@@ -1,0 +1,49 @@
+# TourSwarm Python 依赖
+# Python >= 3.11
+
+# ---------- Agent 编排 ----------
+langgraph==0.2.60
+langgraph-supervisor==0.0.10
+langchain==0.3.14
+langchain-core==0.3.27
+langchain-openai==0.2.14
+langchain-community==0.3.14
+
+# ---------- MCP ----------
+mcp==1.6.0
+langchain-mcp-adapters==0.1.0
+
+# ---------- 记忆 ----------
+mem0ai==0.1.50
+qdrant-client==1.12.1
+
+# ---------- Web 框架 ----------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# ---------- 数据层 ----------
+sqlalchemy==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+pgvector==0.3.6
+redis==5.2.1
+
+# ---------- 工具 ----------
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+tenacity==9.0.0
+python-dotenv==1.0.1
+orjson==3.10.12
+
+# ---------- 测试 ----------
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+respx==0.22.0
+
+# ---------- 类型安全与代码质量 ----------
+# 弥补Python动态类型短板：编译期发现类型错误 + lint + format
+mypy==1.14.0
+ruff==0.8.4
+

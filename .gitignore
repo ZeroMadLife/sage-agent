@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# 环境变量 / 密钥
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 数据库 / 数据
+*.db
+*.sqlite3
+data/*.csv
+data/*.json
+!data/mock/
+postgres_data/
+redis_data/
+qdrant_data/
+
+# 日志
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# 文档临时文件
+~$*.docx
+~$*.xlsx

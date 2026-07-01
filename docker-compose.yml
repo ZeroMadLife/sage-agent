@@ -1,0 +1,54 @@
+# TourSwarm 开发环境编排
+# 启动：docker compose up -d
+# 说明：MCP Server 与 Agent 在宿主机运行，此处仅编排基础设施
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tourswarm-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tourswarm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tourswarm_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-tourswarm}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tourswarm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: tourswarm-redis
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: tourswarm-qdrant
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:

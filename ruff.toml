@@ -1,0 +1,29 @@
+# ruff 配置 — lint + format（替代 flake8 + black + isort）
+# 运行：ruff check . && ruff format .
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["core", "mcp_servers", "agents", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (import排序)
+    "B",    # flake8-bugbear (常见bug模式)
+    "UP",   # pyupgrade (现代化语法)
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff专属规则
+]
+ignore = [
+    "E501",  # 行长由formatter管，不单独报
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "mcp_servers", "agents"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
