@@ -1,7 +1,7 @@
 """Scenic MCP Server tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -18,7 +18,7 @@ def scenic_client() -> ScenicClient:
 
 
 def _tools(server: Any) -> dict[str, Any]:
-    return server._tool_manager._tools
+    return cast(dict[str, Any], server._tool_manager._tools)
 
 
 def test_server_exposes_search_scenic_spots() -> None:
@@ -64,3 +64,26 @@ def test_get_scenic_detail_not_found(scenic_client: ScenicClient) -> None:
     """Unknown scenic spot IDs return None."""
     result = scenic_client.get_scenic_detail("nonexistent")
     assert result is None
+
+
+async def test_search_scenic_spots_tool_returns_results() -> None:
+    """search_scenic_spots tool returns local scenic data."""
+    server = create_scenic_server(data_path=str(MOCK_DIR / "scenic_spots.json"))
+    result = await _tools(server)["search_scenic_spots"].run({"city": "杭州"})
+    assert len(result) == 3
+
+
+async def test_get_scenic_detail_tool_returns_detail() -> None:
+    """get_scenic_detail tool returns local scenic details."""
+    server = create_scenic_server(data_path=str(MOCK_DIR / "scenic_spots.json"))
+    result = await _tools(server)["get_scenic_detail"].run({"spot_id": "hangzhou-xihu"})
+    assert result["name"] == "西湖"
+
+
+async def test_opening_hours_and_ticket_tools_return_values() -> None:
+    """Opening hours and ticket price tools return local values."""
+    server = create_scenic_server(data_path=str(MOCK_DIR / "scenic_spots.json"))
+    opening_hours = await _tools(server)["get_opening_hours"].run({"spot_id": "hangzhou-xihu"})
+    ticket_price = await _tools(server)["get_ticket_price"].run({"spot_id": "hangzhou-xihu"})
+    assert opening_hours == "全天开放"
+    assert ticket_price == 0

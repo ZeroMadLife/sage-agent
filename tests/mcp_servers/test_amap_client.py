@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -16,13 +16,19 @@ MOCK_DIR = Path(__file__).parent.parent.parent / "data" / "mock"
 @pytest.fixture
 def mock_poi_response() -> dict[str, Any]:
     """Return a mocked Amap POI response."""
-    return json.loads((MOCK_DIR / "amap_poi_search.json").read_text(encoding="utf-8"))
+    return cast(
+        dict[str, Any],
+        json.loads((MOCK_DIR / "amap_poi_search.json").read_text(encoding="utf-8")),
+    )
 
 
 @pytest.fixture
 def mock_route_response() -> dict[str, Any]:
     """Return a mocked Amap route response."""
-    return json.loads((MOCK_DIR / "amap_route.json").read_text(encoding="utf-8"))
+    return cast(
+        dict[str, Any],
+        json.loads((MOCK_DIR / "amap_route.json").read_text(encoding="utf-8")),
+    )
 
 
 @pytest.fixture

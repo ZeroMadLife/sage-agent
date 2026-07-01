@@ -30,9 +30,7 @@ def create_amap_server(api_key: str) -> FastMCP:
         )
 
     @server.tool()
-    async def get_route(
-        origin: str, destination: str, mode: RouteMode = "walking"
-    ) -> RouteResult:
+    async def get_route(origin: str, destination: str, mode: RouteMode = "walking") -> RouteResult:
         """查询两个地点之间的路线规划。
 
         在安排行程路线时, 用此工具计算景点之间的距离和交通时间,

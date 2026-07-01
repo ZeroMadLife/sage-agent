@@ -155,7 +155,8 @@
 ## 当前进度
 
 - [x] 项目脚手架（README / .gitignore / .env.example / requirements / docker-compose）
-- [ ] **← 进行中：Phase 1 — MCP Server 开发**
+- [x] Phase 1 — MCP Server 开发（M1：3个 MCP Server + 40 tests + 83% coverage）
+  - 备注：Docker Compose 基础设施镜像拉取在本机网络下未完成，需重试 `docker compose up -d` 复验。
 - [ ] Phase 2 — Agent 编排
 - [ ] Phase 3 — 记忆系统
 - [ ] Phase 4 — 前端与测试
