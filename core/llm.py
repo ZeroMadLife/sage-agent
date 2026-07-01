@@ -74,8 +74,7 @@ def create_llm(model_spec: str, temperature: float = 0.0, **kwargs: Any) -> Chat
     api_key = os.environ.get(config.api_key_env, "").strip()
     if not api_key:
         raise ValueError(
-            f"LLM provider '{provider}' 的 API key 未配置"
-            f"（环境变量: {config.api_key_env}）"
+            f"LLM provider '{provider}' 的 API key 未配置" f"（环境变量: {config.api_key_env}）"
         )
 
     base_url = os.environ.get(config.base_url_env, config.default_base_url).strip()
