@@ -34,7 +34,7 @@ def _build_mem0_config() -> dict[str, Any]:
     deepseek_api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     deepseek_base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     deepseek_model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-    embedder_model = os.environ.get("MEM0_EMBEDDER_MODEL", "BAAI/bge-large-zh-v1.5")
+    embedder_provider = os.environ.get("MEM0_EMBEDDER_PROVIDER", "huggingface")
 
     return {
         "vector_store": {
@@ -48,14 +48,44 @@ def _build_mem0_config() -> dict[str, Any]:
             "provider": "openai",
             "config": {
                 "api_key": deepseek_api_key,
-                "base_url": deepseek_base_url,
+                "openai_base_url": deepseek_base_url,
                 "model": deepseek_model,
+                "top_p": 1.0,
             },
         },
-        "embedder": {
-            "provider": "huggingface",
+        "embedder": _build_embedder_config(embedder_provider),
+    }
+
+
+def _build_embedder_config(provider: str) -> dict[str, Any]:
+    """Build Mem0 embedder configuration.
+
+    HuggingFace remains the default for local/private embeddings. OpenAI-compatible
+    embeddings can be enabled to avoid first-run HuggingFace model downloads.
+    """
+    if provider != "openai":
+        model = os.environ.get("MEM0_EMBEDDER_MODEL", "BAAI/bge-large-zh-v1.5")
+        return {
+            "provider": provider,
             "config": {
-                "model": embedder_model,
+                "model": model,
             },
-        },
+        }
+
+    model = os.environ.get("MEM0_EMBEDDER_MODEL", "text-embedding-3-small")
+    config: dict[str, Any] = {
+        "api_key": os.environ.get("MEM0_EMBEDDER_API_KEY")
+        or os.environ.get("OPENAI_PROXY_API_KEY")
+        or os.environ.get("OPENAI_API_KEY", ""),
+        "model": model,
+        "openai_base_url": os.environ.get("MEM0_EMBEDDER_BASE_URL")
+        or os.environ.get("OPENAI_PROXY_BASE_URL")
+        or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+    }
+    if dims := os.environ.get("MEM0_EMBEDDER_DIMS"):
+        config["embedding_dims"] = int(dims)
+
+    return {
+        "provider": "openai",
+        "config": config,
     }

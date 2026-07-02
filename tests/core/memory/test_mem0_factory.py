@@ -31,6 +31,52 @@ def test_create_mem0_client_returns_client() -> None:
         assert config["vector_store"]["provider"] == "qdrant"
         assert config["vector_store"]["config"]["host"] == "localhost"
         assert config["llm"]["config"]["api_key"] == "test-deepseek"
+        assert config["llm"]["config"]["openai_base_url"] == "https://api.deepseek.test/v1"
+        assert config["llm"]["config"]["top_p"] == 1.0
+        assert "base_url" not in config["llm"]["config"]
+
+
+def test_create_mem0_client_supports_openai_embedder_provider() -> None:
+    """Factory can use an OpenAI-compatible embedder to avoid local model downloads."""
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "MEM0_EMBEDDER_PROVIDER": "openai",
+                "MEM0_EMBEDDER_MODEL": "text-embedding-3-small",
+                "MEM0_EMBEDDER_API_KEY": "test-embedding-key",
+                "MEM0_EMBEDDER_BASE_URL": "https://embedding.test/v1",
+                "MEM0_EMBEDDER_DIMS": "1536",
+            },
+        ),
+        patch("core.memory.mem0_factory.Mem0Client") as mock_class,
+    ):
+        mock_class.from_config.return_value = MagicMock()
+
+        create_mem0_client()
+
+        config = mock_class.from_config.call_args.args[0]
+        assert config["embedder"]["provider"] == "openai"
+        assert config["embedder"]["config"] == {
+            "api_key": "test-embedding-key",
+            "model": "text-embedding-3-small",
+            "openai_base_url": "https://embedding.test/v1",
+            "embedding_dims": 1536,
+        }
+
+
+def test_openai_embedder_defaults_to_openai_embedding_model() -> None:
+    """OpenAI-compatible embedder has a provider-appropriate default model."""
+    with (
+        patch.dict("os.environ", {"MEM0_EMBEDDER_PROVIDER": "openai"}, clear=True),
+        patch("core.memory.mem0_factory.Mem0Client") as mock_class,
+    ):
+        mock_class.from_config.return_value = MagicMock()
+
+        create_mem0_client()
+
+        config = mock_class.from_config.call_args.args[0]
+        assert config["embedder"]["config"]["model"] == "text-embedding-3-small"
 
 
 def test_create_mem0_client_returns_none_on_error() -> None:
