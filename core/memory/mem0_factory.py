@@ -4,6 +4,8 @@ import logging
 import os
 from typing import Any
 
+from qdrant_client import QdrantClient
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -35,13 +37,15 @@ def _build_mem0_config() -> dict[str, Any]:
     deepseek_base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     deepseek_model = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
     embedder_provider = os.environ.get("MEM0_EMBEDDER_PROVIDER", "huggingface")
+    embedder_model = _resolve_embedder_model(embedder_provider)
+    embedder_dims = _resolve_embedder_dims(embedder_provider, embedder_model)
 
     return {
         "vector_store": {
             "provider": "qdrant",
             "config": {
-                "host": qdrant_host,
-                "port": qdrant_port,
+                "client": QdrantClient(host=qdrant_host, port=qdrant_port, trust_env=False),
+                "embedding_model_dims": embedder_dims,
             },
         },
         "llm": {
@@ -53,26 +57,48 @@ def _build_mem0_config() -> dict[str, Any]:
                 "top_p": 1.0,
             },
         },
-        "embedder": _build_embedder_config(embedder_provider),
+        "embedder": _build_embedder_config(embedder_provider, embedder_model, embedder_dims),
     }
 
 
-def _build_embedder_config(provider: str) -> dict[str, Any]:
+def _resolve_embedder_model(provider: str) -> str:
+    """Resolve the embedder model with provider-specific defaults."""
+    default_model = "text-embedding-3-small" if provider == "openai" else "BAAI/bge-large-zh-v1.5"
+    return os.environ.get("MEM0_EMBEDDER_MODEL", default_model)
+
+
+def _resolve_embedder_dims(provider: str, model: str) -> int:
+    """Resolve vector dimensions for Qdrant and Mem0 embedder configuration."""
+    if dims := os.environ.get("MEM0_EMBEDDER_DIMS"):
+        return int(dims)
+
+    known_dims = {
+        "BAAI/bge-large-zh-v1.5": 1024,
+        "BAAI/bge-small-zh-v1.5": 512,
+        "text-embedding-3-small": 1536,
+        "text-embedding-3-large": 3072,
+    }
+    if model in known_dims:
+        return known_dims[model]
+
+    return 1536 if provider == "openai" else 1024
+
+
+def _build_embedder_config(provider: str, model: str, dims: int) -> dict[str, Any]:
     """Build Mem0 embedder configuration.
 
     HuggingFace remains the default for local/private embeddings. OpenAI-compatible
     embeddings can be enabled to avoid first-run HuggingFace model downloads.
     """
     if provider != "openai":
-        model = os.environ.get("MEM0_EMBEDDER_MODEL", "BAAI/bge-large-zh-v1.5")
         return {
             "provider": provider,
             "config": {
                 "model": model,
+                "embedding_dims": dims,
             },
         }
 
-    model = os.environ.get("MEM0_EMBEDDER_MODEL", "text-embedding-3-small")
     config: dict[str, Any] = {
         "api_key": os.environ.get("MEM0_EMBEDDER_API_KEY")
         or os.environ.get("OPENAI_PROXY_API_KEY")
@@ -81,9 +107,8 @@ def _build_embedder_config(provider: str) -> dict[str, Any]:
         "openai_base_url": os.environ.get("MEM0_EMBEDDER_BASE_URL")
         or os.environ.get("OPENAI_PROXY_BASE_URL")
         or os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+        "embedding_dims": dims,
     }
-    if dims := os.environ.get("MEM0_EMBEDDER_DIMS"):
-        config["embedding_dims"] = int(dims)
 
     return {
         "provider": "openai",

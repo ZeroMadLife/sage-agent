@@ -29,11 +29,58 @@ def test_create_mem0_client_returns_client() -> None:
         mock_class.from_config.assert_called_once()
         config = mock_class.from_config.call_args.args[0]
         assert config["vector_store"]["provider"] == "qdrant"
-        assert config["vector_store"]["config"]["host"] == "localhost"
+        assert "client" in config["vector_store"]["config"]
+        assert config["vector_store"]["config"]["embedding_model_dims"] == 1024
+        assert "host" not in config["vector_store"]["config"]
+        assert "port" not in config["vector_store"]["config"]
         assert config["llm"]["config"]["api_key"] == "test-deepseek"
         assert config["llm"]["config"]["openai_base_url"] == "https://api.deepseek.test/v1"
         assert config["llm"]["config"]["top_p"] == 1.0
         assert "base_url" not in config["llm"]["config"]
+
+
+def test_create_mem0_client_disables_qdrant_client_trust_env() -> None:
+    """Qdrant client should bypass system proxy settings for local Docker."""
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "QDRANT_HOST": "localhost",
+                "QDRANT_PORT": "6333",
+            },
+        ),
+        patch("core.memory.mem0_factory.QdrantClient") as qdrant_class,
+        patch("core.memory.mem0_factory.Mem0Client") as mem0_class,
+    ):
+        qdrant_client = MagicMock()
+        qdrant_class.return_value = qdrant_client
+        mem0_class.from_config.return_value = MagicMock()
+
+        create_mem0_client()
+
+        qdrant_class.assert_called_once_with(host="localhost", port=6333, trust_env=False)
+        config = mem0_class.from_config.call_args.args[0]
+        assert config["vector_store"]["config"]["client"] is qdrant_client
+        assert config["vector_store"]["config"]["embedding_model_dims"] == 1024
+
+
+def test_create_mem0_client_sets_qdrant_dims_for_bge_small() -> None:
+    """Qdrant vector size must match the configured HuggingFace embedder."""
+    with (
+        patch.dict(
+            "os.environ",
+            {
+                "MEM0_EMBEDDER_MODEL": "BAAI/bge-small-zh-v1.5",
+            },
+        ),
+        patch("core.memory.mem0_factory.Mem0Client") as mock_class,
+    ):
+        mock_class.from_config.return_value = MagicMock()
+
+        create_mem0_client()
+
+        config = mock_class.from_config.call_args.args[0]
+        assert config["vector_store"]["config"]["embedding_model_dims"] == 512
 
 
 def test_create_mem0_client_supports_openai_embedder_provider() -> None:
@@ -57,6 +104,7 @@ def test_create_mem0_client_supports_openai_embedder_provider() -> None:
 
         config = mock_class.from_config.call_args.args[0]
         assert config["embedder"]["provider"] == "openai"
+        assert config["vector_store"]["config"]["embedding_model_dims"] == 1536
         assert config["embedder"]["config"] == {
             "api_key": "test-embedding-key",
             "model": "text-embedding-3-small",

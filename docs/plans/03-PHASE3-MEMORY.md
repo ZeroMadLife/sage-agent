@@ -1348,35 +1348,35 @@ git commit -m "milestone: M3 complete — memory system with Mem0 cross-session 
   - LLM base URL 使用 `openai_base_url`。
   - 显式设置 `top_p=1.0`，避免 DeepSeek 拒绝 Mem0 默认 `top_p=0`。
   - 默认 HuggingFace embedder；可通过 `MEM0_EMBEDDER_PROVIDER=openai` 切换 OpenAI-compatible embedding。
+  - Qdrant client 显式 `trust_env=False`，避免本机系统代理影响 localhost。
+  - Qdrant `embedding_model_dims` 与 embedder model 同步，避免 1536/512 维度冲突。
 - `scripts/demo_memory.py` 已实现两轮跨会话记忆演示；Mem0 不可用时清晰降级并退出 0。
 
 ### 验收证据
 
-- `bash scripts/check.sh`：通过，`138 passed`。
+- `bash scripts/check.sh`：通过，`140 passed`。
 - `pytest tests/ --cov=core.memory --cov=agents --cov-report=term-missing`：通过，总覆盖率 93%，`core/memory` 覆盖率均超过 80%。
 - `pytest tests/agents/test_e2e.py tests/mcp_servers/ -v`：通过，`44 passed`。
 - `docker compose up -d qdrant`：通过，`tourswarm-qdrant` 状态 `healthy`。
 - `python -m scripts.demo_memory`：
-  - 默认 `BAAI/bge-large-zh-v1.5`：阻塞在 HuggingFace/Xet checkpoint 下载。
-  - `HF_HUB_DISABLE_XET=1 MEM0_EMBEDDER_MODEL=BAAI/bge-small-zh-v1.5`：HuggingFace 连接超时。
-  - `MEM0_EMBEDDER_PROVIDER=openai MEM0_EMBEDDER_MODEL=text-embedding-3-small`：Mem0 可初始化并进入真实调用层；当前 OpenAI Proxy 无该 embedding 通道。
-  - Doubao embedding 探针：当前 key/base URL 返回模型能力不支持。
+  - 使用 `HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 MEM0_EMBEDDER_MODEL=BAAI/bge-small-zh-v1.5` 通过。
+  - 会话 2 检索到：`下周想去杭州玩；特别喜欢海鲜；预算大概500块`。
+  - Prompt context 注入：`已知用户偏好: 下周想去杭州玩; 特别喜欢海鲜; 预算大概500块`。
+  - 最终输出：`Memory influence: visible`。
 
-### 待复验
+### 复验命令
 
-真实跨会话 demo 还缺一个可用 embedding 通道。补充以下任一方案后重跑：
+本机 HuggingFace 官方端点不稳定时，使用镜像端点复验：
 
 ```bash
 docker compose up -d qdrant
-MEM0_EMBEDDER_PROVIDER=openai \
-MEM0_EMBEDDER_MODEL=<embedding-model> \
-MEM0_EMBEDDER_API_KEY=<embedding-api-key> \
-MEM0_EMBEDDER_BASE_URL=<openai-compatible-base-url> \
-MEM0_EMBEDDER_DIMS=<embedding-dimension> \
+HF_ENDPOINT=https://hf-mirror.com \
+HF_HUB_DISABLE_XET=1 \
+MEM0_EMBEDDER_MODEL=BAAI/bge-small-zh-v1.5 \
 python -m scripts.demo_memory
 ```
 
-预期：会话 1 写入“喜欢海鲜”偏好；会话 2 检索到该偏好；规划输出或 memory context 中可见“海鲜”。
+预期：会话 1 写入“喜欢海鲜”偏好；会话 2 检索到该偏好；规划输出或 memory context 中可见“海鲜”；结尾显示 `Memory influence: visible`。
 
 ## Phase 3 完成标准（M3 验收清单）
 
@@ -1386,7 +1386,7 @@ python -m scripts.demo_memory
 - [x] memory_node 集成到 graph（planning 前插入）
 - [x] planning_node 读取 memory_context 注入 prompt
 - [x] Mem0 不可用时优雅降级（不阻断核心功能）
-- [ ] CLI 两轮对话脚本验证跨会话记忆（脚本已实现；真实运行待可用 embedding 通道）
+- [x] CLI 两轮对话脚本验证跨会话记忆
 - [x] Phase 1/2 测试不回归
 - [x] mypy strict 无错误
 - [x] ruff lint 无违规
