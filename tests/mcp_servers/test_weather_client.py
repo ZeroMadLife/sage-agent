@@ -11,6 +11,8 @@ import respx
 from mcp_servers.weather.client import WeatherClient
 
 MOCK_DIR = Path(__file__).parent.parent.parent / "data" / "mock"
+TEST_QWEATHER_BASE_URL = "https://weather.test/v7"
+TEST_QWEATHER_GEO_URL = "https://geo.test/geoapi/v2"
 
 
 @pytest.fixture
@@ -34,7 +36,11 @@ def mock_forecast_response() -> dict[str, Any]:
 @pytest.fixture
 def client() -> WeatherClient:
     """Return a QWeather test client."""
-    return WeatherClient(api_key="test-weather-key")
+    return WeatherClient(
+        api_key="test-weather-key",
+        base_url=TEST_QWEATHER_BASE_URL,
+        geo_url=TEST_QWEATHER_GEO_URL,
+    )
 
 
 @respx.mock
@@ -42,7 +48,7 @@ async def test_get_current_weather_returns_normalized(
     client: WeatherClient, mock_now_response: dict[str, Any]
 ) -> None:
     """Current weather returns a normalized structure."""
-    respx.get("https://api.qweather.com/v7/weather/now").mock(
+    respx.get(f"{TEST_QWEATHER_BASE_URL}/weather/now").mock(
         return_value=httpx.Response(200, json=mock_now_response)
     )
     result = await client.get_current_weather(location_id="101210101")
@@ -58,7 +64,7 @@ async def test_get_forecast_returns_daily_list(
     client: WeatherClient, mock_forecast_response: dict[str, Any]
 ) -> None:
     """Forecast returns a daily weather list."""
-    respx.get("https://api.qweather.com/v7/weather/7d").mock(
+    respx.get(f"{TEST_QWEATHER_BASE_URL}/weather/7d").mock(
         return_value=httpx.Response(200, json=mock_forecast_response)
     )
     result = await client.get_forecast(location_id="101210101", days=7)
@@ -72,7 +78,7 @@ async def test_get_forecast_returns_daily_list(
 @respx.mock
 async def test_get_current_weather_raises_on_error(client: WeatherClient) -> None:
     """API error codes raise an exception."""
-    respx.get("https://api.qweather.com/v7/weather/now").mock(
+    respx.get(f"{TEST_QWEATHER_BASE_URL}/weather/now").mock(
         return_value=httpx.Response(200, json={"code": "401", "refer": []})
     )
     with pytest.raises(Exception, match="和风天气API错误"):
@@ -82,7 +88,7 @@ async def test_get_current_weather_raises_on_error(client: WeatherClient) -> Non
 @respx.mock
 async def test_search_city_by_name(client: WeatherClient) -> None:
     """City lookup returns the location_id."""
-    respx.get("https://geoapi.qweather.com/v2/city/lookup").mock(
+    respx.get(f"{TEST_QWEATHER_GEO_URL}/city/lookup").mock(
         return_value=httpx.Response(
             200,
             json={

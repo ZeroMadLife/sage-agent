@@ -5,6 +5,9 @@ from typing import Any, TypedDict
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+DEFAULT_QWEATHER_BASE_URL = "https://your-host.re.qweatherapi.com/v7"
+DEFAULT_QWEATHER_GEO_URL = "https://your-host.re.qweatherapi.com/geoapi/v2"
+
 
 class WeatherClientError(Exception):
     """Raised when QWeather returns an API error."""
@@ -67,8 +70,8 @@ class WeatherClient:
     def __init__(
         self,
         api_key: str,
-        base_url: str = "https://api.qweather.com/v7",
-        geo_url: str = "https://geoapi.qweather.com/v2",
+        base_url: str = DEFAULT_QWEATHER_BASE_URL,
+        geo_url: str = DEFAULT_QWEATHER_GEO_URL,
     ) -> None:
         self._api_key = api_key
         self._base_url = base_url

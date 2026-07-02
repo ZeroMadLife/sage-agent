@@ -34,11 +34,15 @@ def test_weather_config_has_correct_module() -> None:
     config = build_mcp_config(
         amap_api_key="test-amap",
         qweather_api_key="test-weather",
+        qweather_base_url="https://weather.test/v7",
+        qweather_geo_url="https://geo.test/geoapi/v2",
         scenic_data_path="data/mock/scenic_spots.json",
     )
     weather = config["weather"]
     assert "mcp_servers.weather.server" in weather["args"]
     assert weather["env"]["QWEATHER_API_KEY"] == "test-weather"
+    assert weather["env"]["QWEATHER_BASE_URL"] == "https://weather.test/v7"
+    assert weather["env"]["QWEATHER_GEO_URL"] == "https://geo.test/geoapi/v2"
 
 
 def test_scenic_config_has_data_path() -> None:

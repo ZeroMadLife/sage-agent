@@ -35,6 +35,22 @@ def test_get_weather_tool_description_mentions_planning() -> None:
     assert "天气" in tool.description
 
 
+def test_create_weather_server_passes_qweather_urls_to_client() -> None:
+    """Server construction passes configured QWeather hosts to the client."""
+    with patch("mcp_servers.weather.server.WeatherClient") as client_class:
+        create_weather_server(
+            api_key="test-key",
+            base_url="https://weather.test/v7",
+            geo_url="https://geo.test/geoapi/v2",
+        )
+
+    client_class.assert_called_once_with(
+        api_key="test-key",
+        base_url="https://weather.test/v7",
+        geo_url="https://geo.test/geoapi/v2",
+    )
+
+
 async def test_get_weather_tool_delegates_to_client() -> None:
     """get_weather resolves city and delegates to current weather lookup."""
     weather = {"temp_c": 28, "text": "多云"}

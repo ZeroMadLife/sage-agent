@@ -45,6 +45,14 @@ def test_search_scenic_spots_by_category(scenic_client: ScenicClient) -> None:
     assert result[0]["name"] == "西湖"
 
 
+def test_search_scenic_spots_matches_any_keyword(scenic_client: ScenicClient) -> None:
+    """Whitespace-separated preferences match any individual keyword."""
+    result = scenic_client.search_scenic_spots(city="杭州", keywords="美食 自然风光")
+
+    names = {spot["name"] for spot in result}
+    assert {"西湖", "河坊街"} <= names
+
+
 def test_search_scenic_spots_free_only(scenic_client: ScenicClient) -> None:
     """Filter free scenic spots."""
     result = scenic_client.search_scenic_spots(city="杭州", free_only=True)

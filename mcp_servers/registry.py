@@ -18,9 +18,17 @@ McpConfig = dict[str, McpServerConfig]
 def build_mcp_config(
     amap_api_key: str,
     qweather_api_key: str,
+    qweather_base_url: str = "",
+    qweather_geo_url: str = "",
     scenic_data_path: str = "data/mock/scenic_spots.json",
 ) -> McpConfig:
     """Build MultiServerMCPClient-compatible stdio server config."""
+    weather_env = {"QWEATHER_API_KEY": qweather_api_key}
+    if qweather_base_url:
+        weather_env["QWEATHER_BASE_URL"] = qweather_base_url
+    if qweather_geo_url:
+        weather_env["QWEATHER_GEO_URL"] = qweather_geo_url
+
     return {
         "amap": {
             "command": "python",
@@ -31,7 +39,7 @@ def build_mcp_config(
         "weather": {
             "command": "python",
             "args": ["-m", "mcp_servers.weather.server"],
-            "env": {"QWEATHER_API_KEY": qweather_api_key},
+            "env": weather_env,
             "transport": "stdio",
         },
         "scenic": {

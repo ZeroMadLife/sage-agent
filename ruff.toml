@@ -17,7 +17,10 @@ select = [
     "RUF",  # ruff专属规则
 ]
 ignore = [
-    "E501",  # 行长由formatter管，不单独报
+    "E501",   # 行长由formatter管，不单独报
+    "RUF001", # 中文全角标点（字符串中），中文项目正常
+    "RUF002", # 中文全角标点（docstring中），中文项目正常
+    "RUF003", # 中文全角标点（注释中），中文项目正常
 ]
 
 [lint.isort]

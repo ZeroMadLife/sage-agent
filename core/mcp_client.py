@@ -11,5 +11,7 @@ def build_config_from_settings(
     return build_mcp_config(
         amap_api_key=settings.amap_api_key,
         qweather_api_key=settings.qweather_api_key,
+        qweather_base_url=settings.qweather_base_url,
+        qweather_geo_url=settings.qweather_geo_url,
         scenic_data_path=scenic_data_path,
     )

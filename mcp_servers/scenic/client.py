@@ -72,13 +72,8 @@ class ScenicClient:
         if free_only:
             results = [spot for spot in results if spot["ticket_price"] == 0]
         if keywords:
-            keyword = keywords.lower()
-            results = [
-                spot
-                for spot in results
-                if keyword in spot["name"].lower()
-                or any(keyword in tag.lower() for tag in spot["tags"])
-            ]
+            tokens = [token for token in keywords.lower().split() if token]
+            results = [spot for spot in results if self._matches_keywords(spot, tokens)]
 
         ranked = sorted(results, key=lambda spot: spot["rating"], reverse=True)
         return [self._summarize_spot(spot) for spot in ranked[:limit]]
@@ -113,6 +108,20 @@ class ScenicClient:
             "rating": spot["rating"],
             "tags": spot["tags"],
         }
+
+    @staticmethod
+    def _matches_keywords(spot: ScenicSpot, keywords: list[str]) -> bool:
+        """Return whether a spot matches at least one search keyword."""
+        if not keywords:
+            return True
+
+        haystack = [
+            spot["name"].lower(),
+            spot["category"].lower(),
+            spot["description"].lower(),
+            *(tag.lower() for tag in spot["tags"]),
+        ]
+        return any(keyword in text for keyword in keywords for text in haystack)
 
     @staticmethod
     def _copy_spot(spot: ScenicSpot) -> ScenicSpot:

@@ -5,16 +5,27 @@ from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 
-from mcp_servers.weather.client import CurrentWeather, DailyForecast, WeatherAlert, WeatherClient
+from mcp_servers.weather.client import (
+    DEFAULT_QWEATHER_BASE_URL,
+    DEFAULT_QWEATHER_GEO_URL,
+    CurrentWeather,
+    DailyForecast,
+    WeatherAlert,
+    WeatherClient,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-def create_weather_server(api_key: str) -> FastMCP:
+def create_weather_server(
+    api_key: str,
+    base_url: str = DEFAULT_QWEATHER_BASE_URL,
+    geo_url: str = DEFAULT_QWEATHER_GEO_URL,
+) -> FastMCP:
     """Create a Weather MCP Server instance."""
     server = FastMCP("weather-mcp-server")
-    client = WeatherClient(api_key=api_key)
+    client = WeatherClient(api_key=api_key, base_url=base_url, geo_url=geo_url)
 
     @server.tool()
     async def get_weather(city: str) -> CurrentWeather:
@@ -54,7 +65,9 @@ def main() -> None:
     api_key = os.environ.get("QWEATHER_API_KEY", "")
     if not api_key:
         raise RuntimeError("QWEATHER_API_KEY 环境变量未设置")
-    server = create_weather_server(api_key=api_key)
+    base_url = os.environ.get("QWEATHER_BASE_URL", DEFAULT_QWEATHER_BASE_URL)
+    geo_url = os.environ.get("QWEATHER_GEO_URL", DEFAULT_QWEATHER_GEO_URL)
+    server = create_weather_server(api_key=api_key, base_url=base_url, geo_url=geo_url)
     run: Callable[[], None] = server.run
     run()
 
