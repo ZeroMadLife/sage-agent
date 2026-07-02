@@ -5,8 +5,34 @@ from typing import Any, TypedDict
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-DEFAULT_QWEATHER_BASE_URL = "https://your-host.re.qweatherapi.com/v7"
-DEFAULT_QWEATHER_GEO_URL = "https://your-host.re.qweatherapi.com/geoapi/v2"
+DEFAULT_QWEATHER_BASE_URL = "https://mq3aarq6pa.re.qweatherapi.com/v7"
+DEFAULT_QWEATHER_GEO_URL = "https://mq3aarq6pa.re.qweatherapi.com/geoapi/v2"
+
+# 和风天气新版 API Host 不支持 geoapi 城市查询接口（404）。
+# 内置常用城市的 Location ID 映射，search_city 优先查本地映射。
+# Location ID 来源：和风天气控制台 → 城市查询（旧版）或文档。
+CITY_LOCATION_MAP: dict[str, str] = {
+    "杭州": "101210101",
+    "北京": "101010100",
+    "上海": "101020100",
+    "南京": "101190101",
+    "苏州": "101190401",
+    "成都": "101270101",
+    "西安": "101110101",
+    "厦门": "101230201",
+    "广州": "101280101",
+    "深圳": "101280601",
+    "重庆": "101040100",
+    "武汉": "101200101",
+    "长沙": "101250101",
+    "青岛": "101120201",
+    "大连": "101070201",
+    "昆明": "101290101",
+    "丽江": "101291401",
+    "三亚": "101310215",
+    "拉萨": "101140101",
+    "哈尔滨": "101050101",
+}
 
 
 class WeatherClientError(Exception):
@@ -80,7 +106,22 @@ class WeatherClient:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10), reraise=True)
     async def search_city(self, city_name: str) -> CityInfo:
-        """Resolve a city name to a QWeather location ID."""
+        """Resolve a city name to a QWeather location ID.
+
+        优先查本地 CITY_LOCATION_MAP（和风新版 API Host 不支持 geoapi）。
+        本地找不到时 fallback 到 geoapi 接口（旧版 host 可用时）。
+        """
+        # 1. 本地映射优先
+        location_id = CITY_LOCATION_MAP.get(city_name)
+        if location_id:
+            return {
+                "location_id": location_id,
+                "name": city_name,
+                "lat": "",
+                "lon": "",
+            }
+
+        # 2. Fallback: geoapi 接口（旧版 host 或标准订阅可用时）
         params = {"key": self._api_key, "location": city_name}
         resp = await self._http.get(f"{self._geo_url}/city/lookup", params=params)
         data = resp.json()

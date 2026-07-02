@@ -86,8 +86,16 @@ async def test_get_current_weather_raises_on_error(client: WeatherClient) -> Non
 
 
 @respx.mock
-async def test_search_city_by_name(client: WeatherClient) -> None:
-    """City lookup returns the location_id."""
+async def test_search_city_uses_local_map_first(client: WeatherClient) -> None:
+    """已知城市优先走本地映射，不调 API。"""
+    result = await client.search_city("杭州")
+    assert result["location_id"] == "101210101"
+    assert result["name"] == "杭州"
+
+
+@respx.mock
+async def test_search_city_fallback_to_api(client: WeatherClient) -> None:
+    """本地映射找不到的城市 fallback 到 geoapi 接口。"""
     respx.get(f"{TEST_QWEATHER_GEO_URL}/city/lookup").mock(
         return_value=httpx.Response(
             200,
@@ -95,16 +103,16 @@ async def test_search_city_by_name(client: WeatherClient) -> None:
                 "code": "200",
                 "location": [
                     {
-                        "id": "101210101",
-                        "name": "杭州",
-                        "adm2": "杭州",
-                        "lat": "30.246",
-                        "lon": "120.141",
+                        "id": "101210401",
+                        "name": "千岛湖",
+                        "adm2": "淳安",
+                        "lat": "29.608",
+                        "lon": "119.032",
                     }
                 ],
             },
         )
     )
-    result = await client.search_city("杭州")
-    assert result["location_id"] == "101210101"
-    assert result["name"] == "杭州"
+    result = await client.search_city("千岛湖")
+    assert result["location_id"] == "101210401"
+    assert result["name"] == "千岛湖"
