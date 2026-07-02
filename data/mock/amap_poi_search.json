@@ -1,0 +1,26 @@
+{
+  "status": "1",
+  "count": "2",
+  "pois": [
+    {
+      "id": "B0FFHPRXHN",
+      "name": "西湖",
+      "type": "风景名胜:风景名胜相关",
+      "address": "龙井路1号",
+      "location": "120.141,30.246",
+      "tel": "0571-87969691",
+      "tag": "自然风光",
+      "biz_ext": {"rating": "4.8", "cost": "0"}
+    },
+    {
+      "id": "B0FFHUVYWX",
+      "name": "灵隐寺",
+      "type": "风景名胜:寺庙",
+      "address": "灵隐路法云弄1号",
+      "location": "120.087,30.233",
+      "tel": "0571-87968665",
+      "tag": "人文古迹",
+      "biz_ext": {"rating": "4.7", "cost": "30"}
+    }
+  ]
+}

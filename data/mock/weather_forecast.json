@@ -1,0 +1,35 @@
+{
+  "code": "200",
+  "daily": [
+    {
+      "fxDate": "2026-07-01",
+      "tempMax": "32",
+      "tempMin": "24",
+      "iconDay": "104",
+      "textDay": "多云",
+      "iconNight": "150",
+      "textNight": "晴",
+      "wind360Day": "180",
+      "windDirDay": "南风",
+      "windScaleDay": "1-2",
+      "humidity": "65",
+      "precip": "0.0",
+      "uvIndex": "6"
+    },
+    {
+      "fxDate": "2026-07-02",
+      "tempMax": "34",
+      "tempMin": "25",
+      "iconDay": "100",
+      "textDay": "晴",
+      "iconNight": "150",
+      "textNight": "晴",
+      "wind360Day": "180",
+      "windDirDay": "南风",
+      "windScaleDay": "1-2",
+      "humidity": "60",
+      "precip": "0.0",
+      "uvIndex": "8"
+    }
+  ]
+}

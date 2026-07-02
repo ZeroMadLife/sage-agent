@@ -1,0 +1,58 @@
+[
+  {
+    "id": "hangzhou-xihu",
+    "name": "西湖",
+    "city": "杭州",
+    "category": "自然风光",
+    "description": "中国著名淡水湖，以“淡妆浓抹总相宜”闻名。环湖有苏堤、白堤、断桥等经典景观。",
+    "opening_hours": "全天开放",
+    "ticket_price": 0,
+    "recommended_duration_hours": 4,
+    "best_season": "3-5月, 9-11月",
+    "tags": ["世界遗产", "湖泊", "免费"],
+    "location": "120.141,30.246",
+    "rating": 4.8
+  },
+  {
+    "id": "hangzhou-lingyin",
+    "name": "灵隐寺",
+    "city": "杭州",
+    "category": "人文古迹",
+    "description": "江南著名古刹，始建于东晋。寺内飞来峰石刻造像为全国重点文物保护单位。",
+    "opening_hours": "07:00-18:15",
+    "ticket_price": 30,
+    "recommended_duration_hours": 2,
+    "best_season": "全年",
+    "tags": ["寺庙", "佛教", "历史"],
+    "location": "120.087,30.233",
+    "rating": 4.7
+  },
+  {
+    "id": "hangzhou-hefang",
+    "name": "河坊街",
+    "city": "杭州",
+    "category": "美食购物",
+    "description": "杭州历史文化街区，集中了传统手工艺、特色小吃和老字号店铺。",
+    "opening_hours": "全天开放",
+    "ticket_price": 0,
+    "recommended_duration_hours": 2,
+    "best_season": "全年",
+    "tags": ["步行街", "小吃", "免费"],
+    "location": "120.169,30.249",
+    "rating": 4.3
+  },
+  {
+    "id": "beijing-forbidden",
+    "name": "故宫博物院",
+    "city": "北京",
+    "category": "人文古迹",
+    "description": "明清两代皇宫，世界现存最大古代宫殿建筑群。藏品涵盖书画、瓷器、钟表等。",
+    "opening_hours": "08:30-17:00（周一闭馆）",
+    "ticket_price": 60,
+    "recommended_duration_hours": 4,
+    "best_season": "4-5月, 9-10月",
+    "tags": ["世界遗产", "博物馆", "宫殿"],
+    "location": "116.397,39.917",
+    "rating": 4.9
+  }
+]

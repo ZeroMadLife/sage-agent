@@ -1,12 +1,11 @@
 # ruff 配置 — lint + format（替代 flake8 + black + isort）
 # 运行：ruff check . && ruff format .
 
-[tool.ruff]
 target-version = "py311"
 line-length = 100
 src = ["core", "mcp_servers", "agents", "tests"]
 
-[tool.ruff.lint]
+[lint]
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -18,12 +17,15 @@ select = [
     "RUF",  # ruff专属规则
 ]
 ignore = [
-    "E501",  # 行长由formatter管，不单独报
+    "E501",   # 行长由formatter管，不单独报
+    "RUF001", # 中文全角标点（字符串中），中文项目正常
+    "RUF002", # 中文全角标点（docstring中），中文项目正常
+    "RUF003", # 中文全角标点（注释中），中文项目正常
 ]
 
-[tool.ruff.lint.isort]
+[lint.isort]
 known-first-party = ["core", "mcp_servers", "agents"]
 
-[tool.ruff.format]
+[format]
 quote-style = "double"
 indent-style = "space"

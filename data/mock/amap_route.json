@@ -1,0 +1,16 @@
+{
+  "status": "1",
+  "route": {
+    "origin": "120.141,30.246",
+    "destination": "120.087,30.233",
+    "paths": [
+      {
+        "distance": "7820",
+        "duration": "1234",
+        "steps": [
+          {"instruction": "沿龙井路向西行驶", "distance": "3200", "duration": "480"}
+        ]
+      }
+    ]
+  }
+}

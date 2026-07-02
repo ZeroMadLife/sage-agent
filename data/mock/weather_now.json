@@ -1,0 +1,20 @@
+{
+  "code": "200",
+  "now": {
+    "obsTime": "2026-07-01T10:00+08:00",
+    "temp": "28",
+    "feelsLike": "31",
+    "icon": "104",
+    "text": "多云",
+    "wind360": "180",
+    "windDir": "南风",
+    "windScale": "2",
+    "windSpeed": "8",
+    "humidity": "65",
+    "precip": "0.0",
+    "pressure": "1008",
+    "vis": "25",
+    "cloud": "45",
+    "dew": "22"
+  }
+}
