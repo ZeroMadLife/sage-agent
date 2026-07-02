@@ -159,6 +159,9 @@
   - 备注：Docker Compose 基础设施镜像拉取在本机网络下未完成，需重试 `docker compose up -d` 复验。
 - [x] Phase 2 — Agent 编排（M2：4 Agent + LangGraph 两阶段图 + 90 tests + 93% coverage）
   - 备注：真实 CLI 演示已输出结构化行程；和风天气真实调用返回非 JSON，已按天气降级路径继续生成行程。
-- [ ] Phase 3 — 记忆系统
+- [ ] Phase 3 — 记忆系统（实现与自动化验收完成，真实跨会话 demo 待可用 embedding 通道复验）
+  - 已完成：Redis 短期记忆、Mem0 长期记忆封装、MemoryManager、memory_node、planning prompt 注入、CLI demo、Qdrant Docker 启动验证。
+  - 验收：`bash scripts/check.sh` 通过（138 tests）；`core.memory + agents` 覆盖率 93%；Phase 1/2 回归 `44 passed`。
+  - 待复验：本机 HuggingFace embedding 模型下载超时；现有 OpenAI Proxy / Doubao endpoint 未提供可用 embedding 通道。补充 embedding-capable key/base URL/model 后重跑 `python -m scripts.demo_memory`。
 - [ ] Phase 4 — 前端与测试
 - [ ] Phase 5 — 部署上线
