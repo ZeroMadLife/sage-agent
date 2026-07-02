@@ -1,5 +1,6 @@
 """Long-term Mem0-backed preference memory tests."""
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -84,6 +85,31 @@ async def test_extract_and_store_calls_mem0_add(
         "用户: 我对海鲜过敏\n助手: 好的，我会避免推荐海鲜",
         user_id="user_123",
     )
+
+
+async def test_extract_and_store_offloads_mem0_add(
+    memory: LongTermMemory,
+    mock_mem0: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mem0 add runs through asyncio.to_thread to avoid blocking the event loop."""
+    calls: list[tuple[Any, tuple[Any, ...], dict[str, Any]]] = []
+
+    async def fake_to_thread(func: Any, *args: Any, **kwargs: Any) -> Any:
+        calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr("core.memory.long_term.asyncio.to_thread", fake_to_thread)
+
+    await memory.extract_and_store(conversation="用户: 我喜欢爬山")
+
+    assert calls == [
+        (
+            mock_mem0.add,
+            ("用户: 我喜欢爬山",),
+            {"user_id": "user_123"},
+        )
+    ]
 
 
 async def test_extract_and_store_handles_error(

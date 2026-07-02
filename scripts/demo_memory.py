@@ -30,6 +30,20 @@ def memory_contains_preference(memory_context: str, generated_content: str) -> b
     return "海鲜" in combined
 
 
+async def clear_demo_memory(mem0_client: Any, user_id: str) -> bool:
+    """Clear previous demo memories for a reproducible run when supported."""
+    delete_all = getattr(mem0_client, "delete_all", None)
+    if not callable(delete_all):
+        return False
+
+    try:
+        await asyncio.to_thread(delete_all, user_id=user_id)
+    except Exception as exc:
+        print(f"Demo memory cleanup skipped: {exc}")
+        return False
+    return True
+
+
 async def run_memory_demo() -> None:
     """Run a two-session memory demonstration with real configured services."""
     load_dotenv()
@@ -46,6 +60,11 @@ async def run_memory_demo() -> None:
         return
 
     user_id = "demo_user_memory_001"
+    if await clear_demo_memory(mem0_client, user_id):
+        print("Previous demo memories cleared.")
+    else:
+        print("Previous demo memory cleanup unavailable; continuing.")
+
     long_term = LongTermMemory(mem0_client=mem0_client, user_id=user_id)
     memory_manager = MemoryManager(long_term=long_term)
 

@@ -1,5 +1,6 @@
 """Long-term user preference memory backed by Mem0."""
 
+import asyncio
 import logging
 from typing import Any
 
@@ -51,7 +52,7 @@ class LongTermMemory:
     async def extract_and_store(self, conversation: str) -> None:
         """Ask Mem0 to extract and store durable user preference facts."""
         try:
-            self._mem0.add(conversation, user_id=self._user_id)
+            await asyncio.to_thread(self._mem0.add, conversation, user_id=self._user_id)
         except Exception as exc:
             logger.warning("Mem0 add failed for user %s: %s", self._user_id, exc)
 
