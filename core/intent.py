@@ -3,6 +3,7 @@
 替换 Phase 2 的 parse_input 硬编码关键词匹配。
 支持任何中国城市, 识别查询类型（plan/nearby/chat）。
 """
+
 import json
 import logging
 from typing import Literal
@@ -61,10 +62,12 @@ async def parse_intent(content: str, llm: ChatOpenAI) -> IntentResult:
         IntentResult, LLM 失败时返回 chat 类型的兜底
     """
     try:
-        response = await llm.ainvoke([
-            {"role": "system", "content": INTENT_SYSTEM_PROMPT},
-            {"role": "user", "content": content},
-        ])
+        response = await llm.ainvoke(
+            [
+                {"role": "system", "content": INTENT_SYSTEM_PROMPT},
+                {"role": "user", "content": content},
+            ]
+        )
         raw = getattr(response, "content", str(response))
         if not isinstance(raw, str):
             raw = str(raw)

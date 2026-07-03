@@ -11,11 +11,13 @@ from api.main import create_app
 def _make_agent_stub() -> MagicMock:
     """创建模拟 Agent, chat 返回简单回复。"""
     agent = MagicMock()
-    agent.chat = AsyncMock(return_value=AgentResponse(
-        content="好的, 已为你规划杭州行程。",
-        tool_calls=[],
-        itinerary=None,
-    ))
+    agent.chat = AsyncMock(
+        return_value=AgentResponse(
+            content="好的, 已为你规划杭州行程。",
+            tool_calls=[],
+            itinerary=None,
+        )
+    )
     return agent
 
 

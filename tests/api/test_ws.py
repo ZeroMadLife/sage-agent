@@ -12,11 +12,13 @@ from api.main import create_app
 def _make_agent_stub(content: str = "你好！我是TourSwarm。") -> MagicMock:
     """创建一个模拟 Agent, chat 返回指定内容。"""
     agent = MagicMock()
-    agent.chat = AsyncMock(return_value=AgentResponse(
-        content=content,
-        tool_calls=[],
-        itinerary=None,
-    ))
+    agent.chat = AsyncMock(
+        return_value=AgentResponse(
+            content=content,
+            tool_calls=[],
+            itinerary=None,
+        )
+    )
     return agent
 
 
@@ -57,6 +59,7 @@ def test_chat_websocket_rejects_concurrent_request() -> None:
 
     async def slow_chat(**kwargs: Any) -> AgentResponse:
         import asyncio
+
         await asyncio.sleep(0.5)
         return AgentResponse(content="完成", tool_calls=[], itinerary=None)
 

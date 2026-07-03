@@ -1,9 +1,11 @@
 """Run the ReAct Agent and emit UI-friendly events."""
 
+import asyncio
 import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from agents.react_agent import ToolCallRecord
 from api.schemas import AgentResultEvent, ErrorEvent, ProgressEvent, ToolCallEvent
 
 
@@ -33,23 +35,63 @@ async def run_agent_chat(
 
     yield ProgressEvent(agent="agent", message="正在思考...")
 
+    tool_events: asyncio.Queue[ToolCallRecord] = asyncio.Queue()
+
+    async def on_tool_event(record: ToolCallRecord) -> None:
+        await tool_events.put(record)
+
+    async def _call_agent() -> Any:
+        try:
+            return await agent.chat(
+                content=content,
+                user_id=user_id,
+                session_id=session_id,
+                history=history or [],
+                on_tool_event=on_tool_event,
+            )
+        except TypeError as exc:
+            if "on_tool_event" not in str(exc):
+                raise
+            return await agent.chat(
+                content=content,
+                user_id=user_id,
+                session_id=session_id,
+                history=history or [],
+            )
+
+    streamed_tool_events = 0
     try:
-        response = await agent.chat(
-            content=content,
-            user_id=user_id,
-            session_id=session_id,
-            history=history or [],
-        )
+        agent_task = asyncio.create_task(_call_agent())
+        while not agent_task.done() or not tool_events.empty():
+            if tool_events.empty():
+                try:
+                    record = await asyncio.wait_for(tool_events.get(), timeout=0.05)
+                except TimeoutError:
+                    continue
+            else:
+                record = tool_events.get_nowait()
+
+            streamed_tool_events += 1
+            yield ToolCallEvent(
+                tool=record.tool,
+                args=record.input,
+                status=record.status,
+                message=record.message,
+            )
+
+        response = await agent_task
     except Exception as exc:
         yield ErrorEvent(message=f"Agent 执行失败: {exc}", recoverable=True)
         return
 
-    # 发送工具调用事件
-    for tc in response.tool_calls:
-        yield ToolCallEvent(
-            tool=tc.tool,
-            args=tc.input,
-        )
+    if streamed_tool_events == 0:
+        for tc in response.tool_calls:
+            yield ToolCallEvent(
+                tool=tc.tool,
+                args=tc.input,
+                status=tc.status,
+                message=tc.message,
+            )
 
     latency_ms = int((time.perf_counter() - started) * 1000)
 
@@ -57,6 +99,7 @@ async def run_agent_chat(
     itinerary_obj = None
     if response.itinerary:
         from models.itinerary import Itinerary
+
         try:
             itinerary_obj = Itinerary.model_validate(response.itinerary)
         except Exception:
@@ -65,9 +108,6 @@ async def run_agent_chat(
     yield AgentResultEvent(
         content=response.content,
         itinerary=itinerary_obj,
-        tool_calls=[
-            {"tool": tc.tool, "error": tc.error}
-            for tc in response.tool_calls
-        ],
+        tool_calls=[{"tool": tc.tool, "error": tc.error} for tc in response.tool_calls],
         metrics={"latency_ms": latency_ms},
     )

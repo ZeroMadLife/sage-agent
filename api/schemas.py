@@ -40,6 +40,8 @@ class ToolCallEvent(BaseModel):
     type: Literal["tool_call"] = "tool_call"
     tool: str
     args: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["running", "done", "error"] = "done"
+    message: str = ""
 
 
 class AgentResultEvent(BaseModel):

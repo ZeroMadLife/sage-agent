@@ -8,12 +8,15 @@ export type ToolCallEvent = {
   type: 'tool_call'
   tool: string
   args: Record<string, unknown>
+  status: 'running' | 'done' | 'error'
+  message: string
 }
 
 export type ToolCallStatus = {
   tool: string
   args: Record<string, unknown>
   status: 'running' | 'done' | 'error'
+  message?: string
 }
 
 export type VerificationIssue = {

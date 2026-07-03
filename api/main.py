@@ -54,6 +54,19 @@ def create_runtime_agent() -> Any | None:
         )
         amap_client = AmapClient(api_key=settings.amap_api_key)
 
+        async def get_weather(city: str) -> Any:
+            """Resolve a city name and fetch current weather for ReAct tools."""
+            city_info = await weather_client.search_city(city)
+            return await weather_client.get_current_weather(location_id=city_info["location_id"])
+
+        async def get_forecast(city: str, days: int = 7) -> Any:
+            """Resolve a city name and fetch forecast for ReAct tools."""
+            city_info = await weather_client.search_city(city)
+            return await weather_client.get_forecast(
+                location_id=city_info["location_id"],
+                days=days,
+            )
+
         # Phase 2 多Agent图（作为 generate_itinerary 工具的内部实现）
         graph = build_graph(
             weather_client=weather_client,
@@ -67,8 +80,8 @@ def create_runtime_agent() -> Any | None:
             "search_nearby": amap_client.search_nearby,
             "get_poi_detail": amap_client.get_poi_detail,
             "search_attractions": amap_client.search_attractions,
-            "get_weather": weather_client.get_weather,
-            "get_forecast": weather_client.get_forecast,
+            "get_weather": get_weather,
+            "get_forecast": get_forecast,
             "get_route": amap_client.get_route,
             "geocode": amap_client.geocode,
             "search_scenic_spots": scenic_client.search_scenic_spots,
@@ -92,6 +105,7 @@ def create_app(agent: Any | None = None) -> FastAPI:
     app = FastAPI(title="TourSwarm API")
     app.state.agent = agent
     from api import routes, ws
+
     app.include_router(routes.router)
     app.include_router(ws.router)
     return app

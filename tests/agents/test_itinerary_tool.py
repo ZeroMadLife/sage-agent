@@ -12,14 +12,16 @@ from models.itinerary import Itinerary, ItineraryDay
 def mock_graph() -> MagicMock:
     """模拟 Phase 2 的编译后 graph。"""
     graph = MagicMock()
-    graph.ainvoke = AsyncMock(return_value={
-        "itinerary": Itinerary(
-            destination="杭州",
-            days=[ItineraryDay(date="2026-07-05", total_cost=200)],
-            total_cost=200,
-        ),
-        "weather_info": {"current": {"temp_c": 28, "text": "晴"}, "error": False},
-    })
+    graph.ainvoke = AsyncMock(
+        return_value={
+            "itinerary": Itinerary(
+                destination="杭州",
+                days=[ItineraryDay(date="2026-07-05", total_cost=200)],
+                total_cost=200,
+            ),
+            "weather_info": {"current": {"temp_c": 28, "text": "晴"}, "error": False},
+        }
+    )
     return graph
 
 
@@ -60,8 +62,10 @@ async def test_itinerary_tool_handles_graph_error() -> None:
     graph.ainvoke = AsyncMock(side_effect=Exception("LLM超时"))
     tool = create_itinerary_tool(graph=graph)
     result = await tool(
-        destination="杭州", budget_total=500,
-        preferences=[], dates={"start": "2026-07-05", "end": "2026-07-06"},
+        destination="杭州",
+        budget_total=500,
+        preferences=[],
+        dates={"start": "2026-07-05", "end": "2026-07-06"},
     )
     assert "error" in result
     assert "LLM超时" in result["error"]
@@ -71,8 +75,10 @@ async def test_itinerary_tool_returns_weather_info(mock_graph: MagicMock) -> Non
     """工具返回天气信息（主Agent可以展示给用户）。"""
     tool = create_itinerary_tool(graph=mock_graph)
     result = await tool(
-        destination="杭州", budget_total=500,
-        preferences=[], dates={"start": "2026-07-05", "end": "2026-07-06"},
+        destination="杭州",
+        budget_total=500,
+        preferences=[],
+        dates={"start": "2026-07-05", "end": "2026-07-06"},
     )
     assert "weather" in result
     assert result["weather"]["current"]["temp_c"] == 28

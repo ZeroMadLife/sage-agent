@@ -25,17 +25,13 @@ async def chat_stream(websocket: WebSocket, session_id: str) -> None:
 
     session = SESSIONS.get(session_id)
     if session is None:
-        await websocket.send_json(
-            ErrorEvent(message=f"Unknown session: {session_id}").model_dump()
-        )
+        await websocket.send_json(ErrorEvent(message=f"Unknown session: {session_id}").model_dump())
         await websocket.close()
         return
 
     agent: Any = getattr(websocket.app.state, "agent", None)
     if agent is None:
-        await websocket.send_json(
-            ErrorEvent(message="Agent is not configured").model_dump()
-        )
+        await websocket.send_json(ErrorEvent(message="Agent is not configured").model_dump())
         await websocket.close()
         return
 
@@ -50,9 +46,7 @@ async def chat_stream(websocket: WebSocket, session_id: str) -> None:
         try:
             msg = UserMessage(**raw)
         except Exception as exc:
-            await websocket.send_json(
-                ErrorEvent(message=f"Invalid message: {exc}").model_dump()
-            )
+            await websocket.send_json(ErrorEvent(message=f"Invalid message: {exc}").model_dump())
             continue
 
         # 防重入
@@ -72,8 +66,6 @@ async def chat_stream(websocket: WebSocket, session_id: str) -> None:
                 await websocket.send_json(event.model_dump())
         except Exception as exc:
             logger.exception("Agent chat failed")
-            await websocket.send_json(
-                ErrorEvent(message=f"Agent error: {exc}").model_dump()
-            )
+            await websocket.send_json(ErrorEvent(message=f"Agent error: {exc}").model_dump())
         finally:
             session.is_executing = False

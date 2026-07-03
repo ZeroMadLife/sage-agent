@@ -13,7 +13,7 @@ const itineraryStore = useItineraryStore()
 watch(
   () => chatStore.result,
   (result) => {
-    if (result) {
+    if (result?.itinerary) {
       itineraryStore.setItinerary(result.itinerary)
     }
   },
@@ -21,13 +21,23 @@ watch(
 
 const validationLabel = computed(() => {
   if (!chatStore.result) {
-    return '未验证'
+    return '未生成'
   }
-  return chatStore.result.validation.passed ? '验证通过' : '需要调整'
+  return chatStore.result.itinerary ? '已生成行程' : '已回复'
+})
+
+const statusLabel = computed(() => {
+  if (chatStore.isExecuting) {
+    return '思考中'
+  }
+  if (chatStore.errors.length) {
+    return '异常'
+  }
+  return '空闲'
 })
 
 function startPlanning(content: string) {
-  void chatStore.startPlanning(content)
+  void chatStore.sendMessage(content)
 }
 </script>
 
@@ -39,7 +49,7 @@ function startPlanning(content: string) {
       <section class="panel status-panel">
         <div class="panel-heading">
           <h2>状态</h2>
-          <span>{{ chatStore.connectionStatus }}</span>
+          <span>{{ statusLabel }}</span>
         </div>
         <p>{{ validationLabel }}</p>
         <p v-if="chatStore.errors.length" class="error-text">

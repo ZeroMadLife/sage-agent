@@ -29,7 +29,25 @@ export const useChatStore = defineStore('chat', () => {
     if (event.type === 'progress') {
       events.value.push(event)
     } else if (event.type === 'tool_call') {
-      toolCalls.value.push(event)
+      const normalized = {
+        ...event,
+        status: event.status ?? 'done',
+        message: event.message ?? '',
+      }
+      const key = JSON.stringify({ tool: normalized.tool, args: normalized.args })
+      let existingIndex = -1
+      for (let index = toolCalls.value.length - 1; index >= 0; index -= 1) {
+        const current = toolCalls.value[index]
+        if (JSON.stringify({ tool: current.tool, args: current.args }) === key) {
+          existingIndex = index
+          break
+        }
+      }
+      if (existingIndex >= 0 && normalized.status !== 'running') {
+        toolCalls.value[existingIndex] = normalized
+      } else {
+        toolCalls.value.push(normalized)
+      }
     } else if (event.type === 'result') {
       result.value = event
       isExecuting.value = false
@@ -65,25 +83,62 @@ export const useChatStore = defineStore('chat', () => {
         isExecuting.value = false
       }
     }
+    return socket
+  }
+
+  function _waitForOpen(socket: WebSocket): Promise<void> {
+    if (socket.readyState === WebSocket.OPEN) {
+      return Promise.resolve()
+    }
+    if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) {
+      return Promise.reject(new Error('WebSocket连接已关闭'))
+    }
+
+    return new Promise((resolve, reject) => {
+      const originalOpen = socket.onopen
+      const originalError = socket.onerror
+
+      socket.onopen = (event: Event) => {
+        originalOpen?.call(socket, event)
+        resolve()
+      }
+      socket.onerror = (event: Event) => {
+        originalError?.call(socket, event)
+        reject(new Error('WebSocket连接失败'))
+      }
+    })
+  }
+
+  function _sendSocketMessage(socket: WebSocket, content: string) {
+    socket.send(JSON.stringify({ content }))
   }
 
   async function sendMessage(content: string, userId = 'anonymous') {
     _resetTurnState()
     isExecuting.value = true
 
-    if (!currentSessionId.value || !activeSocket || activeSocket.readyState !== WebSocket.OPEN) {
-      // 创建新 session
-      const response = await startChat(content, userId)
-      currentSessionId.value = response.session_id
-      _connect(response.session_id)
-      // 等连接建立后发消息
-      await new Promise((resolve) => setTimeout(resolve, 200))
-      if (activeSocket?.readyState === WebSocket.OPEN) {
-        activeSocket.send(JSON.stringify({ content }))
+    try {
+      let socket = activeSocket
+      if (
+        !currentSessionId.value ||
+        !socket ||
+        socket.readyState === WebSocket.CLOSED ||
+        socket.readyState === WebSocket.CLOSING
+      ) {
+        const response = await startChat(content, userId)
+        currentSessionId.value = response.session_id
+        socket = _connect(response.session_id)
       }
-    } else {
-      // 已有 session, 通过 WebSocket 发消息
-      activeSocket.send(JSON.stringify({ content }))
+
+      await _waitForOpen(socket)
+      _sendSocketMessage(socket, content)
+    } catch (error) {
+      errors.value.push({
+        type: 'error',
+        message: error instanceof Error ? error.message : '消息发送失败',
+        recoverable: true,
+      })
+      isExecuting.value = false
     }
   }
 

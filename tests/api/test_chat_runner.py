@@ -1,8 +1,9 @@
 """Chat runner tests."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from agents.react_agent import AgentResponse, ToolCallRecord
+from agents.react_agent import AgentResponse, ToolCallRecord, TourAgent
 from api.schemas import AgentResultEvent, ProgressEvent
 from api.services.chat_runner import run_agent_chat
 
@@ -15,11 +16,13 @@ def _make_agent(response: AgentResponse) -> MagicMock:
 
 async def test_run_agent_chat_emits_progress_and_result() -> None:
     """run_agent_chat 返回 progress 和 result 事件。"""
-    agent = _make_agent(AgentResponse(
-        content="杭州现在28度, 晴天。",
-        tool_calls=[],
-        itinerary=None,
-    ))
+    agent = _make_agent(
+        AgentResponse(
+            content="杭州现在28度, 晴天。",
+            tool_calls=[],
+            itinerary=None,
+        )
+    )
 
     events = [
         event
@@ -39,17 +42,19 @@ async def test_run_agent_chat_emits_progress_and_result() -> None:
 
 async def test_run_agent_chat_emits_tool_call_events() -> None:
     """工具调用产生 ToolCallEvent。"""
-    agent = _make_agent(AgentResponse(
-        content="附近有沙县小吃。",
-        tool_calls=[
-            ToolCallRecord(
-                tool="search_nearby",
-                input={"location": "120.1,30.2", "keywords": "餐饮"},
-                output=[{"name": "沙县小吃"}],
-            ),
-        ],
-        itinerary=None,
-    ))
+    agent = _make_agent(
+        AgentResponse(
+            content="附近有沙县小吃。",
+            tool_calls=[
+                ToolCallRecord(
+                    tool="search_nearby",
+                    input={"location": "120.1,30.2", "keywords": "餐饮"},
+                    output=[{"name": "沙县小吃"}],
+                ),
+            ],
+            itinerary=None,
+        )
+    )
 
     events = [
         event
@@ -68,6 +73,44 @@ async def test_run_agent_chat_emits_tool_call_events() -> None:
     assert events[1].tool == "search_nearby"
     assert events[2].type == "result"
     assert "沙县" in events[2].content
+
+
+async def test_run_agent_chat_streams_tool_running_before_tool_finishes() -> None:
+    """工具执行期间应先流式推送 running 事件, 而不是等 Agent 完整结束。"""
+    finish_tool = asyncio.Event()
+
+    async def get_forecast(city: str, days: int = 7) -> list[dict[str, object]]:
+        await finish_tool.wait()
+        return [{"city": city, "days": days}]
+
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(
+        side_effect=[
+            MagicMock(content='{"action": "get_forecast", "input": {"city": "杭州", "days": 7}}'),
+            MagicMock(content="杭州周末天气晴朗，适合出行。"),
+        ]
+    )
+    agent = TourAgent(llm=llm, tools={"get_forecast": get_forecast})
+    stream = run_agent_chat(
+        agent=agent,
+        content="杭州周末天气",
+        user_id="anonymous",
+        session_id="session-001",
+    )
+
+    progress = await anext(stream)
+    running_task = asyncio.create_task(anext(stream))
+    running = await asyncio.wait_for(running_task, timeout=0.2)
+
+    assert progress.type == "progress"
+    assert running.type == "tool_call"
+    assert running.tool == "get_forecast"
+    assert running.status == "running"
+
+    finish_tool.set()
+    remaining = [event async for event in stream]
+    assert any(event.type == "tool_call" and event.status == "done" for event in remaining)
+    assert remaining[-1].type == "result"
 
 
 async def test_run_agent_chat_handles_agent_error() -> None:

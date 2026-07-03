@@ -10,6 +10,7 @@
     result = await tool(destination="杭州", budget_total=500, ...)
     # result 是可序列化的 dict, 含行程+天气
 """
+
 import logging
 from typing import Any
 

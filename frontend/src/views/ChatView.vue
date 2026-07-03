@@ -13,22 +13,43 @@ const messagesContainer = ref<HTMLElement | null>(null)
 interface UIMessage {
   role: 'user' | 'assistant'
   content: string
+  isThinking?: boolean
+  statusMessage?: string
   toolCalls?: ToolCallStatus[]
   itinerary?: Itinerary | null
 }
 
 const messages = ref<UIMessage[]>([])
 
+function lastAssistantMessage() {
+  return [...messages.value].reverse().find((m) => m.role === 'assistant')
+}
+
+// 进度事件 → 显示“正在思考中/正在查询”等状态
+watch(
+  () => chatStore.events,
+  (events) => {
+    const latest = events.at(-1)
+    const last = lastAssistantMessage()
+    if (latest && last) {
+      last.isThinking = true
+      last.statusMessage = latest.message || '正在思考中...'
+    }
+  },
+  { deep: true },
+)
+
 // 工具调用事件 → 更新当前 assistant 消息
 watch(
   () => chatStore.toolCalls,
   (calls) => {
-    const last = [...messages.value].reverse().find((m) => m.role === 'assistant')
+    const last = lastAssistantMessage()
     if (last) {
       last.toolCalls = calls.map((c) => ({
         tool: c.tool,
         args: c.args,
-        status: 'done' as const,
+        status: c.status,
+        message: c.message,
       }))
     }
   },
@@ -40,12 +61,29 @@ watch(
   () => chatStore.result,
   (result) => {
     if (!result) return
-    const last = [...messages.value].reverse().find((m) => m.role === 'assistant')
+    const last = lastAssistantMessage()
     if (last) {
       last.content = result.content
       last.itinerary = result.itinerary
+      last.isThinking = false
+      last.statusMessage = undefined
     }
   },
+)
+
+// 错误事件 → 不让 assistant 气泡一直空着
+watch(
+  () => chatStore.errors,
+  (errors) => {
+    const latest = errors.at(-1)
+    const last = lastAssistantMessage()
+    if (latest && last) {
+      last.content = `请求失败：${latest.message}`
+      last.isThinking = false
+      last.statusMessage = undefined
+    }
+  },
+  { deep: true },
 )
 
 function scrollToBottom() {
@@ -58,7 +96,12 @@ function scrollToBottom() {
 
 async function handleSend(content: string) {
   messages.value.push({ role: 'user', content })
-  messages.value.push({ role: 'assistant', content: '' })
+  messages.value.push({
+    role: 'assistant',
+    content: '',
+    isThinking: true,
+    statusMessage: '正在思考中...',
+  })
   scrollToBottom()
 
   await chatStore.sendMessage(content, deviceId)
@@ -86,6 +129,8 @@ async function handleSend(content: string) {
         :key="i"
         :role="msg.role"
         :content="msg.content"
+        :is-thinking="msg.isThinking"
+        :status-message="msg.statusMessage"
         :tool-calls="msg.toolCalls"
         :itinerary="msg.itinerary"
       />

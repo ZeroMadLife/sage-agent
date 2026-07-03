@@ -1,10 +1,21 @@
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useChatStore } from './chat'
 
-type SocketHandler = ((event?: MessageEvent) => void) | null
+const startChatMock = vi.fn()
+
+vi.mock('../api/chat', () => ({
+  startChat: (...args: unknown[]) => startChatMock(...args),
+  buildChatStreamUrl: (id: string) => `ws://localhost/api/v1/chat/${id}/stream`,
+}))
+
+type SocketHandler = ((event?: Event | MessageEvent) => void) | null
 
 class FakeWebSocket {
+  static CONNECTING = 0
+  static OPEN = 1
+  static CLOSING = 2
+  static CLOSED = 3
   static instances: FakeWebSocket[] = []
 
   readonly url: string
@@ -12,7 +23,7 @@ class FakeWebSocket {
   onmessage: SocketHandler = null
   onerror: SocketHandler = null
   onclose: SocketHandler = null
-  closed = false
+  readyState = FakeWebSocket.CONNECTING
   sentMessages: string[] = []
 
   constructor(url: string) {
@@ -21,12 +32,13 @@ class FakeWebSocket {
   }
 
   close() {
-    this.closed = true
-    this.onclose?.()
+    this.readyState = FakeWebSocket.CLOSED
+    this.onclose?.(new Event('close'))
   }
 
   open() {
-    this.onopen?.()
+    this.readyState = FakeWebSocket.OPEN
+    this.onopen?.(new Event('open'))
   }
 
   receive(data: unknown) {
@@ -34,61 +46,69 @@ class FakeWebSocket {
   }
 
   send(data: string) {
+    if (this.readyState !== FakeWebSocket.OPEN) {
+      throw new Error('socket is not open')
+    }
     this.sentMessages.push(data)
-  }
-
-  get readyState() {
-    return this.closed ? WebSocket.CLOSED : WebSocket.OPEN
   }
 }
 
-beforeEach(() => {
-  setActivePinia(createPinia())
-  FakeWebSocket.instances = []
-})
-
-it('receives progress and result events via websocket', () => {
-  const store = useChatStore()
-
-  // Mock startChat to avoid real HTTP
-  vi.mock('../api/chat', () => ({
-    startChat: vi.fn().mockResolvedValue({ session_id: 'session-001' }),
-    buildChatStreamUrl: (id: string) => `ws://localhost/api/v1/chat/${id}/stream`,
-  }))
-
-  // Directly test event handling by simulating websocket messages
-  const socket = new FakeWebSocket('ws://localhost/api/v1/chat/session-001/stream')
-  FakeWebSocket.instances[0] = socket
-
-  // Simulate the store's internal _handleServerEvent
-  socket.open()
-  socket.receive({ type: 'progress', agent: 'agent', message: '正在思考...' })
-  socket.receive({
-    type: 'result',
-    content: '杭州现在28度, 晴天。',
-    itinerary: null,
-    tool_calls: [],
-    metrics: { latency_ms: 500 },
+describe('chat store websocket flow', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    FakeWebSocket.instances = []
+    startChatMock.mockReset()
+    startChatMock.mockResolvedValue({ session_id: 'session-001' })
+    vi.stubGlobal('WebSocket', FakeWebSocket)
   })
 
-  // Verify via store state (after manually wiring)
-  // Note: store.sendMessage requires async startChat, so we test event handling directly
-  expect(socket.url).toContain('/api/v1/chat/session-001/stream')
-})
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
 
-it('handles error events', () => {
-  const socket = new FakeWebSocket('ws://localhost/api/v1/chat/error/stream')
-  socket.open()
-  socket.receive({ type: 'error', message: 'Agent error', recoverable: true })
+  it('waits for the first websocket connection to open before sending the message', async () => {
+    vi.useFakeTimers()
+    const store = useChatStore()
 
-  // The store would set isExecuting to false on error
-  expect(FakeWebSocket.instances.length).toBeGreaterThan(0)
-})
+    const sendPromise = store.sendMessage('你好', 'device-001')
+    await Promise.resolve()
+    await Promise.resolve()
 
-it('handles busy events', () => {
-  const socket = new FakeWebSocket('ws://localhost/api/v1/chat/busy/stream')
-  socket.open()
-  socket.receive({ type: 'busy', message: '正在处理上一个请求, 请稍候' })
+    const socket = FakeWebSocket.instances[0]
+    expect(socket.sentMessages).toEqual([])
 
-  expect(FakeWebSocket.instances.length).toBeGreaterThan(0)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(socket.sentMessages).toEqual([])
+
+    socket.open()
+    await sendPromise
+    expect(socket.sentMessages).toEqual([JSON.stringify({ content: '你好' })])
+  })
+
+  it('records progress, tool call, and result events from the websocket', async () => {
+    const store = useChatStore()
+
+    const sendPromise = store.sendMessage('杭州天气', 'device-001')
+    await Promise.resolve()
+    await Promise.resolve()
+    const socket = FakeWebSocket.instances[0]
+    socket.open()
+    await sendPromise
+
+    socket.receive({ type: 'progress', agent: 'agent', message: '正在思考...' })
+    socket.receive({ type: 'tool_call', tool: 'get_weather', args: { city: '杭州' } })
+    socket.receive({
+      type: 'result',
+      content: '杭州现在28度，晴天。',
+      itinerary: null,
+      tool_calls: [{ tool: 'get_weather', error: '' }],
+      metrics: { latency_ms: 500 },
+    })
+
+    expect(store.events[0].message).toBe('正在思考...')
+    expect(store.toolCalls[0].tool).toBe('get_weather')
+    expect(store.result?.content).toContain('28度')
+    expect(store.isExecuting).toBe(false)
+  })
 })

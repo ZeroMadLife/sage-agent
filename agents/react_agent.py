@@ -10,15 +10,19 @@ LLM 输出协议：
 - 需要工具时输出 JSON：{"action": "工具名", "input": {"参数": "值"}}
 - 不需要工具时直接输出回复文字
 """
+
 import inspect
 import json
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, Literal
 
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+ToolStatus = Literal["running", "done", "error"]
+ToolEventCallback = Callable[["ToolCallRecord"], Awaitable[None]]
 
 AGENT_SYSTEM_PROMPT = """你是 TourSwarm, 一个学生穷游助手。
 
@@ -56,6 +60,8 @@ class ToolCallRecord(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict, description="调用参数")
     output: Any = Field(default=None, description="返回结果")
     error: str = Field(default="", description="错误信息, 空表示成功")
+    status: ToolStatus = Field(default="done", description="工具执行状态")
+    message: str = Field(default="", description="适合前端展示的人类可读状态")
 
 
 class AgentResponse(BaseModel):
@@ -63,7 +69,9 @@ class AgentResponse(BaseModel):
 
     content: str = Field(description="回复文字")
     tool_calls: list[ToolCallRecord] = Field(default_factory=list, description="工具调用记录")
-    itinerary: dict[str, Any] | None = Field(default=None, description="行程（generate_itinerary返回的）")
+    itinerary: dict[str, Any] | None = Field(
+        default=None, description="行程（generate_itinerary返回的）"
+    )
 
 
 class TourAgent:
@@ -85,6 +93,7 @@ class TourAgent:
         user_id: str,
         session_id: str,
         history: list[dict[str, str]] | None = None,
+        on_tool_event: ToolEventCallback | None = None,
     ) -> AgentResponse:
         """处理用户消息, 返回回复+工具调用记录。
 
@@ -93,6 +102,7 @@ class TourAgent:
             user_id: 用户ID
             session_id: 会话ID
             history: 对话历史（多轮上下文）
+            on_tool_event: 工具开始/完成/失败时的事件回调, 用于 WebSocket 流式展示
 
         Returns:
             AgentResponse（回复文字 + 工具调用记录 + 可选行程）
@@ -117,44 +127,73 @@ class TourAgent:
                 # 不需要工具, 直接回复 — 从历史tool_calls中提取行程
                 itinerary_from_tool = self._extract_itinerary(tool_calls)
                 return AgentResponse(
-                    content=raw, tool_calls=tool_calls,
+                    content=raw,
+                    tool_calls=tool_calls,
                     itinerary=itinerary_from_tool,
                 )
 
-            tool_name = tool_call["action"]
-            tool_input = tool_call.get("input", {})
+            tool_name = str(tool_call["action"])
+            raw_input = tool_call.get("input", {})
+            tool_input = raw_input if isinstance(raw_input, dict) else {}
 
             if tool_name not in self._tools:
                 messages.append({"role": "assistant", "content": raw})
-                messages.append({
-                    "role": "user",
-                    "content": f"工具 {tool_name} 不存在, 可用: {list(self._tools)}",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"工具 {tool_name} 不存在, 可用: {list(self._tools)}",
+                    }
+                )
                 continue
 
             try:
+                await self._emit_tool_event(
+                    on_tool_event,
+                    ToolCallRecord(
+                        tool=tool_name,
+                        input=tool_input,
+                        status="running",
+                        message=self._tool_message(tool_name, tool_input, "running"),
+                    ),
+                )
                 result = await self._execute_tool(tool_name, tool_input)
-                tool_calls.append(ToolCallRecord(
-                    tool=tool_name, input=tool_input, output=result,
-                ))
+                record = ToolCallRecord(
+                    tool=tool_name,
+                    input=tool_input,
+                    output=result,
+                    status="done",
+                    message=self._tool_message(tool_name, tool_input, "done"),
+                )
+                tool_calls.append(record)
+                await self._emit_tool_event(on_tool_event, record)
 
                 # 如果是 generate_itinerary, 提取行程
                 messages.append({"role": "assistant", "content": raw})
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
-                messages.append({
-                    "role": "user",
-                    "content": f"工具 {tool_name} 返回: {result_str[:800]}",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"工具 {tool_name} 返回: {result_str[:800]}",
+                    }
+                )
             except Exception as exc:
                 logger.warning("工具 %s 执行失败: %s", tool_name, exc)
-                tool_calls.append(ToolCallRecord(
-                    tool=tool_name, input=tool_input, error=str(exc),
-                ))
+                record = ToolCallRecord(
+                    tool=tool_name,
+                    input=tool_input,
+                    error=str(exc),
+                    status="error",
+                    message=self._tool_message(tool_name, tool_input, "error"),
+                )
+                tool_calls.append(record)
+                await self._emit_tool_event(on_tool_event, record)
                 messages.append({"role": "assistant", "content": raw})
-                messages.append({
-                    "role": "user",
-                    "content": f"工具 {tool_name} 失败: {exc}, 请告知用户或尝试其他方式。",
-                })
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": f"工具 {tool_name} 失败: {exc}, 请告知用户或尝试其他方式。",
+                    }
+                )
 
         # 循环结束（达到最大迭代次数）
         itinerary_from_tool = self._extract_itinerary(tool_calls)
@@ -185,6 +224,49 @@ class TourAgent:
         return None
 
     @staticmethod
+    async def _emit_tool_event(
+        callback: ToolEventCallback | None,
+        record: ToolCallRecord,
+    ) -> None:
+        """Emit one tool status event when a streaming callback is provided."""
+        if callback is not None:
+            await callback(record)
+
+    @staticmethod
+    def _tool_message(tool_name: str, tool_input: dict[str, Any], status: ToolStatus) -> str:
+        """Create a compact human-readable tool status message."""
+        labels = {
+            "search_nearby": "周边搜索",
+            "get_poi_detail": "地点详情",
+            "search_attractions": "景点搜索",
+            "get_weather": "实时天气",
+            "get_forecast": "天气预报",
+            "get_route": "路线规划",
+            "geocode": "地址定位",
+            "search_scenic_spots": "本地景点库",
+            "get_scenic_detail": "景点详情",
+            "generate_itinerary": "多Agent行程规划",
+        }
+        label = labels.get(tool_name, tool_name)
+        city = str(tool_input.get("city", "") or tool_input.get("destination", ""))
+        days = tool_input.get("days")
+
+        if tool_name == "get_forecast" and city:
+            target = f"{city}未来 {days} 天天气" if days else f"{city}天气预报"
+        elif tool_name == "get_weather" and city:
+            target = f"{city}实时天气"
+        elif tool_name == "generate_itinerary" and city:
+            target = f"{city}行程方案"
+        else:
+            target = label
+
+        if status == "running":
+            return f"正在查询{target}" if "天气" in target else f"正在执行{target}"
+        if status == "done":
+            return target
+        return f"{target}失败"
+
+    @staticmethod
     def _try_parse_tool_call(text: str) -> dict[str, Any] | None:
         """尝试从 LLM 输出中解析工具调用JSON。"""
         text = text.strip()
@@ -203,4 +285,14 @@ class TourAgent:
                     return data
             except json.JSONDecodeError:
                 pass
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char != "{":
+                continue
+            try:
+                data, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and "action" in data:
+                return data
         return None
