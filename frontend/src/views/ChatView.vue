@@ -133,6 +133,24 @@ function historyRole(role: string): 'user' | 'assistant' {
   return role === 'user' ? 'user' : 'assistant'
 }
 
+function historyToolCalls(
+  toolCalls: Array<Record<string, unknown>> | null | undefined,
+): ToolCallStatus[] | undefined {
+  if (!toolCalls || toolCalls.length === 0) {
+    return undefined
+  }
+  return toolCalls.map((call) => {
+    const tool = typeof call.tool === 'string' ? call.tool : 'unknown'
+    const error = typeof call.error === 'string' ? call.error : ''
+    return {
+      tool,
+      args: {},
+      status: error ? 'error' : 'done',
+      message: error ? `${tool}失败` : `${tool}完成`,
+    }
+  })
+}
+
 async function handleSelectSession(sessionId: string) {
   chatStore.closeStream()
   chatStore.currentSessionId = sessionId
@@ -140,6 +158,7 @@ async function handleSelectSession(sessionId: string) {
   messages.value = sessionStore.messages.map((message) => ({
     role: historyRole(message.role),
     content: message.content,
+    toolCalls: historyToolCalls(message.tool_calls),
   }))
   scrollToBottom()
 }

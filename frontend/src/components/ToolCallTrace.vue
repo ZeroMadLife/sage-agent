@@ -17,13 +17,14 @@ const props = defineProps<{
 const hasRunning = computed(() => props.toolCalls.some((call) => call.status === 'running'))
 const hasError = computed(() => props.toolCalls.some((call) => call.status === 'error'))
 const latestRunning = computed(() => [...props.toolCalls].reverse().find((call) => call.status === 'running'))
+const errorCount = computed(() => props.toolCalls.filter((call) => call.status === 'error').length)
 
 const summaryTitle = computed(() => {
   if (props.isThinking || hasRunning.value) {
     return '思考中'
   }
   if (hasError.value) {
-    return '思考中断'
+    return '部分工具失败'
   }
   return '思考过程'
 })
@@ -39,6 +40,9 @@ const summaryMeta = computed(() => {
     return '正在整理工具结果'
   }
   const count = props.toolCalls.length
+  if (hasError.value) {
+    return `已调用 ${count} 个工具，${errorCount.value} 个失败`
+  }
   return count > 0 ? `已调用 ${count} 个工具` : '未调用工具'
 })
 </script>
