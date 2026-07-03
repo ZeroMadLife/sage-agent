@@ -154,6 +154,90 @@ class AmapClient:
             "level": str(geo.get("level", "")),
         }
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10), reraise=True)
+    async def search_nearby(
+        self,
+        location: str,
+        radius: int = 1000,
+        keywords: str = "",
+        types: str = "",
+        limit: int = 20,
+    ) -> list[AmapPoi]:
+        """周边POI搜索 — 查找指定位置附近的兴趣点。
+
+        Args:
+            location: 中心点经纬度 "lng,lat"
+            radius: 搜索半径（米），默认1000
+            keywords: 搜索关键词，如 "餐饮""景点"
+            types: POI类型代码，如 "050000"（餐饮服务）
+            limit: 返回数量上限
+
+        Returns:
+            标准化POI列表
+        """
+        params: dict[str, str] = {
+            "key": self._api_key,
+            "location": location,
+            "radius": str(radius),
+            "offset": str(limit),
+            "page": "1",
+            "extensions": "all",
+        }
+        if keywords:
+            params["keywords"] = keywords
+        if types:
+            params["types"] = types
+
+        resp = await self._http.get(f"{self._base_url}/place/around", params=params)
+        data = resp.json()
+
+        if data.get("status") != "1":
+            raise AmapClientError(f"高德API错误: {data.get('info', 'unknown')}")
+
+        pois = data.get("pois", [])
+        if not isinstance(pois, list):
+            return []
+        return [self._normalize_poi(poi) for poi in pois if isinstance(poi, dict)]
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, max=10), reraise=True)
+    async def get_poi_detail(self, poi_id: str) -> dict[str, Any]:
+        """获取POI详细信息（营业时间/电话/评分/价格）。
+
+        Args:
+            poi_id: 高德POI ID
+
+        Returns:
+            POI详情字典：id/name/address/location/tel/type/rating/cost/opentime
+        """
+        params = {"key": self._api_key, "id": poi_id, "extensions": "all"}
+        resp = await self._http.get(f"{self._base_url}/place/detail", params=params)
+        data = resp.json()
+
+        if data.get("status") != "1":
+            raise AmapClientError(f"高德API错误: {data.get('info', 'unknown')}")
+
+        pois = data.get("pois", [])
+        if not isinstance(pois, list) or not pois:
+            raise AmapClientError(f"POI详情查询失败: {poi_id}")
+
+        poi = pois[0]
+        if not isinstance(poi, dict):
+            raise AmapClientError(f"POI详情查询失败: {poi_id}")
+        biz = poi.get("biz_ext", {})
+        if not isinstance(biz, dict):
+            biz = {}
+        return {
+            "id": str(poi.get("id", "")),
+            "name": str(poi.get("name", "")),
+            "address": str(poi.get("address", "")),
+            "location": str(poi.get("location", "")),
+            "tel": str(poi.get("tel", "")),
+            "type": str(poi.get("type", "")),
+            "rating": str(biz.get("rating", "")),
+            "cost": str(biz.get("cost", "")),
+            "opentime": str(poi.get("opentime", "未知")),
+        }
+
     @staticmethod
     def _normalize_poi(raw: dict[str, Any]) -> AmapPoi:
         """Normalize an Amap POI payload."""

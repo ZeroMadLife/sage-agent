@@ -85,6 +85,20 @@ bash scripts/check.sh
 pytest tests/ -v
 ```
 
+## Phase 4 Web 演示
+
+```bash
+# 启动 FastAPI 后端
+uvicorn api.main:app --reload --port 8000
+
+# 启动 Vue3 工作台
+cd frontend
+npm install
+npm run dev
+```
+
+打开 Vite 输出的本地地址后，输入 `周末去杭州2日游预算500元喜欢美食`，前端会通过 `/api/v1/chat` 创建会话，并连接 `/api/v1/chat/{session_id}/stream` 接收 Agent 进度与行程结果。5 分钟演示流程见 `docs/demo-script.md`。
+
 ## 类型安全工具链
 
 本项目用工程工具解决Python动态类型的短板，而非换语言：

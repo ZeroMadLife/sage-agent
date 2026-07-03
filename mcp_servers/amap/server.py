@@ -1,7 +1,7 @@
 """Amap MCP Server exposing travel-oriented map tools."""
 
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -45,6 +45,42 @@ def create_amap_server(api_key: str) -> FastMCP:
         当用户提到地名但需要计算路线时, 先用此工具获取经纬度。
         """
         return await client.geocode(address=address, city=city)
+
+    @server.tool()
+    async def search_nearby(
+        location: str, radius: int = 1000, keywords: str = "", limit: int = 20
+    ) -> list[AmapPoi]:
+        """搜索指定位置附近的兴趣点（餐饮/景点/购物等）。
+
+        当用户问"附近有什么好吃的""这附近有什么可以逛的"时, 用此工具。
+        需要提供经纬度坐标。
+
+        Args:
+            location: 中心点经纬度 "lng,lat", 如 "120.123,30.234"
+            radius: 搜索半径（米）, 默认1000
+            keywords: 搜索关键词, 如 "餐饮""景点""小吃"
+            limit: 返回数量上限, 默认20
+
+        Returns:
+            POI列表: name/location/address/tel/rating/cost
+        """
+        return await client.search_nearby(
+            location=location, radius=radius, keywords=keywords, limit=limit
+        )
+
+    @server.tool()
+    async def get_poi_detail(poi_id: str) -> dict[str, Any]:
+        """获取某个地点的详细信息（营业时间/电话/评分/价格）。
+
+        当用户问"这家店几点开门""门票多少钱"时用此工具。
+
+        Args:
+            poi_id: 高德POI ID（从 search_nearby 或 search_attractions 结果获取）
+
+        Returns:
+            name/address/tel/rating/cost/opentime
+        """
+        return await client.get_poi_detail(poi_id=poi_id)
 
     return server
 

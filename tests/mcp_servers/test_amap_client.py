@@ -100,3 +100,54 @@ async def test_get_route_supports_driving(
         origin="120.141,30.246", destination="120.087,30.233", mode="driving"
     )
     assert result["distance_m"] == 7820
+
+
+@respx.mock
+async def test_search_nearby_returns_pois(client: AmapClient) -> None:
+    """周边搜索返回标准化POI列表。"""
+    respx.get("https://restapi.amap.com/v3/place/around").mock(
+        return_value=httpx.Response(200, json={
+            "status": "1",
+            "pois": [
+                {"id": "B001", "name": "沙县小吃", "type": "餐饮服务;快餐厅",
+                 "address": "学林街", "location": "120.123,30.234",
+                 "tel": "13800001111", "biz_ext": {"rating": "4.2", "cost": "15"}},
+            ],
+        })
+    )
+    result = await client.search_nearby(
+        location="120.123,30.234", radius=1000, keywords="餐饮", limit=10
+    )
+    assert len(result) == 1
+    assert result[0]["name"] == "沙县小吃"
+    assert result[0]["location"] == "120.123,30.234"
+
+
+@respx.mock
+async def test_search_nearby_handles_empty(client: AmapClient) -> None:
+    """周边搜索无结果时返回空列表。"""
+    respx.get("https://restapi.amap.com/v3/place/around").mock(
+        return_value=httpx.Response(200, json={"status": "1", "pois": []})
+    )
+    result = await client.search_nearby(location="0,0", radius=500)
+    assert result == []
+
+
+@respx.mock
+async def test_get_poi_detail_returns_full_info(client: AmapClient) -> None:
+    """POI详情返回完整信息。"""
+    respx.get("https://restapi.amap.com/v3/place/detail").mock(
+        return_value=httpx.Response(200, json={
+            "status": "1",
+            "pois": [{
+                "id": "B001", "name": "沙县小吃",
+                "address": "学林街123号", "location": "120.123,30.234",
+                "tel": "13800001111", "type": "餐饮服务;快餐厅",
+                "biz_ext": {"rating": "4.2", "cost": "15"},
+                "opentime": "07:00-22:00",
+            }],
+        })
+    )
+    result = await client.get_poi_detail(poi_id="B001")
+    assert result["name"] == "沙县小吃"
+    assert result["opentime"] == "07:00-22:00"

@@ -83,3 +83,15 @@ async def test_geocode_tool_delegates_to_client() -> None:
 
     assert result == geocode
     client.geocode.assert_awaited_once_with(address="西湖", city="杭州")
+
+
+def test_server_exposes_search_nearby_tool() -> None:
+    """Server exposes the search_nearby tool."""
+    server = create_amap_server(api_key="test-key")
+    assert "search_nearby" in _tools(server)
+
+
+def test_server_exposes_get_poi_detail_tool() -> None:
+    """Server exposes the get_poi_detail tool."""
+    server = create_amap_server(api_key="test-key")
+    assert "get_poi_detail" in _tools(server)
