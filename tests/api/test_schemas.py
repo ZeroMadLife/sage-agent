@@ -1,6 +1,11 @@
 """FastAPI contract schema tests."""
 
-from api.schemas import ChatRequest, ChatStartResponse, ProgressEvent, ResultEvent
+from api.schemas import (
+    AgentResultEvent,
+    ChatRequest,
+    ChatStartResponse,
+    ProgressEvent,
+)
 from models.itinerary import BudgetBreakdown, Itinerary, ItineraryDay
 
 
@@ -24,20 +29,31 @@ def test_progress_event_serializes_agent_progress() -> None:
     assert event.model_dump()["agent"] == "planning"
 
 
-def test_result_event_contains_itinerary_and_validation() -> None:
+def test_agent_result_event_contains_content_and_itinerary() -> None:
     itinerary = Itinerary(
         destination="杭州",
         days=[ItineraryDay(date="2026-07-05", total_cost=120)],
         total_cost=120,
         budget=BudgetBreakdown(total=500, spent=120),
     )
-    event = ResultEvent(
+    event = AgentResultEvent(
+        content="好的, 已为你规划杭州行程。",
         itinerary=itinerary,
-        validation={"passed": True, "issues": []},
+        tool_calls=[{"tool": "generate_itinerary", "error": ""}],
         metrics={"latency_ms": 1200},
     )
 
     data = event.model_dump()
     assert data["type"] == "result"
+    assert "杭州行程" in data["content"]
     assert data["itinerary"]["destination"] == "杭州"
-    assert data["validation"]["passed"] is True
+
+
+def test_agent_result_event_without_itinerary() -> None:
+    """纯文字回复时 itinerary 为 None。"""
+    event = AgentResultEvent(content="你好！我是TourSwarm。")
+
+    data = event.model_dump()
+    assert data["type"] == "result"
+    assert data["itinerary"] is None
+    assert "TourSwarm" in data["content"]

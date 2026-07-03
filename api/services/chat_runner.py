@@ -1,57 +1,73 @@
-"""Run the LangGraph itinerary planner and emit UI-friendly events."""
+"""Run the ReAct Agent and emit UI-friendly events."""
 
 import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from api.schemas import ErrorEvent, ProgressEvent, ResultEvent
-from core.verifier import verify_itinerary
-from models.itinerary import Itinerary
-from scripts.demo_chat import parse_input
+from api.schemas import AgentResultEvent, ErrorEvent, ProgressEvent, ToolCallEvent
 
 
-async def run_chat(
-    graph: Any,
+async def run_agent_chat(
+    agent: Any,
+    content: str,
     user_id: str,
     session_id: str,
-    content: str,
-) -> AsyncIterator[ProgressEvent | ResultEvent | ErrorEvent]:
-    """Execute one chat request and stream coarse-grained events."""
-    started = time.perf_counter()
-    parsed = parse_input(content)
-    initial_state = {
-        "messages": [],
-        "user_id": user_id,
-        "session_id": session_id,
-        "iteration_count": 0,
-        **parsed,
-    }
+    history: list[dict[str, str]] | None = None,
+) -> AsyncIterator[ProgressEvent | ToolCallEvent | AgentResultEvent | ErrorEvent]:
+    """执行一次 Agent 对话, 流式返回事件。
 
-    yield ProgressEvent(agent="supervisor", message="已理解需求，开始调度信息与推荐Agent")
-    yield ProgressEvent(agent="info", message="正在查询天气与目的地信息")
-    yield ProgressEvent(agent="recommend", message="正在筛选候选景点")
+    Args:
+        agent: TourAgent 实例
+        content: 用户消息
+        user_id: 用户ID
+        session_id: 会话ID
+        history: 对话历史（多轮上下文）
+
+    Yields:
+        ProgressEvent → 工具调用前
+        ToolCallEvent → 每次工具调用
+        AgentResultEvent → 最终回复
+        ErrorEvent → 错误
+    """
+    started = time.perf_counter()
+
+    yield ProgressEvent(agent="agent", message="正在思考...")
 
     try:
-        result = await graph.ainvoke(initial_state)
+        response = await agent.chat(
+            content=content,
+            user_id=user_id,
+            session_id=session_id,
+            history=history or [],
+        )
     except Exception as exc:
-        yield ErrorEvent(message=f"Agent execution failed: {exc}", recoverable=True)
+        yield ErrorEvent(message=f"Agent 执行失败: {exc}", recoverable=True)
         return
 
-    itinerary = result.get("itinerary")
-    if not isinstance(itinerary, Itinerary):
-        yield ErrorEvent(message="Agent did not produce a valid itinerary", recoverable=True)
-        return
+    # 发送工具调用事件
+    for tc in response.tool_calls:
+        yield ToolCallEvent(
+            tool=tc.tool,
+            args=tc.input,
+        )
 
-    validation = verify_itinerary(
-        itinerary=itinerary,
-        dates=parsed["dates"],
-        budget_total=int(parsed["budget_total"]),
-        weather_info=result.get("weather_info", {}),
-    )
     latency_ms = int((time.perf_counter() - started) * 1000)
 
-    yield ResultEvent(
-        itinerary=itinerary,
-        validation=validation.model_dump(),
+    # 如果有行程, 转换为 Itinerary 对象
+    itinerary_obj = None
+    if response.itinerary:
+        from models.itinerary import Itinerary
+        try:
+            itinerary_obj = Itinerary.model_validate(response.itinerary)
+        except Exception:
+            itinerary_obj = None
+
+    yield AgentResultEvent(
+        content=response.content,
+        itinerary=itinerary_obj,
+        tool_calls=[
+            {"tool": tc.tool, "error": tc.error}
+            for tc in response.tool_calls
+        ],
         metrics={"latency_ms": latency_ms},
     )
