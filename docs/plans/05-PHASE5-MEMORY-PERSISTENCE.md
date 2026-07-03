@@ -2,12 +2,13 @@
 
 > **For agentic workers:** 按照本文件中的 Task 顺序执行。每个 Task 完成后运行 mypy + ruff + pytest，全部通过后用中文 commit message 提交。开发完成后 push 到远程仓库。
 
-**Goal:** 让 TourSwarm 从"内存级一次性对话"变成"持久化多轮对话Agent" — Redis存短期对话、PostgreSQL存历史会话和行程、上下文压缩裁剪防止token爆炸。
+**Goal:** 让 TourSwarm 从"内存级一次性对话"变成"持久化多轮对话Agent" — Redis存短期对话、PostgreSQL存历史会话和行程、上下文压缩裁剪防止token爆炸。加入口令验证实现多用户隔离，给同学使用。
 
 **Architecture:**
 ```
-当前：SessionState.messages（内存，重启即丢）
+当前：SessionState.messages（内存，重启即丢），匿名设备ID
 目标：
+  用户打开页面 → 输入口令 → 后端验证 → 返回 user_id → 存 localStorage
   用户消息 → Redis（短期，TTL 30min，对话历史）→ 超过窗口触发压缩
            → PostgreSQL（长期持久化，会话列表+行程归档）
            → 前端可查看历史会话和行程
@@ -15,7 +16,7 @@
 
 **Tech Stack:** Python 3.11+ / Redis / PostgreSQL + SQLAlchemy / FastAPI / Vue3 / mypy / ruff
 
-**范围边界:** 不做 AgenticRAG / 不做小红书爬虫 / 不做图片 / 不做地图可视化 / 不做登录。专注记忆+持久化+压缩。
+**范围边界:** 不做 AgenticRAG / 不做小红书爬虫 / 不做图片 / 不做地图可视化 / 不做注册系统（仅口令验证）。专注记忆+持久化+压缩+口令隔离。
 
 ---
 
@@ -49,6 +50,7 @@
 ```
 tour-agent/
 ├── core/
+│   ├── auth.py                    # ★ 口令验证（多用户隔离）
 │   └── memory/
 │       ├── short_term.py          # 🔄 接入API层（已有，补充接入逻辑）
 │       ├── compressor.py          # ★ 上下文压缩器（滑窗+摘要）
@@ -59,29 +61,204 @@ tour-agent/
 │   ├── database.py                # ★ 数据库连接管理
 │   └── migrations.py              # ★ 表创建/迁移
 ├── api/
-│   ├── routes.py                  # 🔄 新增历史会话/行程 REST 接口
-│   ├── schemas.py                 # 🔄 新增历史相关 schema
-│   ├── ws.py                      # 🔄 接入 Redis 对话历史 + 压缩
+│   ├── routes.py                  # 🔄 新增口令验证+历史会话/行程 REST 接口
+│   ├── schemas.py                 # 🔄 新增口令+历史相关 schema
+│   ├── ws.py                      # 🔄 接入 Redis 对话历史 + 压缩 + user_id 隔离
 │   └── services/
 │       └── chat_runner.py         # 🔄 消息持久化（Redis+PG双写）
 ├── frontend/src/
-│   ├── views/ChatView.vue         # 🔄 加载历史消息 + 历史会话侧边栏
+│   ├── views/ChatView.vue         # 🔄 口令输入 + 加载历史 + 历史会话侧边栏
+│   ├── composables/
+│   │   └── useAuth.ts             # ★ 口令验证+user_id管理（替换useDeviceId）
 │   ├── components/
 │   │   ├── SessionList.vue        # ★ 历史会话列表
 │   │   └── HistoryItinerary.vue   # ★ 历史行程查看
 │   ├── stores/
-│   │   ├── chat.ts                # 🔄 恢复对话历史
+│   │   ├── chat.ts                # 🔄 恢复对话历史 + 带 user_id
 │   │   └── session.ts             # ★ 历史会话 store
-│   └── types/api.ts               # 🔄 新增历史类型
+│   └── types/api.ts               # 🔄 新增口令+历史类型
 └── tests/
-    ├── core/memory/
-    │   ├── test_compressor.py     # ★
-    │   └── test_session_store.py  # ★
+    ├── core/
+    │   ├── test_auth.py           # ★
+    │   └── memory/
+    │       ├── test_compressor.py # ★
+    │       └── test_session_store.py # ★
     ├── db/
     │   └── test_models.py         # ★
     └── api/
+        ├── test_auth_routes.py    # ★
         └── test_history_routes.py # ★
 ```
+
+---
+
+## Task 0：口令验证（多用户隔离）
+
+**Files:**
+- Create: `core/auth.py`
+- Modify: `api/schemas.py` — 新增口令相关 schema
+- Modify: `api/routes.py` — 新增口令验证接口
+- Modify: `api/ws.py` — 从口令解析 user_id
+- Modify: `frontend/src/composables/useDeviceId.ts` — 改为 useAuth（口令+设备ID）
+- Modify: `frontend/src/views/ChatView.vue` — 首次打开显示口令输入
+- Test: `tests/core/test_auth.py`
+- Test: `tests/api/test_auth_routes.py`
+
+### 设计
+
+```
+用户打开页面 → 无口令 → 显示口令输入框
+             → 有口令（localStorage）→ 直接进入聊天
+
+口令验证流程：
+  前端 POST /api/v1/auth {passphrase: "tour2026"}
+  → 后端验证口令（.env 的 APP_ACCESS_CODES 配置，逗号分隔多个口令）
+  → 返回 {user_id: "passphrase_tour2026"}（口令的哈希作为 user_id）
+  → 前端存 localStorage: {passphrase, user_id}
+  → 后续所有请求（REST + WS）带 user_id
+```
+
+### 口令配置
+
+```bash
+# .env
+# 多个口令逗号分隔，每个口令对应一个用户
+APP_ACCESS_CODES=tour2026,friend01,classmate02
+```
+
+### 后端实现
+
+```python
+# core/auth.py
+import hashlib
+from typing import Any
+
+class AuthManager:
+    """口令验证 — 轻量级多用户隔离。
+
+    不做注册/登录/JWT，仅验证口令 → 返回 user_id。
+    user_id = 口令的 SHA256 前16位，保证不同口令 → 不同用户 → 记忆隔离。
+    """
+
+    def __init__(self, access_codes: str) -> None:
+        # "tour2026,friend01" → {"tour2026", "friend01"}
+        self._codes = {code.strip() for code in access_codes.split(",") if code.strip()}
+
+    def verify(self, passphrase: str) -> str | None:
+        """验证口令，返回 user_id 或 None。"""
+        if passphrase not in self._codes:
+            return None
+        return self._passphrase_to_user_id(passphrase)
+
+    @staticmethod
+    def _passphrase_to_user_id(passphrase: str) -> str:
+        """口令 → user_id（SHA256 前16位，不暴露原始口令）。"""
+        return "u_" + hashlib.sha256(passphrase.encode()).hexdigest()[:16]
+```
+
+```python
+# api/schemas.py 新增
+class AuthRequest(BaseModel):
+    passphrase: str = Field(min_length=1)
+
+class AuthResponse(BaseModel):
+    user_id: str
+    valid: bool = True
+```
+
+```python
+# api/routes.py 新增
+@router.post("/api/v1/auth")
+async def verify_passphrase(request: AuthRequest) -> AuthResponse:
+    auth = getattr(request.app.state, "auth", None)  # 从 app.state 取 AuthManager
+    if auth is None:
+        # 未配置口令 → 允许匿名（开发模式）
+        return AuthResponse(user_id="anonymous", valid=True)
+    user_id = auth.verify(request.passphrase)
+    if user_id is None:
+        return AuthResponse(user_id="", valid=False)
+    return AuthResponse(user_id=user_id, valid=True)
+```
+
+### 前端实现
+
+```typescript
+// frontend/src/composables/useAuth.ts（替换 useDeviceId）
+const PASSPHRASE_KEY = 'tourswarm_passphrase'
+const USER_ID_KEY = 'tourswarm_user_id'
+
+export function useAuth() {
+  const storedPassphrase = localStorage.getItem(PASSPHRASE_KEY)
+  const storedUserId = localStorage.getItem(USER_ID_KEY)
+
+  async function verify(passphrase: string): Promise<boolean> {
+    const resp = await fetch('/api/v1/auth', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passphrase }),
+    })
+    const data = await resp.json()
+    if (data.valid) {
+      localStorage.setItem(PASSPHRASE_KEY, passphrase)
+      localStorage.setItem(USER_ID_KEY, data.user_id)
+      return true
+    }
+    return false
+  }
+
+  function getUserId(): string {
+    return localStorage.getItem(USER_ID_KEY) || ''
+  }
+
+  function isAuthenticated(): boolean {
+    return !!localStorage.getItem(USER_ID_KEY)
+  }
+
+  function logout() {
+    localStorage.removeItem(PASSPHRASE_KEY)
+    localStorage.removeItem(USER_ID_KEY)
+  }
+
+  return { storedPassphrase, storedUserId, verify, getUserId, isAuthenticated, logout }
+}
+```
+
+```vue
+<!-- ChatView.vue 首次打开时显示口令输入 -->
+<template>
+  <div v-if="!isAuthenticated" class="auth-screen">
+    <h1>🧳 TourSwarm 穷游助手</h1>
+    <p>请输入口令进入</p>
+    <input v-model="passphrase" type="password" placeholder="口令" @keyup.enter="handleAuth" />
+    <button @click="handleAuth">进入</button>
+    <p v-if="authError" class="error">口令错误</p>
+  </div>
+  <div v-else class="chat-view">
+    <!-- 原有聊天界面 -->
+  </div>
+</template>
+```
+
+### 测试场景
+
+- `test_verify_valid_passphrase` — 正确口令返回 user_id
+- `test_verify_invalid_passphrase` — 错误口令返回 None
+- `test_verify_different_passphrases_different_user_ids` — 不同口令 → 不同 user_id
+- `test_verify_empty_codes_allows_anonymous` — 未配置口令时允许匿名
+- `test_auth_route_returns_user_id` — POST /api/v1/auth 正确口令返回 user_id
+- `test_auth_route_rejects_invalid` — 错误口令返回 valid=false
+
+- [ ] 写失败测试
+- [ ] 实现 core/auth.py
+- [ ] 修改 api/schemas.py（AuthRequest/AuthResponse）
+- [ ] 修改 api/routes.py（/api/v1/auth 接口）
+- [ ] 修改 api/ws.py（从 user_id 隔离会话）
+- [ ] 实现 frontend useAuth.ts（替换 useDeviceId）
+- [ ] 修改 ChatView.vue（口令输入界面）
+- [ ] 修改 .env.example（新增 APP_ACCESS_CODES）
+- [ ] mypy + ruff + pytest 通过
+- [ ] 前端 vitest 通过
+- [ ] commit: `feat: 新增口令验证实现多用户隔离`
 
 ---
 
@@ -414,6 +591,10 @@ class HistoryItinerary(BaseModel):
 - [ ] 运行 `cd frontend && npm run test -- --run`（前端全绿）
 - [ ] 联调验证清单：
   ```
+  □ 首次打开 → 显示口令输入框 → 输入正确口令 → 进入聊天
+  □ 输入错误口令 → 显示"口令错误"
+  □ 刷新页面 → 口令保留（localStorage），不用重新输入
+  □ 不同口令登录 → 看到不同的历史会话（记忆隔离）
   □ 发送消息后刷新页面 → 对话历史保留（Redis 30min内）
   □ 重启后端 → PostgreSQL 中有历史会话记录
   □ 左侧侧边栏显示历史会话列表
@@ -428,6 +609,7 @@ class HistoryItinerary(BaseModel):
 
 ## 验收标准
 
+- [ ] 口令验证：首次打开需输入口令，不同口令 → 不同用户 → 记忆隔离
 - [ ] Redis 存对话历史，TTL 30分钟，刷新页面可恢复
 - [ ] PostgreSQL 持久化会话/消息/行程，重启不丢
 - [ ] 上下文压缩器：超阈值自动摘要旧消息
@@ -443,5 +625,6 @@ class HistoryItinerary(BaseModel):
 - 不修改 Phase 2 的 agents/graph.py 和4个Agent文件
 - 不修改 Phase 4.5 的 agents/react_agent.py 核心逻辑（只加 on_tool_event 回调已有）
 - 测试用 fakeredis + SQLite in-memory，不依赖真实 Redis/PostgreSQL
+- 口令从 .env 的 APP_ACCESS_CODES 读取，逗号分隔，未配置时允许匿名（开发模式）
 - 前端 TypeScript strict
 - 所有 Python 代码有 type hints + mypy strict + ruff
