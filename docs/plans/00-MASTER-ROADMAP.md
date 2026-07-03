@@ -159,6 +159,12 @@
   - 备注：Docker Compose 基础设施镜像拉取在本机网络下未完成，需重试 `docker compose up -d` 复验。
 - [x] Phase 2 — Agent 编排（M2：4 Agent + LangGraph 两阶段图 + 90 tests + 93% coverage）
   - 备注：真实 CLI 演示已输出结构化行程；和风天气真实调用返回非 JSON，已按天气降级路径继续生成行程。
-- [ ] Phase 3 — 记忆系统
-- [ ] Phase 4 — 前端与测试
+- [x] Phase 3 — 记忆系统（M3：Redis 短期记忆 + Mem0/Qdrant 长期记忆 + 跨会话偏好 demo）
+  - 已完成：Redis 短期记忆、Mem0 长期记忆封装、MemoryManager、memory_node、planning prompt 注入、CLI demo、Qdrant Docker 启动验证。
+  - 验收：`bash scripts/check.sh` 通过（140 tests）；`core.memory + agents` 覆盖率 93%；Phase 1/2 回归 `44 passed`。
+  - 真实 demo：`HF_ENDPOINT=https://hf-mirror.com HF_HUB_DISABLE_XET=1 MEM0_EMBEDDER_MODEL=BAAI/bge-small-zh-v1.5 python -m scripts.demo_memory` 通过，会话 2 检索到“特别喜欢海鲜”和“预算大概500块”，输出 `Memory influence: visible`。
+- [x] Phase 4 — 前端与测试（M4：FastAPI/WebSocket + Vue3 工作台 + 确定性验证器 + eval/perf gates）
+  - 已完成：API schema、REST `/api/v1/chat`、WebSocket `/api/v1/chat/{session_id}/stream`、`chat_runner` 图执行事件适配、`core/verifier.py` 确定性验证器、20 条中文旅游 eval 数据、Vue3 + Pinia 双栏工作台。
+  - 验收：`bash scripts/check.sh` 通过（161 tests）；`cd frontend && npm run test -- --run` 通过（3 tests）；`cd frontend && npm run build` 通过。
+  - 裁剪：UniApp Android 与高德 JS 地图不阻塞 M4，作为 Phase 5/后续加分项推进。
 - [ ] Phase 5 — 部署上线

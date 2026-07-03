@@ -24,6 +24,10 @@
 
 ## 二、Vue3 Web 端架构
 
+### 体验基准
+
+Phase 4 前端不做纯聊天页。参考 DeepTrip / Trip.com / Ctrip AI 行程规划形态，Web 端应优先实现“AI 助手进度 + 可编辑行程工作台”的双栏体验：左侧展示需求理解、工具调用、Agent 进度与可恢复错误；右侧展示行程 tabs、每日时间轴、景点/住宿/交通卡片、预算摘要和直接编辑操作。详细竞品拆解见 [`docs/research/ai-trip-planning-ux-benchmark.md`](../research/ai-trip-planning-ux-benchmark.md)。
+
 ### 技术栈
 
 | 层 | 选型 | 理由 |

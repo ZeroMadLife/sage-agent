@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agents.graph import build_graph
+from core.memory.long_term import MemoryFact
 from mcp_servers.scenic.client import ScenicClient
 
 
@@ -165,3 +166,37 @@ async def test_e2e_replans_when_over_budget(
     assert planning_llm.ainvoke.await_count == 2
     assert result["budget_breakdown"].over_budget is False
     assert result["iteration_count"] == 2
+
+
+async def test_e2e_injects_memory_before_planning(
+    mock_weather_client: MagicMock,
+    mock_scenic_client: ScenicClient,
+    mock_budget_llm: MagicMock,
+) -> None:
+    """Providing a memory manager inserts memory before the planning node."""
+    planning_llm = MagicMock()
+    planning_llm.ainvoke = AsyncMock(return_value=MagicMock(content=_json_content()))
+    memory_manager = MagicMock()
+    memory_manager.retrieve_for_planning = MagicMock(return_value="已知用户偏好: 用户喜欢海鲜")
+    memory_manager.retrieve_facts = MagicMock(
+        return_value=[MemoryFact(content="用户喜欢海鲜", score=0.95, fact_id="mem_1")]
+    )
+    graph = build_graph(
+        weather_client=mock_weather_client,
+        scenic_client=mock_scenic_client,
+        planning_llm=planning_llm,
+        budget_llm=mock_budget_llm,
+        memory_manager=memory_manager,
+    )
+
+    result = await graph.ainvoke(_initial_state())
+
+    planning_llm.ainvoke.assert_awaited()
+    call_args = planning_llm.ainvoke.await_args
+    assert call_args is not None
+    messages = call_args.args[0]
+    assert "用户喜欢海鲜" in messages[-1]["content"]
+    assert result["memory_context"] == "已知用户偏好: 用户喜欢海鲜"
+    assert result["memory_facts"] == [
+        {"content": "用户喜欢海鲜", "score": 0.95, "fact_id": "mem_1"}
+    ]

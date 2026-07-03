@@ -47,6 +47,7 @@ def test_resolve_llm_deepseek(monkeypatch) -> None:
 
 def test_resolve_llm_defaults_to_main_model(monkeypatch) -> None:
     """resolve_llm 不传参时使用主模型。"""
+    monkeypatch.setenv("LLM_MODEL", "doubao:Doubao-Seed-2.0-pro")
     monkeypatch.setenv("DOUBAO_API_KEY", "test-doubao-key")
     settings = Settings()
     result = settings.resolve_llm()

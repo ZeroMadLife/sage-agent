@@ -30,6 +30,8 @@ class TravelState(TypedDict, total=False):
     recommendations: list[dict[str, Any]]
     weather_info: dict[str, Any]
     budget_breakdown: BudgetBreakdown
+    memory_context: str
+    memory_facts: list[dict[str, Any]]
 
     iteration_count: int
     over_budget: bool

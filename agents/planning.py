@@ -154,6 +154,7 @@ def create_planning_prompt(
     preferences: list[str],
     weather_info: dict[str, Any],
     recommendations: list[dict[str, Any]],
+    memory_context: str = "",
 ) -> str:
     """Build the planning prompt with all context required by the LLM."""
     current_weather = weather_info.get("current", {})
@@ -187,6 +188,9 @@ def create_planning_prompt(
         spots_desc = "无候选景点"
 
     prefs_desc = "、".join(preferences) if preferences else "无特殊偏好"
+    memory_section = ""
+    if memory_context:
+        memory_section = f"\n用户历史偏好:\n{memory_context}\n"
 
     return f"""请为以下需求生成旅游行程：
 
@@ -200,6 +204,7 @@ def create_planning_prompt(
 
 候选景点:
 {spots_desc}
+{memory_section}
 
 请生成行程方案，确保总花费不超过 {budget_total} 元。只输出 JSON，不要其他文字。"""
 
@@ -213,6 +218,7 @@ async def planning_node(state: dict[str, Any], llm: Any) -> dict[str, Itinerary]
         preferences=state.get("preferences", []),
         weather_info=state.get("weather_info", {}),
         recommendations=state.get("recommendations", []),
+        memory_context=str(state.get("memory_context", "")),
     )
     messages = [
         {"role": "system", "content": PLANNING_SYSTEM_PROMPT},

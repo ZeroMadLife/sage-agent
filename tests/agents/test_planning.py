@@ -32,6 +32,11 @@ def _state() -> dict[str, Any]:
     }
 
 
+def _last_user_prompt(llm: MagicMock) -> str:
+    messages = llm.ainvoke.await_args.args[0]
+    return str(messages[-1]["content"])
+
+
 async def test_planning_node_returns_itinerary(mock_llm: MagicMock) -> None:
     """planning_node returns a parsed Itinerary object."""
     result = await planning_node(_state(), mock_llm)
@@ -164,6 +169,35 @@ def test_create_planning_prompt_includes_all_context() -> None:
     assert "美食" in prompt
     assert "多云" in prompt
     assert "西湖" in prompt
+
+
+def test_create_planning_prompt_includes_memory_context() -> None:
+    """Planning prompt includes retrieved cross-session user preferences."""
+    prompt = create_planning_prompt(
+        destination="杭州",
+        dates={"start": "2026-07-05", "end": "2026-07-06"},
+        budget_total=500,
+        preferences=["美食"],
+        weather_info={"error": True},
+        recommendations=[],
+        memory_context="已知用户偏好: 用户喜欢海鲜; 预算500元以内",
+    )
+
+    assert "用户历史偏好" in prompt
+    assert "海鲜" in prompt
+    assert "预算500元以内" in prompt
+
+
+async def test_planning_node_injects_state_memory_context(mock_llm: MagicMock) -> None:
+    """planning_node passes state.memory_context into the LLM prompt."""
+    state = {
+        **_state(),
+        "memory_context": "已知用户偏好: 用户喜欢海鲜",
+    }
+
+    await planning_node(state, mock_llm)
+
+    assert "用户喜欢海鲜" in _last_user_prompt(mock_llm)
 
 
 async def test_create_planning_agent_returns_callable_node(mock_llm: MagicMock) -> None:

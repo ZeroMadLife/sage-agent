@@ -5,11 +5,11 @@
 
 set -e
 echo "===== ruff lint ====="
-ruff check core/ mcp_servers/ agents/ tests/
+ruff check core/ mcp_servers/ agents/ api/ evals/ tests/
 echo "===== ruff format --check ====="
-ruff format --check core/ mcp_servers/ agents/ tests/
+ruff format --check core/ mcp_servers/ agents/ api/ evals/ tests/
 echo "===== mypy type check ====="
-mypy core/ mcp_servers/ agents/
+mypy core/ mcp_servers/ agents/ api/ evals/
 echo "===== pytest ====="
 pytest tests/ -v --tb=short
 echo ""

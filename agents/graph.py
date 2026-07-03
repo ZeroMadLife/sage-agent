@@ -6,6 +6,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agents.budget import create_budget_agent
 from agents.info import create_info_agent
+from agents.memory_node import create_memory_node
 from agents.planning import create_planning_agent
 from agents.recommend import create_recommend_agent
 from agents.supervisor import should_replan
@@ -19,6 +20,7 @@ def build_graph(
     scenic_client: Any,
     planning_llm: Any,
     budget_llm: Any,
+    memory_manager: Any | None = None,
 ) -> Any:
     """Build and compile the two-phase multi-agent graph."""
     info_agent = create_info_agent(weather_client, scenic_client)
@@ -36,10 +38,16 @@ def build_graph(
     graph.add_node("recommend", recommend_agent)
     graph.add_node("planning", planning_agent)
     graph.add_node("budget", budget_agent)
+    if memory_manager is not None:
+        graph.add_node("memory", create_memory_node(memory_manager))
 
     graph.add_edge(START, "info")
     graph.add_edge(START, "recommend")
-    graph.add_edge(["info", "recommend"], "planning")
+    if memory_manager is not None:
+        graph.add_edge(["info", "recommend"], "memory")
+        graph.add_edge("memory", "planning")
+    else:
+        graph.add_edge(["info", "recommend"], "planning")
     graph.add_edge("planning", "budget")
     graph.add_conditional_edges(
         "budget",

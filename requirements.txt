@@ -16,6 +16,7 @@ langchain-mcp-adapters==0.1.0
 # ---------- 记忆 ----------
 mem0ai==0.1.50
 qdrant-client==1.12.1
+sentence-transformers==3.4.1
 
 # ---------- Web 框架 ----------
 fastapi==0.115.6

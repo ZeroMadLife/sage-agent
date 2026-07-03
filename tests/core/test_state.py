@@ -23,6 +23,8 @@ def test_travel_state_has_required_fields() -> None:
         "recommendations",
         "weather_info",
         "budget_breakdown",
+        "memory_context",
+        "memory_facts",
         "iteration_count",
         "over_budget",
         "final_response",
