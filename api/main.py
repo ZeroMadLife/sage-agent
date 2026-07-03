@@ -1,6 +1,7 @@
 """FastAPI app factory with two-tier Agent."""
 
 import logging
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,9 @@ from agents.react_agent import TourAgent
 from core.auth import AuthManager
 from core.config.settings import get_settings
 from core.llm import create_llm
+from core.memory.compressor import ContextCompressor
+from core.memory.session_store import SessionStore
+from db.database import AsyncSessionFactory
 from mcp_servers.amap.client import AmapClient
 from mcp_servers.scenic.client import ScenicClient
 from mcp_servers.weather.client import WeatherClient
@@ -97,16 +101,39 @@ def create_runtime_agent() -> Any | None:
         return None
 
 
-def create_app(agent: Any | None = None, auth: AuthManager | None = None) -> FastAPI:
+def create_runtime_session_store() -> Any | None:
+    """Build the runtime SessionStore without requiring external services at import time."""
+    try:
+        settings = get_settings()
+        redis_module: Any = import_module("redis.asyncio")
+        redis_client: Any = redis_module.from_url(settings.redis_url)
+        compressor = None
+        try:
+            compressor = ContextCompressor(llm=create_llm(settings.llm_light_model))
+        except Exception as exc:
+            logger.warning("Context compressor unavailable: %s", exc)
+        return SessionStore(redis_client, AsyncSessionFactory, compressor=compressor)
+    except Exception as exc:
+        logger.warning("Session store unavailable: %s", exc)
+        return None
+
+
+def create_app(
+    agent: Any | None = None,
+    auth: AuthManager | None = None,
+    session_store: Any | None = None,
+) -> FastAPI:
     """Create the TourSwarm API app.
 
     Args:
         agent: TourAgent 实例, None 时 API 可运行但 WebSocket 会报错
         auth: 口令验证器, None 时允许匿名访问
+        session_store: 可选持久化会话存储
     """
     app = FastAPI(title="TourSwarm API")
     app.state.agent = agent
     app.state.auth = auth
+    app.state.session_store = session_store
     from api import routes, ws
 
     app.include_router(routes.router)
@@ -117,4 +144,5 @@ def create_app(agent: Any | None = None, auth: AuthManager | None = None) -> Fas
 app = create_app(
     agent=create_runtime_agent(),
     auth=AuthManager(get_settings().app_access_codes),
+    session_store=create_runtime_session_store(),
 )

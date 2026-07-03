@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from agents.react_agent import AgentResponse, ToolCallRecord, TourAgent
 from api.schemas import AgentResultEvent, ProgressEvent
 from api.services.chat_runner import run_agent_chat
+from models.itinerary import Itinerary
 
 
 def _make_agent(response: AgentResponse) -> MagicMock:
@@ -131,3 +132,48 @@ async def test_run_agent_chat_handles_agent_error() -> None:
     assert events[0].type == "progress"
     assert events[1].type == "error"
     assert "LLM超时" in events[1].message
+
+
+async def test_run_agent_chat_persists_messages_and_itinerary() -> None:
+    """When a SessionStore is provided, runner should save both sides and archive plans."""
+    itinerary = {
+        "destination": "杭州",
+        "days": [],
+        "total_cost": 200,
+        "weather_summary": "晴",
+    }
+    agent = _make_agent(
+        AgentResponse(
+            content="杭州行程已生成。",
+            tool_calls=[ToolCallRecord(tool="generate_itinerary", input={}, output=itinerary)],
+            itinerary=itinerary,
+        )
+    )
+    store = MagicMock()
+    store.save_message = AsyncMock()
+    store.archive_itinerary = AsyncMock()
+    store.maybe_compress = AsyncMock(return_value=False)
+
+    events = [
+        event
+        async for event in run_agent_chat(
+            agent=agent,
+            content="帮我规划杭州2日游",
+            user_id="u_1",
+            session_id="session-001",
+            session_store=store,
+        )
+    ]
+
+    assert events[-1].type == "result"
+    store.save_message.assert_any_await("session-001", "user", "帮我规划杭州2日游")
+    store.save_message.assert_any_await(
+        "session-001",
+        "assistant",
+        "杭州行程已生成。",
+        tool_calls=[{"tool": "generate_itinerary", "error": ""}],
+    )
+    store.archive_itinerary.assert_awaited_once()
+    archived = store.archive_itinerary.await_args.args[2]
+    assert isinstance(archived, Itinerary)
+    store.maybe_compress.assert_awaited_once_with("session-001")

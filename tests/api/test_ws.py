@@ -97,3 +97,26 @@ def test_chat_websocket_agent_error_returns_error_event() -> None:
     assert progress["type"] == "progress"
     assert error["type"] == "error"
     assert "LLM超时" in error["message"]
+
+
+def test_chat_websocket_loads_history_from_store() -> None:
+    """WebSocket should pass persisted history into the Agent."""
+    agent = _make_agent_stub(content="继续回答")
+    store = MagicMock()
+    store.create_session = AsyncMock(return_value="session-001")
+    store.load_messages = AsyncMock(return_value=[{"role": "user", "content": "之前的问题"}])
+    store.save_message = AsyncMock()
+    store.maybe_compress = AsyncMock(return_value=False)
+    store.archive_itinerary = AsyncMock()
+    client = TestClient(create_app(agent=agent, session_store=store))
+    response = client.post("/api/v1/chat", json={"content": "继续", "user_id": "u_1"})
+    session_id = response.json()["session_id"]
+
+    with client.websocket_connect(f"/api/v1/chat/{session_id}/stream") as websocket:
+        websocket.send_json({"content": "继续"})
+        websocket.receive_json()
+        websocket.receive_json()
+
+    store.load_messages.assert_awaited_once_with(session_id)
+    agent.chat.assert_awaited()
+    assert agent.chat.await_args.kwargs["history"] == [{"role": "user", "content": "之前的问题"}]

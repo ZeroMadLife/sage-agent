@@ -56,14 +56,22 @@ async def chat_stream(websocket: WebSocket, session_id: str) -> None:
 
         session.is_executing = True
         try:
+            store = getattr(websocket.app.state, "session_store", None)
+            history = (
+                await store.load_messages(session_id) if store is not None else session.messages
+            )
             async for event in run_agent_chat(
                 agent=agent,
                 content=msg.content,
                 user_id=session.request.user_id,
                 session_id=session_id,
-                history=session.messages,
+                history=history,
+                session_store=store,
             ):
                 await websocket.send_json(event.model_dump())
+                if store is None and event.type == "result":
+                    session.messages.append({"role": "user", "content": msg.content})
+                    session.messages.append({"role": "assistant", "content": event.content})
         except Exception as exc:
             logger.exception("Agent chat failed")
             await websocket.send_json(ErrorEvent(message=f"Agent error: {exc}").model_dump())

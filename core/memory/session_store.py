@@ -154,6 +154,34 @@ class SessionStore:
             for record in records
         ]
 
+    async def list_itineraries(
+        self,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """列出归档行程，可按用户或会话过滤。"""
+        statement = select(ItineraryRecord)
+        if user_id is not None:
+            statement = statement.where(ItineraryRecord.user_id == user_id)
+        if session_id is not None:
+            statement = statement.where(ItineraryRecord.session_id == session_id)
+        statement = statement.order_by(ItineraryRecord.created_at.desc())
+
+        async with self._session_factory() as session:
+            result = await session.scalars(statement)
+            records = result.all()
+
+        return [
+            {
+                "id": record.id,
+                "destination": record.destination,
+                "total_cost": record.total_cost,
+                "created_at": record.created_at.isoformat(),
+                "content": Itinerary.model_validate_json(record.content_json),
+            }
+            for record in records
+        ]
+
     async def maybe_compress(self, session_id: str) -> bool:
         """检查并执行上下文压缩。"""
         if self._compressor is None:

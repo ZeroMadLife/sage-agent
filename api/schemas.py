@@ -33,6 +33,53 @@ class AuthResponse(BaseModel):
     valid: bool = True
 
 
+class SessionSummary(BaseModel):
+    """Historical session summary."""
+
+    session_id: str
+    title: str
+    created_at: str
+    updated_at: str
+    status: str
+
+
+class SessionListResponse(BaseModel):
+    """Historical session list response."""
+
+    sessions: list[SessionSummary]
+
+
+class HistoryMessage(BaseModel):
+    """Persisted historical chat message."""
+
+    role: str
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+    created_at: str
+
+
+class SessionMessagesResponse(BaseModel):
+    """Historical messages for one session."""
+
+    messages: list[HistoryMessage]
+
+
+class HistoryItinerary(BaseModel):
+    """Archived itinerary response item."""
+
+    id: int
+    destination: str
+    total_cost: int
+    created_at: str
+    content: Itinerary
+
+
+class ItineraryListResponse(BaseModel):
+    """Archived itinerary list response."""
+
+    itineraries: list[HistoryItinerary]
+
+
 class UserMessage(BaseModel):
     """用户通过 WebSocket 发送的消息。"""
 

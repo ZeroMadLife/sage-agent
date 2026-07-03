@@ -15,6 +15,7 @@ async def run_agent_chat(
     user_id: str,
     session_id: str,
     history: list[dict[str, str]] | None = None,
+    session_store: Any | None = None,
 ) -> AsyncIterator[ProgressEvent | ToolCallEvent | AgentResultEvent | ErrorEvent]:
     """执行一次 Agent 对话, 流式返回事件。
 
@@ -24,6 +25,7 @@ async def run_agent_chat(
         user_id: 用户ID
         session_id: 会话ID
         history: 对话历史（多轮上下文）
+        session_store: 可选会话存储, 提供后会双写用户/助手消息
 
     Yields:
         ProgressEvent → 工具调用前
@@ -34,6 +36,8 @@ async def run_agent_chat(
     started = time.perf_counter()
 
     yield ProgressEvent(agent="agent", message="正在思考...")
+    if session_store is not None:
+        await session_store.save_message(session_id, "user", content)
 
     tool_events: asyncio.Queue[ToolCallRecord] = asyncio.Queue()
 
@@ -105,9 +109,22 @@ async def run_agent_chat(
         except Exception:
             itinerary_obj = None
 
+    tool_call_summaries = [{"tool": tc.tool, "error": tc.error} for tc in response.tool_calls]
+
+    if session_store is not None:
+        await session_store.save_message(
+            session_id,
+            "assistant",
+            response.content,
+            tool_calls=tool_call_summaries,
+        )
+        if itinerary_obj is not None:
+            await session_store.archive_itinerary(session_id, user_id, itinerary_obj)
+        await session_store.maybe_compress(session_id)
+
     yield AgentResultEvent(
         content=response.content,
         itinerary=itinerary_obj,
-        tool_calls=[{"tool": tc.tool, "error": tc.error} for tc in response.tool_calls],
+        tool_calls=tool_call_summaries,
         metrics={"latency_ms": latency_ms},
     )

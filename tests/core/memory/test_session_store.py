@@ -130,6 +130,24 @@ async def test_archive_itinerary(store_context: Any) -> None:
     assert records[0].total_cost == 200
 
 
+async def test_list_itineraries_filters_by_user_and_session(store_context: Any) -> None:
+    """Archived itinerary listing should support user and session filters."""
+    store, _, _ = store_context
+    own_session = await store.create_session("u_1")
+    other_session = await store.create_session("u_2")
+    await store.archive_itinerary(own_session, "u_1", Itinerary(destination="杭州", total_cost=200))
+    await store.archive_itinerary(
+        other_session, "u_2", Itinerary(destination="北京", total_cost=300)
+    )
+
+    user_itineraries = await store.list_itineraries(user_id="u_1")
+    session_itineraries = await store.list_itineraries(session_id=own_session)
+
+    assert [item["destination"] for item in user_itineraries] == ["杭州"]
+    assert [item["destination"] for item in session_itineraries] == ["杭州"]
+    assert isinstance(user_itineraries[0]["content"], Itinerary)
+
+
 async def test_list_sessions(store_context: Any) -> None:
     """Users should only see their own sessions."""
     store, _, _ = store_context
