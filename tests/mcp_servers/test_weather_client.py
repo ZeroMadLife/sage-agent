@@ -94,6 +94,14 @@ async def test_search_city_uses_local_map_first(client: WeatherClient) -> None:
 
 
 @respx.mock
+async def test_search_city_uses_putian_local_map(client: WeatherClient) -> None:
+    """莆田走本地 Location ID, 避免新版和风 host 的 geoapi 兼容问题。"""
+    result = await client.search_city("莆田")
+    assert result["location_id"] == "101230401"
+    assert result["name"] == "莆田"
+
+
+@respx.mock
 async def test_search_city_fallback_to_api(client: WeatherClient) -> None:
     """本地映射找不到的城市 fallback 到 geoapi 接口。"""
     respx.get(f"{TEST_QWEATHER_GEO_URL}/city/lookup").mock(

@@ -106,6 +106,50 @@ async def test_agent_extracts_tool_call_when_llm_wraps_json_in_prose(
     assert "get_forecast" not in response.content
 
 
+async def test_agent_forces_tool_for_direct_weather_query(
+    mock_llm: MagicMock, mock_tools: dict
+) -> None:
+    """用户直接问天气时, LLM 先直接回答也应被拉回工具调用。"""
+    mock_llm.ainvoke = AsyncMock(
+        side_effect=[
+            MagicMock(content="周末天气应该还不错。"),
+            MagicMock(content='{"action": "get_forecast", "input": {"city": "莆田", "days": 7}}'),
+            MagicMock(content="莆田周末多云，适合出行。"),
+        ]
+    )
+    agent = TourAgent(llm=mock_llm, tools=mock_tools)
+
+    response = await agent.chat("天气怎么样", user_id="u1", session_id="s1")
+
+    assert response.tool_calls[0].tool == "get_forecast"
+    assert "莆田周末" in response.content
+
+
+async def test_agent_reuses_recent_weather_for_non_weather_followup(
+    mock_llm: MagicMock, mock_tools: dict
+) -> None:
+    """已有天气回复后, 用户只是继续说出游意图时不应重复打天气工具。"""
+    mock_tools["get_forecast"] = AsyncMock(return_value=[{"date": "2026-07-05"}])
+    mock_llm.ainvoke = AsyncMock(
+        side_effect=[
+            MagicMock(content='{"action": "get_forecast", "input": {"city": "莆田", "days": 7}}'),
+            MagicMock(content="可以，沿用刚才的天气信息来安排周末出行。"),
+        ]
+    )
+    history = [
+        {"role": "user", "content": "莆田周末天气怎么样"},
+        {"role": "assistant", "content": "莆田周末多云，温度适合出行。"},
+    ]
+    agent = TourAgent(llm=mock_llm, tools=mock_tools)
+
+    response = await agent.chat("那我周末出去玩", user_id="u1", session_id="s1", history=history)
+
+    mock_tools["get_forecast"].assert_not_awaited()
+    assert response.tool_calls[0].tool == "get_forecast"
+    assert response.tool_calls[0].output["reused"] is True
+    assert "沿用" in response.content
+
+
 async def test_agent_emits_tool_running_and_done_events(
     mock_llm: MagicMock, mock_tools: dict
 ) -> None:
@@ -148,6 +192,66 @@ async def test_agent_handles_tool_error(mock_llm: MagicMock, mock_tools: dict) -
 
     assert "不可用" in response.content
     assert response.tool_calls[0].error != ""
+
+
+async def test_agent_injects_travel_context_for_budget_followup(
+    mock_llm: MagicMock, mock_tools: dict
+) -> None:
+    """用户补充预算时, Agent 应显式提示 LLM 结合历史目的地和天数。"""
+    history = [
+        {"role": "user", "content": "我要去莆田玩两天"},
+        {
+            "role": "assistant",
+            "content": "天气暂时查不到。你大概的预算范围是多少？",
+        },
+    ]
+    mock_llm.ainvoke = AsyncMock(return_value=MagicMock(content="我会按莆田两天500元继续规划。"))
+    agent = TourAgent(llm=mock_llm, tools=mock_tools)
+
+    await agent.chat(
+        "我的预算是500块 我一个人",
+        user_id="u1",
+        session_id="s1",
+        history=history,
+    )
+
+    call_messages = mock_llm.ainvoke.call_args.args[0]
+    system_text = "\n".join(
+        message["content"] for message in call_messages if message.get("role") == "system"
+    )
+    assert "已知旅行上下文" in system_text
+    assert "目的地: 莆田" in system_text
+    assert "天数: 2天" in system_text
+    assert "预算: 500元" in system_text
+    assert "不要重复追问" in system_text
+
+
+async def test_agent_marks_tool_failures_as_degradable_context(
+    mock_llm: MagicMock, mock_tools: dict
+) -> None:
+    """工具失败后再次询问 LLM 时, 应提醒它继续降级处理而不是重复追问已知信息。"""
+    mock_tools["get_forecast"] = AsyncMock(side_effect=Exception("天气API异常"))
+    mock_llm.ainvoke = AsyncMock(
+        side_effect=[
+            MagicMock(content='{"action": "get_forecast", "input": {"city": "莆田", "days": 7}}'),
+            MagicMock(content="天气暂时不可用，我会先按常规天气安排莆田两日游。"),
+        ]
+    )
+    agent = TourAgent(llm=mock_llm, tools=mock_tools)
+
+    await agent.chat(
+        "我的预算是500块 我一个人",
+        user_id="u1",
+        session_id="s1",
+        history=[{"role": "user", "content": "我要去莆田玩两天"}],
+    )
+
+    second_call_messages = mock_llm.ainvoke.await_args_list[1].args[0]
+    user_text = "\n".join(
+        message["content"] for message in second_call_messages if message.get("role") == "user"
+    )
+    assert "可降级错误" in user_text
+    assert "不要重复追问已知信息" in user_text
 
 
 async def test_agent_uses_history_for_followup(mock_llm: MagicMock, mock_tools: dict) -> None:

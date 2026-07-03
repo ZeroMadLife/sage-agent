@@ -56,6 +56,37 @@ async def test_itinerary_tool_passes_correct_state_to_graph(mock_graph: MagicMoc
     assert state["iteration_count"] == 0
 
 
+async def test_itinerary_tool_normalizes_loose_llm_arguments(mock_graph: MagicMock) -> None:
+    """LLM 传入字符串 dates/preferences/budget 时, 工具边界应归一化后再进图。"""
+    tool = create_itinerary_tool(graph=mock_graph)
+
+    await tool(
+        destination="莆田",
+        budget_total="500块",
+        preferences="海鲜、自然风光",
+        dates="两天",
+    )
+
+    state = mock_graph.ainvoke.call_args.args[0]
+    assert state["destination"] == "莆田"
+    assert state["budget_total"] == 500
+    assert state["preferences"] == ["美食", "自然风光"]
+    assert isinstance(state["dates"], dict)
+    assert set(state["dates"]) == {"start", "end"}
+
+
+async def test_itinerary_tool_accepts_missing_optional_arguments(mock_graph: MagicMock) -> None:
+    """ReAct 工具调用少传偏好/日期时, generate_itinerary 不应直接 TypeError。"""
+    tool = create_itinerary_tool(graph=mock_graph)
+
+    result = await tool(destination="莆田", budget_total=500)
+
+    assert result["destination"] == "杭州"
+    state = mock_graph.ainvoke.call_args.args[0]
+    assert state["preferences"] == []
+    assert isinstance(state["dates"], dict)
+
+
 async def test_itinerary_tool_handles_graph_error() -> None:
     """graph 执行失败时返回错误字典（不抛异常, 让主Agent处理）。"""
     graph = MagicMock()
