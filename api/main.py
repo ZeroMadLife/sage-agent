@@ -9,12 +9,13 @@ from fastapi import FastAPI
 
 from agents.graph import build_graph
 from agents.itinerary_tool import create_itinerary_tool
-from agents.react_agent import TourAgent
+from agents.react_agent import AgentRuntime
 from core.auth import AuthManager
 from core.config.settings import get_settings
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
+from core.skill import SkillRegistry, build_travel_planning_skill
 from db.database import AsyncSessionFactory
 from mcp_servers.amap.client import AmapClient
 from mcp_servers.scenic.client import ScenicClient
@@ -80,6 +81,8 @@ def create_runtime_agent() -> Any | None:
             budget_llm=budget_llm,
         )
 
+        generate_itinerary = create_itinerary_tool(graph=graph)
+
         # 工具列表（generate_itinerary 是其中之一）
         tools: dict[str, Any] = {
             "search_nearby": amap_client.search_nearby,
@@ -92,10 +95,12 @@ def create_runtime_agent() -> Any | None:
             "search_scenic_spots": scenic_client.search_scenic_spots,
             "get_scenic_detail": scenic_client.get_scenic_detail,
             # 两段式核心：generate_itinerary 工具（内部走多Agent图）
-            "generate_itinerary": create_itinerary_tool(graph=graph),
+            "generate_itinerary": generate_itinerary,
         }
 
-        return TourAgent(llm=chat_llm, tools=tools)
+        registry = SkillRegistry()
+        registry.register(build_travel_planning_skill(tools=tools, sub_agent_graph=graph))
+        return AgentRuntime(llm=chat_llm, skill=registry.get("travel-planning"))
     except Exception as exc:
         logger.warning("Runtime agent unavailable: %s", exc)
         return None

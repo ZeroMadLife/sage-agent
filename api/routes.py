@@ -23,6 +23,7 @@ class SessionState:
 
     def __init__(self, request: ChatRequest) -> None:
         self.request = request
+        self.skill_name = "travel-planning"
         self.is_executing = False
         self.messages: list[dict[str, str]] = []
 

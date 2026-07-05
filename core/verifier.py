@@ -1,7 +1,7 @@
 """Deterministic validation for LLM-generated itineraries."""
 
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
@@ -21,6 +21,15 @@ class VerificationResult(BaseModel):
 
     passed: bool
     issues: list[VerificationIssue]
+
+
+@runtime_checkable
+class Verifier(Protocol):
+    """Domain verifier interface used by pluggable Skills."""
+
+    def verify(self, output: Any, context: dict[str, Any]) -> VerificationResult:
+        """Validate one domain output with the provided runtime context."""
+        ...
 
 
 def _date_range(start: str, end: str) -> set[str]:
@@ -84,3 +93,32 @@ def verify_itinerary(
             )
 
     return VerificationResult(passed=not issues, issues=issues)
+
+
+class ItineraryVerifier:
+    """Verifier implementation that preserves the legacy itinerary checks."""
+
+    def verify(self, output: Any, context: dict[str, Any]) -> VerificationResult:
+        """Validate an itinerary output using the legacy verification function."""
+        itinerary = output if isinstance(output, Itinerary) else Itinerary.model_validate(output)
+        dates = self._dict_str(context.get("dates", {}))
+        budget_total = int(context.get("budget_total", 0))
+        weather_info = self._dict_any(context.get("weather_info", {}))
+        return verify_itinerary(
+            itinerary=itinerary,
+            dates=dates,
+            budget_total=budget_total,
+            weather_info=weather_info,
+        )
+
+    @staticmethod
+    def _dict_str(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): str(item) for key, item in value.items()}
+
+    @staticmethod
+    def _dict_any(value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        return dict(value)

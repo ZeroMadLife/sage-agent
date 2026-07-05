@@ -25,10 +25,21 @@ class LongTermMemory:
         self._mem0 = mem0_client
         self._user_id = user_id
 
-    def search(self, query: str, limit: int = 10) -> list[MemoryFact]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        scope: str | None = None,
+    ) -> list[MemoryFact]:
         """Search relevant memories for one user, degrading to no memory on failure."""
+        normalized_scope = self._normalize_scope(scope)
         try:
-            raw_results = self._mem0.search(query=query, user_id=self._user_id, limit=limit)
+            raw_results = self._mem0.search(
+                query=query,
+                user_id=self._user_id,
+                limit=limit,
+                filters={"scope": normalized_scope},
+            )
         except Exception as exc:
             logger.warning("Mem0 search failed for user %s: %s", self._user_id, exc)
             return []
@@ -49,10 +60,16 @@ class LongTermMemory:
             )
         return facts
 
-    async def extract_and_store(self, conversation: str) -> None:
+    async def extract_and_store(self, conversation: str, scope: str | None = None) -> None:
         """Ask Mem0 to extract and store durable user preference facts."""
+        normalized_scope = self._normalize_scope(scope)
         try:
-            await asyncio.to_thread(self._mem0.add, conversation, user_id=self._user_id)
+            await asyncio.to_thread(
+                self._mem0.add,
+                conversation,
+                user_id=self._user_id,
+                metadata={"scope": normalized_scope},
+            )
         except Exception as exc:
             logger.warning("Mem0 add failed for user %s: %s", self._user_id, exc)
 
@@ -85,3 +102,7 @@ class LongTermMemory:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    def _normalize_scope(self, scope: str | None) -> str:
+        """Return explicit scope or the backward-compatible user scope."""
+        return scope or f"user:{self._user_id}"

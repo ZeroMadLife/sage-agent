@@ -42,7 +42,8 @@ async def test_extract_memories_async_does_not_block(
     )
 
     mock_long_term.extract_and_store.assert_awaited_once_with(
-        "用户: 我喜欢海鲜\n助手: 好的，会推荐海鲜餐厅"
+        "用户: 我喜欢海鲜\n助手: 好的，会推荐海鲜餐厅",
+        scope="skill:travel-planning",
     )
 
 
@@ -75,7 +76,11 @@ def test_retrieve_for_planning_returns_prompt_text(
 
     assert "海鲜" in text
     assert "500" in text
-    mock_long_term.search.assert_called_once_with("杭州美食行程", limit=10)
+    mock_long_term.search.assert_called_once_with(
+        "杭州美食行程",
+        limit=10,
+        scope="skill:travel-planning",
+    )
 
 
 def test_retrieve_for_planning_returns_empty_on_no_memory() -> None:
@@ -107,7 +112,11 @@ def test_retrieve_facts_returns_list(
 
     assert len(facts) == 2
     assert facts[0].content == "用户喜欢海鲜"
-    mock_long_term.search.assert_called_once_with("用户偏好", limit=10)
+    mock_long_term.search.assert_called_once_with(
+        "用户偏好",
+        limit=10,
+        scope="skill:travel-planning",
+    )
 
 
 def test_retrieve_facts_handles_error(mock_long_term: MagicMock) -> None:

@@ -50,6 +50,7 @@ def test_search_returns_memory_facts(
         query="用户喜欢什么食物",
         user_id="user_123",
         limit=10,
+        filters={"scope": "user:user_123"},
     )
 
 
@@ -84,6 +85,7 @@ async def test_extract_and_store_calls_mem0_add(
     mock_mem0.add.assert_called_once_with(
         "用户: 我对海鲜过敏\n助手: 好的，我会避免推荐海鲜",
         user_id="user_123",
+        metadata={"scope": "user:user_123"},
     )
 
 
@@ -107,7 +109,7 @@ async def test_extract_and_store_offloads_mem0_add(
         (
             mock_mem0.add,
             ("用户: 我喜欢爬山",),
-            {"user_id": "user_123"},
+            {"user_id": "user_123", "metadata": {"scope": "user:user_123"}},
         )
     ]
 
