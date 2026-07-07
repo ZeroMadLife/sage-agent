@@ -131,14 +131,14 @@ def create_app(
     coding_workspace_root: str | Path | None = None,
     coding_storage_root: str | Path | None = None,
 ) -> FastAPI:
-    """Create the TourSwarm API app.
+    """Create the Sage API app.
 
     Args:
-        agent: TourAgent 实例, None 时 API 可运行但 WebSocket 会报错
+        agent: travel-planning domain agent, None 时 API 可运行但 WebSocket 会报错
         auth: 口令验证器, None 时允许匿名访问
         session_store: 可选持久化会话存储
     """
-    app = FastAPI(title="TourSwarm API")
+    app = FastAPI(title="Sage API")
     app.state.agent = agent
     app.state.auth = auth
     app.state.session_store = session_store

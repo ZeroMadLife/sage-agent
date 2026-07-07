@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ArrowLeft } from 'lucide-vue-next'
 import CodingComposer from '../components/CodingComposer.vue'
 import CodingFileTree from '../components/CodingFileTree.vue'
 import CodingGitBadge from '../components/CodingGitBadge.vue'
@@ -8,8 +7,6 @@ import CodingSidebar from '../components/CodingSidebar.vue'
 import CodingToolActivity from '../components/CodingToolActivity.vue'
 import { useCodingStore } from '../stores/coding'
 import { useMarkdown } from '../composables/useMarkdown'
-
-const emit = defineEmits<{ exit: [] }>()
 
 const store = useCodingStore()
 const messagesRef = ref<HTMLElement | null>(null)
@@ -41,9 +38,6 @@ onBeforeUnmount(() => {
 <template>
   <div class="sage-view">
     <header class="sage-header">
-      <button class="exit-btn" @click="emit('exit')">
-        <ArrowLeft :size="16" />
-      </button>
       <h1 class="sage-brand">Sage</h1>
       <CodingGitBadge />
       <span class="session-pill">
@@ -97,21 +91,6 @@ onBeforeUnmount(() => {
   padding: 8px 14px;
   border-bottom: 1px solid #e5e7eb;
   background: #fff;
-}
-
-.exit-btn {
-  display: flex;
-  align-items: center;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  background: transparent;
-  padding: 4px;
-  cursor: pointer;
-  color: #6b7280;
-}
-
-.exit-btn:hover {
-  background: #f3f4f6;
 }
 
 .sage-brand {

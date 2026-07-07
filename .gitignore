@@ -55,6 +55,14 @@ docker-compose.override.yml
 # 文档临时文件
 ~$*.docx
 ~$*.xlsx
+*.docx
 
 # 本地架构分析产物
 graphify-out/
+graphify-out-*/
+.coding/
+
+# 本地参考/研究材料（不属于 Sage 源码）
+Kimi_Agent_多智能体协作平台/
+multiagent_project.agent.final/
+multiagent_project.agent.final.footnote.docx

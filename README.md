@@ -1,123 +1,93 @@
-# TourSwarm — 旅游 Agent + Sage Web Coding 助手
+# Sage — 个人 Web Coding Agent
 
-> 一个本地 Agent 实验仓：旅游侧沉淀"个人旅游助手"产品原型，Coding 侧（Sage）沉淀"网页端自主编程助手"框架能力。当前阶段不是上线运营，而是把 demo 打磨成能讲清楚架构、能真实联调、能继续量化评测的作品。
+> Sage 是一个本地优先的网页端 Coding Agent，用来在代码仓库里读代码、搜代码、改代码、跑命令、沉淀可复用 Skills，并通过 WebSocket 流式展示 agent 的工作过程。原 TourSwarm 旅游规划能力保留为 Sage 的第一个领域 Skill / benchmark 场景，不再作为主产品叙事。
 
 ## 当前定位
 
 | 维度 | 说明 |
 |------|------|
-| 产品方向 | 个人旅游 Agent + Sage 网页端 Coding Agent |
-| 旅游侧差异化 | ReAct 主Agent + `generate_itinerary` 工具包装多Agent图 + 自研 MCP 工具 + 预算约束 + 记忆/验证器 |
-| Sage 差异化 | Pico v3 风格 Runtime + XML 工具协议 + Skills 系统 + 文件/搜索/patch/shell 工具 + 两层权限治理 + 三栏布局 + WebSocket 流式 |
-| 当前阶段 | Sage v2：三栏布局 + Skills + 文件树 + git 状态 + 模型选择 + 工具折叠 |
-| 技术栈 | FastAPI + WebSocket + LangChain ReAct + LangGraph + MCP + Mem0/Qdrant + Redis + Vue3 + TypeScript + Pinia |
+| 产品定位 | 个人 Web Coding Agent + 可扩展 Skills 框架 |
+| 主界面 | Vue 3 三栏开发者控制台：Skills/MCP/模型、聊天与工具活动、文件树与预览 |
+| Agent Runtime | 参考 Pico v3：workspace、tools、policy gates、engine、context、todo、plan mode、worker、trace |
+| 领域示例 | `travel-planning`：ReAct 主 Agent + `generate_itinerary` LangGraph 工具 + 高德/和风/景点 MCP + 行程验证器 |
+| 技术栈 | FastAPI、WebSocket、Vue 3、TypeScript、Pinia、LangChain、LangGraph、MCP、Redis、PostgreSQL、Qdrant |
 | 语言 | Python 3.11+ / TypeScript |
+
+## 为什么做 Sage
+
+这个项目不是单纯的线上产品，而是一个面向作品集和工程沉淀的 Agent 项目。目标是把“能跑的 demo”逐步打磨成能讲清楚架构、能联调、能评测、能继续扩展的个人 coding agent。
+
+核心亮点：
+
+- **Agent loop**：模型输出被解析为工具调用或最终回答，再通过 WebSocket 流式推给前端。
+- **工具治理**：路径安全、风险工具策略、plan mode 限制、patch 前 fresh read，避免盲改和越权。
+- **开发者体验**：参考 Hermes Web UI 的 calm developer console，工具调用作为 metadata 折叠展示。
+- **Skills 扩展**：`/review`、`/test`、`/commit`、`/travel-planning` 都通过 `SKILL.md` 沉淀为可复用 workflow。
+- **评测路径**：后续可量化 coding task success rate、tool success rate、one-pass rate、P95 latency；旅游场景继续提供多约束验证数据。
 
 ## 核心架构
 
-### 旅游助手
-
-Phase 4 之前是“用户输入 -> 多Agent图 -> 一次性行程”。Phase 4.5 改成两段式个人助手：
-
 ```text
-Vue3 Chat UI
-  -> POST /api/v1/chat 创建 session
-  -> WebSocket /api/v1/chat/{session_id}/stream 长连接多轮对话
-  -> FastAPI
-  -> TourAgent 主Agent（ReAct, DeepSeek）
-       ├─ 普通聊天：直接回复
-       ├─ 附近查询：search_nearby / get_poi_detail / geocode / get_route
-       ├─ 天气查询：get_weather / get_forecast
-       ├─ 景点查询：search_attractions / search_scenic_spots / get_scenic_detail
-       └─ 复杂规划：generate_itinerary 工具
-              -> LangGraph 多Agent图
-                   -> Info Agent + Recommend Agent
-                   -> Planning Agent
-                   -> Budget Agent
-              -> 结构化 Itinerary
-```
-
-主Agent只知道自己调用了一个叫 `generate_itinerary` 的工具；工具内部才启动 Phase 2 的多Agent协作。这让产品体验更像“个人助手”，而不是每次都强行跑完整规划流。
-
-### Coding 助手
-
-Coding Agent v1 参考本机 Pico v3 的 runtime/tools/engine 架构，但外壳换成 TourSwarm 的 FastAPI + Vue3：
-
-```text
-Vue3 CodeAssist UI
-  -> POST /api/v1/coding/session 创建 coding session
-  -> WebSocket /api/v1/coding/{session_id}/stream 长连接收发任务
+Vue 3 Sage Console
+  -> POST /api/v1/coding/session
+  -> WS /api/v1/coding/{session_id}/stream
   -> FastAPI api/coding.py
   -> CodingRuntime
        ├─ WorkspaceContext：工作目录、路径安全、输出截断
        ├─ Tool Registry：list_files / read_file / search / run_shell / write_file / patch_file
-       ├─ PermissionChecker + ToolPolicyChecker：写权限、plan mode、patch 前 fresh read、shell 搜索拦截
+       ├─ PermissionChecker + ToolPolicyChecker：写权限、plan mode、fresh read 策略
        ├─ Engine：model -> parse <tool>/<final> -> execute tool -> stream event
-       ├─ ContextManager + CompactManager：上下文预算与历史压缩
-       ├─ Todo / Plan Mode / Worker：任务账本、只读规划、子 agent
+       ├─ ContextManager + CompactManager：prompt 组装和历史压缩
+       ├─ Skills：bundled / user / project SKILL.md 发现
+       ├─ Todo / Plan Mode / Worker：任务账本、只读规划、子 agent hook
        └─ .coding/：session events 与 run trace 本地持久化
 ```
 
-Coding 侧是新增能力，和旅游侧 `agents/`、`mcp_servers/`、`core/verifier.py`、`evals/` 隔离。
+旅游系统作为领域能力保留：
 
-## Phase 4.5 本轮变动
+```text
+Sage domain skill: travel-planning
+  -> AgentRuntime（ReAct, DeepSeek）
+       ├─ search_nearby / get_poi_detail / geocode / get_route
+       ├─ get_weather / get_forecast
+       ├─ search_attractions / search_scenic_spots / get_scenic_detail
+       └─ generate_itinerary
+            -> LangGraph: info -> recommend -> planning -> budget
+            -> ItineraryVerifier: 时间 / 预算 / 空间 / 约束检查
+```
 
-| 任务 | 模块 | 提交 |
-|------|------|------|
-| 高德周边搜索工具 | `mcp_servers/amap/client.py`, `server.py` 新增 `search_nearby` / `get_poi_detail` | `e84d662` |
-| LLM 意图理解 | `core/intent.py`，替代旧的硬编码 `parse_input` 思路 | `be66de4` |
-| 行程生成工具 | `agents/itinerary_tool.py`，把 LangGraph 多Agent图包装成 `generate_itinerary` | `7f013b4` |
-| ReAct 主Agent | `agents/react_agent.py`，负责日常对话、工具选择和多轮上下文 | `d51aa4b` |
-| API 两段式接入 | `api/main.py`, `api/ws.py`, `api/services/chat_runner.py`，长连接多轮 WebSocket | `55f00de` |
-| 前端聊天界面 | `frontend/src/views/ChatView.vue` 与消息/工具/行程组件 | `5b56f5e` |
-| 验收适配 | API/集成测试适配新 Agent API | `380b232`, `226416f` |
-
-详细计划见 `docs/plans/04.5-PHASE4.5-AGENT-EXPERIENCE.md`。
-
-## Phase 6 Coding Agent v1
-
-| 层 | 模块 | 说明 |
-|----|------|------|
-| Layer 0-2 | `core/coding/workspace.py`, `tools/`, `permissions.py`, `tool_policy.py` | 路径安全、6 个核心工具、权限与策略治理 |
-| Layer 3-4 | `engine.py`, `engine_helpers.py`, `model_output.py`, `context_manager.py`, `compact.py` | XML 工具协议、流式 engine、上下文预算和压缩 |
-| Layer 5-8 | `todo_ledger.py`, `plan_mode.py`, `worker_*`, `runtime.py`, `session_*`, `run_store.py` | todo、plan mode、worker、session/event/run trace 持久化 |
-| Layer 9 | `api/coding.py`, `api/main.py`, `api/schemas.py` | Coding REST session + WebSocket 流式接口 |
-| Layer 10 | `frontend/src/views/CodingView.vue`, `frontend/src/api/coding.ts` | 浏览器中的 CodeAssist 最小可用界面 |
-
-详细落地记录见 `docs/plans/06-CODING-AGENT-V1.md`。
+这样项目有两条互补叙事：coding 任务体现线性读改测 agent loop，旅游任务体现复杂多约束任务里的多 Agent 编排和确定性验证。
 
 ## 仓库结构
 
 ```text
 tour-agent/
-├── agents/
-│   ├── react_agent.py          # ReAct 主Agent
-│   ├── itinerary_tool.py       # generate_itinerary 工具
-│   └── graph.py                # Phase 2 多Agent图
-├── api/                        # FastAPI + 旅游/Coding WebSocket
+├── api/                         # FastAPI app、Sage coding routes、保留的 travel routes
 ├── core/
-│   ├── coding/                 # Coding Agent runtime/tools/engine
-│   ├── intent.py               # LLM 意图解析
-│   ├── memory/                 # Redis 短期记忆 + Mem0 长期记忆
-│   └── verifier.py             # 行程确定性验证器
-├── mcp_servers/                # 高德 / 天气 / 景点 MCP Server
-├── frontend/                   # Vue3 聊天界面
-├── evals/                      # 旅行 case 与评测脚本
-├── tests/                      # 单元 / 集成 / 性能测试
-├── docker-compose.yml          # 本地 PostgreSQL + Redis + Qdrant
+│   ├── coding/                  # Sage coding runtime、tools、engine、skills、session traces
+│   ├── memory/                  # Redis 短期记忆 + Mem0/Qdrant 长期记忆
+│   ├── skill.py                 # travel-planning 领域 Skill 抽象
+│   └── verifier.py              # 行程验证器接口与实现
+├── agents/                      # 旅游领域 ReAct runtime 和 LangGraph 行程工具
+├── mcp_servers/                 # 高德 / 天气 / 景点 MCP servers
+├── frontend/                    # Vue 3 Sage console
+├── evals/                       # 旅游 eval cases 和脚本
+├── tests/                       # 后端、前端、agent、API、coding runtime 测试
+├── docs/                        # plans、reviews、specs、落地记录
+├── docker-compose.yml           # 本地 PostgreSQL + Redis + Qdrant
 ├── requirements.txt
 └── .env.example
 ```
 
-## 本地启动文档
+## 本地启动
 
-### 1. 第一次准备环境
+### 1. 创建环境
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
 
-conda create -n tourswarm python=3.11 -y
-conda activate tourswarm
+conda create -n sage-agent python=3.11 -y
+conda activate sage-agent
 
 python -m pip install --upgrade pip
 pip install -r requirements.txt
@@ -129,41 +99,35 @@ cd ..
 cp .env.example .env
 ```
 
+如果你已经有 `tour-agent-phase1` 之类的 conda 环境，也可以继续用，只要依赖完整即可。
+
 ### 2. 配置 `.env`
 
-完整联调至少需要 LLM Key。旅游主Agent和 Coding 助手目前都默认使用 DeepSeek：
+Sage coding runtime 当前默认使用 DeepSeek 兼容接口：
 
 ```bash
-# 旅游主Agent + Coding助手
-DEEPSEEK_API_KEY=你的deepseek_key
+DEEPSEEK_API_KEY=你的_deepseek_key
+```
 
-# 复杂行程规划默认用 LLM_MODEL 指向的模型；默认是豆包
+旅游领域 Skill 会用到额外模型和服务：
+
+```bash
+# 多 Agent 行程规划；也可以临时切到 deepseek:deepseek-chat
 LLM_MODEL=doubao:Doubao-Seed-2.0-pro
-DOUBAO_API_KEY=你的豆包_key
+DOUBAO_API_KEY=你的_豆包_key
+
+# 高德 Web 服务 API
+AMAP_API_KEY=你的_高德_key
+
+# 和风天气 API
+QWEATHER_API_KEY=你的_和风_key
+QWEATHER_BASE_URL=https://你的-host.re.qweatherapi.com/v7
+QWEATHER_GEO_URL=https://你的-host.re.qweatherapi.com/geoapi/v2
 ```
 
-如果你暂时只想用 DeepSeek 跑通，可以把规划模型也切到 DeepSeek：
+单元测试使用 mock，不消耗真实 API 额度。
 
-```bash
-LLM_MODEL=deepseek:deepseek-chat
-DEEPSEEK_API_KEY=你的deepseek_key
-```
-
-附近搜索需要高德 Key：
-
-```bash
-AMAP_API_KEY=你的高德_web服务_key
-```
-
-天气查询需要和风天气 Key；如果不配，行程规划会按天气失败降级继续跑：
-
-```bash
-QWEATHER_API_KEY=你的和风_key
-QWEATHER_BASE_URL=https://你的host.re.qweatherapi.com/v7
-QWEATHER_GEO_URL=https://你的host.re.qweatherapi.com/geoapi/v2
-```
-
-### 3. 每次启动中间件
+### 3. 启动中间件
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
@@ -171,35 +135,26 @@ docker compose up -d
 docker compose ps
 ```
 
-确认 `tourswarm-postgres`、`tourswarm-redis`、`tourswarm-qdrant` 都是 `Up` 或 `healthy`。
+确认 PostgreSQL、Redis、Qdrant 都是 `Up` 或 `healthy`。
 
 ### 4. 启动后端
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
-conda activate tourswarm
+conda activate sage-agent
 uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env
 ```
 
-自检：
+健康检查：
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-返回 `{"status":"ok"}` 只代表 FastAPI 活着。若 WebSocket 返回 `Agent is not configured`，优先检查 `DEEPSEEK_API_KEY` 和 `LLM_MODEL` 对应的 Key 是否被 `--env-file .env` 加载进进程。
-
-Coding 助手在创建 session 时才实例化模型。如果点“代码”后创建 session 失败，优先检查同一个后端进程是否读到了 `DEEPSEEK_API_KEY`。
-
 如果 8000 被占用：
 
 ```bash
 lsof -nP -iTCP:8000 -sTCP:LISTEN
-```
-
-可以停掉旧进程，或把 TourSwarm 改到 8010：
-
-```bash
 uvicorn api.main:app --host 127.0.0.1 --port 8010 --reload --env-file .env
 ```
 
@@ -210,50 +165,48 @@ cd /Users/zeromadlife/Desktop/tour-agent/frontend
 VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
 ```
 
-打开 Vite 输出地址，通常是：
+打开 Vite 输出的地址，通常是：
 
 ```text
 http://127.0.0.1:5173/
 ```
 
-本地开发推荐只设置 `VITE_API_PROXY_TARGET`，让 Vite 代理 `/api` 和 WebSocket 到后端。不要优先设置 `VITE_API_BASE_URL=http://127.0.0.1:8000`，否则容易遇到浏览器 CORS 问题。
-
-如果后端换成 8010，前端对应改成：
+如果后端使用 8010：
 
 ```bash
 VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev
 ```
 
-页面顶部有两个入口：
+本地开发推荐使用 `VITE_API_PROXY_TARGET`，让 Vite 代理 REST 和 WebSocket 到 FastAPI。不要优先设置 `VITE_API_BASE_URL=http://127.0.0.1:8000`，否则容易遇到浏览器 CORS 问题。
 
-| 入口 | 用途 | 后端接口 |
-|------|------|----------|
-| 旅行 | 旅游问答、天气、附近搜索、复杂行程规划 | `/api/v1/chat`, `/api/v1/chat/{session_id}/stream` |
-| 代码 | 读文件、搜索、改文件、跑命令的网页端 Coding 助手 | `/api/v1/coding/session`, `/api/v1/coding/{session_id}/stream` |
+## PyCharm 启动
 
-### 6. 推荐联调输入
+后端 Run Configuration：
 
-旅游助手：
+| 配置项 | 值 |
+|--------|-----|
+| Type | Python |
+| Module name | `uvicorn` |
+| Parameters | `api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env` |
+| Working directory | `/Users/zeromadlife/Desktop/tour-agent` |
+| Interpreter | conda env `sage-agent` 或你当前项目环境 |
 
-```text
-你好
+PyCharm 启动后端前先运行：
+
+```bash
+docker compose up -d
 ```
 
-```text
-帮我规划杭州2日游预算500元，喜欢美食和自然风光
+前端建议直接用 PyCharm Terminal：
+
+```bash
+cd /Users/zeromadlife/Desktop/tour-agent/frontend
+VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
 ```
 
-```text
-杭州明天天气怎么样
-```
+## 推荐联调输入
 
-```text
-附近有什么好吃的
-```
-
-注意：“附近有什么好吃的”要真正返回高德周边结果，需要主Agent拿到经纬度。当前前端还没有浏览器定位能力，所以这是下一步产品化要补的点；现在可通过更明确的位置/地址类输入辅助 Agent 调 `geocode`。
-
-Coding 助手：
+Coding agent：
 
 ```text
 读 README.md 告诉我项目叫什么
@@ -264,10 +217,24 @@ Coding 助手：
 ```
 
 ```text
-读 api/coding.py，总结 Coding WebSocket 的事件流
+/review
 ```
 
-Coding 助手的事件、session 和 run trace 会写到仓库根目录的 `.coding/`：
+```text
+/test
+```
+
+旅游领域 Skill：
+
+```text
+/travel-planning 帮我规划杭州2日游预算500元，喜欢美食和自然风光
+```
+
+`/travel-planning` 目前是 Sage 侧的 prompt 入口。成熟的旅游后端和 API 仍保留在 `/api/v1/chat` 与 `agents/` 下，用于回归测试和后续统一 runtime 集成。
+
+## Runtime 产物
+
+Coding session 和 run trace 会写到 `.coding/`：
 
 ```text
 .coding/sessions/<session_id>.json
@@ -275,83 +242,67 @@ Coding 助手的事件、session 和 run trace 会写到仓库根目录的 `.cod
 .coding/runs/<run_id>/trace.jsonl
 ```
 
-## PyCharm 启动
-
-### 后端 Run Configuration
-
-| 配置项 | 值 |
-|--------|-----|
-| Type | Python |
-| Module name | `uvicorn` |
-| Parameters | `api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env` |
-| Working directory | `/Users/zeromadlife/Desktop/tour-agent` |
-| Interpreter | conda env `tourswarm` |
-
-PyCharm 启动前仍然要先执行：
-
-```bash
-docker compose up -d
-```
-
-### 前端 Run Configuration
-
-推荐直接用 PyCharm Terminal：
-
-```bash
-cd /Users/zeromadlife/Desktop/tour-agent/frontend
-VITE_API_PROXY_TARGET=http://127.0.0.1:8000 npm run dev
-```
-
-也可以建 npm 配置：
-
-| 配置项 | 值 |
-|--------|-----|
-| package.json | `/Users/zeromadlife/Desktop/tour-agent/frontend/package.json` |
-| Command | `run` |
-| Scripts | `dev` |
-| Environment variables | `VITE_API_PROXY_TARGET=http://127.0.0.1:8000` |
+这些是本地运行产物，不应提交到 git。
 
 ## 质量检查
+
+后端全量回归：
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
 bash scripts/check.sh
-
-cd frontend
-npm run test -- --run
-npm run build
 ```
 
-Coding 模块可单独快速检查：
+Coding 后端快速检查：
 
 ```bash
 pytest tests/core/coding tests/api/test_coding_routes.py -q
 ```
 
-测试使用 Mock，不消耗真实 API 额度；本地联调才需要真实 Key。
+前端检查：
 
-## 常见问题
+```bash
+cd /Users/zeromadlife/Desktop/tour-agent/frontend
+npm run test -- --run
+npm run build
+```
 
-| 现象 | 优先检查 |
-|------|----------|
-| `Address already in use` | `lsof -nP -iTCP:8000 -sTCP:LISTEN` 查占用，换端口或杀旧进程 |
-| `/health` 正常但聊天失败 | 后端 Agent 构建失败，检查 `DEEPSEEK_API_KEY`、`LLM_MODEL`、`DOUBAO_API_KEY` |
-| WebSocket 返回 `Agent is not configured` | `.env` 没加载或 LLM Key 缺失 |
-| 创建 Coding session 失败 | 后端进程没有读到 `DEEPSEEK_API_KEY`，或 `.env` 被放在了错误目录 |
-| 前端页面能开但发消息失败 | 后端端口和 `VITE_API_PROXY_TARGET` 不一致 |
-| CodeAssist 连接中不动 | 后端 `/api/v1/coding/session` 失败，打开浏览器 Network 或后端日志看 500 详情 |
-| Coding 工具被拒绝 | 可能触发了路径逃逸、plan mode、patch 前未 read、或 shell 搜索拦截策略 |
-| 天气失败但仍生成行程 | 正常降级；补和风 Key 和 Host 可恢复真实天气 |
-| 附近搜索结果不稳定 | 高德 Key、经纬度、当前位置输入是否明确 |
+## GitHub 仓库改名
+
+目标仓库名：`sage-agent`。
+
+当前本机没有 `gh` CLI，所以 GitHub 网页侧需要手动改名：
+
+```text
+GitHub -> ZeroMadLife/poor-travel-agent -> Settings -> Repository name -> sage-agent
+```
+
+网页改名后，本地更新 remote：
+
+```bash
+cd /Users/zeromadlife/Desktop/tour-agent
+git remote set-url origin git@github.com:ZeroMadLife/sage-agent.git
+git remote -v
+```
 
 ## 当前边界
 
-- 前端是聊天 demo，不是最终 UI。
-- 旅游会话状态仍以内存/本地服务为主；Coding 会话会落 `.coding/`，但还不是多人协作存储。
-- 没有登录、地图、分享、UniApp、线上部署。
-- `generate_itinerary` 已经能包装多Agent图，但工具级流式进度还比较粗。
-- Coding 助手具备最小可用的读/搜/改/跑命令能力，但还没有人工审批 UI、diff 预览、sandbox、RAG 和 benchmark。
-- 下一阶段重点不是堆 UI，而是补定位输入、评测指标、错误降级、可观测性，以及 Coding Agent 的任务成功率量化。
+- Sage UI 已成为主产品入口，旧旅游 chatbot UI 被隐藏。
+- 旅游能力保留为 domain skill 和 regression asset，但还没有完全并入 `core/coding/` 的统一工具注册表。
+- risky coding tools 还没有人工 approval UI。
+- 文件预览是只读的，diff preview 和 inline editing 是后续工作。
+- MCP 状态目前是配置可见性，不是 live health probe。
+- benchmark 还未落地。
+
+## Roadmap
+
+- 高风险工具 approval UI：pending / allow / deny。
+- `patch_file` 和 `write_file` 的 diff preview。
+- active run 的 stop / cancel。
+- 左栏 session list 和 run history。
+- coding 与 domain skills 的统一 Skill registry。
+- Coding benchmark：任务成功率、工具成功率、一次通过率、P95 latency。
+- 把 travel-planning 进一步接入 Sage runtime，成为真正可调用的领域工具集。
 
 ## License
 

@@ -9,7 +9,7 @@ from core.verifier import ItineraryVerifier, Verifier
 
 TRAVEL_PLANNING_SKILL_NAME = "travel-planning"
 
-TRAVEL_PLANNING_SYSTEM_PROMPT = """你是 TourSwarm, 一个学生穷游助手。
+TRAVEL_PLANNING_SYSTEM_PROMPT = """你是 Sage 的 travel-planning domain skill, 一个学生穷游助手。
 
 你能帮用户：查找附近美食/景点、规划行程、查天气、查路线、算预算。
 
