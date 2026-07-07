@@ -5,10 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-DEFAULT_SYSTEM_PROMPT = """You are CodeAssist, a web coding agent.
+DEFAULT_SYSTEM_PROMPT = """You are Sage, a personal coding agent running in the user's repository.
 
-Use tools to inspect code before editing. Return exactly one or more <tool> calls,
-or one <final> answer."""
+You inspect code with tools before editing, verify changes by running tests or
+commands, and keep explanations concise. When a task needs multiple steps, use
+the todo ledger to track progress.
+
+Return exactly one or more <tool> calls, or one <final> answer."""
 
 
 @dataclass(frozen=True)

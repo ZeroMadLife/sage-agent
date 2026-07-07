@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -14,11 +15,12 @@ from core.coding.plan_mode import PlanModeManager
 from core.coding.run_store import RunStore
 from core.coding.session_events import SessionEventBus
 from core.coding.session_store import CodingSessionStore
+from core.coding.skills import SkillRegistry
 from core.coding.todo_ledger import TodoLedger
 from core.coding.tool_policy import ToolPolicyChecker
 from core.coding.tools.registry import ToolContext, build_tool_registry
 from core.coding.worker_manager import WorkerManager
-from core.coding.workspace import WorkspaceContext, now
+from core.coding.workspace import IGNORED_PATH_NAMES, WorkspaceContext, now
 
 
 class CodingRuntime:
@@ -66,6 +68,107 @@ class CodingRuntime:
             worker_manager=self.worker_manager,
         )
         self.tools = build_tool_registry(self.workspace, tool_context=self.tool_context)
+        self.skill_registry = SkillRegistry(root=self.workspace.root)
+        self.model_spec: str = ""
+
+    def list_files(self, path: str = ".") -> list[dict[str, Any]]:
+        """Return directory entries (dirs first, then files), workspace-safe."""
+        target = self.workspace.path(path)
+        if not target.is_dir():
+            raise ValueError("path is not a directory")
+        entries = [
+            item
+            for item in sorted(
+                target.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
+            )
+            if item.name not in IGNORED_PATH_NAMES
+        ]
+        return [{"name": item.name, "is_dir": item.is_dir()} for item in entries[:200]]
+
+    def read_file(self, path: str) -> dict[str, Any]:
+        """Return file content preview (workspace-safe)."""
+        target = self.workspace.path(path)
+        if not target.is_file():
+            raise ValueError("path is not a file")
+        content = target.read_text(encoding="utf-8", errors="replace")
+        return {"path": path, "content": content, "lines": len(content.splitlines())}
+
+    def git_status(self) -> dict[str, Any]:
+        """Return branch + dirty file list (best-effort, 3s timeout)."""
+        root = self.workspace.root
+        try:
+            branch_result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            status_result = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return {"is_git": False, "branch": "", "dirty_count": 0, "changed_files": []}
+
+        if branch_result.returncode != 0 and status_result.returncode != 0:
+            return {"is_git": False, "branch": "", "dirty_count": 0, "changed_files": []}
+
+        branch = branch_result.stdout.strip()
+        changed_files = [
+            line[3:].strip() for line in status_result.stdout.splitlines() if line.strip()
+        ]
+        return {
+            "is_git": True,
+            "branch": branch,
+            "dirty_count": len(changed_files),
+            "changed_files": changed_files,
+        }
+
+    def list_skills(self) -> list[dict[str, Any]]:
+        """Return skill metadata list."""
+        return [
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "source": skill.source,
+                "argument_hint": skill.argument_hint,
+            }
+            for skill in self.skill_registry.list()
+        ]
+
+    def get_skill(self, name: str) -> dict[str, Any] | None:
+        """Return skill content preview."""
+        skill = self.skill_registry.get(name)
+        if skill is None:
+            return None
+        return {
+            "name": skill.name,
+            "description": skill.description,
+            "source": skill.source,
+            "content": skill.prompt,
+        }
+
+    def resolve_slash(self, text: str) -> tuple[str | None, str, str]:
+        """Resolve a slash command. Returns (expanded_prompt, command, args).
+
+        If not a slash command, returns (None, "", "").
+        If slash but unknown skill, returns ("", command, args).
+        """
+        skill, command, arguments = self.skill_registry.resolve(text)
+        if not command:
+            return None, "", ""
+        if skill is None:
+            return "", command, arguments
+        return skill.render(arguments), command, arguments
+
+    def switch_model(self, model_spec: str, model_factory: Callable[[], Any]) -> None:
+        """Replace the active model client."""
+        self.model = model_factory()
+        self.model_spec = model_spec
 
     def enter_plan_mode(self, topic: str, path: str | None = None) -> str:
         """Switch to plan mode."""

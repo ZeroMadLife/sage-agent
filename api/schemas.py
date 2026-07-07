@@ -33,6 +33,96 @@ class CodingSessionResponse(BaseModel):
     workspace_root: str
 
 
+class CodingFileEntry(BaseModel):
+    """One entry in a coding file tree listing."""
+
+    name: str
+    is_dir: bool
+
+
+class CodingFilesResponse(BaseModel):
+    """File tree listing for a coding session."""
+
+    path: str
+    entries: list[CodingFileEntry]
+
+
+class CodingFileContentResponse(BaseModel):
+    """File content preview for a coding session."""
+
+    path: str
+    content: str
+    lines: int
+
+
+class CodingGitStatusResponse(BaseModel):
+    """Git status for a coding workspace."""
+
+    is_git: bool
+    branch: str = ""
+    dirty_count: int = 0
+    changed_files: list[str] = Field(default_factory=list)
+
+
+class CodingModel(BaseModel):
+    """One selectable model."""
+
+    id: str
+    label: str
+    provider: str
+
+
+class CodingModelsResponse(BaseModel):
+    """Available models for a coding session."""
+
+    models: list[CodingModel]
+    current: str | None = None
+
+
+class CodingModelSwitchRequest(BaseModel):
+    """Request body for switching a session's model."""
+
+    model_id: str = Field(min_length=1)
+
+
+class CodingSkillSummary(BaseModel):
+    """Skill list entry."""
+
+    name: str
+    description: str
+    source: str
+    argument_hint: str = ""
+
+
+class CodingSkillsResponse(BaseModel):
+    """Skill list response."""
+
+    skills: list[CodingSkillSummary]
+
+
+class CodingSkillDetailResponse(BaseModel):
+    """Skill content preview."""
+
+    name: str
+    description: str
+    source: str
+    content: str
+
+
+class CodingMcpServer(BaseModel):
+    """MCP server config entry."""
+
+    name: str
+    transport: str
+    status: str = "configured"
+
+
+class CodingMcpServersResponse(BaseModel):
+    """MCP server config listing."""
+
+    servers: list[CodingMcpServer]
+
+
 class AuthRequest(BaseModel):
     """Passphrase verification request."""
 
