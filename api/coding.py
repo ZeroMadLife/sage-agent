@@ -79,6 +79,44 @@ async def list_coding_sessions(request: Request) -> CodingSessionsResponse:
     )
 
 
+@router.post("/api/v1/coding/session/{session_id}/resume")
+async def resume_coding_session(
+    session_id: str,
+    request: Request,
+) -> CodingSessionResponse:
+    """Rehydrate a persisted coding runtime session."""
+    model_factory = getattr(request.app.state, "coding_model_factory", None)
+    if model_factory is None:
+        raise RuntimeError("Coding model factory is not configured")
+    storage_root = Path(request.app.state.coding_storage_root)
+    try:
+        runtime = CodingRuntime.resume(
+            session_id=session_id,
+            model=model_factory(),
+            storage_root=storage_root,
+            model_factory=model_factory,
+            approval_policy="ask",
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    try:
+        runtime.workspace.root.resolve().relative_to(default_workspace)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="persisted workspace_root must be inside the configured coding workspace",
+        ) from exc
+    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
+    sessions[session_id] = runtime
+    return CodingSessionResponse(
+        session_id=session_id,
+        workspace_root=str(runtime.workspace.root.resolve()),
+    )
+
+
 @router.websocket("/api/v1/coding/{session_id}/stream")
 async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     """Stream coding-agent events over WebSocket."""

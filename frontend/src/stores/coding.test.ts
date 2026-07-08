@@ -297,6 +297,42 @@ describe('coding store', () => {
     expect(store.codingSessions[0].title).toBe('读 README')
   })
 
+  it('selects and resumes a coding session', async () => {
+    const socketInstances: Array<{ close: ReturnType<typeof vi.fn> }> = []
+    class FakeSocket {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      close = vi.fn()
+
+      constructor(_url: string) {
+        socketInstances.push(this)
+      }
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ session_id: 's2', workspace_root: '/tmp/repo' }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ runs: [] }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+    store.sessionId = 's1'
+    store.messages = [{ role: 'assistant', content: 'old' }]
+
+    await store.selectSession('s2')
+
+    expect(store.sessionId).toBe('s2')
+    expect(store.workspaceRoot).toBe('/tmp/repo')
+    expect(store.messages).toEqual([])
+    expect(socketInstances).toHaveLength(1)
+    expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
+  })
+
   it('refreshes run history when a run finishes', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

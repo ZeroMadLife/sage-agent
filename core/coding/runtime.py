@@ -36,6 +36,7 @@ class CodingRuntime:
         storage_root: Path | str,
         model_factory: Callable[[], Any] | None = None,
         approval_policy: ApprovalPolicy = "auto",
+        session_state: dict[str, Any] | None = None,
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -48,23 +49,33 @@ class CodingRuntime:
             session_id=session_id,
             path=self.session_store.event_path(session_id),
         )
-        self.session: dict[str, Any] = {
-            "id": session_id,
-            "workspace_root": str(self.workspace.root),
-            "created_at": now(),
-            "updated_at": now(),
-            "history": [],
-            "runtime_mode": {"mode": "default"},
-            "todos": {"next_id": 1, "items": []},
-        }
+        self.session = (
+            dict(session_state)
+            if session_state is not None
+            else {
+                "id": session_id,
+                "workspace_root": str(self.workspace.root),
+                "created_at": now(),
+                "updated_at": now(),
+                "history": [],
+                "runtime_mode": {"mode": "default"},
+                "todos": {"next_id": 1, "items": []},
+            }
+        )
+        self.session["id"] = session_id
+        self.session["workspace_root"] = str(self.workspace.root)
+        self.session.setdefault("history", [])
+        self.session.setdefault("runtime_mode", {"mode": "default"})
+        self.session.setdefault("todos", {"next_id": 1, "items": []})
         self.todo_ledger = TodoLedger(self.session["todos"])
         self.plan_mode = PlanModeManager(self.workspace.root)
+        self._restore_plan_mode(self.session["runtime_mode"])
         self.worker_manager = WorkerManager(self.workspace, self.model_factory)
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
         self.approval_manager = ApprovalManager()
         self.stop_requested = False
-        self.runtime_mode = "default"
+        self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
         self.policy_checker = ToolPolicyChecker(self.workspace)
         self.tool_context = ToolContext(
@@ -76,6 +87,32 @@ class CodingRuntime:
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.model_spec: str = ""
         self._save_session()
+
+    @classmethod
+    def resume(
+        cls,
+        session_id: str,
+        model: Any,
+        storage_root: Path | str,
+        model_factory: Callable[[], Any] | None = None,
+        approval_policy: ApprovalPolicy = "auto",
+    ) -> CodingRuntime:
+        """Rehydrate a persisted coding runtime for a new WebSocket connection."""
+        storage_path = Path(storage_root)
+        store = CodingSessionStore(storage_path / "sessions")
+        session_state = store.load(session_id)
+        workspace_root = Path(str(session_state.get("workspace_root", "")))
+        if not workspace_root:
+            raise ValueError("persisted session is missing workspace_root")
+        return cls(
+            session_id=session_id,
+            workspace_root=workspace_root,
+            model=model,
+            storage_root=storage_path,
+            model_factory=model_factory,
+            approval_policy=approval_policy,
+            session_state=session_state,
+        )
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:
         """Return directory entries (dirs first, then files), workspace-safe."""
@@ -244,3 +281,13 @@ class CodingRuntime:
     def _save_session(self) -> None:
         self._sync_session_state()
         self.session_store.save(self.session)
+
+    def _restore_plan_mode(self, runtime_mode: Any) -> None:
+        if not isinstance(runtime_mode, dict):
+            return
+        mode = str(runtime_mode.get("mode", "default"))
+        if mode != "plan":
+            return
+        self.plan_mode.mode = "plan"
+        self.plan_mode.topic = str(runtime_mode.get("topic", ""))
+        self.plan_mode.plan_path = str(runtime_mode.get("plan_path", ""))

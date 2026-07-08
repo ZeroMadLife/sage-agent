@@ -133,7 +133,10 @@ Composer / Skills：
 - 新增 REST：`GET /api/v1/coding/sessions`。
 - 前端 store 增加 `codingSessions` / `loadSessions()`，初始化和 run 结束后刷新 session history。
 - `CodingSidebar.vue` 增加 Sessions 区块，显示当前 session、标题、消息数和 runtime mode。
-- 本轮只做“历史可见性”，还不做旧 session 的 runtime rehydrate / resume。
+- `CodingRuntime.resume()` 可以从本地 session JSON 重建 runtime，恢复 history、todo ledger、plan mode、workspace 和工具上下文。
+- 新增 REST：`POST /api/v1/coding/session/{session_id}/resume`。
+- 前端 store 增加 `selectSession()`，点击 Sessions 区块中的历史会话后会调用 resume、清理当前消息/trace、刷新 workspace/run/session 状态并重连 WebSocket。
+- resume 恢复的是可继续对话的 session 状态；运行中的 run 和 pending approval 不跨进程恢复。
 
 ## 测试覆盖
 
@@ -196,10 +199,11 @@ Run history 新增：
 Session history 新增：
 
 - `tests/core/coding/test_session_store.py`：session summary 派生与更新时间排序。
-- `tests/api/test_coding_routes.py`：coding sessions API。
-- `frontend/src/api/coding.test.ts`：session history API client。
-- `frontend/src/stores/coding.test.ts`：session list 加载。
-- `frontend/src/components/CodingSidebar.test.ts`：Sessions 区块渲染与 active 状态。
+- `tests/core/coding/test_todo_plan_worker_runtime.py`：runtime resume 恢复 history、todo 和 plan mode。
+- `tests/api/test_coding_routes.py`：coding sessions API 和 resume API。
+- `frontend/src/api/coding.test.ts`：session history / resume API client。
+- `frontend/src/stores/coding.test.ts`：session list 加载和 select session 状态切换。
+- `frontend/src/components/CodingSidebar.test.ts`：Sessions 区块渲染、active 状态和点击切换。
 
 ## 已验证
 
@@ -304,7 +308,17 @@ cd frontend && npm run test -- --run src/api/coding.test.ts src/stores/coding.te
 
 结果：后端 session history 定向 `24 passed`；ruff/mypy 通过；前端定向 `3 files / 25 tests passed`。
 
+```bash
+pytest tests/core/coding/test_todo_plan_worker_runtime.py tests/api/test_coding_routes.py -q
+ruff check core/coding/runtime.py api/coding.py tests/core/coding/test_todo_plan_worker_runtime.py tests/api/test_coding_routes.py
+mypy core/coding/runtime.py api/coding.py tests/core/coding/test_todo_plan_worker_runtime.py tests/api/test_coding_routes.py
+cd frontend && npm run test -- --run src/api/coding.test.ts src/stores/coding.test.ts src/components/CodingSidebar.test.ts
+cd frontend && npm run build
+```
+
+结果：后端 session resume 定向 `25 passed`；ruff/mypy 通过；前端定向 `3 files / 28 tests passed`；前端 build 通过。
+
 ## 后续方向
 
 1. Graphify 更新：完成 v3 主要方向后重新生成架构图谱。
-2. 后续 v3.x：diff preview modal、更细粒度 tool permission policy、run detail 面板增强。
+2. 后续 v3.x：run detail 面板增强、session 消息回放、更细粒度 tool permission policy。

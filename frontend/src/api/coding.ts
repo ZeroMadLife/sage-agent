@@ -47,6 +47,15 @@ export async function fetchCodingSessions(): Promise<CodingSessionsResponse> {
   return (await response.json()) as CodingSessionsResponse
 }
 
+export async function resumeCodingSession(sessionId: string): Promise<CodingSessionResponse> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/session/${sessionId}/resume`, API_BASE_URL),
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`resume session failed: ${response.status}`)
+  return (await response.json()) as CodingSessionResponse
+}
+
 export async function fetchCodingFiles(
   sessionId: string,
   path = '.',

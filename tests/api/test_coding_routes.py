@@ -89,6 +89,30 @@ def test_list_coding_sessions_returns_persisted_sessions(tmp_path: Path) -> None
     assert sessions[0]["runtime_mode"] == "default"
 
 
+def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
+    """POST /coding/session/{id}/resume restores a persisted runtime into memory."""
+    (tmp_path / "README.md").write_text("Sage resume\n", encoding="utf-8")
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+        websocket.send_json({"content": "读 README.md"})
+        while websocket.receive_json()["type"] != "final":
+            pass
+    app.state.coding_sessions.clear()
+
+    response = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+    assert response.status_code == 200
+    assert response.json()["session_id"] == session_id
+    assert session_id in app.state.coding_sessions
+    assert app.state.coding_sessions[session_id].session["history"][0]["content"] == "读 README.md"
+
+
 def test_create_coding_session_rejects_workspace_outside_configured_root(
     tmp_path: Path,
 ) -> None:

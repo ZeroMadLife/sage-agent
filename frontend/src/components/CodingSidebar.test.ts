@@ -1,6 +1,6 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, expect, it } from 'vitest'
+import { beforeEach, expect, it, vi } from 'vitest'
 import { useCodingStore } from '../stores/coding'
 import CodingSidebar from './CodingSidebar.vue'
 
@@ -29,6 +29,27 @@ it('renders coding session history', () => {
   expect(wrapper.text()).toContain('读 README')
   expect(wrapper.text()).toContain('2 messages')
   expect(wrapper.find('.session-item.active').exists()).toBe(true)
+})
+
+it('selects a persisted coding session from the sidebar', async () => {
+  const store = useCodingStore()
+  store.codingSessions = [
+    {
+      session_id: 's2',
+      title: '继续任务',
+      workspace_root: '/tmp/repo',
+      created_at: '2026-07-08T10:00:00',
+      updated_at: '2026-07-08T10:00:01',
+      runtime_mode: 'default',
+      message_count: 4,
+    },
+  ]
+  store.selectSession = vi.fn()
+  const wrapper = mount(CodingSidebar)
+
+  await wrapper.find('button.session-item').trigger('click')
+
+  expect(store.selectSession).toHaveBeenCalledWith('s2')
 })
 
 it('renders run detail as a readable worklog timeline', () => {

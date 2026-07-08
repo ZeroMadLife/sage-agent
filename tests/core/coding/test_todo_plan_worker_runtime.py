@@ -111,3 +111,31 @@ async def test_runtime_persists_session_events_and_run_trace(tmp_path: Path) -> 
     run_dirs = list((tmp_path / ".coding" / "runs").iterdir())
     assert run_dirs
     assert (run_dirs[0] / "trace.jsonl").is_file()
+
+
+def test_runtime_resumes_persisted_session_state(tmp_path: Path) -> None:
+    """A saved runtime can be rehydrated for a later WebSocket connection."""
+    original = CodingRuntime(
+        session_id="s-resume",
+        workspace_root=tmp_path,
+        model=FakeModel(["<final>noop</final>"]),
+        storage_root=tmp_path / ".coding",
+    )
+    original.session["history"].append(
+        {"role": "user", "content": "继续看 README", "created_at": "2026-07-08T10:00:00"}
+    )
+    original.todo_ledger.add("补 resume 测试", priority="high")
+    original.enter_plan_mode("Resume runtime")
+
+    resumed = CodingRuntime.resume(
+        session_id="s-resume",
+        model=FakeModel(["<final>resumed</final>"]),
+        storage_root=tmp_path / ".coding",
+    )
+
+    assert resumed.session_id == "s-resume"
+    assert resumed.workspace.root == tmp_path
+    assert resumed.session["history"][0]["content"] == "继续看 README"
+    assert "补 resume 测试" in resumed.todo_ledger.render_list()
+    assert resumed.runtime_mode == "plan"
+    assert resumed.permission_checker.plan_mode is True

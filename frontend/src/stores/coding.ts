@@ -13,6 +13,7 @@ import {
   fetchCodingSessions,
   fetchCodingSkills,
   respondCodingApproval,
+  resumeCodingSession,
   startCodingSession,
   stopCodingRun,
   switchCodingModel,
@@ -348,6 +349,25 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
+  async function selectSession(targetSessionId: string) {
+    if (!targetSessionId || targetSessionId === sessionId.value) return
+    stopApprovalPolling()
+    socket?.close()
+    socket = null
+    const session = await resumeCodingSession(targetSessionId)
+    sessionId.value = session.session_id
+    workspaceRoot.value = session.workspace_root
+    messages.value = []
+    isThinking.value = false
+    errorMessage.value = ''
+    pendingApproval.value = null
+    runs.value = []
+    selectedRun.value = null
+    dirCache.clear()
+    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns()])
+    connectSocket()
+  }
+
   async function loadRunDetail(runId: string) {
     if (!sessionId.value) return
     try {
@@ -452,6 +472,7 @@ export const useCodingStore = defineStore('coding', () => {
     handleServerEvent,
     respondApproval,
     stopCurrentRun,
+    selectSession,
     loadSkills,
     loadMcpServers,
     loadModels,

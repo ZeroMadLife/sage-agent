@@ -65,17 +65,18 @@ function runIcon(status: string) {
     <section class="sidebar-section">
       <h3><MessagesSquare :size="13" /> Sessions</h3>
       <div v-if="store.codingSessions.length === 0" class="empty">暂无 session</div>
-      <div
+      <button
         v-for="session in store.codingSessions"
         :key="session.session_id"
         class="session-item"
         :class="{ active: session.session_id === store.sessionId }"
+        @click="store.selectSession(session.session_id)"
       >
         <div class="session-title">{{ session.title }}</div>
         <div class="session-meta">
           {{ session.message_count }} messages · {{ session.runtime_mode }}
         </div>
-      </div>
+      </button>
     </section>
 
     <section class="sidebar-section">
@@ -220,13 +221,23 @@ function runIcon(status: string) {
 }
 
 .session-item {
+  display: block;
+  width: 100%;
   padding: 5px 7px;
+  border: 0;
   border-radius: 6px;
   margin-bottom: 4px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
 }
 
 .session-item.active {
   background: #eef6ff;
+}
+
+.session-item:hover {
+  background: #f3f4f6;
 }
 
 .session-title {
