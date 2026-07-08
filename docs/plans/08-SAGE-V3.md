@@ -53,8 +53,21 @@ Sage v3 开始向 Hermes / Hermes Web UI 的设计演进。本阶段先做三块
 
 - `category`：`file` / `shell` / `todo` / `plan` / `agent`
 - `requires_approval`：默认跟随 `risky`
+- `deferred`：标识是否延迟加载，控制是否默认进入模型可见工具列表。
 - `timeout`：同步 runner 的通用超时保护，避免非 shell 工具长期卡住执行链路
 - `PermissionChecker` 在 ask 模式下尊重 `requires_approval=False`，让工具可以显式声明“实现有写入/副作用风险，但已由更细的策略层治理，不需要再进入用户审批队列”。
+
+### Tool Search 延迟加载
+
+Sage v3 已补齐 Claude Code 风格的轻量 tool search 机制：
+
+- `tool_search` 是常驻工具，始终进入模型可见工具列表。
+- 常驻工具保持为：`list_files` / `read_file` / `search` / `run_shell` / `write_file` / `patch_file` / `tool_search`。
+- 延迟工具包括：`todo_add` / `todo_update` / `todo_list` / `enter_plan_mode` / `exit_plan_mode` / `agent` / `send_message` / `task_stop`。
+- `get_active_tools()` 只返回常驻工具和当前 session 已激活的 deferred 工具。
+- `Engine` 每轮构建工具描述时只注入 active tools 的完整 schema；未激活的 deferred 工具只以 `Deferred tools (use tool_search to activate): ...` 名单形式进入 prompt。
+- `tool_search` 会按 name / description / category 匹配 deferred 工具，并把命中的工具写入当前 session 的 `activated_tools` 集合；下一轮模型请求开始，这些工具自动进入完整 schema 描述。
+- `CodingRuntime` 将 `activated_tools` 作为 session 状态持久化，resume 后继续保留已激活工具，避免多会话串扰或恢复后丢失上下文。
 
 ### Approval MVP
 
@@ -177,6 +190,17 @@ Composer / Skills：
 - 装饰器注册暴露 `ToolDefinition` 和 schema model。
 - `category` / `requires_approval` 元数据正确。
 - 同步 runner 有通用 timeout 保护。
+- `get_active_tools()` 只暴露常驻工具和已激活 deferred 工具。
+- `tool_search` 能匹配 deferred 工具、返回 schema，并写入 session 级 activated set。
+
+`tests/core/coding/test_engine.py` 新增：
+
+- `tool_search` 激活 deferred 工具后，下一轮 prompt 才注入完整工具 schema。
+- 未激活 deferred 工具只出现在 `Deferred tools` 名单里，不作为完整 schema 进入工具描述。
+
+`tests/core/coding/test_todo_plan_worker_runtime.py` 新增：
+
+- `activated_tools` 会随 session 持久化，并在 runtime resume 后恢复。
 
 `tests/core/coding/test_permissions.py` 新增：
 
@@ -354,6 +378,31 @@ cd frontend && npm run build
 ```
 
 结果：后端 session resume 定向 `25 passed`；ruff/mypy 通过；前端定向 `3 files / 28 tests passed`；前端 build 通过。
+
+```bash
+pytest tests/core/coding/test_tools.py::test_tool_registry_discovers_decorated_tools_with_stable_metadata tests/core/coding/test_tools.py::test_get_active_tools_filters_deferred_tools tests/core/coding/test_tools.py::test_tool_search_activates_matching_deferred_tools tests/core/coding/test_engine.py::test_engine_tool_search_activates_deferred_tools_for_next_prompt tests/core/coding/test_todo_plan_worker_runtime.py::test_runtime_persists_activated_deferred_tools -q
+```
+
+结果：Tool Search 定向 `5 passed`。
+
+```bash
+pytest tests/core/coding tests/api/test_coding_routes.py -q
+```
+
+结果：coding/API 回归 `90 passed`。
+
+```bash
+bash scripts/check.sh
+```
+
+结果：ruff、format、mypy 全过；pytest `329 passed`。
+
+```bash
+cd frontend && npm run test -- --run
+cd frontend && npm run build
+```
+
+结果：前端 `15 files / 51 tests passed`；production build 通过。
 
 ## 后续方向
 

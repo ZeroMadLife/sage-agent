@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from core.coding.tools.base import RegisteredTool, ToolContext, ToolResult
-from core.coding.tools.schemas import first_error_message
+from core.coding.tools.schemas import ToolSearchArgs, first_error_message
 from core.coding.workspace import WorkspaceContext
 
 ToolHandler = Callable[[WorkspaceContext, dict[str, Any], ToolContext | None], ToolResult | str]
@@ -37,6 +38,7 @@ class ToolDefinition:
     category: str = "general"
     requires_approval: bool | None = None
     timeout: float = 30.0
+    deferred: bool = False
 
 
 _TOOL_DEFINITIONS: dict[str, ToolDefinition] = {}
@@ -53,6 +55,7 @@ def register_tool(
     category: str = "general",
     requires_approval: bool | None = None,
     timeout: float = 30.0,
+    deferred: bool = False,
 ) -> Callable[[ToolHandler], ToolHandler]:
     """Register a tool handler from its owning module."""
 
@@ -67,6 +70,7 @@ def register_tool(
             category=category,
             requires_approval=requires_approval,
             timeout=timeout,
+            deferred=deferred,
         )
         return handler
 
@@ -82,9 +86,15 @@ def registered_tool_definitions() -> dict[str, ToolDefinition]:
 def build_tool_registry(
     workspace: WorkspaceContext,
     tool_context: ToolContext | None = None,
+    activated_tools: set[str] | None = None,
 ) -> dict[str, RegisteredTool]:
     """Build coding tools for one workspace."""
     _ensure_default_modules_loaded()
+    activated = activated_tools if activated_tools is not None else set()
+    definitions = {
+        **_TOOL_DEFINITIONS,
+        "tool_search": _tool_search_definition(activated),
+    }
 
     return {
         name: RegisteredTool(
@@ -96,9 +106,18 @@ def build_tool_registry(
             category=definition.category,
             requires_approval=definition.requires_approval,
             timeout=definition.timeout,
+            deferred=definition.deferred,
         )
-        for name, definition in _TOOL_DEFINITIONS.items()
+        for name, definition in definitions.items()
     }
+
+
+def get_active_tools(
+    tools: dict[str, RegisteredTool],
+    activated: set[str],
+) -> dict[str, RegisteredTool]:
+    """Return resident tools plus session-activated deferred tools."""
+    return {name: tool for name, tool in tools.items() if not tool.deferred or name in activated}
 
 
 def execute_tool(
@@ -130,6 +149,8 @@ def validate_tool(
     """Validate pydantic schema and workspace-aware constraints."""
     _ensure_default_modules_loaded()
     definition = _TOOL_DEFINITIONS.get(name)
+    if definition is None and name == "tool_search":
+        definition = _tool_search_definition(set())
     if definition is None:
         raise ValueError(f"unknown tool: {name}")
     try:
@@ -173,6 +194,58 @@ def _make_runner(
         return definition.handler(workspace, validated, tool_context)
 
     return runner
+
+
+def _tool_search_definition(activated_tools: set[str]) -> ToolDefinition:
+    return ToolDefinition(
+        name="tool_search",
+        schema={"query": "str"},
+        description=(
+            "Search for available deferred tools by name or keyword and activate matching tools."
+        ),
+        risky=False,
+        schema_model=ToolSearchArgs,
+        handler=_make_tool_search_handler(activated_tools),
+        category="meta",
+        deferred=False,
+    )
+
+
+def _make_tool_search_handler(activated_tools: set[str]) -> ToolHandler:
+    def handler(
+        workspace: WorkspaceContext,
+        args: dict[str, Any],
+        tool_context: ToolContext | None = None,
+    ) -> ToolResult:
+        _ = workspace, tool_context
+        query = str(args.get("query", "")).strip().lower()
+        definitions = registered_tool_definitions()
+        matches = [
+            definition
+            for definition in definitions.values()
+            if definition.deferred
+            and definition.name not in activated_tools
+            and (
+                query in definition.name.lower()
+                or query in definition.description.lower()
+                or query in definition.category.lower()
+            )
+        ]
+        if not matches:
+            return ToolResult(content="No matching deferred tools found.")
+        for match in matches:
+            activated_tools.add(match.name)
+        payload = [
+            {
+                "name": match.name,
+                "description": match.description,
+                "schema": match.schema,
+            }
+            for match in matches
+        ]
+        return ToolResult(content=json.dumps(payload, ensure_ascii=False, indent=2))
+
+    return handler
 
 
 def _ensure_default_modules_loaded() -> None:

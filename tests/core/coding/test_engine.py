@@ -123,3 +123,44 @@ async def test_engine_cancels_before_model_request(tmp_path: Path) -> None:
 
     assert events == [{"type": "cancelled", "content": "已停止当前运行。"}]
     assert model.prompts == []
+
+
+async def test_engine_tool_search_activates_deferred_tools_for_next_prompt(
+    tmp_path: Path,
+) -> None:
+    """tool_search activation makes matching deferred tools visible on the next model turn."""
+    workspace = WorkspaceContext(root=tmp_path)
+    activated_tools: set[str] = set()
+    tools = build_tool_registry(workspace, activated_tools=activated_tools)
+    model = FakeModel(
+        [
+            '<tool>{"name":"tool_search","args":{"query":"todo"}}</tool>',
+            "<final>todo tools ready</final>",
+        ]
+    )
+    engine = Engine(
+        model=model,
+        workspace=workspace,
+        tools=tools,
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        activated_tools=activated_tools,
+    )
+
+    events = [event async for event in engine.run_turn("我要拆任务")]
+
+    assert [event["type"] for event in events] == [
+        "model_requested",
+        "model_parsed",
+        "tool_call",
+        "tool_result",
+        "model_requested",
+        "model_parsed",
+        "final",
+    ]
+    assert "Deferred tools" in model.prompts[0]
+    assert "todo_add" in model.prompts[0]
+    assert "todo_add:" not in model.prompts[0]
+    assert "todo_add:" in model.prompts[1]
+    assert "todo_add" in activated_tools

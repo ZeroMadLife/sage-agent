@@ -67,6 +67,10 @@ class CodingRuntime:
         self.session.setdefault("history", [])
         self.session.setdefault("runtime_mode", {"mode": "default"})
         self.session.setdefault("todos", {"next_id": 1, "items": []})
+        self.session.setdefault("activated_tools", [])
+        self.activated_tools = {
+            str(name) for name in self.session.get("activated_tools", []) if str(name).strip()
+        }
         self.todo_ledger = TodoLedger(self.session["todos"])
         self.plan_mode = PlanModeManager(self.workspace.root)
         self._restore_plan_mode(self.session["runtime_mode"])
@@ -83,7 +87,11 @@ class CodingRuntime:
             todo_ledger=self.todo_ledger,
             worker_manager=self.worker_manager,
         )
-        self.tools = build_tool_registry(self.workspace, tool_context=self.tool_context)
+        self.tools = build_tool_registry(
+            self.workspace,
+            tool_context=self.tool_context,
+            activated_tools=self.activated_tools,
+        )
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.model_spec: str = ""
         self._save_session()
@@ -249,6 +257,7 @@ class CodingRuntime:
             approval_manager=self.approval_manager,
             should_stop=lambda: self.stop_requested,
             history=self.session["history"],
+            activated_tools=self.activated_tools,
             max_steps=50,
         )
         async for event in engine.run_turn(user_message):
@@ -277,6 +286,7 @@ class CodingRuntime:
         self.session["updated_at"] = now()
         self.session["todos"] = self.todo_ledger.to_dict()
         self.session["runtime_mode"] = self.plan_mode.to_dict()
+        self.session["activated_tools"] = sorted(self.activated_tools)
 
     def _save_session(self) -> None:
         self._sync_session_state()

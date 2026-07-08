@@ -33,6 +33,7 @@ class RegisteredTool:
     category: str = "general"
     requires_approval: bool | None = None
     timeout: float = 30.0
+    deferred: bool = False
 
     def __post_init__(self) -> None:
         """Default approval metadata follows risk metadata."""

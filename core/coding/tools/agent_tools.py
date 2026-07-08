@@ -23,6 +23,7 @@ from core.coding.workspace import WorkspaceContext
     schema_model=AgentArgs,
     risky=False,
     category="agent",
+    deferred=True,
 )
 def agent(
     workspace: WorkspaceContext,
@@ -47,6 +48,7 @@ def agent(
     schema_model=SendMessageArgs,
     risky=False,
     category="agent",
+    deferred=True,
 )
 def send_message(
     workspace: WorkspaceContext,
@@ -66,6 +68,7 @@ def send_message(
     schema_model=TaskStopArgs,
     risky=False,
     category="agent",
+    deferred=True,
 )
 def task_stop(
     workspace: WorkspaceContext,

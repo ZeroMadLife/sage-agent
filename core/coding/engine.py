@@ -18,6 +18,7 @@ from core.coding.model_output import parse
 from core.coding.permissions import PermissionChecker
 from core.coding.tool_policy import ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool, ToolResult
+from core.coding.tools.registry import get_active_tools
 from core.coding.workspace import WorkspaceContext, now
 
 
@@ -44,6 +45,7 @@ class Engine:
         approval_manager: ApprovalManager | None = None,
         should_stop: Callable[[], bool] | None = None,
         history: list[dict[str, Any]] | None = None,
+        activated_tools: set[str] | None = None,
         max_steps: int = 50,
     ) -> None:
         self.model = model
@@ -56,6 +58,7 @@ class Engine:
         self.approval_manager = approval_manager
         self.should_stop = should_stop or (lambda: False)
         self.history = history if history is not None else []
+        self.activated_tools = activated_tools if activated_tools is not None else set()
         self.max_steps = max_steps
 
     async def run_turn(self, user_message: str) -> AsyncIterator[dict[str, Any]]:
@@ -271,7 +274,18 @@ class Engine:
         raise TypeError("model must provide complete(prompt) or ainvoke(messages)")
 
     def _tool_descriptions(self) -> list[str]:
-        return build_tool_descriptions(self.tools)
+        active_tools = get_active_tools(self.tools, self.activated_tools)
+        descriptions = build_tool_descriptions(active_tools)
+        deferred = sorted(
+            name
+            for name, tool in self.tools.items()
+            if tool.deferred and name not in self.activated_tools
+        )
+        if deferred:
+            descriptions.append(
+                "Deferred tools (use tool_search to activate): " + ", ".join(deferred)
+            )
+        return descriptions
 
     @staticmethod
     def _step_limit_summary(user_message: str, tool_steps: int) -> str:

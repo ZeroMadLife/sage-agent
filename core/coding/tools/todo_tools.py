@@ -22,6 +22,7 @@ from core.coding.workspace import WorkspaceContext
     schema_model=TodoAddArgs,
     risky=False,
     category="todo",
+    deferred=True,
 )
 def todo_add(
     workspace: WorkspaceContext,
@@ -54,6 +55,7 @@ def todo_add(
     schema_model=TodoUpdateArgs,
     risky=False,
     category="todo",
+    deferred=True,
 )
 def todo_update(
     workspace: WorkspaceContext,
@@ -81,6 +83,7 @@ def todo_update(
     schema_model=TodoListArgs,
     risky=False,
     category="todo",
+    deferred=True,
 )
 def todo_list(
     workspace: WorkspaceContext,

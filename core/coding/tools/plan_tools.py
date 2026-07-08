@@ -17,6 +17,7 @@ from core.coding.workspace import WorkspaceContext
     schema_model=EnterPlanModeArgs,
     risky=False,
     category="plan",
+    deferred=True,
 )
 def enter_plan_mode(
     workspace: WorkspaceContext,
@@ -36,6 +37,7 @@ def enter_plan_mode(
     schema_model=ExitPlanModeArgs,
     risky=False,
     category="plan",
+    deferred=True,
 )
 def exit_plan_mode(
     workspace: WorkspaceContext,

@@ -139,3 +139,31 @@ def test_runtime_resumes_persisted_session_state(tmp_path: Path) -> None:
     assert "补 resume 测试" in resumed.todo_ledger.render_list()
     assert resumed.runtime_mode == "plan"
     assert resumed.permission_checker.plan_mode is True
+
+
+async def test_runtime_persists_activated_deferred_tools(tmp_path: Path) -> None:
+    """tool_search activations are session-scoped and survive runtime resume."""
+    original = CodingRuntime(
+        session_id="s-tool-search",
+        workspace_root=tmp_path,
+        model=FakeModel(
+            [
+                '<tool>{"name":"tool_search","args":{"query":"todo"}}</tool>',
+                "<final>todo tools activated</final>",
+            ]
+        ),
+        storage_root=tmp_path / ".coding",
+    )
+
+    events = [event async for event in original.run_turn("启用 todo 工具")]
+    resumed = CodingRuntime.resume(
+        session_id="s-tool-search",
+        model=FakeModel(["<final>resumed</final>"]),
+        storage_root=tmp_path / ".coding",
+    )
+
+    assert events[-1]["type"] == "final"
+    assert "todo_add" in original.activated_tools
+    assert "todo_update" in original.session["activated_tools"]
+    assert "todo_add" in resumed.activated_tools
+    assert "todo_add" in resumed.session["activated_tools"]

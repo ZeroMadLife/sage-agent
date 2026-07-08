@@ -208,6 +208,19 @@ class TaskStopArgs(BaseModel):
         return value
 
 
+class ToolSearchArgs(BaseModel):
+    """Arguments for tool_search."""
+
+    query: str
+
+    @field_validator("query")
+    @classmethod
+    def query_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be empty")
+        return value
+
+
 def first_error_message(exc: ValidationError) -> str:
     """Extract a compact validation message."""
     errors = exc.errors(include_url=False)

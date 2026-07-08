@@ -9,6 +9,7 @@ from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import (
     ToolDefinition,
     build_tool_registry,
+    get_active_tools,
     registered_tool_definitions,
 )
 from core.coding.workspace import WorkspaceContext
@@ -128,6 +129,7 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
         "run_shell",
         "write_file",
         "patch_file",
+        "tool_search",
         "todo_add",
         "todo_update",
         "todo_list",
@@ -141,6 +143,8 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
     assert tools["run_shell"].category == "shell"
     assert tools["run_shell"].requires_approval is True
     assert tools["read_file"].requires_approval is False
+    assert tools["tool_search"].deferred is False
+    assert tools["todo_add"].deferred is True
 
 
 def test_registered_tool_definitions_are_decorator_backed() -> None:
@@ -150,6 +154,34 @@ def test_registered_tool_definitions_are_decorator_backed() -> None:
     assert isinstance(definitions["read_file"], ToolDefinition)
     assert definitions["read_file"].schema_model.__name__ == "ReadFileArgs"
     assert definitions["todo_add"].category == "todo"
+
+
+def test_get_active_tools_filters_deferred_tools(tmp_path: Path) -> None:
+    """Only resident tools and activated deferred tools are model-visible."""
+    tools = build_tool_registry(_workspace(tmp_path))
+
+    active = get_active_tools(tools, activated={"todo_add"})
+
+    assert "read_file" in active
+    assert "tool_search" in active
+    assert "todo_add" in active
+    assert "todo_update" not in active
+    assert "agent" not in active
+
+
+def test_tool_search_activates_matching_deferred_tools(tmp_path: Path) -> None:
+    """tool_search returns schemas and activates matching deferred tools for the session."""
+    activated: set[str] = set()
+    tools = build_tool_registry(_workspace(tmp_path), activated_tools=activated)
+
+    result = tools["tool_search"].execute({"query": "todo"})
+
+    assert result.is_error is False
+    assert "todo_add" in result.content
+    assert "todo_update" in result.content
+    assert "todo_add" in activated
+    assert "todo_update" in activated
+    assert "read_file" not in activated
 
 
 def test_registered_tool_execute_times_out_sync_runner() -> None:
