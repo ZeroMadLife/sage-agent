@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass
 from typing import Any
+
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=16, thread_name_prefix="sage-tool")
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,14 @@ class RegisteredTool:
     description: str
     risky: bool
     runner: ToolRunner
+    category: str = "general"
+    requires_approval: bool | None = None
+    timeout: float = 30.0
+
+    def __post_init__(self) -> None:
+        """Default approval metadata follows risk metadata."""
+        if self.requires_approval is None:
+            object.__setattr__(self, "requires_approval", self.risky)
 
     @property
     def read_only(self) -> bool:
@@ -35,10 +46,22 @@ class RegisteredTool:
 
     def execute(self, args: dict[str, Any] | None = None) -> ToolResult:
         """Execute the tool and convert validation/runtime failures to ToolResult."""
+        future = _TOOL_EXECUTOR.submit(self.runner, args or {})
         try:
-            result = self.runner(args or {})
+            result = future.result(timeout=self.timeout)
+        except TimeoutError:
+            return ToolResult(content=f"tool timed out after {self.timeout:g}s", is_error=True)
         except Exception as exc:
             return ToolResult(content=str(exc), is_error=True)
         if isinstance(result, ToolResult):
             return result
         return ToolResult(content=str(result))
+
+
+@dataclass
+class ToolContext:
+    """Optional runtime components used by extended tools."""
+
+    runtime: Any | None = None
+    todo_ledger: Any | None = None
+    worker_manager: Any | None = None

@@ -2,9 +2,15 @@
 
 import os
 import sys
+import time
 from pathlib import Path
 
-from core.coding.tools.registry import build_tool_registry
+from core.coding.tools.base import RegisteredTool, ToolResult
+from core.coding.tools.registry import (
+    ToolDefinition,
+    build_tool_registry,
+    registered_tool_definitions,
+)
 from core.coding.workspace import WorkspaceContext
 
 
@@ -109,3 +115,60 @@ def test_run_shell_uses_filtered_environment_and_reports_timeout(tmp_path: Path)
     assert "secret" not in env_result.content
     assert timeout_result.is_error is True
     assert "timed out" in timeout_result.content
+
+
+def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: Path) -> None:
+    """Tool discovery exposes the same public toolset plus Sage v3 metadata."""
+    tools = build_tool_registry(_workspace(tmp_path))
+
+    assert set(tools) == {
+        "list_files",
+        "read_file",
+        "search",
+        "run_shell",
+        "write_file",
+        "patch_file",
+        "todo_add",
+        "todo_update",
+        "todo_list",
+        "enter_plan_mode",
+        "exit_plan_mode",
+        "agent",
+        "send_message",
+        "task_stop",
+    }
+    assert tools["read_file"].category == "file"
+    assert tools["run_shell"].category == "shell"
+    assert tools["run_shell"].requires_approval is True
+    assert tools["read_file"].requires_approval is False
+
+
+def test_registered_tool_definitions_are_decorator_backed() -> None:
+    """The registry is populated by per-module decorators instead of a central spec dict."""
+    definitions = registered_tool_definitions()
+
+    assert isinstance(definitions["read_file"], ToolDefinition)
+    assert definitions["read_file"].schema_model.__name__ == "ReadFileArgs"
+    assert definitions["todo_add"].category == "todo"
+
+
+def test_registered_tool_execute_times_out_sync_runner() -> None:
+    """Synchronous tools get a generic timeout guard outside shell-specific timeout."""
+
+    def slow_runner(_args: dict[str, object]) -> ToolResult:
+        time.sleep(0.2)
+        return ToolResult(content="late")
+
+    tool = RegisteredTool(
+        name="slow",
+        schema={},
+        description="Slow tool.",
+        risky=False,
+        runner=slow_runner,
+        timeout=0.01,
+    )
+
+    result = tool.execute({})
+
+    assert result.is_error is True
+    assert "timed out" in result.content
