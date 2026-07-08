@@ -126,6 +126,16 @@ export type CodingSessionsResponse = {
   sessions: CodingSessionSummary[]
 }
 
+export type CodingSessionMessage = {
+  role: 'user' | 'assistant'
+  content: string
+  created_at: string
+}
+
+export type CodingSessionMessagesResponse = {
+  messages: CodingSessionMessage[]
+}
+
 export type CodingApproval = {
   approval_id: string
   session_id: string

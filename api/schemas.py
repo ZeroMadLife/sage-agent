@@ -52,6 +52,20 @@ class CodingSessionsResponse(BaseModel):
     sessions: list[CodingSessionSummary]
 
 
+class CodingSessionMessage(BaseModel):
+    """One replayable coding-agent chat message."""
+
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: str = ""
+
+
+class CodingSessionMessagesResponse(BaseModel):
+    """Replayable chat messages for one local coding-agent session."""
+
+    messages: list[CodingSessionMessage]
+
+
 class CodingFileEntry(BaseModel):
     """One entry in a coding file tree listing."""
 

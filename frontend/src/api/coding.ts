@@ -8,6 +8,7 @@ import type {
   CodingModelsResponse,
   CodingRunDetailResponse,
   CodingRunsResponse,
+  CodingSessionMessagesResponse,
   CodingSessionResponse,
   CodingSessionsResponse,
   CodingSkillDetailResponse,
@@ -54,6 +55,16 @@ export async function resumeCodingSession(sessionId: string): Promise<CodingSess
   )
   if (!response.ok) throw new Error(`resume session failed: ${response.status}`)
   return (await response.json()) as CodingSessionResponse
+}
+
+export async function fetchCodingSessionMessages(
+  sessionId: string,
+): Promise<CodingSessionMessagesResponse> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/session/${sessionId}/messages`, API_BASE_URL),
+  )
+  if (!response.ok) throw new Error(`fetch session messages failed: ${response.status}`)
+  return (await response.json()) as CodingSessionMessagesResponse
 }
 
 export async function fetchCodingFiles(

@@ -4,6 +4,7 @@ import {
   fetchCodingApprovalPending,
   fetchCodingRun,
   fetchCodingRuns,
+  fetchCodingSessionMessages,
   fetchCodingSessions,
   respondCodingApproval,
   resumeCodingSession,
@@ -165,5 +166,31 @@ describe('coding API client', () => {
 
     expect(response.session_id).toBe('s1')
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
+  })
+
+  it('fetches coding session messages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: '读 README',
+            created_at: '2026-07-08T10:00:00',
+          },
+          {
+            role: 'assistant',
+            content: 'README 里是 Sage。',
+            created_at: '2026-07-08T10:00:01',
+          },
+        ],
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await fetchCodingSessionMessages('s1')
+
+    expect(response.messages[1].content).toBe('README 里是 Sage。')
+    expect(fetchMock).toHaveBeenCalledWith(expect.any(URL))
   })
 })

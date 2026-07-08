@@ -23,6 +23,8 @@ from api.schemas import (
     CodingRunDetailResponse,
     CodingRunsResponse,
     CodingRunSummary,
+    CodingSessionMessage,
+    CodingSessionMessagesResponse,
     CodingSessionRequest,
     CodingSessionResponse,
     CodingSessionsResponse,
@@ -114,6 +116,37 @@ async def resume_coding_session(
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(runtime.workspace.root.resolve()),
+    )
+
+
+@router.get(
+    "/api/v1/coding/session/{session_id}/messages",
+    response_model=CodingSessionMessagesResponse,
+)
+async def get_coding_session_messages(
+    session_id: str,
+    request: Request,
+) -> CodingSessionMessagesResponse:
+    """Return persisted chat messages for replaying a coding session."""
+    storage_root = Path(request.app.state.coding_storage_root)
+    store = CodingSessionStore(storage_root / "sessions")
+    try:
+        session_state = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    workspace_root = Path(str(session_state.get("workspace_root", ""))).resolve()
+    try:
+        workspace_root.relative_to(default_workspace)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="persisted workspace_root must be inside the configured coding workspace",
+        ) from exc
+    return CodingSessionMessagesResponse(
+        messages=[CodingSessionMessage(**item) for item in store.messages(session_id)]
     )
 
 

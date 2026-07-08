@@ -10,6 +10,7 @@ import {
   fetchCodingModels,
   fetchCodingRun,
   fetchCodingRuns,
+  fetchCodingSessionMessages,
   fetchCodingSessions,
   fetchCodingSkills,
   respondCodingApproval,
@@ -357,7 +358,7 @@ export const useCodingStore = defineStore('coding', () => {
     const session = await resumeCodingSession(targetSessionId)
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
-    messages.value = []
+    messages.value = await loadSessionMessages(session.session_id)
     isThinking.value = false
     errorMessage.value = ''
     pendingApproval.value = null
@@ -366,6 +367,18 @@ export const useCodingStore = defineStore('coding', () => {
     dirCache.clear()
     await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns()])
     connectSocket()
+  }
+
+  async function loadSessionMessages(targetSessionId: string): Promise<ChatMessage[]> {
+    try {
+      const res = await fetchCodingSessionMessages(targetSessionId)
+      return res.messages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      }))
+    } catch {
+      return []
+    }
   }
 
   async function loadRunDetail(runId: string) {

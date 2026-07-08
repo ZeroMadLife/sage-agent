@@ -314,6 +314,23 @@ describe('coding store', () => {
         ok: true,
         json: async () => ({ session_id: 's2', workspace_root: '/tmp/repo' }),
       })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          messages: [
+            {
+              role: 'user',
+              content: '读 README',
+              created_at: '2026-07-08T10:00:00',
+            },
+            {
+              role: 'assistant',
+              content: 'README 里是 Sage。',
+              created_at: '2026-07-08T10:00:01',
+            },
+          ],
+        }),
+      })
       .mockResolvedValue({
         ok: true,
         json: async () => ({ runs: [] }),
@@ -328,7 +345,10 @@ describe('coding store', () => {
 
     expect(store.sessionId).toBe('s2')
     expect(store.workspaceRoot).toBe('/tmp/repo')
-    expect(store.messages).toEqual([])
+    expect(store.messages).toEqual([
+      { role: 'user', content: '读 README' },
+      { role: 'assistant', content: 'README 里是 Sage。' },
+    ])
     expect(socketInstances).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
   })

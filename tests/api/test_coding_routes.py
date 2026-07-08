@@ -113,6 +113,39 @@ def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
     assert app.state.coding_sessions[session_id].session["history"][0]["content"] == "读 README.md"
 
 
+def test_get_coding_session_messages_returns_persisted_chat_history(tmp_path: Path) -> None:
+    """GET /coding/session/{id}/messages replays persisted user/assistant messages."""
+    (tmp_path / "README.md").write_text("Sage messages\n", encoding="utf-8")
+    client = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding",
+        )
+    )
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+        websocket.send_json({"content": "读 README.md"})
+        while websocket.receive_json()["type"] != "final":
+            pass
+
+    response = client.get(f"/api/v1/coding/session/{session_id}/messages")
+
+    assert response.status_code == 200
+    assert response.json()["messages"] == [
+        {
+            "role": "user",
+            "content": "读 README.md",
+            "created_at": response.json()["messages"][0]["created_at"],
+        },
+        {
+            "role": "assistant",
+            "content": "README 里能看到项目内容。",
+            "created_at": response.json()["messages"][1]["created_at"],
+        },
+    ]
+
+
 def test_create_coding_session_rejects_workspace_outside_configured_root(
     tmp_path: Path,
 ) -> None:

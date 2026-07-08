@@ -6,7 +6,15 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, TypedDict, cast
+
+
+class CodingChatMessage(TypedDict):
+    """Replayable chat message persisted in a coding session."""
+
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: str
 
 
 class CodingSessionStore:
@@ -51,6 +59,31 @@ class CodingSessionStore:
             if isinstance(data, dict):
                 summaries.append(_summarize_session(data))
         return sorted(summaries, key=lambda item: item["updated_at"], reverse=True)[:limit]
+
+    def messages(self, session_id: str) -> list[CodingChatMessage]:
+        """Return replayable user/assistant chat messages for one session."""
+        data = self.load(session_id)
+        history = data.get("history", [])
+        if not isinstance(history, list):
+            return []
+        messages: list[CodingChatMessage] = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", ""))
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(item.get("content", "")).strip()
+            if not content:
+                continue
+            messages.append(
+                {
+                    "role": cast(Literal["user", "assistant"], role),
+                    "content": content,
+                    "created_at": str(item.get("created_at", "")),
+                }
+            )
+        return messages
 
 
 def _safe_session_id(session_id: str) -> str:

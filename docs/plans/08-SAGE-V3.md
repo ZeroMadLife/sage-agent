@@ -1,7 +1,7 @@
 # Sage v3 落地记录
 
 > 日期：2026-07-08
-> 当前阶段：方向一完成；方向三完成；方向二完成；方向四完成；v3.x stop/cancel run 完成；v3.x approval UX 完成；v3.x run history 完成
+> 当前阶段：方向一完成；方向三完成；方向二完成；方向四完成；v3.x stop/cancel run 完成；v3.x approval UX 完成；v3.x run history 完成；v3.x session replay 完成
 > 参考：`docs/superpowers/prompts/2026-07-08-codex-goal-sage-v3.md`
 
 ## 目标
@@ -138,6 +138,18 @@ Composer / Skills：
 - 前端 store 增加 `selectSession()`，点击 Sessions 区块中的历史会话后会调用 resume、清理当前消息/trace、刷新 workspace/run/session 状态并重连 WebSocket。
 - resume 恢复的是可继续对话的 session 状态；运行中的 run 和 pending approval 不跨进程恢复。
 
+### Session Message Replay
+
+把 resume 从“恢复后端运行态”补齐到“恢复前端聊天上下文”：
+
+- `CodingSessionStore.messages(session_id)` 从本地 session JSON 的 `history` 派生可重放消息。
+- 只保留 `user` / `assistant` 两类消息，跳过 `tool` 等内部执行记录；工具轨迹仍由 Runs/worklog timeline 承载。
+- 新增 REST：`GET /api/v1/coding/session/{session_id}/messages`。
+- messages API 会校验持久化 `workspace_root` 必须在配置的 coding workspace 内，和 resume 的边界一致。
+- 前端新增 `fetchCodingSessionMessages()`。
+- `selectSession()` 在 resume 后拉取历史消息并写回中间聊天区，然后再刷新 workspace、run history、session history 并重连 WebSocket。
+- 如果历史消息读取失败，前端退回空消息列表，但不阻断 session resume，避免单个损坏历史文件拖垮整个工作台。
+
 ## 测试覆盖
 
 `tests/core/coding/test_context_compact.py` 新增：
@@ -204,6 +216,13 @@ Session history 新增：
 - `frontend/src/api/coding.test.ts`：session history / resume API client。
 - `frontend/src/stores/coding.test.ts`：session list 加载和 select session 状态切换。
 - `frontend/src/components/CodingSidebar.test.ts`：Sessions 区块渲染、active 状态和点击切换。
+
+Session replay 新增：
+
+- `tests/core/coding/test_session_store.py`：session history 到可重放聊天消息的归一化，覆盖跳过 `tool` 角色。
+- `tests/api/test_coding_routes.py`：messages API 返回持久化 user/assistant 历史。
+- `frontend/src/api/coding.test.ts`：messages API client。
+- `frontend/src/stores/coding.test.ts`：选择历史 session 后，中间聊天区重放历史消息而不是清空。
 
 ## 已验证
 
