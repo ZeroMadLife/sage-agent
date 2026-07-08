@@ -50,3 +50,36 @@ it('renders diff preview when provided', () => {
   expect(wrapper.find('.diff-remove').exists()).toBe(true)
   expect(wrapper.find('.diff-add').exists()).toBe(true)
 })
+
+it('opens a full diff modal for approval review', async () => {
+  const wrapper = mount(CodingApprovalCard, {
+    props: {
+      approval: {
+        approval_id: 'appr_1',
+        session_id: 'c1',
+        tool: 'write_file',
+        args: { path: 'src/main.py' },
+        description: 'write_file requires approval.',
+        pattern_key: 'tool:write_file',
+        diff_preview: [
+          { type: 'remove', text: 'print("old")' },
+          { type: 'add', text: 'print("new")' },
+        ],
+      },
+    },
+  })
+
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+
+  await wrapper.find('button.view-diff').trigger('click')
+
+  const dialog = wrapper.find('[role="dialog"]')
+  expect(dialog.exists()).toBe(true)
+  expect(dialog.text()).toContain('src/main.py')
+  expect(dialog.text()).toContain('print("old")')
+  expect(dialog.text()).toContain('print("new")')
+
+  await wrapper.find('button.close-diff').trigger('click')
+
+  expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+})

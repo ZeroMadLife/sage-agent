@@ -164,7 +164,8 @@ Approval UX 新增：
 - `write_file` / `patch_file` approval 增加 diff preview：
   - `patch_file` 直接用 `old_text` / `new_text` 生成预览。
   - `write_file` 先读取当前文件内容，再和待写入 content 生成预览；新文件或读取失败时按空文件处理。
-- `frontend/src/components/CodingApprovalCard.test.ts` 覆盖四种 choice 和 diff 行高亮。
+- diff preview 支持打开完整 diff modal，用于在 Allow/Deny 前审阅完整改动，避免把高风险写入压缩在底部小卡片里。
+- `frontend/src/components/CodingApprovalCard.test.ts` 覆盖四种 choice、diff 行高亮和完整 diff modal。
 - `frontend/src/stores/coding.test.ts` 覆盖 write approval diff preview 生成。
 
 Run history 新增：
@@ -236,6 +237,13 @@ cd frontend && npm run test -- --run src/api/coding.test.ts src/components/Codin
 ```
 
 结果：后端 approval UX 定向 `22 passed`；前端 approval UX 定向 `3 files / 20 tests passed`
+
+```bash
+cd frontend && npm run test -- --run src/components/CodingApprovalCard.test.ts
+cd frontend && npm run build
+```
+
+结果：approval diff modal 定向 `1 file / 3 tests passed`；前端 build 通过。
 
 ```bash
 pytest tests/core/coding/test_run_store.py tests/api/test_coding_routes.py -q
