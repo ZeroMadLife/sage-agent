@@ -4,11 +4,12 @@ from pathlib import Path
 
 from core.coding.permissions import PermissionChecker
 from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import build_tool_registry
 from core.coding.workspace import WorkspaceContext
 
 
-def _tools(tmp_path: Path):
+def _tools(tmp_path: Path) -> tuple[WorkspaceContext, dict[str, RegisteredTool]]:
     workspace = WorkspaceContext(root=tmp_path)
     return workspace, build_tool_registry(workspace)
 
@@ -33,6 +34,25 @@ def test_permission_denies_risky_tools_when_policy_is_never(tmp_path: Path) -> N
 
     assert decision.allowed is False
     assert decision.security_event_type == "approval_denied"
+
+
+def test_permission_respects_tool_approval_metadata_in_ask_mode(tmp_path: Path) -> None:
+    """Risky tools can opt out of approval when metadata marks them as governed elsewhere."""
+    workspace = WorkspaceContext(root=tmp_path)
+    tool = RegisteredTool(
+        name="safe_risky_tool",
+        schema={},
+        description="Risky implementation, but pre-governed by a stricter policy layer.",
+        risky=True,
+        requires_approval=False,
+        runner=lambda _args: ToolResult(content="ok"),
+    )
+    checker = PermissionChecker(approval_policy="ask")
+
+    decision = checker.check(tool, {}, workspace)
+
+    assert decision.allowed is True
+    assert decision.reason == "approval_not_required"
 
 
 def test_permission_enforces_plan_mode_read_only_guard(tmp_path: Path) -> None:

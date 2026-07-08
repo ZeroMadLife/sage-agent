@@ -73,6 +73,8 @@ class PermissionChecker:
 
         if tool.read_only:
             return PermissionDecision.allow("read_only")
+        if tool.requires_approval is False:
+            return PermissionDecision.allow("approval_not_required")
         if self.read_only:
             return PermissionDecision.deny("approval_denied", "read_only_block")
         if self.approval_policy == "auto":

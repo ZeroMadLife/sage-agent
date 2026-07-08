@@ -54,6 +54,7 @@ Sage v3 开始向 Hermes / Hermes Web UI 的设计演进。本阶段先做三块
 - `category`：`file` / `shell` / `todo` / `plan` / `agent`
 - `requires_approval`：默认跟随 `risky`
 - `timeout`：同步 runner 的通用超时保护，避免非 shell 工具长期卡住执行链路
+- `PermissionChecker` 在 ask 模式下尊重 `requires_approval=False`，让工具可以显式声明“实现有写入/副作用风险，但已由更细的策略层治理，不需要再进入用户审批队列”。
 
 ### Approval MVP
 
@@ -137,6 +138,10 @@ Composer / Skills：
 - 装饰器注册暴露 `ToolDefinition` 和 schema model。
 - `category` / `requires_approval` 元数据正确。
 - 同步 runner 有通用 timeout 保护。
+
+`tests/core/coding/test_permissions.py` 新增：
+
+- ask 模式下 `PermissionChecker` 尊重工具级 `requires_approval=False` 元数据。
 
 Approval 相关新增：
 
@@ -261,6 +266,14 @@ cd frontend && npm run build
 ```
 
 结果：后端 run timeline 定向 `4 passed`；前端 `3 files / 22 tests passed`；ruff/mypy/build 通过。
+
+```bash
+pytest tests/core/coding/test_permissions.py tests/core/coding/test_approval.py tests/core/coding/test_engine.py tests/api/test_coding_routes.py -q
+ruff check core/coding/permissions.py tests/core/coding/test_permissions.py
+mypy core/coding/permissions.py tests/core/coding/test_permissions.py
+```
+
+结果：tool permission metadata 定向 `34 passed`；ruff/mypy 通过。
 
 ## 后续方向
 
