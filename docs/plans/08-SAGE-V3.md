@@ -1,7 +1,7 @@
 # Sage v3 落地记录
 
 > 日期：2026-07-08
-> 当前阶段：方向一完成；方向三完成；方向二完成；方向四完成；v3.x stop/cancel run 完成；v3.x approval UX 完成；v3.x run history 完成；v3.x session replay 完成
+> 当前阶段：方向一完成；方向三完成；方向二完成；方向四完成；v3.x stop/cancel run 完成；v3.x approval UX 完成；v3.x run history 完成；v3.x session replay 完成；v3.x session lifecycle 完成
 > 参考：`docs/superpowers/prompts/2026-07-08-codex-goal-sage-v3.md`
 
 ## 目标
@@ -150,6 +150,16 @@ Composer / Skills：
 - `selectSession()` 在 resume 后拉取历史消息并写回中间聊天区，然后再刷新 workspace、run history、session history 并重连 WebSocket。
 - 如果历史消息读取失败，前端退回空消息列表，但不阻断 session resume，避免单个损坏历史文件拖垮整个工作台。
 
+### Session Lifecycle Control
+
+让 Sessions 区从“只读历史列表”变成真正的工作台入口：
+
+- 前端 store 新增 `startNewSession()`，复用已有 `POST /api/v1/coding/session` 创建新的 ask-mode coding session。
+- 新 session 会清空中间聊天区、当前 run list、selected run、pending approval 和错误状态。
+- 新 session 创建后会刷新 git badge、文件树、session list、run list，并重新建立 WebSocket。
+- `CodingSidebar.vue` 的 Sessions 标题右侧新增 Plus 图标按钮，用于随时开一个干净的新任务。
+- 这个能力补齐了 Hermes Web UI 常见的 session 生命周期闭环：新建、切换、恢复、继续对话。
+
 ## 测试覆盖
 
 `tests/core/coding/test_context_compact.py` 新增：
@@ -223,6 +233,11 @@ Session replay 新增：
 - `tests/api/test_coding_routes.py`：messages API 返回持久化 user/assistant 历史。
 - `frontend/src/api/coding.test.ts`：messages API client。
 - `frontend/src/stores/coding.test.ts`：选择历史 session 后，中间聊天区重放历史消息而不是清空。
+
+Session lifecycle 新增：
+
+- `frontend/src/stores/coding.test.ts`：`startNewSession()` 会创建干净 session、清空旧消息/run 状态并重连 WebSocket。
+- `frontend/src/components/CodingSidebar.test.ts`：Sessions 区的新建按钮会触发 `startNewSession()`。
 
 ## 已验证
 

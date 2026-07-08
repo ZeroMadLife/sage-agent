@@ -52,6 +52,16 @@ it('selects a persisted coding session from the sidebar', async () => {
   expect(store.selectSession).toHaveBeenCalledWith('s2')
 })
 
+it('starts a new coding session from the sidebar', async () => {
+  const store = useCodingStore()
+  store.startNewSession = vi.fn()
+  const wrapper = mount(CodingSidebar)
+
+  await wrapper.find('[data-testid="new-coding-session"]').trigger('click')
+
+  expect(store.startNewSession).toHaveBeenCalled()
+})
+
 it('renders run detail as a readable worklog timeline', () => {
   const store = useCodingStore()
   store.runs = [

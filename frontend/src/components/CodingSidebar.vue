@@ -6,6 +6,7 @@ import {
   Clock3,
   FileCode,
   MessagesSquare,
+  Plus,
   Search,
   Server,
   XCircle,
@@ -63,7 +64,17 @@ function runIcon(status: string) {
 <template>
   <aside class="sidebar">
     <section class="sidebar-section">
-      <h3><MessagesSquare :size="13" /> Sessions</h3>
+      <div class="section-heading">
+        <h3><MessagesSquare :size="13" /> Sessions</h3>
+        <button
+          class="icon-action"
+          data-testid="new-coding-session"
+          title="New session"
+          @click="store.startNewSession()"
+        >
+          <Plus :size="13" />
+        </button>
+      </div>
       <div v-if="store.codingSessions.length === 0" class="empty">暂无 session</div>
       <button
         v-for="session in store.codingSessions"
@@ -203,16 +214,45 @@ function runIcon(status: string) {
   border-bottom: 1px solid #f0f1f3;
 }
 
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
 .sidebar-section h3 {
   display: flex;
   align-items: center;
   gap: 5px;
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
   color: #6b7280;
   letter-spacing: 0.04em;
+}
+
+.sidebar-section > h3 {
+  margin-bottom: 8px;
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #374151;
+  background: #ffffff;
+  cursor: pointer;
+}
+
+.icon-action:hover {
+  background: #f3f4f6;
 }
 
 .empty {

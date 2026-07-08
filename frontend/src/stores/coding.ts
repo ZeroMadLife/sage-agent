@@ -369,6 +369,24 @@ export const useCodingStore = defineStore('coding', () => {
     connectSocket()
   }
 
+  async function startNewSession() {
+    stopApprovalPolling()
+    socket?.close()
+    socket = null
+    const session = await startCodingSession()
+    sessionId.value = session.session_id
+    workspaceRoot.value = session.workspace_root
+    messages.value = []
+    isThinking.value = false
+    errorMessage.value = ''
+    pendingApproval.value = null
+    runs.value = []
+    selectedRun.value = null
+    dirCache.clear()
+    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns()])
+    connectSocket()
+  }
+
   async function loadSessionMessages(targetSessionId: string): Promise<ChatMessage[]> {
     try {
       const res = await fetchCodingSessionMessages(targetSessionId)
@@ -486,6 +504,7 @@ export const useCodingStore = defineStore('coding', () => {
     respondApproval,
     stopCurrentRun,
     selectSession,
+    startNewSession,
     loadSkills,
     loadMcpServers,
     loadModels,

@@ -353,6 +353,57 @@ describe('coding store', () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
   })
 
+  it('starts a new coding session from the workbench', async () => {
+    const socketInstances: Array<{ close: ReturnType<typeof vi.fn> }> = []
+    class FakeSocket {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      close = vi.fn()
+
+      constructor(_url: string) {
+        socketInstances.push(this)
+      }
+    }
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ session_id: 's-new', workspace_root: '/tmp/repo' }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ runs: [], sessions: [] }),
+      })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+    store.sessionId = 's-old'
+    store.workspaceRoot = '/tmp/repo'
+    store.messages = [{ role: 'assistant', content: 'old answer' }]
+    store.runs = [
+      {
+        run_id: 'run_old',
+        status: 'completed',
+        event_count: 1,
+        tool_count: 0,
+        error_count: 0,
+        last_event_type: 'final',
+        started_at: '',
+        updated_at: '',
+      },
+    ]
+    store.selectedRun = { run_id: 'run_old', events: [], timeline: [] }
+
+    await store.startNewSession()
+
+    expect(store.sessionId).toBe('s-new')
+    expect(store.workspaceRoot).toBe('/tmp/repo')
+    expect(store.messages).toEqual([])
+    expect(store.runs).toEqual([])
+    expect(store.selectedRun).toBeNull()
+    expect(socketInstances).toHaveLength(1)
+  })
+
   it('refreshes run history when a run finishes', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
