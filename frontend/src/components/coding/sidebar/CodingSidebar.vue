@@ -104,27 +104,6 @@ function runIcon(status: string) {
   if (status === 'error' || status === 'cancelled') return XCircle
   return Clock3
 }
-
-// Manual plan-mode entry.
-const showPlanInput = ref(false)
-const planTopicInput = ref('')
-
-function togglePlanInput() {
-  showPlanInput.value = !showPlanInput.value
-  if (!showPlanInput.value) planTopicInput.value = ''
-}
-
-function confirmPlan() {
-  if (!planTopicInput.value.trim()) return
-  void store.enterPlanMode(planTopicInput.value.trim())
-  planTopicInput.value = ''
-  showPlanInput.value = false
-}
-
-function cancelPlanInput() {
-  showPlanInput.value = false
-  planTopicInput.value = ''
-}
 </script>
 
 <template>
@@ -177,37 +156,6 @@ function cancelPlanInput() {
         >
           显示全部 ({{ filteredSessions.length }})
         </button>
-      </div>
-    </section>
-
-    <section class="sidebar-section plan-mode-section">
-      <div class="plan-mode-controls">
-        <button
-          v-if="store.runtimeMode !== 'plan'"
-          class="plan-btn"
-          data-testid="enter-plan-mode"
-          @click="togglePlanInput"
-        >
-          进入计划模式
-        </button>
-        <span v-else class="plan-active">已在计划模式</span>
-      </div>
-      <div v-if="showPlanInput" class="plan-input-row">
-        <input
-          v-model="planTopicInput"
-          class="plan-topic-input"
-          placeholder="计划主题..."
-          data-testid="plan-topic-input"
-          @keydown.enter="confirmPlan"
-        />
-        <button
-          class="plan-confirm-btn"
-          data-testid="plan-confirm"
-          @click="confirmPlan"
-        >
-          确认
-        </button>
-        <button class="plan-cancel-btn" @click="cancelPlanInput">取消</button>
       </div>
     </section>
 
@@ -762,88 +710,5 @@ function cancelPlanInput() {
 .mcp-transport {
   font-size: 10px;
   color: #9ca3af;
-}
-
-.plan-mode-section {
-  padding-top: 8px;
-  padding-bottom: 10px;
-}
-
-.plan-mode-controls {
-  display: flex;
-  align-items: center;
-}
-
-.plan-btn {
-  width: 100%;
-  padding: 5px 8px;
-  border: 1px solid #2563eb;
-  border-radius: 6px;
-  background: #eff6ff;
-  color: #1e40af;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.plan-btn:hover {
-  background: #dbeafe;
-}
-
-.plan-active {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
-  border-radius: 4px;
-  background: #d1fae5;
-  color: #065f46;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.plan-input-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.plan-topic-input {
-  flex: 1;
-  min-width: 0;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 12px;
-  outline: 0;
-}
-
-.plan-topic-input:focus {
-  border-color: #2563eb;
-}
-
-.plan-confirm-btn,
-.plan-cancel-btn {
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: #fff;
-  padding: 4px 8px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.plan-confirm-btn {
-  border-color: #2563eb;
-  color: #1e40af;
-  font-weight: 600;
-}
-
-.plan-confirm-btn:hover {
-  background: #eff6ff;
-}
-
-.plan-cancel-btn:hover {
-  background: #f3f4f6;
 }
 </style>

@@ -45,6 +45,7 @@ class CodingRuntime:
         approval_policy: ApprovalPolicy = "auto",
         session_state: dict[str, Any] | None = None,
         save_on_init: bool = True,
+        permission_mode: str = "default",
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -85,6 +86,7 @@ class CodingRuntime:
         self.worker_manager = WorkerManager(self.workspace, self.model_factory)
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
+        self.permission_mode = str(self.session.get("permission_mode", permission_mode))
         self.approval_manager = ApprovalManager()
         self.plan_review_manager = PlanReviewManager()
         self.stop_requested = False
@@ -231,6 +233,12 @@ class CodingRuntime:
         """Replace the active model client."""
         self.model = model_factory()
         self.model_spec = model_spec
+
+    def set_permission_mode(self, mode: str) -> None:
+        """Switch the active permission mode at runtime."""
+        self.permission_mode = mode
+        self.permission_checker = self._permission_checker()
+        self._save_session()
 
     def enter_plan_mode(self, topic: str, path: str | None = None) -> str:
         """Switch to plan mode."""
@@ -388,6 +396,7 @@ class CodingRuntime:
 
     def _permission_checker(self) -> PermissionChecker:
         return PermissionChecker(
+            permission_mode=self.permission_mode,
             approval_policy=self.approval_policy,
             plan_mode=self.runtime_mode == "plan",
         )
@@ -409,6 +418,7 @@ class CodingRuntime:
         self.session["todos"] = self.todo_ledger.to_dict()
         self.session["runtime_mode"] = self.plan_mode.to_dict()
         self.session["activated_tools"] = sorted(self.activated_tools)
+        self.session["permission_mode"] = self.permission_mode
 
     def _save_session(self) -> None:
         self._sync_session_state()

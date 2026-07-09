@@ -13,6 +13,7 @@ import type {
   CodingSessionsResponse,
   CodingSkillDetailResponse,
   CodingSkillsResponse,
+  PermissionMode,
 } from '../types/api'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
@@ -120,6 +121,17 @@ export async function switchCodingModel(
   if (!response.ok) throw new Error(`switch model failed: ${response.status}`)
 }
 
+export async function switchPermissionMode(
+  sessionId: string,
+  mode: PermissionMode,
+): Promise<void> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/${sessionId}/permission-mode`, API_BASE_URL),
+    { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) },
+  )
+  if (!response.ok) throw new Error(`switch permission mode failed: ${response.status}`)
+}
+
 export async function fetchCodingSkills(): Promise<CodingSkillsResponse> {
   const response = await fetch(new URL('/api/v1/coding/skills', API_BASE_URL))
   if (!response.ok) throw new Error(`fetch skills failed: ${response.status}`)
@@ -193,22 +205,6 @@ export async function rejectCodingPlan(sessionId: string): Promise<void> {
     { method: 'POST' },
   )
   if (!response.ok) throw new Error(`reject plan failed: ${response.status}`)
-}
-
-export async function enterCodingPlan(
-  sessionId: string,
-  topic: string,
-): Promise<{ status: string; mode: string; plan_path: string; topic: string }> {
-  const response = await fetch(
-    new URL(`/api/v1/coding/${sessionId}/plan/enter`, API_BASE_URL),
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic }),
-    },
-  )
-  if (!response.ok) throw new Error(`enter plan failed: ${response.status}`)
-  return await response.json()
 }
 
 export async function fetchCodingRuns(sessionId: string): Promise<CodingRunsResponse> {

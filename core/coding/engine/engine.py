@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
@@ -93,6 +94,10 @@ class Engine:
         tool_steps = 0
         attempts = 0
 
+        last_tool_signature: tuple[str, str] = ("", "")
+        repeat_count = 0
+        MAX_REPEAT = 3
+
         while tool_steps < self.max_steps and attempts < self.max_steps + 2:
             if self.should_stop():
                 yield self._cancelled_event()
@@ -142,6 +147,25 @@ class Engine:
             if kind in {"tool", "tools"}:
                 tool_payloads = [payload] if kind == "tool" else list(payload)
                 for tool_payload in tool_payloads:
+                    # Detect repeated identical tool calls to prevent infinite loops
+                    sig = (
+                        str(tool_payload.get("name", "")),
+                        json.dumps(tool_payload.get("args", {}), sort_keys=True),
+                    )
+                    if sig == last_tool_signature:
+                        repeat_count += 1
+                    else:
+                        repeat_count = 0
+                        last_tool_signature = sig
+                    if repeat_count >= MAX_REPEAT:
+                        notice = (
+                            f"检测到工具 {sig[0]} 连续重复调用 {MAX_REPEAT} 次,已停止以避免无限循环。"
+                        )
+                        self.history.append(
+                            {"role": "assistant", "content": notice, "created_at": now()}
+                        )
+                        yield event_to_dict(FinalEvent(run_id=self.run_id, content=notice))
+                        return
                     if tool_steps >= self.max_steps:
                         break
                     if self.should_stop():

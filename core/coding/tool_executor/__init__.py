@@ -10,6 +10,7 @@ from core.coding.tool_executor.permissions import (
     ApprovalPolicy,
     PermissionChecker,
     PermissionDecision,
+    PermissionMode,
 )
 from core.coding.tool_executor.policy import ToolPolicyChecker, ToolPolicyDecision
 
@@ -20,6 +21,7 @@ __all__ = [
     "ApprovalPolicy",
     "PermissionChecker",
     "PermissionDecision",
+    "PermissionMode",
     "ToolExecutor",
     "ToolPolicyChecker",
     "ToolPolicyDecision",

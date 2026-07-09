@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CodingApprovalCard,
   CodingComposer,
@@ -36,6 +36,25 @@ function scrollToBottom() {
     }
   })
 }
+
+const isAtBottom = ref(true)
+
+function handleScroll() {
+  if (!messagesRef.value) return
+  const { scrollTop, scrollHeight, clientHeight } = messagesRef.value
+  isAtBottom.value = scrollHeight - scrollTop - clientHeight < 80
+}
+
+function autoScroll() {
+  if (isAtBottom.value) {
+    scrollToBottom()
+  }
+}
+
+watch(
+  () => store.messages.map(m => m.content + (m.tools ? m.tools.length : 0)).join(''),
+  () => autoScroll(),
+)
 
 function onUseSkill(command: string) {
   composerRef.value?.setInput(command)
@@ -80,7 +99,7 @@ onBeforeUnmount(() => {
       </div>
 
       <main class="pane-center">
-        <section ref="messagesRef" class="message-area">
+        <section ref="messagesRef" class="message-area" @scroll="handleScroll">
           <div v-if="store.messages.length === 0" class="empty-state">
             <p>Sage 已就绪。输入任务或 /review 调用 skill。</p>
           </div>

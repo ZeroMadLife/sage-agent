@@ -33,6 +33,7 @@ from api.schemas import (
     CodingSkillsResponse,
     CodingSkillSummary,
     ErrorEvent,
+    PermissionModeSwitchRequest,
     UserMessage,
 )
 from core.coding.persistence import CodingSessionStore
@@ -64,6 +65,7 @@ async def create_coding_session(
         model_factory=model_factory,
         approval_policy=payload.approval_policy,
         save_on_init=False,
+        permission_mode="default",
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -299,19 +301,6 @@ async def stop_coding_run(session_id: str, request: Request) -> dict[str, bool]:
     return {"ok": True}
 
 
-@router.post("/api/v1/coding/{session_id}/plan/enter")
-async def enter_plan_mode_route(session_id: str, payload: dict, request: Request) -> dict[str, str]:
-    """Manually enter plan mode with a given topic."""
-    runtime = _require_runtime(request, session_id)
-    if runtime.runtime_mode == "plan":
-        raise HTTPException(status_code=400, detail="already in plan mode")
-    topic = str(payload.get("topic", "")).strip()
-    if not topic:
-        raise HTTPException(status_code=400, detail="topic is required")
-    plan_path = runtime.enter_plan_mode(topic)
-    return {"status": "entered", "mode": runtime.runtime_mode, "plan_path": plan_path, "topic": topic}
-
-
 @router.post("/api/v1/coding/{session_id}/plan/approve")
 async def approve_plan(session_id: str, request: Request) -> dict[str, str]:
     """Approve the pending plan review and exit plan mode."""
@@ -389,6 +378,16 @@ async def switch_coding_model(
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "model_id": payload.model_id}
+
+
+@router.patch("/api/v1/coding/{session_id}/permission-mode")
+async def switch_permission_mode(
+    session_id: str, payload: PermissionModeSwitchRequest, request: Request
+) -> dict:
+    """Switch the active permission mode at runtime."""
+    runtime = _require_runtime(request, session_id)
+    runtime.set_permission_mode(payload.mode)
+    return {"ok": True, "mode": payload.mode}
 
 
 @router.get("/api/v1/coding/skills", response_model=CodingSkillsResponse)

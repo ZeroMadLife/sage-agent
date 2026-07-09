@@ -4,6 +4,8 @@ export type ProgressEvent = {
   message: string
 }
 
+export type PermissionMode = 'default' | 'accept_edits' | 'auto' | 'plan'
+
 export type ToolCallEvent = {
   type: 'tool_call'
   tool: string

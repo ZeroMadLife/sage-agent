@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   approveCodingPlan,
   buildCodingStreamUrl,
-  enterCodingPlan,
   fetchCodingApprovalPending,
   fetchCodingRun,
   fetchCodingRuns,
@@ -110,37 +109,6 @@ describe('coding API client', () => {
     const calledUrl = fetchMock.mock.calls[0][0] as URL
     expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/reject')
     expect(fetchMock.mock.calls[0][1]).toEqual({ method: 'POST' })
-  })
-
-  it('enters plan mode via REST', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: 'entered',
-        mode: 'plan',
-        plan_path: '.coding/plans/test-plan.md',
-        topic: '重构认证模块',
-      }),
-    })
-    vi.stubGlobal('fetch', fetchMock)
-
-    const result = await enterCodingPlan('c1', '重构认证模块')
-
-    const calledUrl = fetchMock.mock.calls[0][0] as URL
-    expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/enter')
-    expect(fetchMock.mock.calls[0][1]).toEqual({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ topic: '重构认证模块' }),
-    })
-    expect(result.mode).toBe('plan')
-  })
-
-  it('throws when entering plan mode fails', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 400 })
-    vi.stubGlobal('fetch', fetchMock)
-
-    await expect(enterCodingPlan('c1', 'test')).rejects.toThrow('enter plan failed: 400')
   })
 
   it('throws when plan approval fails', async () => {

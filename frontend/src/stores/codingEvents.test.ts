@@ -243,6 +243,29 @@ describe('codingEvents', () => {
     expect(current.messages.value[0].isThinking).toBe(false)
   })
 
+  it('tool_call clears accumulated streaming text', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, { type: 'text_delta', delta: '我来读取文件' })
+    applyCodingEvent(current, { type: 'text_delta', delta: '的内容' })
+
+    expect(current.messages.value).toHaveLength(1)
+    expect(current.messages.value[0].content).toBe('我来读取文件的内容')
+
+    applyCodingEvent(current, {
+      type: 'tool_call',
+      tool: 'read_file',
+      args: { path: 'README.md' },
+    })
+
+    expect(current.messages.value).toHaveLength(1)
+    expect(current.messages.value[0].content).toBe('')
+    expect(current.messages.value[0].tools).toHaveLength(1)
+    expect(current.messages.value[0].tools![0].tool).toBe('read_file')
+    expect(current.messages.value[0].tools![0].status).toBe('running')
+  })
+
   it('enters plan mode on runtime_mode_changed', () => {
     const current = state()
 

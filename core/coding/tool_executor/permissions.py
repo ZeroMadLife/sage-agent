@@ -10,7 +10,13 @@ from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool
 
 ApprovalPolicy = Literal["auto", "ask", "never"]
+PermissionMode = Literal["default", "accept_edits", "auto", "plan"]
 ApprovalCallback = Callable[[str, dict[str, Any]], bool]
+
+# Sentinel for "no explicit permission mode set": fall back to the legacy
+# ``approval_policy`` behavior so existing callers stay backward compatible.
+# The runtime always passes an explicit mode, opting into the new semantics.
+_PERMISSION_MODE_INHERIT = "_inherit_policy"
 
 
 @dataclass(frozen=True)
@@ -44,12 +50,14 @@ class PermissionChecker:
         plan_mode: bool = False,
         read_only: bool = False,
         approval_callback: ApprovalCallback | None = None,
+        permission_mode: str = _PERMISSION_MODE_INHERIT,
     ) -> None:
         self.approval_policy = approval_policy
         self.write_scope = tuple(write_scope or ())
         self.plan_mode = plan_mode
         self.read_only = read_only
         self.approval_callback = approval_callback
+        self.permission_mode = permission_mode
 
     def check(
         self,
@@ -58,7 +66,8 @@ class PermissionChecker:
         workspace: WorkspaceContext,
     ) -> PermissionDecision:
         """Return whether the tool call is permitted."""
-        if self.plan_mode:
+        # Plan mode: only read-only tools
+        if self.permission_mode == "plan" or self.plan_mode:
             if tool.read_only:
                 return PermissionDecision.allow("plan_read_only")
             return PermissionDecision.deny(
@@ -77,12 +86,27 @@ class PermissionChecker:
             return PermissionDecision.allow("approval_not_required")
         if self.read_only:
             return PermissionDecision.deny("approval_denied", "read_only_block")
-        if self.approval_policy == "auto":
-            return PermissionDecision.allow("approval_auto")
+        # ``never`` is an explicit hard security deny and overrides any
+        # auto-approving permission mode for backward compatibility.
         if self.approval_policy == "never":
             return PermissionDecision.deny("approval_denied", "approval_denied")
-        if self.approval_callback is not None and self.approval_callback(tool.name, args):
-            return PermissionDecision.allow("approval_prompt")
+
+        # Mode-specific decisions for risky tools (write_file, patch_file, run_shell).
+        # Only applied when an explicit permission mode was set; otherwise the
+        # legacy ``approval_policy`` controls the decision via the fallback below.
+        if self.permission_mode == "auto":
+            return PermissionDecision.allow("approval_auto")
+        if self.permission_mode == "accept_edits":
+            if tool.name in {"write_file", "patch_file"}:
+                return PermissionDecision.allow("accept_edits_auto")
+            if self.approval_callback is None:
+                return PermissionDecision.allow("approval_required")
+        if self.permission_mode == "default":
+            if self.approval_callback is None:
+                return PermissionDecision.allow("approval_required")
+        # Fallback: old approval_policy for backward compat
+        if self.approval_policy == "auto":
+            return PermissionDecision.allow("approval_auto")
         if self.approval_callback is None:
             return PermissionDecision.allow("approval_required")
         return PermissionDecision.deny("approval_denied", "approval_denied")

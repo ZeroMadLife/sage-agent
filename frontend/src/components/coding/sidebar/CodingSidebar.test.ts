@@ -135,53 +135,6 @@ it('starts a new coding session from the sidebar', async () => {
   expect(store.startNewSession).toHaveBeenCalled()
 })
 
-it('reveals the plan topic input when the enter-plan-mode button is clicked', async () => {
-  useCodingStore()
-  const wrapper = mount(CodingSidebar)
-
-  // Input hidden until the button is clicked.
-  expect(wrapper.find('[data-testid="plan-topic-input"]').exists()).toBe(false)
-
-  await wrapper.find('[data-testid="enter-plan-mode"]').trigger('click')
-
-  expect(wrapper.find('[data-testid="plan-topic-input"]').exists()).toBe(true)
-})
-
-it('calls enterPlanMode with the trimmed topic when confirmed', async () => {
-  const store = useCodingStore()
-  store.enterPlanMode = vi.fn()
-  const wrapper = mount(CodingSidebar)
-
-  await wrapper.find('[data-testid="enter-plan-mode"]').trigger('click')
-  await wrapper.find('[data-testid="plan-topic-input"]').setValue('  重构认证模块  ')
-  await wrapper.find('[data-testid="plan-confirm"]').trigger('click')
-
-  expect(store.enterPlanMode).toHaveBeenCalledWith('重构认证模块')
-  // Input collapses and resets after confirmation.
-  expect(wrapper.find('[data-testid="plan-topic-input"]').exists()).toBe(false)
-})
-
-it('does not call enterPlanMode when the topic is empty', async () => {
-  const store = useCodingStore()
-  store.enterPlanMode = vi.fn()
-  const wrapper = mount(CodingSidebar)
-
-  await wrapper.find('[data-testid="enter-plan-mode"]').trigger('click')
-  await wrapper.find('[data-testid="plan-confirm"]').trigger('click')
-
-  expect(store.enterPlanMode).not.toHaveBeenCalled()
-})
-
-it('hides the enter-plan-mode button when already in plan mode', () => {
-  const store = useCodingStore()
-  store.runtimeMode = 'plan'
-
-  const wrapper = mount(CodingSidebar)
-
-  expect(wrapper.find('[data-testid="enter-plan-mode"]').exists()).toBe(false)
-  expect(wrapper.text()).toContain('已在计划模式')
-})
-
 it('renders run detail as a readable worklog timeline', async () => {
   const store = useCodingStore()
   store.runs = [

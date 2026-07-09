@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tests.core.coding.scripted_api_client import ScriptedApiClient
+
 from core.coding.context import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager, WorkspaceContext
 from core.coding.engine import Engine
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
@@ -222,8 +224,6 @@ def test_build_ainvoke_messages_falls_back_to_single_user_message() -> None:
 
 async def test_engine_streams_text_delta(tmp_path: Path) -> None:
     """run_turn yields text_delta events whose deltas reassemble the response."""
-    from tests.core.coding.scripted_api_client import ScriptedApiClient
-
     final_text = "README says Sage."
     full_response = f"<final>{final_text}</final>"
     workspace = WorkspaceContext(root=tmp_path)
@@ -284,3 +284,35 @@ async def test_engine_ainvoke_fallback_emits_no_text_delta(tmp_path: Path) -> No
 
     assert not any(event["type"] == "text_delta" for event in events)
     assert events[-1]["type"] == "final"
+
+
+async def test_engine_detects_repeated_tool_calls(tmp_path: Path) -> None:
+    """Engine stops with a final event when a tool call repeats identically too often."""
+    (tmp_path / "README.md").write_text("TourSwarm\n", encoding="utf-8")
+    workspace = WorkspaceContext(root=tmp_path)
+    tools = build_tool_registry(workspace)
+    # The model keeps returning the exact same read_file tool call forever.
+    repeated_call = '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'
+    model = ScriptedApiClient([repeated_call] * 8)
+    engine = Engine(
+        model=model,
+        workspace=workspace,
+        tools=tools,
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        max_steps=50,
+    )
+
+    events = [event async for event in engine.run_turn("循环读文件")]
+
+    # The loop guard terminates with a final event, never reaching the step limit.
+    assert events[-1]["type"] == "final"
+    assert events[-1]["type"] != "step_limit"
+    assert "重复调用" in events[-1]["content"]
+    assert "read_file" in events[-1]["content"]
+
+    # The identical tool was allowed to run three times (repeat_count 0,1,2) before
+    # the fourth repetition tripped the guard and emitted the final event.
+    tool_results = [event for event in events if event["type"] == "tool_result"]
+    assert len(tool_results) == 3

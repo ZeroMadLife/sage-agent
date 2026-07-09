@@ -108,6 +108,10 @@ export function applyCodingEvent(
     return {}
   }
   if (event.type === 'tool_call') {
+    const last = state.messages.value[state.messages.value.length - 1]
+    if (last && last.isThinking && last.content) {
+      last.content = ''
+    }
     appendToolActivity(state.messages.value, event)
     return {}
   }

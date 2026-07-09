@@ -3,7 +3,6 @@ import { computed, ref } from 'vue'
 import {
   approveCodingPlan,
   buildCodingStreamUrl,
-  enterCodingPlan,
   fetchCodingFile,
   fetchCodingFiles,
   fetchCodingApprovalPending,
@@ -21,6 +20,7 @@ import {
   startCodingSession,
   stopCodingRun,
   switchCodingModel,
+  switchPermissionMode,
 } from '../api/coding'
 import type {
   CodingApproval,
@@ -36,6 +36,7 @@ import type {
   CodingSessionSummary,
   CodingSkillSummary,
   CodingToolResultEvent,
+  PermissionMode,
 } from '../types/api'
 import { applyCodingEvent } from './codingEvents'
 import type { ChatMessage, PlanReviewState } from './codingEvents'
@@ -76,6 +77,7 @@ export const useCodingStore = defineStore('coding', () => {
   const pendingApproval = ref<CodingApproval | null>(null)
   const thinkingPhase = ref('')
   const runtimeMode = ref('default')
+  const permissionMode = ref<PermissionMode>('default')
   const planTopic = ref('')
   const planPath = ref('')
   const planReview = ref<PlanReviewState | null>(null)
@@ -295,13 +297,11 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
-  async function enterPlanMode(topic: string) {
+  async function changePermissionMode(mode: PermissionMode) {
     if (!sessionId.value) return
     try {
-      const result = await enterCodingPlan(sessionId.value, topic)
-      runtimeMode.value = result.mode
-      planTopic.value = result.topic
-      planPath.value = result.plan_path
+      await switchPermissionMode(sessionId.value, mode)
+      permissionMode.value = mode
     } catch (e) {
       errorMessage.value = String(e)
     }
@@ -370,6 +370,7 @@ export const useCodingStore = defineStore('coding', () => {
     thinkingPhase.value = ''
     planReview.value = null
     runtimeMode.value = 'default'
+    permissionMode.value = 'default'
     planTopic.value = ''
     planPath.value = ''
     runs.value = []
@@ -393,6 +394,7 @@ export const useCodingStore = defineStore('coding', () => {
     thinkingPhase.value = ''
     planReview.value = null
     runtimeMode.value = 'default'
+    permissionMode.value = 'default'
     planTopic.value = ''
     planPath.value = ''
     runs.value = []
@@ -503,6 +505,7 @@ export const useCodingStore = defineStore('coding', () => {
     pendingApproval,
     thinkingPhase,
     runtimeMode,
+    permissionMode,
     planTopic,
     planPath,
     planReview,
@@ -526,7 +529,7 @@ export const useCodingStore = defineStore('coding', () => {
     stopCurrentRun,
     approvePlan,
     rejectPlan,
-    enterPlanMode,
+    changePermissionMode,
     selectSession,
     startNewSession,
     connectSocket,

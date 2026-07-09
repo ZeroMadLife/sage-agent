@@ -296,6 +296,27 @@ def test_stop_coding_run_marks_runtime_stop_requested(tmp_path: Path) -> None:
     assert app.state.coding_sessions[session_id].stop_requested is True
 
 
+def test_switch_permission_mode(tmp_path: Path) -> None:
+    """PATCH /permission-mode switches the runtime permission mode."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    assert runtime.permission_mode == "default"
+
+    response = client.patch(
+        f"/api/v1/coding/{session_id}/permission-mode", json={"mode": "accept_edits"}
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "mode": "accept_edits"}
+    assert runtime.permission_mode == "accept_edits"
+
+
 def test_plan_approve_exits_plan_mode(tmp_path: Path) -> None:
     """POST /plan/approve resolves a pending review and exits plan mode."""
     app = create_app(
@@ -375,66 +396,6 @@ def test_plan_approve_rejects_when_not_in_plan_mode(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "not in plan mode"
-
-
-def test_plan_enter_creates_plan_mode(tmp_path: Path) -> None:
-    """POST /plan/enter enters plan mode with a topic."""
-    app = create_app(
-        coding_model_factory=FakeModel,
-        coding_workspace_root=tmp_path,
-        coding_storage_root=tmp_path / ".coding",
-    )
-    client = TestClient(app)
-    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-
-    response = client.post(
-        f"/api/v1/coding/{session_id}/plan/enter", json={"topic": "重构认证模块"}
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["status"] == "entered"
-    assert body["mode"] == "plan"
-    assert body["topic"] == "重构认证模块"
-    assert "plan_path" in body
-    runtime = app.state.coding_sessions[session_id]
-    assert runtime.runtime_mode == "plan"
-
-
-def test_plan_enter_rejects_empty_topic(tmp_path: Path) -> None:
-    """POST /plan/enter returns 400 when topic is empty."""
-    app = create_app(
-        coding_model_factory=FakeModel,
-        coding_workspace_root=tmp_path,
-        coding_storage_root=tmp_path / ".coding",
-    )
-    client = TestClient(app)
-    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-
-    response = client.post(f"/api/v1/coding/{session_id}/plan/enter", json={"topic": ""})
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "topic is required"
-
-
-def test_plan_enter_rejects_when_already_in_plan_mode(tmp_path: Path) -> None:
-    """POST /plan/enter returns 400 when already in plan mode."""
-    app = create_app(
-        coding_model_factory=FakeModel,
-        coding_workspace_root=tmp_path,
-        coding_storage_root=tmp_path / ".coding",
-    )
-    client = TestClient(app)
-    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-    runtime = app.state.coding_sessions[session_id]
-    runtime.enter_plan_mode("Existing plan")
-
-    response = client.post(
-        f"/api/v1/coding/{session_id}/plan/enter", json={"topic": "New plan"}
-    )
-
-    assert response.status_code == 400
-    assert response.json()["detail"] == "already in plan mode"
 
 
 def test_coding_websocket_streams_plan_ready_then_approve_exits(tmp_path: Path) -> None:

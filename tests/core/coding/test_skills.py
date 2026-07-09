@@ -120,3 +120,11 @@ def test_skill_registry_resolve_non_slash(tmp_path: Path) -> None:
     assert skill is None
     assert command == ""
     assert args == ""
+
+
+def test_planmode_skill_discovered(tmp_path):
+    """The bundled planmode skill is discoverable."""
+    registry = SkillRegistry(root=tmp_path)
+    skill = registry.get("planmode")
+    assert skill is not None
+    assert "计划模式" in skill.description

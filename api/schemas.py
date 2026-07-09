@@ -118,6 +118,12 @@ class CodingModelSwitchRequest(BaseModel):
     model_id: str = Field(min_length=1)
 
 
+class PermissionModeSwitchRequest(BaseModel):
+    """Request body for switching a session's permission mode."""
+
+    mode: Literal["default", "accept_edits", "auto", "plan"]
+
+
 class CodingSkillSummary(BaseModel):
     """Skill list entry."""
 
