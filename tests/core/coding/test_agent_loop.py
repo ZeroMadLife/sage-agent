@@ -7,13 +7,15 @@ from pathlib import Path
 
 from tests.core.coding.scripted_api_client import ScriptedApiClient
 
-from core.coding.approval import ApprovalManager
-from core.coding.context_manager import ContextManager
+from core.coding.context import ContextManager, WorkspaceContext
 from core.coding.engine import Engine
-from core.coding.permissions import ApprovalPolicy, PermissionChecker
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.tool_executor import (
+    ApprovalManager,
+    ApprovalPolicy,
+    PermissionChecker,
+    ToolPolicyChecker,
+)
 from core.coding.tools.registry import build_tool_registry
-from core.coding.workspace import WorkspaceContext
 
 
 def _engine(

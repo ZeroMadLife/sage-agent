@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.coding.run_store import RunStore
+from core.coding.persistence import RunStore
 
 
 def test_run_store_lists_run_summaries_from_trace(tmp_path: Path) -> None:

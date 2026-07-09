@@ -6,13 +6,13 @@ import inspect
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
-from core.coding.approval import ApprovalManager
-from core.coding.context_manager import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager
-from core.coding.engine_helpers import (
-    build_tool_descriptions,
-    step_limit_summary,
+from core.coding.context import (
+    SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    ContextManager,
+    WorkspaceContext,
+    now,
 )
-from core.coding.events import (
+from core.coding.engine.events import (
     CancelledEvent,
     FinalEvent,
     ModelParsedEvent,
@@ -22,13 +22,14 @@ from core.coding.events import (
     ToolResultEvent,
     event_to_dict,
 )
-from core.coding.model_output import parse
-from core.coding.permissions import PermissionChecker
-from core.coding.tool_executor import ToolExecutor
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.engine.helpers import build_tool_descriptions, step_limit_summary
+from core.coding.engine.model_output import parse
+from core.coding.tool_executor.approval import ApprovalManager
+from core.coding.tool_executor.executor import ToolExecutor
+from core.coding.tool_executor.permissions import PermissionChecker
+from core.coding.tool_executor.policy import ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool
 from core.coding.tools.registry import get_active_tools
-from core.coding.workspace import WorkspaceContext, now
 
 
 class ApiClient(Protocol):

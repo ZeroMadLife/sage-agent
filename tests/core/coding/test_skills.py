@@ -8,13 +8,14 @@ from core.coding.skills import SkillRegistry, discover_skills, parse_slash_comma
 from core.coding.skills.skill import Skill, parse_frontmatter
 
 
-def test_discover_skills_loads_three_bundled_skills(tmp_path: Path) -> None:
-    """Bundled review/test/commit skills are discovered."""
+def test_discover_skills_loads_bundled_skills(tmp_path: Path) -> None:
+    """Bundled coding and domain skills are discovered."""
     skills = discover_skills(tmp_path)
-    assert set(skills) >= {"review", "test", "commit"}
+    assert set(skills) >= {"review", "test", "commit", "travel", "travel-planning"}
     assert skills["review"].source == "builtin"
     assert skills["review"].description
     assert skills["review"].prompt
+    assert "generate_itinerary" in skills["travel"].allowed_tools
 
 
 def test_skill_render_replaces_arguments(tmp_path: Path) -> None:
@@ -89,6 +90,18 @@ def test_skill_registry_resolve_known_command(tmp_path: Path) -> None:
     assert skill.name == "review"
     assert command == "review"
     assert args == ""
+
+
+def test_skill_registry_resolves_travel_alias(tmp_path: Path) -> None:
+    """The v5 travel domain skill is invokable as /travel."""
+    registry = SkillRegistry(root=tmp_path)
+
+    skill, command, args = registry.resolve("/travel 杭州两天五百")
+
+    assert skill is not None
+    assert skill.name == "travel"
+    assert command == "travel"
+    assert args == "杭州两天五百"
 
 
 def test_skill_registry_resolve_unknown_command(tmp_path: Path) -> None:

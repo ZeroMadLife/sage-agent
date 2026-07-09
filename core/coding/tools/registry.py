@@ -10,9 +10,9 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool, ToolContext, ToolResult
 from core.coding.tools.schemas import ToolSearchArgs, first_error_message
-from core.coding.workspace import WorkspaceContext
 
 ToolHandler = Callable[[WorkspaceContext, dict[str, Any], ToolContext | None], ToolResult | str]
 
@@ -22,6 +22,7 @@ TOOL_MODULES = (
     "core.coding.tools.todo_tools",
     "core.coding.tools.plan_tools",
     "core.coding.tools.agent_tools",
+    "core.coding.tools.travel_tools",
 )
 
 

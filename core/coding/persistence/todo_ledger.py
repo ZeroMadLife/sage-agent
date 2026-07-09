@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from core.coding.workspace import now
+from core.coding.context import now
 
 VALID_STATUS = {"pending", "in_progress", "completed", "blocked"}
 VALID_PRIORITY = {"low", "normal", "high"}

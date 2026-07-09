@@ -439,8 +439,8 @@ def test_list_coding_models_returns_providers(tmp_path: Path) -> None:
     assert all("id" in m and "provider" in m for m in models)
 
 
-def test_list_coding_skills_returns_three_bundled(tmp_path: Path) -> None:
-    """GET /skills returns the three bundled skills."""
+def test_list_coding_skills_returns_bundled_skills(tmp_path: Path) -> None:
+    """GET /skills returns bundled coding and domain skills."""
     client = _make_bare_client(tmp_path)
 
     response = client.get("/api/v1/coding/skills")
@@ -448,9 +448,7 @@ def test_list_coding_skills_returns_three_bundled(tmp_path: Path) -> None:
     assert response.status_code == 200
     skills = response.json()["skills"]
     names = [skill["name"] for skill in skills]
-    assert "review" in names
-    assert "test" in names
-    assert "commit" in names
+    assert set(names) >= {"review", "test", "commit", "travel", "travel-planning"}
 
 
 def test_get_coding_skill_returns_content(tmp_path: Path) -> None:

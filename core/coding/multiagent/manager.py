@@ -8,9 +8,9 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
-from core.coding.worker_execution import WorkerTask, clean_scope, clean_type
-from core.coding.worker_runtime import run_worker_task
-from core.coding.workspace import WorkspaceContext, now
+from core.coding.context import WorkspaceContext, now
+from core.coding.multiagent.execution import WorkerTask, clean_scope, clean_type
+from core.coding.multiagent.runtime import run_worker_task
 
 
 class WorkerManager:

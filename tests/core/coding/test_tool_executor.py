@@ -2,19 +2,22 @@
 
 from pathlib import Path
 
-from core.coding.approval import ApprovalManager
-from core.coding.events import (
+from core.coding.context import WorkspaceContext
+from core.coding.engine import (
     ApprovalGrantedEvent,
     ApprovalRequiredEvent,
     CancelledEvent,
     ToolCallEvent,
     ToolResultEvent,
 )
-from core.coding.permissions import ApprovalPolicy, PermissionChecker
-from core.coding.tool_executor import ToolExecutor
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.tool_executor import (
+    ApprovalManager,
+    ApprovalPolicy,
+    PermissionChecker,
+    ToolExecutor,
+    ToolPolicyChecker,
+)
 from core.coding.tools.registry import build_tool_registry
-from core.coding.workspace import WorkspaceContext
 
 
 def _executor(

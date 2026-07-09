@@ -9,7 +9,7 @@ import {
   Wrench,
   XCircle,
 } from 'lucide-vue-next'
-import type { ToolActivity } from '../stores/coding'
+import type { ToolActivity } from '../../../stores/coding'
 
 const props = defineProps<{
   tools: ToolActivity[]

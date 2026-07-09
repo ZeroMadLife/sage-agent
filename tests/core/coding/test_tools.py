@@ -1,10 +1,12 @@
 """Coding core tool tests."""
 
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
+from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import (
     ToolDefinition,
@@ -12,7 +14,8 @@ from core.coding.tools.registry import (
     get_active_tools,
     registered_tool_definitions,
 )
-from core.coding.workspace import WorkspaceContext
+from core.config.settings import Settings
+from models.itinerary import BudgetBreakdown, Itinerary, ItineraryDay
 
 
 def _workspace(tmp_path: Path) -> WorkspaceContext:
@@ -138,6 +141,13 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
         "agent",
         "send_message",
         "task_stop",
+        "generate_itinerary",
+        "search_attractions",
+        "get_weather",
+        "get_forecast",
+        "geocode",
+        "search_nearby",
+        "get_route",
     }
     assert tools["read_file"].category == "file"
     assert tools["run_shell"].category == "shell"
@@ -145,6 +155,8 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
     assert tools["read_file"].requires_approval is False
     assert tools["tool_search"].deferred is False
     assert tools["todo_add"].deferred is True
+    assert tools["generate_itinerary"].deferred is True
+    assert tools["get_weather"].category == "travel"
 
 
 def test_registered_tool_definitions_are_decorator_backed() -> None:
@@ -182,6 +194,76 @@ def test_tool_search_activates_matching_deferred_tools(tmp_path: Path) -> None:
     assert "todo_add" in activated
     assert "todo_update" in activated
     assert "read_file" not in activated
+
+
+def test_tool_search_activates_travel_tools(tmp_path: Path) -> None:
+    """tool_search can activate v5 travel domain tools."""
+    activated: set[str] = set()
+    tools = build_tool_registry(_workspace(tmp_path), activated_tools=activated)
+
+    result = tools["tool_search"].execute({"query": "travel"})
+
+    assert result.is_error is False
+    assert "generate_itinerary" in result.content
+    assert "get_weather" in result.content
+    assert "generate_itinerary" in activated
+    assert "get_weather" in activated
+
+
+def test_travel_tool_missing_key_returns_error(tmp_path: Path, monkeypatch) -> None:
+    """Travel tools degrade clearly when API keys are not configured."""
+    from core.coding.tools import travel_tools
+
+    monkeypatch.setattr(
+        travel_tools,
+        "get_settings",
+        lambda: Settings(amap_api_key="", qweather_api_key=""),
+    )
+    tools = build_tool_registry(_workspace(tmp_path))
+
+    result = tools["search_attractions"].execute({"city": "杭州"})
+
+    assert result.is_error is True
+    assert "AMAP_API_KEY" in result.content
+
+
+def test_generate_itinerary_uses_existing_graph_wrapper(tmp_path: Path, monkeypatch) -> None:
+    """generate_itinerary delegates to the existing itinerary tool graph wrapper."""
+    from core.coding.tools import travel_tools
+
+    class FakeGraph:
+        async def ainvoke(self, state: dict[str, object]) -> dict[str, object]:
+            return {
+                "itinerary": Itinerary(
+                    destination=str(state["destination"]),
+                    days=[ItineraryDay(date="2026-07-10", total_cost=80)],
+                    total_cost=80,
+                    weather_summary="晴",
+                    budget=BudgetBreakdown(total=500, spent=80, over_budget=False),
+                ),
+                "weather_info": {"current": {"text": "晴"}, "error": False},
+            }
+
+    monkeypatch.setattr(
+        travel_tools,
+        "get_settings",
+        lambda: Settings(qweather_api_key="fake", doubao_api_key="fake"),
+    )
+    monkeypatch.setattr(
+        travel_tools,
+        "_build_itinerary_graph",
+        lambda _settings, _repo_root: FakeGraph(),
+    )
+    tools = build_tool_registry(_workspace(tmp_path))
+
+    result = tools["generate_itinerary"].execute(
+        {"destination": "杭州", "budget_total": 500, "preferences": "美食"}
+    )
+    payload = json.loads(result.content)
+
+    assert result.is_error is False
+    assert payload["destination"] == "杭州"
+    assert payload["total_cost"] == 80
 
 
 def test_registered_tool_execute_times_out_sync_runner() -> None:

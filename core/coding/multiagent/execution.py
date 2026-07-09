@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from dataclasses import dataclass, field
 
-from core.coding.workspace import now
+from core.coding.context import now
 
 
 @dataclass

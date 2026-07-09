@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from core.coding.workspace import WorkspaceContext, clip
+from core.coding.context import WorkspaceContext, clip
 
 
 def test_workspace_resolves_relative_paths_inside_root(tmp_path: Path) -> None:

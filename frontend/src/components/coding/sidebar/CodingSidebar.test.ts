@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, expect, it, vi } from 'vitest'
-import { useCodingStore } from '../stores/coding'
+import { useCodingStore } from '../../../stores/coding'
 import CodingSidebar from './CodingSidebar.vue'
 
 beforeEach(() => {

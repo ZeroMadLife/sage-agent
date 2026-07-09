@@ -6,7 +6,7 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
-from core.coding.workspace import now
+from core.coding.context import now
 
 
 class RunEventBase(BaseModel):

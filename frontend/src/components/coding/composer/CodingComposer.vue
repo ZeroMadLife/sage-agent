@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { Send, Square } from 'lucide-vue-next'
-import { useCodingStore } from '../stores/coding'
+import { useCodingStore } from '../../../stores/coding'
 
 const store = useCodingStore()
 const input = ref('')

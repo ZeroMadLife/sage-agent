@@ -1,6 +1,6 @@
 """Approval manager and dangerous command tests."""
 
-from core.coding.approval import ApprovalManager, check_dangerous_command
+from core.coding.tool_executor import ApprovalManager, check_dangerous_command
 
 
 def test_approval_manager_submit_resolve_and_pending() -> None:

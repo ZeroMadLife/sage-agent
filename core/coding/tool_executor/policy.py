@@ -6,8 +6,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool
-from core.coding.workspace import WorkspaceContext
 
 SHELL_SEARCH_RE = re.compile(r"(?:^|;|&&|\|\|)\s*(?:cat|less|head|grep|rg|find|ls)(?:\s|$)")
 

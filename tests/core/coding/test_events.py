@@ -1,6 +1,6 @@
 """Typed coding run event tests."""
 
-from core.coding.events import (
+from core.coding.engine import (
     ApprovalRequiredEvent,
     CancelledEvent,
     FinalEvent,

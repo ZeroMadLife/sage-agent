@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.coding.session_store import CodingSessionStore
+from core.coding.persistence import CodingSessionStore
 
 
 def test_session_store_lists_session_summaries(tmp_path: Path) -> None:

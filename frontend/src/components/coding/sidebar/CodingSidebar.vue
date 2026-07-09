@@ -13,8 +13,8 @@ import {
   Zap,
 } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
-import { useCodingStore } from '../stores/coding'
-import type { CodingSkillSummary } from '../types/api'
+import { useCodingStore } from '../../../stores/coding'
+import type { CodingSkillSummary } from '../../../types/api'
 
 const store = useCodingStore()
 const emit = defineEmits<{ useSkill: [name: string] }>()

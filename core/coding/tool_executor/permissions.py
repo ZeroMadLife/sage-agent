@@ -6,8 +6,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool
-from core.coding.workspace import WorkspaceContext
 
 ApprovalPolicy = Literal["auto", "ask", "never"]
 ApprovalCallback = Callable[[str, dict[str, Any]], bool]

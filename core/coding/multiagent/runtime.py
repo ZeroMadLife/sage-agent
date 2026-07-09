@@ -5,13 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from core.coding.context_manager import ContextManager
-from core.coding.engine import Engine
-from core.coding.permissions import PermissionChecker
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.context import ContextManager, WorkspaceContext
+from core.coding.engine.engine import Engine
+from core.coding.multiagent.execution import WorkerTask
+from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.registry import build_tool_registry
-from core.coding.worker_execution import WorkerTask
-from core.coding.workspace import WorkspaceContext
 
 
 async def run_worker_task(

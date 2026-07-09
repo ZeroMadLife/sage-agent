@@ -1,6 +1,6 @@
 """Coding engine helper tests."""
 
-from core.coding.engine_helpers import (
+from core.coding.engine import (
     build_tool_descriptions,
     normalize_tool_payload,
     step_limit_summary,

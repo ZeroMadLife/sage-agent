@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Maximize2, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
-import type { CodingApproval, CodingApprovalChoice } from '../types/api'
+import type { CodingApproval, CodingApprovalChoice } from '../../../types/api'
 
 const props = defineProps<{
   approval: CodingApproval

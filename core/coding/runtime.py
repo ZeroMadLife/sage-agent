@@ -8,22 +8,21 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
-from core.coding.approval import ApprovalManager
-from core.coding.context_manager import ContextManager
-from core.coding.engine import Engine
-from core.coding.events import TurnFinishedEvent, TurnStartedEvent, event_to_dict
-from core.coding.permissions import ApprovalPolicy, PermissionChecker
+from core.coding.context import IGNORED_PATH_NAMES, ContextManager, WorkspaceContext, now
+from core.coding.engine.engine import Engine
+from core.coding.engine.events import TurnFinishedEvent, TurnStartedEvent, event_to_dict
+from core.coding.multiagent import WorkerManager
+from core.coding.persistence import CodingSessionStore, RunStore, SessionEventBus, TodoLedger
 from core.coding.plan_mode import PlanModeManager
-from core.coding.run_store import RunStore
-from core.coding.session_events import SessionEventBus
-from core.coding.session_store import CodingSessionStore
 from core.coding.skills import SkillRegistry
-from core.coding.todo_ledger import TodoLedger
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.tool_executor import (
+    ApprovalManager,
+    ApprovalPolicy,
+    PermissionChecker,
+    ToolPolicyChecker,
+)
 from core.coding.tools.base import ToolContext
 from core.coding.tools.registry import build_tool_registry
-from core.coding.worker_manager import WorkerManager
-from core.coding.workspace import IGNORED_PATH_NAMES, WorkspaceContext, now
 
 
 class CodingRuntime:

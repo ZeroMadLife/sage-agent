@@ -35,8 +35,8 @@ from api.schemas import (
     ErrorEvent,
     UserMessage,
 )
+from core.coding.persistence import CodingSessionStore
 from core.coding.runtime import CodingRuntime
-from core.coding.session_store import CodingSessionStore
 from core.llm import _PROVIDERS, create_llm
 
 router = APIRouter()

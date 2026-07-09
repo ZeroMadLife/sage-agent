@@ -7,10 +7,10 @@ import subprocess
 import textwrap
 from typing import Any
 
+from core.coding.context import WorkspaceContext, clip
 from core.coding.tools.base import ToolContext, ToolResult
 from core.coding.tools.registry import register_tool
 from core.coding.tools.schemas import RunShellArgs
-from core.coding.workspace import WorkspaceContext, clip
 
 ALLOWED_SHELL_ENV = {
     "PATH",

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { GitBranch } from 'lucide-vue-next'
 import { computed } from 'vue'
-import { useCodingStore } from '../stores/coding'
+import { useCodingStore } from '../../../stores/coding'
 
 const store = useCodingStore()
 const label = computed(() => {

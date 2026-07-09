@@ -2,11 +2,10 @@
 
 from pathlib import Path
 
-from core.coding.permissions import PermissionChecker
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.context import WorkspaceContext
+from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import build_tool_registry
-from core.coding.workspace import WorkspaceContext
 
 
 def _tools(tmp_path: Path) -> tuple[WorkspaceContext, dict[str, RegisteredTool]]:

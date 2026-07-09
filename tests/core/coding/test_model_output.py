@@ -1,6 +1,6 @@
 """Coding model output protocol tests."""
 
-from core.coding.model_output import parse
+from core.coding.engine import parse
 
 
 def test_parse_json_tool_payload() -> None:

@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
-import CodingApprovalCard from '../components/CodingApprovalCard.vue'
-import CodingComposer from '../components/CodingComposer.vue'
-import CodingFileTree from '../components/CodingFileTree.vue'
-import CodingGitBadge from '../components/CodingGitBadge.vue'
-import CodingSidebar from '../components/CodingSidebar.vue'
-import CodingThinkingIndicator from '../components/CodingThinkingIndicator.vue'
-import CodingToolActivity from '../components/CodingToolActivity.vue'
+import {
+  CodingApprovalCard,
+  CodingComposer,
+  CodingFileTree,
+  CodingGitBadge,
+  CodingSidebar,
+  CodingThinkingIndicator,
+  CodingToolActivity,
+} from '../components/coding'
 import { useCodingStore } from '../stores/coding'
 import { useMarkdown } from '../composables/useMarkdown'
 

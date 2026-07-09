@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.coding.context_manager import ContextManager
-from core.coding.workspace import now
+from core.coding.context.manager import ContextManager
+from core.coding.context.workspace import now
 
 
 class CompactManager:

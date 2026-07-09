@@ -1,0 +1,7 @@
+export { default as CodingApprovalCard } from './chat/CodingApprovalCard.vue'
+export { default as CodingThinkingIndicator } from './chat/CodingThinkingIndicator.vue'
+export { default as CodingToolActivity } from './chat/CodingToolActivity.vue'
+export { default as CodingComposer } from './composer/CodingComposer.vue'
+export { default as CodingFileTree } from './files/CodingFileTree.vue'
+export { default as CodingGitBadge } from './files/CodingGitBadge.vue'
+export { default as CodingSidebar } from './sidebar/CodingSidebar.vue'

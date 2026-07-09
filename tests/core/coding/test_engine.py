@@ -2,12 +2,10 @@
 
 from pathlib import Path
 
-from core.coding.context_manager import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager
+from core.coding.context import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager, WorkspaceContext
 from core.coding.engine import Engine
-from core.coding.permissions import PermissionChecker
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.registry import build_tool_registry
-from core.coding.workspace import WorkspaceContext
 
 
 class FakeModel:

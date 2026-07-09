@@ -3,8 +3,7 @@
 from datetime import date
 from pathlib import Path
 
-from core.coding.compact import CompactManager
-from core.coding.context_manager import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager
+from core.coding.context import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, CompactManager, ContextManager
 from core.coding.runtime import CodingRuntime
 
 

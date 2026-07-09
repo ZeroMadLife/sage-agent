@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from core.coding.context import IGNORED_PATH_NAMES, WorkspaceContext, clip
 from core.coding.tools.base import ToolContext, ToolResult
 from core.coding.tools.registry import register_tool
 from core.coding.tools.schemas import (
@@ -16,7 +17,6 @@ from core.coding.tools.schemas import (
     SearchArgs,
     WriteFileArgs,
 )
-from core.coding.workspace import IGNORED_PATH_NAMES, WorkspaceContext, clip
 
 
 @register_tool(

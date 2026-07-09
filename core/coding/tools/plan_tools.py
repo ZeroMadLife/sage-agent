@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.coding.context import WorkspaceContext
 from core.coding.tools.base import ToolContext, ToolResult
 from core.coding.tools.registry import register_tool
 from core.coding.tools.schemas import EnterPlanModeArgs, ExitPlanModeArgs
-from core.coding.workspace import WorkspaceContext
 
 
 @register_tool(

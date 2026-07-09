@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronRight, Folder, FileText } from 'lucide-vue-next'
-import { useCodingStore } from '../stores/coding'
+import { useCodingStore } from '../../../stores/coding'
 
 const store = useCodingStore()
 

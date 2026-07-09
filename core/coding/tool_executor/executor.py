@@ -6,9 +6,8 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any
 
-from core.coding.approval import ApprovalManager, check_dangerous_command
-from core.coding.engine_helpers import normalize_tool_payload
-from core.coding.events import (
+from core.coding.context import WorkspaceContext
+from core.coding.engine.events import (
     ApprovalGrantedEvent,
     ApprovalRequiredEvent,
     CancelledEvent,
@@ -16,10 +15,11 @@ from core.coding.events import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from core.coding.permissions import PermissionChecker
-from core.coding.tool_policy import ToolPolicyChecker
+from core.coding.engine.helpers import normalize_tool_payload
+from core.coding.tool_executor.approval import ApprovalManager, check_dangerous_command
+from core.coding.tool_executor.permissions import PermissionChecker
+from core.coding.tool_executor.policy import ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool, ToolResult
-from core.coding.workspace import WorkspaceContext
 
 
 class ToolExecutor:
