@@ -12,12 +12,58 @@ import {
   XCircle,
   Zap,
 } from 'lucide-vue-next'
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useCodingStore } from '../stores/coding'
 import type { CodingSkillSummary } from '../types/api'
 
 const store = useCodingStore()
 const emit = defineEmits<{ useSkill: [name: string] }>()
+
+// Collapsible panels: Sessions expanded by default, others collapsed.
+const collapsedPanels = ref<Set<string>>(new Set(['skills', 'runs', 'mcp', 'model']))
+
+function togglePanel(panel: string) {
+  const next = new Set(collapsedPanels.value)
+  if (next.has(panel)) next.delete(panel)
+  else next.add(panel)
+  collapsedPanels.value = next
+}
+
+function isPanelCollapsed(panel: string) {
+  return collapsedPanels.value.has(panel)
+}
+
+const SESSION_LIMIT = 10
+const sessionQuery = ref('')
+const showAllSessions = ref(false)
+
+const filteredSessions = computed(() => {
+  const query = sessionQuery.value.trim().toLowerCase()
+  if (!query) return store.codingSessions
+  return store.codingSessions.filter(
+    (session) =>
+      session.session_id.toLowerCase().includes(query) ||
+      session.title.toLowerCase().includes(query),
+  )
+})
+
+const visibleSessions = computed(() => {
+  if (showAllSessions.value) return filteredSessions.value
+  return filteredSessions.value.slice(0, SESSION_LIMIT)
+})
+
+const hiddenSessionCount = computed(
+  () => Math.max(0, filteredSessions.value.length - SESSION_LIMIT),
+)
+
+function showAllSessionsNow() {
+  showAllSessions.value = true
+}
+
+// Reset "show all" whenever the query changes so the limit reapplies.
+watch(sessionQuery, () => {
+  showAllSessions.value = false
+})
 
 const expandedSkill = ref<string | null>(null)
 const skillQuery = ref('')
@@ -65,7 +111,13 @@ function runIcon(status: string) {
   <aside class="sidebar">
     <section class="sidebar-section">
       <div class="section-heading">
-        <h3><MessagesSquare :size="13" /> Sessions</h3>
+        <button class="panel-toggle" @click="togglePanel('sessions')">
+          <component
+            :is="isPanelCollapsed('sessions') ? ChevronRight : ChevronDown"
+            :size="13"
+          />
+          <h3><MessagesSquare :size="13" /> Sessions</h3>
+        </button>
         <button
           class="icon-action"
           data-testid="new-coding-session"
@@ -75,55 +127,83 @@ function runIcon(status: string) {
           <Plus :size="13" />
         </button>
       </div>
-      <div v-if="store.codingSessions.length === 0" class="empty">暂无 session</div>
-      <button
-        v-for="session in store.codingSessions"
-        :key="session.session_id"
-        class="session-item"
-        :class="{ active: session.session_id === store.sessionId }"
-        @click="store.selectSession(session.session_id)"
-      >
-        <div class="session-title">{{ session.title }}</div>
-        <div class="session-meta">
-          {{ session.message_count }} messages · {{ session.runtime_mode }}
-        </div>
-      </button>
+      <div v-if="!isPanelCollapsed('sessions')">
+        <label v-if="store.codingSessions.length > 0" class="session-search">
+          <Search :size="12" />
+          <input
+            v-model="sessionQuery"
+            type="search"
+            placeholder="Search sessions"
+            aria-label="Search sessions"
+          />
+        </label>
+        <div v-if="store.codingSessions.length === 0" class="empty">暂无 session</div>
+        <button
+          v-for="session in visibleSessions"
+          :key="session.session_id"
+          class="session-item"
+          :class="{ active: session.session_id === store.sessionId }"
+          @click="store.selectSession(session.session_id)"
+        >
+          <div class="session-title">{{ session.title }}</div>
+          <div class="session-meta">
+            {{ session.message_count }} messages · {{ session.runtime_mode }}
+          </div>
+        </button>
+        <button
+          v-if="!showAllSessions && hiddenSessionCount > 0"
+          class="show-all-sessions"
+          @click="showAllSessionsNow"
+        >
+          显示全部 ({{ filteredSessions.length }})
+        </button>
+      </div>
     </section>
 
     <section class="sidebar-section">
-      <h3>Skills</h3>
-
-      <label class="skill-search">
-        <Search :size="12" />
-        <input v-model="skillQuery" type="search" placeholder="Search skills" />
-      </label>
-
-      <div v-if="groupedSkills.length === 0" class="empty">暂无 skill</div>
-      <div v-for="group in groupedSkills" :key="group.source" class="skill-group">
-        <button class="source-header" @click="toggleSource(group.source)">
+      <div class="section-heading">
+        <button class="panel-toggle" @click="togglePanel('skills')">
           <component
-            :is="collapsedSources.has(group.source) ? ChevronRight : ChevronDown"
+            :is="isPanelCollapsed('skills') ? ChevronRight : ChevronDown"
             :size="13"
           />
-          <span>{{ group.source }}</span>
-          <span>{{ group.skills.length }}</span>
+          <h3><Zap :size="13" /> Skills</h3>
         </button>
+      </div>
 
-        <div v-if="!collapsedSources.has(group.source)">
-          <div v-for="skill in group.skills" :key="skill.name" class="skill-item">
-            <button class="skill-header" @click="toggleSkill(skill.name)">
-              <component
-                :is="expandedSkill === skill.name ? ChevronDown : ChevronRight"
-                :size="13"
-              />
-              <span class="skill-name">/{{ skill.name }}</span>
-              <span class="skill-source" :class="skill.source">{{ skill.source }}</span>
-            </button>
-            <div v-if="expandedSkill === skill.name" class="skill-detail">
-              <p class="skill-desc">{{ skill.description }}</p>
-              <button class="skill-use" @click="useSkill(skill)">
-                <Zap :size="12" /> 使用
+      <div v-if="!isPanelCollapsed('skills')">
+        <label class="skill-search">
+          <Search :size="12" />
+          <input v-model="skillQuery" type="search" placeholder="Search skills" />
+        </label>
+
+        <div v-if="groupedSkills.length === 0" class="empty">暂无 skill</div>
+        <div v-for="group in groupedSkills" :key="group.source" class="skill-group">
+          <button class="source-header" @click="toggleSource(group.source)">
+            <component
+              :is="collapsedSources.has(group.source) ? ChevronRight : ChevronDown"
+              :size="13"
+            />
+            <span>{{ group.source }}</span>
+            <span>{{ group.skills.length }}</span>
+          </button>
+
+          <div v-if="!collapsedSources.has(group.source)">
+            <div v-for="skill in group.skills" :key="skill.name" class="skill-item">
+              <button class="skill-header" @click="toggleSkill(skill.name)">
+                <component
+                  :is="expandedSkill === skill.name ? ChevronDown : ChevronRight"
+                  :size="13"
+                />
+                <span class="skill-name">/{{ skill.name }}</span>
+                <span class="skill-source" :class="skill.source">{{ skill.source }}</span>
               </button>
+              <div v-if="expandedSkill === skill.name" class="skill-detail">
+                <p class="skill-desc">{{ skill.description }}</p>
+                <button class="skill-use" @click="useSkill(skill)">
+                  <Zap :size="12" /> 使用
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -131,68 +211,98 @@ function runIcon(status: string) {
     </section>
 
     <section class="sidebar-section">
-      <h3><Clock3 :size="13" /> Runs</h3>
-      <div v-if="store.runs.length === 0" class="empty">暂无 run</div>
-      <div v-for="run in store.runs" :key="run.run_id" class="run-item">
-        <button class="run-header" @click="store.loadRunDetail(run.run_id)">
-          <component :is="runIcon(run.status)" :size="13" />
-          <span class="run-id">{{ run.run_id.replace('run_', '') }}</span>
-          <span class="run-status" :class="run.status">{{ run.status }}</span>
+      <div class="section-heading">
+        <button class="panel-toggle" @click="togglePanel('runs')">
+          <component
+            :is="isPanelCollapsed('runs') ? ChevronRight : ChevronDown"
+            :size="13"
+          />
+          <h3><Clock3 :size="13" /> Runs</h3>
         </button>
-        <div class="run-meta">
-          {{ run.tool_count }} tools · {{ run.event_count }} events · {{ run.last_event_type }}
-        </div>
       </div>
-      <div v-if="store.selectedRun" class="run-detail">
-        <div class="run-detail-title">
-          {{ store.selectedRun.run_id }}
-          <span>{{ store.selectedRun.timeline?.length || store.selectedRun.events.length }} steps</span>
+      <div v-if="!isPanelCollapsed('runs')">
+        <div v-if="store.runs.length === 0" class="empty">暂无 run</div>
+        <div v-for="run in store.runs" :key="run.run_id" class="run-item">
+          <button class="run-header" @click="store.loadRunDetail(run.run_id)">
+            <component :is="runIcon(run.status)" :size="13" />
+            <span class="run-id">{{ run.run_id.replace('run_', '') }}</span>
+            <span class="run-status" :class="run.status">{{ run.status }}</span>
+          </button>
+          <div class="run-meta">
+            {{ run.tool_count }} tools · {{ run.event_count }} events · {{ run.last_event_type }}
+          </div>
         </div>
-        <div
-          v-for="(entry, index) in store.selectedRun.timeline?.slice(-8) || []"
-          :key="index"
-          class="run-timeline-entry"
-          :class="entry.status"
-        >
-          <span class="run-timeline-dot"></span>
-          <span class="run-timeline-body">
-            <span class="run-timeline-title">{{ entry.title }}</span>
-            <span v-if="entry.detail" class="run-timeline-detail">{{ entry.detail }}</span>
-          </span>
-        </div>
-        <div
-          v-if="!store.selectedRun.timeline?.length"
-          v-for="(event, index) in store.selectedRun.events.slice(-8)"
-          :key="`event-${index}`"
-          class="run-event"
-        >
-          {{ event.type }}
+        <div v-if="store.selectedRun" class="run-detail">
+          <div class="run-detail-title">
+            {{ store.selectedRun.run_id }}
+            <span>{{ store.selectedRun.timeline?.length || store.selectedRun.events.length }} steps</span>
+          </div>
+          <div
+            v-for="(entry, index) in store.selectedRun.timeline?.slice(-8) || []"
+            :key="index"
+            class="run-timeline-entry"
+            :class="entry.status"
+          >
+            <span class="run-timeline-dot"></span>
+            <span class="run-timeline-body">
+              <span class="run-timeline-title">{{ entry.title }}</span>
+              <span v-if="entry.detail" class="run-timeline-detail">{{ entry.detail }}</span>
+            </span>
+          </div>
+          <div
+            v-if="!store.selectedRun.timeline?.length"
+            v-for="(event, index) in store.selectedRun.events.slice(-8)"
+            :key="`event-${index}`"
+            class="run-event"
+          >
+            {{ event.type }}
+          </div>
         </div>
       </div>
     </section>
 
     <section class="sidebar-section">
-      <h3><Server :size="13" /> MCP</h3>
-      <div v-if="store.mcpServers.length === 0" class="empty">暂无 MCP server</div>
-      <div v-for="server in store.mcpServers" :key="server.name" class="mcp-item">
-        <span class="mcp-dot" :class="server.status"></span>
-        <span class="mcp-name">{{ server.name }}</span>
-        <span class="mcp-transport">{{ server.transport }}</span>
+      <div class="section-heading">
+        <button class="panel-toggle" @click="togglePanel('mcp')">
+          <component
+            :is="isPanelCollapsed('mcp') ? ChevronRight : ChevronDown"
+            :size="13"
+          />
+          <h3><Server :size="13" /> MCP</h3>
+        </button>
+      </div>
+      <div v-if="!isPanelCollapsed('mcp')">
+        <div v-if="store.mcpServers.length === 0" class="empty">暂无 MCP server</div>
+        <div v-for="server in store.mcpServers" :key="server.name" class="mcp-item">
+          <span class="mcp-dot" :class="server.status"></span>
+          <span class="mcp-name">{{ server.name }}</span>
+          <span class="mcp-transport">{{ server.transport }}</span>
+        </div>
       </div>
     </section>
 
     <section class="sidebar-section">
-      <h3><FileCode :size="13" /> 模型</h3>
-      <div v-if="store.models.length === 0" class="empty">加载中...</div>
-      <div
-        v-for="model in store.models"
-        :key="model.id"
-        class="model-item"
-        :class="{ active: model.id === store.currentModelId }"
-        @click="store.changeModel(model.id)"
-      >
-        <span class="model-provider">{{ model.provider }}</span>
-        <span class="model-label">{{ model.label.split(' / ')[1] || model.label }}</span>
+      <div class="section-heading">
+        <button class="panel-toggle" @click="togglePanel('model')">
+          <component
+            :is="isPanelCollapsed('model') ? ChevronRight : ChevronDown"
+            :size="13"
+          />
+          <h3><FileCode :size="13" /> 模型</h3>
+        </button>
+      </div>
+      <div v-if="!isPanelCollapsed('model')">
+        <div v-if="store.models.length === 0" class="empty">加载中...</div>
+        <div
+          v-for="model in store.models"
+          :key="model.id"
+          class="model-item"
+          :class="{ active: model.id === store.currentModelId }"
+          @click="store.changeModel(model.id)"
+        >
+          <span class="model-provider">{{ model.provider }}</span>
+          <span class="model-label">{{ model.label.split(' / ')[1] || model.label }}</span>
+        </div>
       </div>
     </section>
   </aside>
@@ -220,6 +330,21 @@ function runIcon(status: string) {
   justify-content: space-between;
   gap: 8px;
   margin: 0 0 8px;
+}
+
+.panel-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+  color: inherit;
+}
+
+.panel-toggle :deep(h3) {
+  margin: 0;
 }
 
 .sidebar-section h3 {
@@ -305,6 +430,45 @@ function runIcon(status: string) {
   border-radius: 6px;
   background: #fff;
   color: #6b7280;
+}
+
+.session-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 8px;
+  padding: 4px 6px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #fff;
+  color: #6b7280;
+}
+
+.session-search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  font-size: 12px;
+}
+
+.show-all-sessions {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.show-all-sessions:hover {
+  background: #eff6ff;
 }
 
 .skill-search input {

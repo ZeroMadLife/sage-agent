@@ -141,6 +141,27 @@ def test_runtime_resumes_persisted_session_state(tmp_path: Path) -> None:
     assert resumed.permission_checker.plan_mode is True
 
 
+def test_runtime_resume_does_not_touch_updated_at(tmp_path: Path) -> None:
+    """Opening a saved session should not reorder it before a new turn runs."""
+    original = CodingRuntime(
+        session_id="s-resume-order",
+        workspace_root=tmp_path,
+        model=FakeModel(["<final>noop</final>"]),
+        storage_root=tmp_path / ".coding",
+    )
+    original.session["updated_at"] = "2026-07-08T09:10:00"
+    original.session_store.save(original.session)
+
+    CodingRuntime.resume(
+        session_id="s-resume-order",
+        model=FakeModel(["<final>resumed</final>"]),
+        storage_root=tmp_path / ".coding",
+    )
+
+    saved = original.session_store.load("s-resume-order")
+    assert saved["updated_at"] == "2026-07-08T09:10:00"
+
+
 async def test_runtime_persists_activated_deferred_tools(tmp_path: Path) -> None:
     """tool_search activations are session-scoped and survive runtime resume."""
     original = CodingRuntime(

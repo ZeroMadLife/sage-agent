@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core.coding.context_manager import ContextManager
+from core.coding.context_manager import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager
 from core.coding.engine import Engine
 from core.coding.permissions import PermissionChecker
 from core.coding.tool_policy import ToolPolicyChecker
@@ -19,6 +19,18 @@ class FakeModel:
 
     async def complete(self, prompt: str) -> str:
         self.prompts.append(prompt)
+        return self.responses.pop(0)
+
+
+class FakeAinvokeModel:
+    """Async model exposing ainvoke; records the messages it receives."""
+
+    def __init__(self, responses: list[str]) -> None:
+        self.responses = list(responses)
+        self.calls: list[list[dict[str, str]]] = []
+
+    async def ainvoke(self, messages: list[dict[str, str]]) -> object:
+        self.calls.append([dict(msg) for msg in messages])
         return self.responses.pop(0)
 
 
@@ -166,3 +178,45 @@ async def test_engine_tool_search_activates_deferred_tools_for_next_prompt(
     assert "todo_add:" not in model.prompts[0]
     assert "todo_add:" in model.prompts[1]
     assert "todo_add" in activated_tools
+
+
+async def test_engine_ainvoke_splits_system_and_user_messages(tmp_path: Path) -> None:
+    """The ainvoke branch sends the pre-boundary prompt as a system message."""
+    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    workspace = WorkspaceContext(root=tmp_path)
+    tools = build_tool_registry(workspace)
+    model = FakeAinvokeModel(
+        [
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            "<final>项目叫 TourSwarm coding agent。</final>",
+        ]
+    )
+    engine = Engine(
+        model=model,
+        workspace=workspace,
+        tools=tools,
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        max_steps=5,
+    )
+
+    events = [event async for event in engine.run_turn("读 README.md 告诉我项目叫什么")]
+
+    assert events[-1]["type"] == "final"
+    # Each model turn is one ainvoke call with a system + user pair.
+    assert len(model.calls) == 2
+    for messages in model.calls:
+        assert [msg["role"] for msg in messages] == ["system", "user"]
+        system_content = messages[0]["content"]
+        user_content = messages[1]["content"]
+        assert SYSTEM_PROMPT_DYNAMIC_BOUNDARY not in system_content
+        assert SYSTEM_PROMPT_DYNAMIC_BOUNDARY not in user_content
+        assert "You are Sage" in system_content
+        assert "Current user request" in user_content
+
+
+def test_build_ainvoke_messages_falls_back_to_single_user_message() -> None:
+    """Without a boundary marker the whole prompt stays a single user message."""
+    messages = Engine._build_ainvoke_messages("plain prompt without boundary")
+    assert messages == [{"role": "user", "content": "plain prompt without boundary"}]

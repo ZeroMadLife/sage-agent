@@ -40,6 +40,27 @@ import { CodingStream } from './codingStream'
 
 export type { ChatMessage, ToolActivity } from './codingEvents'
 
+// Noise entries hidden from the workspace file tree.
+const FILE_TREE_NOISE_PATTERNS: Array<RegExp | string> = [
+  /^\.env(\..*)?$/, // .env, .env.local, .env.production ...
+  '.DS_Store',
+  '__pycache__',
+  /\.pyc$/, // compiled python
+  'node_modules',
+  '.git',
+  /\.log$/, // log files
+]
+
+function isFileTreeNoise(name: string): boolean {
+  return FILE_TREE_NOISE_PATTERNS.some((pattern) =>
+    typeof pattern === 'string' ? name === pattern : pattern.test(name),
+  )
+}
+
+function filterFileEntries(entries: CodingFileEntry[]): CodingFileEntry[] {
+  return entries.filter((entry) => !isFileTreeNoise(entry.name))
+}
+
 export const useCodingStore = defineStore('coding', () => {
   const sessionId = ref('')
   const workspaceRoot = ref('')
@@ -50,6 +71,7 @@ export const useCodingStore = defineStore('coding', () => {
   const contextChars = ref(0)
   const contextBudget = 60000
   const pendingApproval = ref<CodingApproval | null>(null)
+  const thinkingPhase = ref('')
   const codingSessions = ref<CodingSessionSummary[]>([])
   const runs = ref<CodingRunSummary[]>([])
   const selectedRun = ref<CodingRunDetailResponse | null>(null)
@@ -105,6 +127,7 @@ export const useCodingStore = defineStore('coding', () => {
       onError: (message) => {
         errorMessage.value = message
         isThinking.value = false
+        thinkingPhase.value = ''
       },
     })
     stream.connect(sessionId.value, buildCodingStreamUrl(sessionId.value))
@@ -119,6 +142,7 @@ export const useCodingStore = defineStore('coding', () => {
         errorMessage,
         contextChars,
         pendingApproval,
+        thinkingPhase,
       },
       event,
     )
@@ -148,6 +172,7 @@ export const useCodingStore = defineStore('coding', () => {
     isThinking.value = true
     errorMessage.value = ''
     pendingApproval.value = null
+    thinkingPhase.value = ''
     startApprovalPolling()
   }
 
@@ -291,6 +316,7 @@ export const useCodingStore = defineStore('coding', () => {
     isThinking.value = false
     errorMessage.value = ''
     pendingApproval.value = null
+    thinkingPhase.value = ''
     runs.value = []
     selectedRun.value = null
     dirCache.clear()
@@ -309,6 +335,7 @@ export const useCodingStore = defineStore('coding', () => {
     isThinking.value = false
     errorMessage.value = ''
     pendingApproval.value = null
+    thinkingPhase.value = ''
     runs.value = []
     selectedRun.value = null
     dirCache.clear()
@@ -351,16 +378,17 @@ export const useCodingStore = defineStore('coding', () => {
     const generation = ++fileTreeGeneration
     if (!force && dirCache.has(path)) {
       fileTreePath.value = path
-      fileTreeEntries.value = [...(dirCache.get(path) || [])]
+      fileTreeEntries.value = filterFileEntries([...(dirCache.get(path) || [])])
       expandedDirs.value = new Set([...expandedDirs.value, path])
       return
     }
     try {
       const res = await fetchCodingFiles(sessionId.value, path)
       if (generation !== fileTreeGeneration) return
-      dirCache.set(path, res.entries)
+      const entries = filterFileEntries(res.entries)
+      dirCache.set(path, entries)
       fileTreePath.value = path
-      fileTreeEntries.value = res.entries
+      fileTreeEntries.value = entries
       expandedDirs.value = new Set([...expandedDirs.value, path])
     } catch {
       if (generation !== fileTreeGeneration) return
@@ -414,6 +442,7 @@ export const useCodingStore = defineStore('coding', () => {
     contextBudget,
     contextPercent,
     pendingApproval,
+    thinkingPhase,
     codingSessions,
     runs,
     selectedRun,
@@ -434,6 +463,7 @@ export const useCodingStore = defineStore('coding', () => {
     stopCurrentRun,
     selectSession,
     startNewSession,
+    connectSocket,
     loadSkills,
     loadMcpServers,
     loadModels,

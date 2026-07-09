@@ -146,6 +146,37 @@ describe('coding store', () => {
     expect(store.expandedDirs.has('.')).toBe(true)
   })
 
+  it('filters noise files out of the file tree', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        path: '.',
+        entries: [
+          { name: 'src', is_dir: true },
+          { name: 'README.md', is_dir: false },
+          { name: '.env', is_dir: false },
+          { name: '.env.local', is_dir: false },
+          { name: '.DS_Store', is_dir: false },
+          { name: '__pycache__', is_dir: true },
+          { name: 'app.pyc', is_dir: false },
+          { name: 'node_modules', is_dir: true },
+          { name: '.git', is_dir: true },
+          { name: 'debug.log', is_dir: false },
+        ],
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    await store.loadFiles('.')
+
+    expect(store.fileTreeEntries).toEqual([
+      { name: 'src', is_dir: true },
+      { name: 'README.md', is_dir: false },
+    ])
+  })
+
   it('refreshes workspace view after successful write tools', async () => {
     const fetchMock = vi.fn().mockImplementation((url: URL) => {
       if (url.pathname.endsWith('/git/status')) {
@@ -197,6 +228,34 @@ describe('coding store', () => {
     expect(store.messages[0].content).toBe('完成')
     expect(store.messages[0].isThinking).toBe(false)
     expect(store.isThinking).toBe(false)
+  })
+
+  it('resets thinking state and phase when the websocket errors', () => {
+    const sockets: Array<FakeSocket> = []
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+      constructor(_url: string) {
+        sockets.push(this)
+      }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.isThinking = true
+    store.thinkingPhase = '正在请求模型...'
+
+    store.connectSocket()
+    sockets[0].onerror?.()
+
+    expect(store.isThinking).toBe(false)
+    expect(store.thinkingPhase).toBe('')
+    expect(store.errorMessage).toBe('连接中断')
+    store.disconnect()
   })
 
   it('handles cancelled event as a stopped assistant message', () => {

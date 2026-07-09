@@ -28,7 +28,11 @@ coverage.xml
 *.key
 
 # IDE
-.vscode/
+**/.vscode/*
+!/.vscode/
+!/.vscode/extensions.json
+!/.vscode/launch.json
+!/.vscode/tasks.json
 .idea/
 *.swp
 *.swo

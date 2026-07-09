@@ -72,11 +72,44 @@ tour-agent/
 ├── mcp_servers/                 # 高德 / 天气 / 景点 MCP servers
 ├── frontend/                    # Vue 3 Sage console
 ├── evals/                       # 旅游 eval cases 和脚本
+├── scripts/dev.sh               # 本地一键启动后端 + 前端
 ├── tests/                       # 后端、前端、agent、API、coding runtime 测试
 ├── docs/                        # plans、reviews、specs、落地记录
+├── .vscode/                     # VS Code 共享任务与 FastAPI debug 配置
 ├── docker-compose.yml           # 本地 PostgreSQL + Redis + Qdrant
 ├── requirements.txt
 └── .env.example
+```
+
+## 获取代码与远程 Git
+
+当前远程仓库：
+
+```text
+git@github.com:ZeroMadLife/sage-agent.git
+```
+
+首次拉取：
+
+```bash
+git clone git@github.com:ZeroMadLife/sage-agent.git
+cd sage-agent
+```
+
+如果你的机器没有配置 GitHub SSH key，可以先用 HTTPS：
+
+```bash
+git clone https://github.com/ZeroMadLife/sage-agent.git
+cd sage-agent
+```
+
+常用协作命令：
+
+```bash
+git status
+git pull --rebase origin main
+git checkout -b codex/your-feature-name
+git push -u origin codex/your-feature-name
 ```
 
 ## 本地启动
@@ -127,7 +160,47 @@ QWEATHER_GEO_URL=https://你的-host.re.qweatherapi.com/geoapi/v2
 
 单元测试使用 mock，不消耗真实 API 额度。
 
-### 3. 启动中间件
+### 3. 一键启动本地开发环境
+
+依赖安装和 `.env` 准备好以后，推荐直接用一键脚本：
+
+```bash
+cd /Users/zeromadlife/Desktop/tour-agent
+conda activate sage-agent
+bash scripts/dev.sh
+```
+
+脚本会：
+
+- 自动执行 `docker compose up -d` 启动 PostgreSQL、Redis、Qdrant。
+- 启动 FastAPI：`http://127.0.0.1:8000`
+- 启动 Vite：`http://127.0.0.1:5173`
+- 自动设置 `VITE_API_PROXY_TARGET=http://127.0.0.1:8000`，让 REST 和 WebSocket 都走 Vite proxy。
+
+常用覆盖项：
+
+```bash
+# 后端端口被占用时
+BACKEND_PORT=8010 bash scripts/dev.sh
+
+# 已经手动启动 docker compose 时
+SAGE_SKIP_DOCKER=1 bash scripts/dev.sh
+```
+
+Windows 建议用 Git Bash 或 WSL 运行 `bash scripts/dev.sh`。如果必须用 CMD，请分别开两个窗口：
+
+```bat
+cd /d C:\path\to\sage-agent
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env
+```
+
+```bat
+cd /d C:\path\to\sage-agent\frontend
+set VITE_API_PROXY_TARGET=http://127.0.0.1:8000
+npm run dev -- --host 127.0.0.1 --port 5173
+```
+
+### 4. 手动启动中间件
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
@@ -137,7 +210,7 @@ docker compose ps
 
 确认 PostgreSQL、Redis、Qdrant 都是 `Up` 或 `healthy`。
 
-### 4. 启动后端
+### 5. 手动启动后端
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
@@ -158,7 +231,7 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 uvicorn api.main:app --host 127.0.0.1 --port 8010 --reload --env-file .env
 ```
 
-### 5. 启动前端
+### 6. 手动启动前端
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent/frontend
@@ -179,7 +252,31 @@ VITE_API_PROXY_TARGET=http://127.0.0.1:8010 npm run dev
 
 本地开发推荐使用 `VITE_API_PROXY_TARGET`，让 Vite 代理 REST 和 WebSocket 到 FastAPI。不要优先设置 `VITE_API_BASE_URL=http://127.0.0.1:8000`，否则容易遇到浏览器 CORS 问题。
 
-## PyCharm 启动
+## IDE Debug 启动
+
+### VS Code
+
+仓库已包含共享配置：
+
+- `.vscode/extensions.json`：推荐 Python / debugpy / Volar。
+- `.vscode/tasks.json`：`docker: compose up`、`dev: backend`、`dev: frontend`、`dev: all`。
+- `.vscode/launch.json`：`Debug FastAPI (uvicorn)`。
+
+推荐流程：
+
+1. 打开仓库根目录 `/Users/zeromadlife/Desktop/tour-agent`。
+2. 选择项目 Python 解释器，例如 conda env `sage-agent`。
+3. 先运行 VS Code Task：`docker: compose up`。
+4. 在 Run and Debug 面板选择 `Debug FastAPI (uvicorn)` 启动后端断点调试。
+5. 另开 VS Code Task：`dev: frontend` 启动前端。
+
+如果只想一键启动，不需要断点：
+
+```text
+Terminal -> Run Task -> dev: all
+```
+
+### PyCharm
 
 后端 Run Configuration：
 

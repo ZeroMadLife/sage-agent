@@ -38,6 +38,7 @@ class CodingRuntime:
         model_factory: Callable[[], Any] | None = None,
         approval_policy: ApprovalPolicy = "auto",
         session_state: dict[str, Any] | None = None,
+        save_on_init: bool = True,
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -95,7 +96,8 @@ class CodingRuntime:
         )
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.model_spec: str = ""
-        self._save_session()
+        if save_on_init:
+            self._save_session()
 
     @classmethod
     def resume(
@@ -121,6 +123,7 @@ class CodingRuntime:
             model_factory=model_factory,
             approval_policy=approval_policy,
             session_state=session_state,
+            save_on_init=False,
         )
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:

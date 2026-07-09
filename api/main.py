@@ -144,7 +144,7 @@ def create_app(
     app.state.session_store = session_store
     repo_root = Path(__file__).resolve().parent.parent
     app.state.coding_model_factory = coding_model_factory or (
-        lambda: create_llm("deepseek:deepseek-chat")
+        lambda: create_llm(get_settings().llm_model)
     )
     app.state.coding_workspace_root = Path(coding_workspace_root or repo_root).resolve()
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()

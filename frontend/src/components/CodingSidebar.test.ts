@@ -31,6 +31,79 @@ it('renders coding session history', () => {
   expect(wrapper.find('.session-item.active').exists()).toBe(true)
 })
 
+it('collapses Skills panel by default and expands it on toggle', async () => {
+  const store = useCodingStore()
+  store.skills = [
+    { name: 'review', description: 'review code', source: 'builtin', argument_hint: '' },
+  ]
+  const wrapper = mount(CodingSidebar)
+
+  // Skills collapsed by default -> skill content hidden.
+  expect(wrapper.text()).not.toContain('/review')
+
+  const skillsToggle = wrapper
+    .findAll('.panel-toggle')
+    .find((btn) => btn.text().includes('Skills'))
+  await skillsToggle?.trigger('click')
+
+  expect(wrapper.text()).toContain('/review')
+})
+
+it('filters sessions by title via the search box', async () => {
+  const store = useCodingStore()
+  store.codingSessions = [
+    {
+      session_id: 's1',
+      title: '读 README',
+      workspace_root: '/tmp',
+      created_at: '',
+      updated_at: '',
+      runtime_mode: 'default',
+      message_count: 1,
+    },
+    {
+      session_id: 's2',
+      title: 'fix bug',
+      workspace_root: '/tmp',
+      created_at: '',
+      updated_at: '',
+      runtime_mode: 'default',
+      message_count: 1,
+    },
+  ]
+  const wrapper = mount(CodingSidebar)
+
+  expect(wrapper.findAll('.session-item')).toHaveLength(2)
+
+  await wrapper.find('input[aria-label="Search sessions"]').setValue('bug')
+
+  expect(wrapper.findAll('.session-item')).toHaveLength(1)
+  expect(wrapper.text()).toContain('fix bug')
+  expect(wrapper.text()).not.toContain('读 README')
+})
+
+it('limits sessions to 10 and offers a show-all button', async () => {
+  const store = useCodingStore()
+  store.codingSessions = Array.from({ length: 12 }, (_, i) => ({
+    session_id: `s${i}`,
+    title: `session ${i}`,
+    workspace_root: '/tmp',
+    created_at: '',
+    updated_at: '',
+    runtime_mode: 'default',
+    message_count: 1,
+  }))
+  const wrapper = mount(CodingSidebar)
+
+  expect(wrapper.findAll('.session-item')).toHaveLength(10)
+  expect(wrapper.text()).toContain('显示全部 (12)')
+
+  await wrapper.find('.show-all-sessions').trigger('click')
+
+  expect(wrapper.findAll('.session-item')).toHaveLength(12)
+  expect(wrapper.find('.show-all-sessions').exists()).toBe(false)
+})
+
 it('selects a persisted coding session from the sidebar', async () => {
   const store = useCodingStore()
   store.codingSessions = [
@@ -62,7 +135,7 @@ it('starts a new coding session from the sidebar', async () => {
   expect(store.startNewSession).toHaveBeenCalled()
 })
 
-it('renders run detail as a readable worklog timeline', () => {
+it('renders run detail as a readable worklog timeline', async () => {
   const store = useCodingStore()
   store.runs = [
     {
@@ -108,6 +181,12 @@ it('renders run detail as a readable worklog timeline', () => {
   }
 
   const wrapper = mount(CodingSidebar)
+
+  // Runs panel is collapsed by default; expand it to reveal the timeline.
+  const runsToggle = wrapper
+    .findAll('.panel-toggle')
+    .find((btn) => btn.text().includes('Runs'))
+  await runsToggle?.trigger('click')
 
   expect(wrapper.text()).toContain('Run read_file')
   expect(wrapper.text()).toContain('path=README.md')

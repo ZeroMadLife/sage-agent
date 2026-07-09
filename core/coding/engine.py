@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
 from core.coding.approval import ApprovalManager
-from core.coding.context_manager import ContextManager
+from core.coding.context_manager import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager
 from core.coding.engine_helpers import (
     build_tool_descriptions,
     step_limit_summary,
@@ -199,10 +199,34 @@ class Engine:
 
         ainvoke = getattr(self.model, "ainvoke", None)
         if callable(ainvoke):
-            response = await ainvoke([{"role": "user", "content": prompt}])
+            messages = self._build_ainvoke_messages(prompt)
+            response = await ainvoke(messages)
             content = getattr(response, "content", response)
             return content if isinstance(content, str) else str(content)
         raise TypeError("model must provide complete(prompt) or ainvoke(messages)")
+
+    @staticmethod
+    def _build_ainvoke_messages(prompt: str) -> list[dict[str, str]]:
+        """Split the assembled prompt into a system + user message pair.
+
+        The ``ContextManager`` separates the stable system prompt (identity +
+        tool list) from the volatile session context (project context +
+        transcript + current request) with the ``SYSTEM_PROMPT_DYNAMIC_BOUNDARY``
+        marker. The ainvoke interface supports distinct roles, so we send the
+        pre-boundary text as ``role: "system"`` and everything after it as
+        ``role: "user"``. When the boundary is absent we fall back to sending
+        the whole prompt as a single user message to preserve prior behavior.
+        """
+        boundary_index = prompt.find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+        if boundary_index == -1:
+            return [{"role": "user", "content": prompt}]
+        system_content = prompt[:boundary_index].strip()
+        marker_end = boundary_index + len(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+        user_content = prompt[marker_end:].strip()
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
 
     def _tool_descriptions(self) -> list[str]:
         active_tools = get_active_tools(self.tools, self.activated_tools)

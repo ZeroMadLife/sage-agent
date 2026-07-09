@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import CodingApprovalCard from '../components/CodingApprovalCard.vue'
 import CodingComposer from '../components/CodingComposer.vue'
 import CodingFileTree from '../components/CodingFileTree.vue'
 import CodingGitBadge from '../components/CodingGitBadge.vue'
 import CodingSidebar from '../components/CodingSidebar.vue'
+import CodingThinkingIndicator from '../components/CodingThinkingIndicator.vue'
 import CodingToolActivity from '../components/CodingToolActivity.vue'
 import { useCodingStore } from '../stores/coding'
 import { useMarkdown } from '../composables/useMarkdown'
@@ -13,6 +14,15 @@ const store = useCodingStore()
 const messagesRef = ref<HTMLElement | null>(null)
 const composerRef = ref<InstanceType<typeof CodingComposer> | null>(null)
 const { render } = useMarkdown()
+
+// Show the thinking bar only while thinking and before any tool activity card
+// has appeared for the in-flight turn.
+const showThinkingIndicator = computed(() => {
+  if (!store.isThinking || !store.thinkingPhase) return false
+  const last = store.messages[store.messages.length - 1]
+  if (last && last.tools && last.tools.length > 0) return false
+  return true
+})
 
 function scrollToBottom() {
   nextTick(() => {
@@ -64,6 +74,7 @@ onBeforeUnmount(() => {
               <div v-html="render(msg.content)" class="message-content"></div>
             </article>
           </template>
+          <CodingThinkingIndicator v-if="showThinkingIndicator" :phase="store.thinkingPhase" />
           <p v-if="store.errorMessage" class="error-text">{{ store.errorMessage }}</p>
         </section>
 
