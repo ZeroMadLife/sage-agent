@@ -188,3 +188,99 @@ async def test_runtime_persists_activated_deferred_tools(tmp_path: Path) -> None
     assert "todo_update" in original.session["activated_tools"]
     assert "todo_add" in resumed.activated_tools
     assert "todo_add" in resumed.session["activated_tools"]
+
+
+async def test_run_turn_emits_runtime_mode_changed_on_plan_entry(tmp_path: Path) -> None:
+    """Entering plan mode mid-turn yields a runtime_mode_changed event to the stream."""
+    (tmp_path / "README.md").write_text("TourSwarm plan\n", encoding="utf-8")
+    runtime = CodingRuntime(
+        session_id="s-plan-stream",
+        workspace_root=tmp_path,
+        model=FakeModel(
+            [
+                # Activate the deferred enter_plan_mode tool via tool_search.
+                '<tool>{"name":"tool_search","args":{"query":"plan"}}</tool>',
+                # Call it to switch the runtime into plan mode.
+                '<tool>{"name":"enter_plan_mode","args":{"topic":"Refactor API"}}</tool>',
+                "<final>Planning started.</final>",
+            ]
+        ),
+        storage_root=tmp_path / ".coding",
+    )
+
+    events = [event async for event in runtime.run_turn("进入规划模式")]
+
+    types = [event["type"] for event in events]
+    assert "runtime_mode_changed" in types
+
+    # The mode change should be surfaced right after the enter_plan_mode tool
+    # result, carrying the plan-mode payload to the frontend.
+    mode_idx = types.index("runtime_mode_changed")
+    mode_event = events[mode_idx]
+    assert mode_event["mode"] == "plan"
+    assert mode_event["topic"] == "Refactor API"
+    assert mode_event["plan_path"] == ".coding/plans/refactor-api-plan.md"
+    assert mode_event["run_id"]
+
+    # The preceding event must be the enter_plan_mode tool result.
+    assert types[mode_idx - 1] == "tool_result"
+    assert events[mode_idx - 1]["tool"] == "enter_plan_mode"
+
+    # Final answer still lands at the end of the turn.
+    assert events[-1]["type"] == "final"
+    assert runtime.runtime_mode == "plan"
+
+
+async def test_run_turn_emits_plan_ready_for_review_on_plan_exit(tmp_path: Path) -> None:
+    """exit_plan_mode submits the plan for review instead of leaving plan mode.
+
+    V5.1: exit_plan_mode no longer flips the mode directly. It yields a
+    plan_ready_for_review event and the runtime stays in plan mode until the
+    user approves via approve_plan().
+    """
+    runtime = CodingRuntime(
+        session_id="s-plan-exit",
+        workspace_root=tmp_path,
+        model=FakeModel(
+            [
+                # Activate exit_plan_mode (deferred) via tool_search.
+                '<tool>{"name":"tool_search","args":{"query":"plan"}}</tool>',
+                # Call it to request leaving plan mode.
+                '<tool>{"name":"exit_plan_mode","args":{}}</tool>',
+                "<final>Plan ready for your review.</final>",
+            ]
+        ),
+        storage_root=tmp_path / ".coding",
+    )
+    # Start the session already in plan mode with a plan file on disk.
+    plan_path = runtime.enter_plan_mode("Refactor API")
+    (tmp_path / plan_path).write_text("# Refactor plan\nstep 1\n", encoding="utf-8")
+
+    events = [event async for event in runtime.run_turn("退出规划模式")]
+
+    types = [event["type"] for event in events]
+    # No direct mode change: the runtime stays in plan mode pending review.
+    assert "runtime_mode_changed" not in types
+    assert "plan_ready_for_review" in types
+
+    review_idx = types.index("plan_ready_for_review")
+    review_event = events[review_idx]
+    assert review_event["plan_path"] == ".coding/plans/refactor-api-plan.md"
+    assert "# Refactor plan" in review_event["summary"]
+    assert review_event["review_id"]
+    assert review_event["run_id"]
+
+    # The review is surfaced right after the exit_plan_mode tool result.
+    assert types[review_idx - 1] == "tool_result"
+    assert events[review_idx - 1]["tool"] == "exit_plan_mode"
+
+    assert events[-1]["type"] == "final"
+    # Still in plan mode until the user approves.
+    assert runtime.runtime_mode == "plan"
+    assert runtime.plan_review_manager.pending is not None
+
+    # Approving via the runtime flips the mode to default.
+    approved = runtime.approve_plan()
+    assert approved is True
+    assert runtime.runtime_mode == "default"
+    assert runtime.plan_review_manager.pending is None

@@ -5,6 +5,8 @@ import {
   CodingComposer,
   CodingFileTree,
   CodingGitBadge,
+  CodingPlanApproval,
+  CodingPlanPreview,
   CodingSidebar,
   CodingThinkingIndicator,
   CodingToolActivity,
@@ -15,6 +17,7 @@ import { useMarkdown } from '../composables/useMarkdown'
 const store = useCodingStore()
 const messagesRef = ref<HTMLElement | null>(null)
 const composerRef = ref<InstanceType<typeof CodingComposer> | null>(null)
+const showPlanPreview = ref(false)
 const { render } = useMarkdown()
 
 // Show the thinking bar only while thinking and before any tool activity card
@@ -38,6 +41,10 @@ function onUseSkill(command: string) {
   composerRef.value?.setInput(command)
 }
 
+function openPlanPreview() {
+  showPlanPreview.value = true
+}
+
 onMounted(async () => {
   await store.initialize()
   scrollToBottom()
@@ -58,6 +65,15 @@ onBeforeUnmount(() => {
       </span>
     </header>
 
+    <div v-if="store.runtimeMode === 'plan'" class="plan-banner">
+      <span class="plan-icon">📋</span>
+      <span class="plan-label">计划模式</span>
+      <span class="plan-topic">{{ store.planTopic }}</span>
+      <button v-if="store.planPath" class="plan-view-btn" @click="openPlanPreview">
+        查看计划
+      </button>
+    </div>
+
     <div class="sage-body">
       <div class="pane-left">
         <CodingSidebar @use-skill="onUseSkill" />
@@ -77,6 +93,7 @@ onBeforeUnmount(() => {
             </article>
           </template>
           <CodingThinkingIndicator v-if="showThinkingIndicator" :phase="store.thinkingPhase" />
+          <CodingPlanApproval v-if="store.planReview" />
           <p v-if="store.errorMessage" class="error-text">{{ store.errorMessage }}</p>
         </section>
 
@@ -93,6 +110,14 @@ onBeforeUnmount(() => {
         <CodingFileTree />
       </div>
     </div>
+
+    <CodingPlanPreview
+      v-if="showPlanPreview"
+      :plan-path="store.planPath"
+      :topic="store.planTopic"
+      :visible="true"
+      @close="showPlanPreview = false"
+    />
   </div>
 </template>
 
@@ -135,6 +160,48 @@ onBeforeUnmount(() => {
   grid-template-columns: 240px 1fr 300px;
   min-height: 0;
   overflow: hidden;
+}
+
+.plan-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  background: #eff6ff;
+  color: #1e40af;
+  border-bottom: 1px solid #dbeafe;
+  font-size: 13px;
+}
+
+.plan-icon {
+  font-size: 15px;
+}
+
+.plan-label {
+  font-weight: 700;
+}
+
+.plan-topic {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.plan-view-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid #1e40af;
+  border-radius: 6px;
+  background: #fff;
+  color: #1e40af;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.plan-view-btn:hover {
+  background: #dbeafe;
 }
 
 .pane-left {

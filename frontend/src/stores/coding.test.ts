@@ -479,4 +479,78 @@ describe('coding store', () => {
 
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL))
   })
+
+  it('stores plan review from plan_ready_for_review event', () => {
+    const store = useCodingStore()
+    store.handleServerEvent({
+      type: 'plan_ready_for_review',
+      run_id: 'run_xxx',
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan',
+    } as never)
+
+    expect(store.planReview?.review_id).toBe('plan_review_1')
+    expect(store.planReview?.plan_path).toBe('.coding/plans/xxx-plan.md')
+    expect(store.planReview?.summary).toBe('# Plan')
+  })
+
+  it('approves a plan via REST and clears state from response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'approved', mode: 'default' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.runtimeMode = 'plan'
+    store.planTopic = 'refactor'
+    store.planPath = '.coding/plans/xxx-plan.md'
+    store.planReview = {
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan',
+    }
+
+    await store.approvePlan()
+
+    const calledUrl = fetchMock.mock.calls[0][0] as URL
+    expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/approve')
+    // approvePlan applies the REST response locally since runtime_mode_changed
+    // is not pushed over WebSocket (the REST call runs outside run_turn).
+    expect(store.planReview).toBeNull()
+    expect(store.runtimeMode).toBe('default')
+    expect(store.planTopic).toBe('')
+    expect(store.planPath).toBe('')
+  })
+
+  it('rejects a plan via REST and clears plan review locally', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.planReview = {
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan',
+    }
+
+    await store.rejectPlan()
+
+    const calledUrl = fetchMock.mock.calls[0][0] as URL
+    expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/reject')
+    expect(store.planReview).toBeNull()
+  })
+
+  it('does nothing when approving or rejecting without a plan review', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    await store.approvePlan()
+    await store.rejectPlan()
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 })

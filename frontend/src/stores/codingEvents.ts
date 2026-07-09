@@ -22,6 +22,12 @@ export type ChatMessage = {
   isThinking?: boolean
 }
 
+export type PlanReviewState = {
+  review_id: string
+  plan_path: string
+  summary: string
+}
+
 export type CodingEventState = {
   sessionId: Ref<string>
   messages: Ref<ChatMessage[]>
@@ -30,6 +36,10 @@ export type CodingEventState = {
   contextChars: Ref<number>
   pendingApproval: Ref<CodingApproval | null>
   thinkingPhase: Ref<string>
+  runtimeMode: Ref<string>
+  planTopic: Ref<string>
+  planPath: Ref<string>
+  planReview: Ref<PlanReviewState | null>
 }
 
 export type CodingEventEffect = {
@@ -48,6 +58,23 @@ export function applyCodingEvent(
   }
   if (event.type === 'turn_finished') {
     state.thinkingPhase.value = ''
+    return {}
+  }
+  if (event.type === 'runtime_mode_changed') {
+    state.runtimeMode.value = event.mode
+    state.planTopic.value = event.topic || ''
+    state.planPath.value = event.plan_path || ''
+    if (event.mode === 'default') {
+      state.planReview.value = null
+    }
+    return {}
+  }
+  if (event.type === 'plan_ready_for_review') {
+    state.planReview.value = {
+      review_id: event.review_id,
+      plan_path: event.plan_path,
+      summary: event.summary,
+    }
     return {}
   }
   if (event.type === 'model_requested') {

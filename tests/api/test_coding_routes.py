@@ -289,6 +289,167 @@ def test_stop_coding_run_marks_runtime_stop_requested(tmp_path: Path) -> None:
     assert app.state.coding_sessions[session_id].stop_requested is True
 
 
+def test_plan_approve_exits_plan_mode(tmp_path: Path) -> None:
+    """POST /plan/approve resolves a pending review and exits plan mode."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    runtime.enter_plan_mode("Refactor API")
+    # Submit a pending plan review (as exit_plan_mode would).
+    runtime.request_plan_exit()
+
+    response = client.post(f"/api/v1/coding/{session_id}/plan/approve")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "approved", "mode": "default"}
+    assert runtime.runtime_mode == "default"
+    assert runtime.plan_review_manager.pending is None
+
+
+def test_plan_reject_keeps_plan_mode(tmp_path: Path) -> None:
+    """POST /plan/reject resolves a pending review while staying in plan mode."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    runtime.enter_plan_mode("Refactor API")
+    # Submit a pending plan review (as exit_plan_mode would).
+    runtime.request_plan_exit()
+
+    response = client.post(f"/api/v1/coding/{session_id}/plan/reject")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "rejected", "mode": "plan"}
+    assert runtime.runtime_mode == "plan"
+    assert runtime.plan_review_manager.pending is None
+
+
+def test_plan_approve_rejects_when_no_pending_review(tmp_path: Path) -> None:
+    """POST /plan/approve returns 400 when no review is pending."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    runtime.enter_plan_mode("Refactor API")
+    # Submit then resolve a review so nothing is left outstanding.
+    runtime.request_plan_exit()
+    runtime.plan_review_manager.resolve("rejected")
+
+    response = client.post(f"/api/v1/coding/{session_id}/plan/approve")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "no pending plan review"
+
+
+def test_plan_approve_rejects_when_not_in_plan_mode(tmp_path: Path) -> None:
+    """POST /plan/approve returns 400 when the runtime is not in plan mode."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+
+    response = client.post(f"/api/v1/coding/{session_id}/plan/approve")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "not in plan mode"
+
+
+def test_coding_websocket_streams_plan_ready_then_approve_exits(tmp_path: Path) -> None:
+    """exit_plan_mode yields plan_ready_for_review; approve via REST exits plan mode."""
+    (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
+
+    class PlanExitModel:
+        """Model that activates and calls exit_plan_mode, then returns a final."""
+
+        def __init__(self) -> None:
+            self.responses = [
+                '<tool>{"name":"tool_search","args":{"query":"plan"}}</tool>',
+                '<tool>{"name":"exit_plan_mode","args":{}}</tool>',
+                "<final>Plan is ready for your review.</final>",
+            ]
+
+        async def complete(self, prompt: str) -> str:
+            _ = prompt
+            return self.responses.pop(0)
+
+    app = create_app(
+        coding_model_factory=PlanExitModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    # Seed plan mode + a plan file on disk before the turn.
+    plan_path = runtime.enter_plan_mode("Refactor API")
+    (tmp_path / plan_path).write_text("# Refactor plan\nstep 1\n", encoding="utf-8")
+
+    with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+        websocket.send_json({"content": "退出规划模式"})
+        events: list[dict] = []
+        while True:
+            event = websocket.receive_json()
+            events.append(event)
+            if event["type"] == "final":
+                break
+
+    types = [event["type"] for event in events]
+    assert "plan_ready_for_review" in types
+    review_event = events[types.index("plan_ready_for_review")]
+    assert review_event["plan_path"] == ".coding/plans/refactor-api-plan.md"
+    assert "# Refactor plan" in review_event["summary"]
+    # Still in plan mode pending user approval.
+    assert runtime.runtime_mode == "plan"
+
+    # User approves via the REST API.
+    response = client.post(f"/api/v1/coding/{session_id}/plan/approve")
+    assert response.status_code == 200
+    assert response.json()["mode"] == "default"
+    assert runtime.runtime_mode == "default"
+
+
+def test_coding_websocket_resurfaces_pending_plan_review_on_reconnect(tmp_path: Path) -> None:
+    """A reconnecting client re-receives plan_ready_for_review + plan mode."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    client = TestClient(app)
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    runtime.enter_plan_mode("Refactor API")
+    runtime.request_plan_exit()
+
+    with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+        mode_sync = websocket.receive_json()
+        review_sync = websocket.receive_json()
+
+    assert mode_sync["type"] == "runtime_mode_changed"
+    assert mode_sync["mode"] == "plan"
+    assert mode_sync["plan_path"] == ".coding/plans/refactor-api-plan.md"
+    assert review_sync["type"] == "plan_ready_for_review"
+    assert review_sync["review_id"]
+    assert "# Refactor" not in review_sync["summary"]  # no plan file was written
+    assert runtime.runtime_mode == "plan"
+
+
 def test_coding_run_history_lists_and_reads_traces(tmp_path: Path) -> None:
     """Run history endpoints expose persisted coding run traces."""
     (tmp_path / "README.md").write_text("Sage run history\n", encoding="utf-8")

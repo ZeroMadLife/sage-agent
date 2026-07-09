@@ -10,10 +10,17 @@ from typing import Any
 
 from core.coding.context import IGNORED_PATH_NAMES, ContextManager, WorkspaceContext, now
 from core.coding.engine.engine import Engine
-from core.coding.engine.events import TurnFinishedEvent, TurnStartedEvent, event_to_dict
+from core.coding.engine.events import (
+    PlanReadyForReviewEvent,
+    RuntimeModeChangedEvent,
+    TurnFinishedEvent,
+    TurnStartedEvent,
+    event_to_dict,
+)
 from core.coding.multiagent import WorkerManager
 from core.coding.persistence import CodingSessionStore, RunStore, SessionEventBus, TodoLedger
 from core.coding.plan_mode import PlanModeManager
+from core.coding.plan_review import PlanReviewManager
 from core.coding.skills import SkillRegistry
 from core.coding.tool_executor import (
     ApprovalManager,
@@ -79,6 +86,7 @@ class CodingRuntime:
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
         self.approval_manager = ApprovalManager()
+        self.plan_review_manager = PlanReviewManager()
         self.stop_requested = False
         self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
@@ -243,6 +251,48 @@ class CodingRuntime:
         self._save_session()
         self.session_event_bus.emit("runtime_mode_changed", self.plan_mode.to_dict())
 
+    def request_plan_exit(self) -> dict[str, str]:
+        """Submit the current plan for user review instead of exiting directly.
+
+        Reads the plan file and submits a review entry. The turn continues to
+        stream; the ``plan_ready_for_review`` event is surfaced to the client by
+        ``run_turn``. The actual mode switch happens later via ``approve_plan``.
+
+        Raises ValueError if not currently in plan mode.
+        """
+        if self.runtime_mode != "plan":
+            raise ValueError("not in plan mode")
+        plan_path = self.plan_mode.plan_path
+        summary = self._plan_summary(plan_path)
+        entry = self.plan_review_manager.submit(plan_path, summary)
+        return {"review_id": entry.review_id, "plan_path": plan_path, "summary": summary}
+
+    def approve_plan(self) -> bool:
+        """Approve the pending plan review and exit plan mode."""
+        entry = self.plan_review_manager.resolve("approved")
+        if entry is None:
+            return False
+        self.exit_plan_mode()
+        return True
+
+    def reject_plan(self) -> bool:
+        """Reject the pending plan review, staying in plan mode.
+
+        Returns True when a review was pending and rejected, False otherwise.
+        """
+        entry = self.plan_review_manager.resolve("rejected")
+        return entry is not None
+
+    def _plan_summary(self, plan_path: str) -> str:
+        """Return the first 2000 characters of the plan file (best-effort)."""
+        if not plan_path:
+            return ""
+        target = self.workspace.path(plan_path)
+        if not target.is_file():
+            return ""
+        content = target.read_text(encoding="utf-8", errors="replace")
+        return content[:2000]
+
     async def run_turn(self, user_message: str) -> AsyncIterator[dict[str, Any]]:
         """Run one coding turn, persist events, and stream them to caller."""
         self.stop_requested = False
@@ -251,6 +301,8 @@ class CodingRuntime:
         started = event_to_dict(TurnStartedEvent(run_id=run_id))
         self.run_store.append_trace(run_id, started)
         self.session_event_bus.emit("turn_started", started)
+        prev_mode = self.runtime_mode
+        last_notified_review_id = ""
         engine = Engine(
             model=self.model,
             workspace=self.workspace,
@@ -273,6 +325,45 @@ class CodingRuntime:
             self.session_event_bus.emit(event["type"], event)
             self._sync_session_state()
             yield event
+            # Surface runtime mode changes (enter/exit plan mode) that happen
+            # during tool execution to the WebSocket stream. These mutations are
+            # performed on the runtime via the tool context, so they are not
+            # part of the engine's own event stream and must be re-injected.
+            if self.runtime_mode != prev_mode:
+                mode_event = event_to_dict(
+                    RuntimeModeChangedEvent(
+                        run_id=run_id,
+                        mode=self.runtime_mode,
+                        topic=self.plan_mode.topic,
+                        plan_path=self.plan_mode.plan_path,
+                    )
+                )
+                mode_event = {"run_id": run_id, **mode_event}
+                self.run_store.append_trace(run_id, mode_event)
+                yield mode_event
+                prev_mode = self.runtime_mode
+            # Surface a pending plan review exactly once per outstanding request.
+            # The exit_plan_mode tool submits a review instead of exiting; the
+            # actual mode switch happens when the user approves via the REST API.
+            pending = self.plan_review_manager.pending
+            if (
+                pending is not None
+                and not pending.event.is_set()
+                and pending.review_id != last_notified_review_id
+            ):
+                review_event = event_to_dict(
+                    PlanReadyForReviewEvent(
+                        run_id=run_id,
+                        review_id=pending.review_id,
+                        plan_path=pending.plan_path,
+                        summary=pending.summary,
+                    )
+                )
+                review_event = {"run_id": run_id, **review_event}
+                self.run_store.append_trace(run_id, review_event)
+                self.session_event_bus.emit("plan_ready_for_review", review_event)
+                yield review_event
+                last_notified_review_id = pending.review_id
         finished = event_to_dict(TurnFinishedEvent(run_id=run_id))
         self.run_store.append_trace(run_id, finished)
         self.session_event_bus.emit("turn_finished", finished)
@@ -283,6 +374,7 @@ class CodingRuntime:
         """Request cancellation for the current or next engine checkpoint."""
         self.stop_requested = True
         self.approval_manager.cancel_session(self.session_id)
+        self.plan_review_manager.cancel()
         self.session_event_bus.emit("stop_requested", {"session_id": self.session_id})
 
     def _permission_checker(self) -> PermissionChecker:

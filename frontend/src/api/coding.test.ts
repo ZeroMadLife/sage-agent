@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  approveCodingPlan,
   buildCodingStreamUrl,
   fetchCodingApprovalPending,
   fetchCodingRun,
   fetchCodingRuns,
   fetchCodingSessionMessages,
   fetchCodingSessions,
+  rejectCodingPlan,
   respondCodingApproval,
   resumeCodingSession,
   startCodingSession,
@@ -81,6 +83,39 @@ describe('coding API client', () => {
     await stopCodingRun('c1')
 
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
+  })
+
+  it('approves a plan via REST', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'approved', mode: 'default' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await approveCodingPlan('c1')
+
+    const calledUrl = fetchMock.mock.calls[0][0] as URL
+    expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/approve')
+    expect(fetchMock.mock.calls[0][1]).toEqual({ method: 'POST' })
+    expect(result).toEqual({ status: 'approved', mode: 'default' })
+  })
+
+  it('rejects a plan via REST', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await rejectCodingPlan('c1')
+
+    const calledUrl = fetchMock.mock.calls[0][0] as URL
+    expect(calledUrl.pathname).toBe('/api/v1/coding/c1/plan/reject')
+    expect(fetchMock.mock.calls[0][1]).toEqual({ method: 'POST' })
+  })
+
+  it('throws when plan approval fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500 })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(approveCodingPlan('c1')).rejects.toThrow('approve plan failed: 500')
   })
 
   it('fetches coding run history and detail', async () => {

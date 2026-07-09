@@ -4,6 +4,8 @@ from core.coding.engine import (
     ApprovalRequiredEvent,
     CancelledEvent,
     FinalEvent,
+    PlanReadyForReviewEvent,
+    RuntimeModeChangedEvent,
     StepLimitEvent,
     ToolCallEvent,
     ToolResultEvent,
@@ -85,3 +87,65 @@ def test_policy_and_security_fields_are_optional_and_serializable() -> None:
 
     assert data["policy_reason"] == "prior_read_required"
     assert data["security_event_type"] == "write_scope_guard"
+
+
+def test_runtime_mode_changed_event_serializes_plan_state() -> None:
+    """Runtime mode change events carry mode, topic, and plan_path to the UI."""
+    event = RuntimeModeChangedEvent(
+        run_id="run_1",
+        mode="plan",
+        topic="Refactor API",
+        plan_path=".coding/plans/refactor-api-plan.md",
+    )
+
+    data = event_to_dict(event)
+
+    assert data == {
+        "type": "runtime_mode_changed",
+        "run_id": "run_1",
+        "created_at": event.created_at,
+        "mode": "plan",
+        "topic": "Refactor API",
+        "plan_path": ".coding/plans/refactor-api-plan.md",
+    }
+
+
+def test_runtime_mode_changed_event_defaults_to_default_mode() -> None:
+    """A freshly constructed mode event defaults to default mode with empty plan."""
+    event = RuntimeModeChangedEvent()
+
+    assert event.type == "runtime_mode_changed"
+    assert event.mode == "default"
+    assert event.topic == ""
+    assert event.plan_path == ""
+
+
+def test_plan_ready_for_review_event_serializes_review_payload() -> None:
+    """Plan review events carry review_id, plan_path, and summary to the UI."""
+    event = PlanReadyForReviewEvent(
+        run_id="run_1",
+        review_id="plan_review_1",
+        plan_path=".coding/plans/refactor-api-plan.md",
+        summary="# Refactor plan\nstep 1",
+    )
+
+    data = event_to_dict(event)
+
+    assert data == {
+        "type": "plan_ready_for_review",
+        "run_id": "run_1",
+        "created_at": event.created_at,
+        "review_id": "plan_review_1",
+        "plan_path": ".coding/plans/refactor-api-plan.md",
+        "summary": "# Refactor plan\nstep 1",
+    }
+
+
+def test_plan_ready_for_review_event_defaults_to_empty_fields() -> None:
+    """A freshly constructed review event defaults to empty review fields."""
+    event = PlanReadyForReviewEvent()
+
+    assert event.type == "plan_ready_for_review"
+    assert event.review_id == ""
+    assert event.plan_path == ""
+    assert event.summary == ""

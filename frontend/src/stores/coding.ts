@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
+  approveCodingPlan,
   buildCodingStreamUrl,
   fetchCodingFile,
   fetchCodingFiles,
@@ -13,6 +14,7 @@ import {
   fetchCodingSessionMessages,
   fetchCodingSessions,
   fetchCodingSkills,
+  rejectCodingPlan,
   respondCodingApproval,
   resumeCodingSession,
   startCodingSession,
@@ -35,7 +37,7 @@ import type {
   CodingToolResultEvent,
 } from '../types/api'
 import { applyCodingEvent } from './codingEvents'
-import type { ChatMessage } from './codingEvents'
+import type { ChatMessage, PlanReviewState } from './codingEvents'
 import { CodingStream } from './codingStream'
 
 export type { ChatMessage, ToolActivity } from './codingEvents'
@@ -72,6 +74,10 @@ export const useCodingStore = defineStore('coding', () => {
   const contextBudget = 60000
   const pendingApproval = ref<CodingApproval | null>(null)
   const thinkingPhase = ref('')
+  const runtimeMode = ref('default')
+  const planTopic = ref('')
+  const planPath = ref('')
+  const planReview = ref<PlanReviewState | null>(null)
   const codingSessions = ref<CodingSessionSummary[]>([])
   const runs = ref<CodingRunSummary[]>([])
   const selectedRun = ref<CodingRunDetailResponse | null>(null)
@@ -143,6 +149,10 @@ export const useCodingStore = defineStore('coding', () => {
         contextChars,
         pendingApproval,
         thinkingPhase,
+        runtimeMode,
+        planTopic,
+        planPath,
+        planReview,
       },
       event,
     )
@@ -256,6 +266,34 @@ export const useCodingStore = defineStore('coding', () => {
     pendingApproval.value = null
   }
 
+  async function approvePlan() {
+    if (!planReview.value) return
+    try {
+      const result = await approveCodingPlan(sessionId.value)
+      // The REST call runs outside run_turn, so runtime_mode_changed is not
+      // pushed over WebSocket. Apply the response locally.
+      if (result.mode === 'default') {
+        runtimeMode.value = 'default'
+        planTopic.value = ''
+        planPath.value = ''
+        planReview.value = null
+      }
+    } catch (e) {
+      errorMessage.value = String(e)
+    }
+  }
+
+  async function rejectPlan() {
+    if (!planReview.value) return
+    try {
+      await rejectCodingPlan(sessionId.value)
+      // Backend stays in plan mode (no runtime_mode_changed), so clear locally.
+      planReview.value = null
+    } catch (e) {
+      errorMessage.value = String(e)
+    }
+  }
+
   async function loadSkills() {
     try {
       const res = await fetchCodingSkills()
@@ -317,6 +355,10 @@ export const useCodingStore = defineStore('coding', () => {
     errorMessage.value = ''
     pendingApproval.value = null
     thinkingPhase.value = ''
+    planReview.value = null
+    runtimeMode.value = 'default'
+    planTopic.value = ''
+    planPath.value = ''
     runs.value = []
     selectedRun.value = null
     dirCache.clear()
@@ -336,6 +378,10 @@ export const useCodingStore = defineStore('coding', () => {
     errorMessage.value = ''
     pendingApproval.value = null
     thinkingPhase.value = ''
+    planReview.value = null
+    runtimeMode.value = 'default'
+    planTopic.value = ''
+    planPath.value = ''
     runs.value = []
     selectedRun.value = null
     dirCache.clear()
@@ -443,6 +489,10 @@ export const useCodingStore = defineStore('coding', () => {
     contextPercent,
     pendingApproval,
     thinkingPhase,
+    runtimeMode,
+    planTopic,
+    planPath,
+    planReview,
     codingSessions,
     runs,
     selectedRun,
@@ -461,6 +511,8 @@ export const useCodingStore = defineStore('coding', () => {
     handleServerEvent,
     respondApproval,
     stopCurrentRun,
+    approvePlan,
+    rejectPlan,
     selectSession,
     startNewSession,
     connectSocket,

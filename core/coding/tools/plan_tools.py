@@ -32,7 +32,7 @@ def enter_plan_mode(
 
 @register_tool(
     name="exit_plan_mode",
-    description="Exit plan mode and return to default mode.",
+    description="Exit plan mode after the user reviews the plan.",
     schema={},
     schema_model=ExitPlanModeArgs,
     risky=False,
@@ -46,8 +46,17 @@ def exit_plan_mode(
 ) -> ToolResult:
     _ = workspace, args
     runtime = _require_context_attr(tool_context, "runtime")
-    runtime.exit_plan_mode()
-    return ToolResult(content="mode: default")
+    try:
+        result = runtime.request_plan_exit()
+    except ValueError as exc:
+        return ToolResult(content=str(exc), is_error=True)
+    return ToolResult(
+        content=(
+            "plan ready for review\n"
+            f"plan path: {result['plan_path']}\n"
+            "waiting for user approval to exit plan mode"
+        )
+    )
 
 
 def _require_context_attr(context: ToolContext | None, attr: str) -> Any:

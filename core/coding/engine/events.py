@@ -118,6 +118,24 @@ class TurnFinishedEvent(RunEventBase):
     type: Literal["turn_finished"] = "turn_finished"
 
 
+class RuntimeModeChangedEvent(RunEventBase):
+    """Runtime mode changed (plan/default) during tool execution."""
+
+    type: Literal["runtime_mode_changed"] = "runtime_mode_changed"
+    mode: str = "default"
+    topic: str = ""
+    plan_path: str = ""
+
+
+class PlanReadyForReviewEvent(RunEventBase):
+    """Plan is ready for user review before exiting plan mode."""
+
+    type: Literal["plan_ready_for_review"] = "plan_ready_for_review"
+    review_id: str = ""
+    plan_path: str = ""
+    summary: str = ""
+
+
 RunEvent: TypeAlias = (
     TurnStartedEvent
     | ModelRequestedEvent
@@ -132,6 +150,8 @@ RunEvent: TypeAlias = (
     | CancelledEvent
     | ErrorEvent
     | TurnFinishedEvent
+    | RuntimeModeChangedEvent
+    | PlanReadyForReviewEvent
 )
 
 

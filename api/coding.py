@@ -163,6 +163,36 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
         await websocket.close()
         return
 
+    # Sync the runtime mode on (re)connect so the frontend knows whether the
+    # session is currently in plan mode. This only fires when a turn is not
+    # actively streaming, since mode changes mid-turn are delivered via the
+    # runtime_mode_changed events yielded by run_turn().
+    if runtime.runtime_mode != "default":
+        await websocket.send_json(
+            {
+                "type": "runtime_mode_changed",
+                "run_id": "",
+                "mode": runtime.runtime_mode,
+                "topic": runtime.plan_mode.topic,
+                "plan_path": runtime.plan_mode.plan_path,
+            }
+        )
+
+    # Re-surface an outstanding plan review on (re)connect so the frontend can
+    # render the approval UI even if the plan_ready_for_review event was missed
+    # (e.g. the turn already finished streaming before the client connected).
+    pending_review = runtime.plan_review_manager.pending
+    if pending_review is not None and not pending_review.event.is_set():
+        await websocket.send_json(
+            {
+                "type": "plan_ready_for_review",
+                "run_id": "",
+                "review_id": pending_review.review_id,
+                "plan_path": pending_review.plan_path,
+                "summary": pending_review.summary,
+            }
+        )
+
     while True:
         try:
             raw: Any = await websocket.receive_json()
@@ -262,6 +292,30 @@ async def stop_coding_run(session_id: str, request: Request) -> dict[str, bool]:
     runtime = _require_runtime(request, session_id)
     runtime.request_stop()
     return {"ok": True}
+
+
+@router.post("/api/v1/coding/{session_id}/plan/approve")
+async def approve_plan(session_id: str, request: Request) -> dict[str, str]:
+    """Approve the pending plan review and exit plan mode."""
+    runtime = _require_runtime(request, session_id)
+    if runtime.runtime_mode != "plan":
+        raise HTTPException(status_code=400, detail="not in plan mode")
+    success = runtime.approve_plan()
+    if not success:
+        raise HTTPException(status_code=400, detail="no pending plan review")
+    return {"status": "approved", "mode": runtime.runtime_mode}
+
+
+@router.post("/api/v1/coding/{session_id}/plan/reject")
+async def reject_plan(session_id: str, request: Request) -> dict[str, str]:
+    """Reject the pending plan review, staying in plan mode."""
+    runtime = _require_runtime(request, session_id)
+    if runtime.runtime_mode != "plan":
+        raise HTTPException(status_code=400, detail="not in plan mode")
+    success = runtime.reject_plan()
+    if not success:
+        raise HTTPException(status_code=400, detail="no pending plan review")
+    return {"status": "rejected", "mode": runtime.runtime_mode}
 
 
 @router.get("/api/v1/coding/{session_id}/runs", response_model=CodingRunsResponse)

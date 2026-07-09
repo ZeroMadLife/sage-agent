@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ref } from 'vue'
-import { applyCodingEvent, type ChatMessage } from './codingEvents'
+import { applyCodingEvent, type ChatMessage, type PlanReviewState } from './codingEvents'
 import type { CodingApproval } from '../types/api'
 
 function state() {
@@ -12,6 +12,10 @@ function state() {
     contextChars: ref(0),
     pendingApproval: ref<CodingApproval | null>(null),
     thinkingPhase: ref(''),
+    runtimeMode: ref('default'),
+    planTopic: ref(''),
+    planPath: ref(''),
+    planReview: ref<PlanReviewState | null>(null),
   }
 }
 
@@ -192,5 +196,100 @@ describe('codingEvents', () => {
 
     expect(current.isThinking.value).toBe(false)
     expect(current.thinkingPhase.value).toBe('')
+  })
+
+  it('enters plan mode on runtime_mode_changed', () => {
+    const current = state()
+
+    applyCodingEvent(current, {
+      type: 'runtime_mode_changed',
+      run_id: 'run_xxx',
+      mode: 'plan',
+      topic: 'refactor auth module',
+      plan_path: '.coding/plans/xxx-plan.md',
+    })
+
+    expect(current.runtimeMode.value).toBe('plan')
+    expect(current.planTopic.value).toBe('refactor auth module')
+    expect(current.planPath.value).toBe('.coding/plans/xxx-plan.md')
+  })
+
+  it('exits plan mode back to default on runtime_mode_changed', () => {
+    const current = state()
+    current.runtimeMode.value = 'plan'
+    current.planTopic.value = 'refactor auth module'
+    current.planPath.value = '.coding/plans/xxx-plan.md'
+
+    applyCodingEvent(current, { type: 'runtime_mode_changed', mode: 'default' })
+
+    expect(current.runtimeMode.value).toBe('default')
+    expect(current.planTopic.value).toBe('')
+    expect(current.planPath.value).toBe('')
+  })
+
+  it('handles runtime_mode_changed with missing optional fields', () => {
+    const current = state()
+    current.runtimeMode.value = 'plan'
+    current.planTopic.value = 'topic'
+    current.planPath.value = 'path'
+
+    applyCodingEvent(current, { type: 'runtime_mode_changed', mode: 'default' })
+
+    expect(current.runtimeMode.value).toBe('default')
+    expect(current.planTopic.value).toBe('')
+    expect(current.planPath.value).toBe('')
+  })
+
+  it('stores plan review from plan_ready_for_review', () => {
+    const current = state()
+
+    applyCodingEvent(current, {
+      type: 'plan_ready_for_review',
+      run_id: 'run_xxx',
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan\n\n- step 1',
+    })
+
+    expect(current.planReview.value).toEqual({
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan\n\n- step 1',
+    })
+  })
+
+  it('clears plan review when runtime_mode_changed exits to default', () => {
+    const current = state()
+    current.runtimeMode.value = 'plan'
+    current.planReview.value = {
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan',
+    }
+
+    applyCodingEvent(current, { type: 'runtime_mode_changed', mode: 'default' })
+
+    expect(current.runtimeMode.value).toBe('default')
+    expect(current.planReview.value).toBeNull()
+  })
+
+  it('keeps plan review when runtime_mode_changed stays in plan mode', () => {
+    const current = state()
+    current.runtimeMode.value = 'plan'
+    current.planReview.value = {
+      review_id: 'plan_review_1',
+      plan_path: '.coding/plans/xxx-plan.md',
+      summary: '# Plan',
+    }
+
+    applyCodingEvent(current, {
+      type: 'runtime_mode_changed',
+      mode: 'plan',
+      topic: 'updated topic',
+      plan_path: '.coding/plans/xxx-plan.md',
+    })
+
+    expect(current.runtimeMode.value).toBe('plan')
+    expect(current.planReview.value).not.toBeNull()
   })
 })

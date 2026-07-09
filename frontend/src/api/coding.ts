@@ -176,6 +176,25 @@ export async function stopCodingRun(sessionId: string): Promise<void> {
   if (!response.ok) throw new Error(`stop run failed: ${response.status}`)
 }
 
+export async function approveCodingPlan(
+  sessionId: string,
+): Promise<{ status: string; mode: string }> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/${sessionId}/plan/approve`, API_BASE_URL),
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`approve plan failed: ${response.status}`)
+  return (await response.json()) as { status: string; mode: string }
+}
+
+export async function rejectCodingPlan(sessionId: string): Promise<void> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/${sessionId}/plan/reject`, API_BASE_URL),
+    { method: 'POST' },
+  )
+  if (!response.ok) throw new Error(`reject plan failed: ${response.status}`)
+}
+
 export async function fetchCodingRuns(sessionId: string): Promise<CodingRunsResponse> {
   const response = await fetch(new URL(`/api/v1/coding/${sessionId}/runs`, API_BASE_URL))
   if (!response.ok) throw new Error(`fetch runs failed: ${response.status}`)

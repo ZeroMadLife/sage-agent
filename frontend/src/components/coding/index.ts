@@ -1,4 +1,6 @@
 export { default as CodingApprovalCard } from './chat/CodingApprovalCard.vue'
+export { default as CodingPlanApproval } from './chat/CodingPlanApproval.vue'
+export { default as CodingPlanPreview } from './chat/CodingPlanPreview.vue'
 export { default as CodingThinkingIndicator } from './chat/CodingThinkingIndicator.vue'
 export { default as CodingToolActivity } from './chat/CodingToolActivity.vue'
 export { default as CodingComposer } from './composer/CodingComposer.vue'

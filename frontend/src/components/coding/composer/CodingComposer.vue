@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Send, Square } from 'lucide-vue-next'
 import { useCodingStore } from '../../../stores/coding'
+import type { CodingSkillSummary } from '../../../types/api'
 
 const store = useCodingStore()
 const input = ref('')
@@ -26,11 +27,37 @@ const contextTooltip = computed(
     `${store.contextChars} chars used / ${store.contextBudget} budget (${store.contextPercent}%)`,
 )
 
+// --- Skill menu (triggered when input starts with "/") ---
+const showSkillMenu = computed(() => input.value.startsWith('/'))
+
+const skillQuery = computed(() => input.value.slice(1).toLowerCase())
+
+const filteredSkills = computed<CodingSkillSummary[]>(() => {
+  const query = skillQuery.value.trim()
+  if (!query) return store.skills
+  return store.skills.filter((skill) =>
+    `${skill.name} ${skill.description}`.toLowerCase().includes(query),
+  )
+})
+
+const selectedIndex = ref(0)
+
+function selectSkill(skill: CodingSkillSummary) {
+  input.value = `/${skill.name} `
+  selectedIndex.value = 0
+}
+
+function onInput() {
+  // Reset selection whenever the filter result set changes.
+  selectedIndex.value = 0
+}
+
 function send() {
   const content = input.value.trim()
   if (!content) return
   store.sendMessage(content)
   input.value = ''
+  selectedIndex.value = 0
 }
 
 function stop() {
@@ -38,6 +65,33 @@ function stop() {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (showSkillMenu.value && filteredSkills.value.length > 0) {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault()
+      selectedIndex.value = (selectedIndex.value + 1) % filteredSkills.value.length
+      return
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault()
+      const count = filteredSkills.value.length
+      selectedIndex.value = (selectedIndex.value - 1 + count) % count
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      const skills = filteredSkills.value
+      // Clamp in case the filter narrowed after the selection was set.
+      const skill = skills[Math.min(selectedIndex.value, skills.length - 1)]
+      if (skill) selectSkill(skill)
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      input.value = ''
+      selectedIndex.value = 0
+      return
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     send()
@@ -94,13 +148,34 @@ defineExpose({
     </div>
 
     <div class="composer-input">
-      <textarea
-        v-model="input"
-        rows="2"
-        :disabled="!store.sessionId || store.isThinking"
-        placeholder="输入任务，或 /review 调用 skill"
-        @keydown="onKeydown"
-      />
+      <div class="composer-textarea-wrap">
+        <textarea
+          v-model="input"
+          rows="2"
+          :disabled="!store.sessionId || store.isThinking"
+          placeholder="输入任务，或 /review 调用 skill"
+          @keydown="onKeydown"
+          @input="onInput"
+        />
+        <ul v-if="showSkillMenu && filteredSkills.length > 0" class="skill-menu" role="listbox">
+          <li
+            v-for="(skill, index) in filteredSkills"
+            :key="skill.name"
+            class="skill-menu-item"
+            :class="{ active: index === selectedIndex }"
+            role="option"
+            :aria-selected="index === selectedIndex"
+            @mouseenter="selectedIndex = index"
+            @click="selectSkill(skill)"
+          >
+            <span class="skill-menu-name">/{{ skill.name }}</span>
+            <span class="skill-menu-desc">{{ skill.description }}</span>
+          </li>
+        </ul>
+        <p v-else-if="showSkillMenu && filteredSkills.length === 0" class="skill-menu-empty">
+          无匹配 skill
+        </p>
+      </div>
       <button
         v-if="store.isThinking"
         class="stop-btn"
@@ -177,8 +252,13 @@ defineExpose({
   align-items: flex-end;
 }
 
-.composer-input textarea {
+.composer-textarea-wrap {
+  position: relative;
   flex: 1;
+}
+
+.composer-input textarea {
+  width: 100%;
   resize: vertical;
   border: 1px solid #d1d5db;
   border-radius: 8px;
@@ -191,6 +271,67 @@ defineExpose({
 .composer-input textarea:focus {
   outline: none;
   border-color: #3b82f6;
+}
+
+.skill-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin: 0 0 4px;
+  padding: 4px;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  z-index: 10;
+}
+
+.skill-menu-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.skill-menu-item.active {
+  background: #eff6ff;
+}
+
+.skill-menu-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111827;
+  white-space: nowrap;
+}
+
+.skill-menu-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.skill-menu-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  margin: 0 0 4px;
+  padding: 6px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  font-size: 12px;
+  color: #9ca3af;
+  z-index: 10;
 }
 
 .send-btn {
