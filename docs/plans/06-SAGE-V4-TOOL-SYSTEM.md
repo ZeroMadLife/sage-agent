@@ -2,28 +2,48 @@
 
 > 基于对 Hermes 工具系统的深度分析，提炼出可落地到 Sage 的改进点。
 > 按优先级排序，每个 Task 独立可交付。
+> 更新日期：2026-07-09 - 文件路径已同步 V5.0 结构解耦重构后的新包路径。
 
 ---
 
 ## 优先级总览
 
-| 优先级 | Task | 来源 | 价值 |
-|:---:|------|------|------|
-| P0 | AST 自动工具发现 | Hermes registry.py | 新增工具零配置注册 |
-| P0 | 跨 Agent 文件状态协调 | Hermes file_state.py | 并发安全基石 |
-| P0 | 并发锁 + 异步安全 | Hermes delegate_tool.py | 多 Agent 不死锁 |
-| P1 | 辅助 LLM 自动审批 | Hermes approval.py | 减少用户打断 |
-| P1 | 子 Agent 审批策略 | Hermes delegate_tool.py | 子 Agent 不死锁 |
-| P1 | Explore 只读子 Agent | Hermes delegate_tool.py | 安全搜索 |
-| P2 | 并行子 Agent + 线程池 | Hermes delegate_tool.py | 并行任务加速 |
-| P2 | MCP 集成 | Hermes mcp_tool.py | 外部工具生态 |
-| P2 | 前端审批 UI 优化 | Sage 自身 | 用户体验 |
+| 优先级 | Task | 来源 | 价值 | 前置 |
+|:---:|------|------|------|------|
+| P0 | AST 自动工具发现 | Hermes registry.py | 新增工具零配置注册 | 无 |
+| P0 | 跨 Agent 文件状态协调 | Hermes file_state.py | 并发安全基石 | 无 |
+| P0 | 并发锁 + 异步安全 | Hermes delegate_tool.py | 多 Agent 不死锁 | Task 2 |
+| P1 | 辅助 LLM 自动审批 | Hermes approval.py | 减少用户打断 | 无 |
+| P1 | 子 Agent 审批策略 | Hermes delegate_tool.py | 子 Agent 不死锁 | Task 3 |
+| P1 | Explore 只读子 Agent | Hermes delegate_tool.py | 安全搜索 | Task 5 |
+| P2 | 并行子 Agent + 线程池 | Hermes delegate_tool.py | 并行任务加速 | Task 5, 6 |
+| P2 | MCP 集成 | Hermes mcp_tool.py | 外部工具生态 | 无 |
+| P2 | 前端审批 UI 优化 | Sage 自身 | 用户体验 | V5.1 |
+
+> **与 V5.1 的关系：** V5.1（plan mode + skill 菜单）是前端体验优先路径，V4（工具系统强化）是后端能力优先路径。两者可并行推进，但 V4 Task 7（前端审批 UI）依赖 V5.1 的前端基础设施。
+
+---
+
+## V5.0 后的新文件路径映射
+
+V5.0 重构后，以下路径已变更，本计划中所有引用已同步：
+
+| V4 计划旧路径 | V5.0 新路径 |
+|------|------|
+| `core/coding/approval.py` | `core/coding/tool_executor/approval.py` |
+| `core/coding/tool_policy.py` | `core/coding/tool_executor/policy.py` |
+| `core/coding/permissions.py` | `core/coding/tool_executor/permissions.py` |
+| `core/coding/tool_executor.py` | `core/coding/tool_executor/executor.py` |
+| `core/coding/worker_manager.py` | `core/coding/multiagent/manager.py` |
+| `core/coding/worker_runtime.py` | `core/coding/multiagent/runtime.py` |
+| `core/coding/engine.py` | `core/coding/engine/engine.py` |
+| `core/coding/workspace.py` | `core/coding/context/workspace.py` |
 
 ---
 
 ## Task 1：AST 自动工具发现（P0）
 
-**现状：** `registry.py` 硬编码 `TOOL_MODULES` 列表，新增工具需要手动加。
+**现状：** `core/coding/tools/registry.py` 硬编码 `TOOL_MODULES` 列表，新增工具需要手动加。
 
 **目标：** 扫描 `core/coding/tools/` 目录，AST 解析自动发现含 `@register_tool` 的模块。
 
@@ -53,12 +73,12 @@ def discover_tool_modules(tools_dir: Path) -> list[str]:
 
 ## Task 2：跨 Agent 文件状态协调（P0）
 
-**现状：** `WorkspaceContext` 只追踪单 Agent 的读写指纹。多 Agent 并发时会覆盖。
+**现状：** `core/coding/context/workspace.py` 的 `WorkspaceContext` 只追踪单 Agent 的读写指纹。多 Agent 并发时会覆盖。
 
 **目标：** 进程级 `FileStateRegistry` 单例，追踪所有 Agent 的文件读写状态。
 
 ```python
-# 新文件：core/coding/file_state.py
+# 新文件：core/coding/multiagent/file_state.py
 class FileStateRegistry:
     """进程级跨 Agent 文件状态协调器。
 
@@ -91,9 +111,9 @@ class FileStateRegistry:
 **集成到 ToolPolicyChecker：**
 
 ```python
-# tool_policy.py 改动
+# core/coding/tool_executor/policy.py 改动
 class ToolPolicyChecker:
-    def __init__(self, workspace, file_registry, agent_id="main"):
+    def __init__(self, workspace, file_registry=None, agent_id="main"):
         self._file_registry = file_registry
         self._agent_id = agent_id
 
@@ -104,15 +124,16 @@ class ToolPolicyChecker:
             if not self._has_fresh_read(path):
                 return deny("prior_read_required")
             # 检查2：其他 Agent 是否改过（新增）
-            is_stale, msg = self._file_registry.check_stale(self._agent_id, path)
-            if is_stale:
-                return deny("file_modified_by_other_agent", msg)
+            if self._file_registry:
+                is_stale, msg = self._file_registry.check_stale(self._agent_id, path)
+                if is_stale:
+                    return deny("file_modified_by_other_agent", msg)
         return allow()
 ```
 
 **改动文件：**
-- 新增 `core/coding/file_state.py`
-- 修改 `core/coding/tool_policy.py` - 集成 FileStateRegistry
+- 新增 `core/coding/multiagent/file_state.py`
+- 修改 `core/coding/tool_executor/policy.py` - 集成 FileStateRegistry
 - 修改 `core/coding/tools/file_tools.py` - read_file 后 record_read，write/patch 后 note_write
 - 新增 `tests/core/coding/test_file_state.py`
 
@@ -120,12 +141,12 @@ class ToolPolicyChecker:
 
 ## Task 3：并发锁 + 异步安全（P0）
 
-**现状：** 子 Agent 在线程池中运行，但审批回调存在 threading.local()，子线程不继承 -> 死锁。
+**现状：** 子 Agent 在线程池中运行（`core/coding/tools/base.py` 的 `_TOOL_EXECUTOR`），但审批回调存在主线程上下文，子线程不继承 -> 死锁。
 
-**目标：** 子 Agent 的危险命令自动拒绝（不调用 input()），主 Agent 的审批走 WebSocket。
+**目标：** 子 Agent 的危险命令自动拒绝（不调用交互式审批），主 Agent 的审批走 WebSocket。
 
 ```python
-# 新增到 core/coding/approval.py
+# 新增到 core/coding/tool_executor/approval.py
 def subagent_auto_deny(command: str, description: str, **kwargs) -> str:
     """子 Agent 危险命令自动拒绝 - 防止死锁。
 
@@ -145,8 +166,8 @@ class ApprovalManager:
 ```
 
 **改动文件：**
-- 修改 `core/coding/approval.py` - 新增 subagent_auto_deny
-- 修改 `core/coding/worker_manager.py` - 子 Agent 审批回调注入
+- 修改 `core/coding/tool_executor/approval.py` - 新增 subagent_auto_deny
+- 修改 `core/coding/multiagent/manager.py` - 子 Agent 审批回调注入
 - 新增 `tests/core/coding/test_subagent_approval.py`
 
 ---
@@ -158,7 +179,7 @@ class ApprovalManager:
 **目标：** 用轻量 LLM（DeepSeek）判断命令风险等级，低风险自动允许，高风险仍需人工。
 
 ```python
-# 新增到 core/coding/approval.py
+# 新增到 core/coding/tool_executor/approval.py
 class SmartApprovalManager(ApprovalManager):
     """辅助 LLM 自动审批。
 
@@ -217,8 +238,8 @@ LLM 判断: high（覆盖远程主分支）-> 需要人工确认（CANNOT_AUTO_A
 ```
 
 **改动文件：**
-- 修改 `core/coding/approval.py` - 新增 SmartApprovalManager
-- 修改 `core/coding/engine.py` - 工具执行前走 SmartApprovalManager
+- 修改 `core/coding/tool_executor/approval.py` - 新增 SmartApprovalManager
+- 修改 `core/coding/engine/engine.py` - 工具执行前走 SmartApprovalManager
 - 新增 `tests/core/coding/test_smart_approval.py`
 
 ---
@@ -232,7 +253,7 @@ LLM 判断: high（覆盖远程主分支）-> 需要人工确认（CANNOT_AUTO_A
 2. Explore 子 Agent 只读 - 只能 list_files/read_file/search，不能 write/patch/shell
 
 ```python
-# core/coding/worker_manager.py 改动
+# core/coding/multiagent/manager.py 改动
 SUBAGENT_BLOCKED_TOOLS = frozenset([
     "agent",           # 禁止递归委派
     "send_message",    # 禁止跨 Agent 通信
@@ -268,7 +289,7 @@ def build_subagent_tools(
 ```
 
 **改动文件：**
-- 修改 `core/coding/worker_manager.py` - 工具集隔离
+- 修改 `core/coding/multiagent/manager.py` - 工具集隔离
 - 修改 `core/coding/tools/agent_tools.py` - agent 工具支持 subagent_type
 - 新增 `tests/core/coding/test_subagent_tools.py`
 
@@ -276,12 +297,12 @@ def build_subagent_tools(
 
 ## Task 6：并行子 Agent + 线程池超时（P2）
 
-**现状：** 子 Agent 串行执行。
+**现状：** 子 Agent 串行执行（`core/coding/multiagent/manager.py` 的 `WorkerManager`）。
 
 **目标：** 支持并行委派多个子 Agent，父 Agent 等待全部完成。
 
 ```python
-# core/coding/worker_manager.py 改动
+# core/coding/multiagent/manager.py 改动
 class WorkerManager:
     def __init__(self, max_workers: int = 4, default_timeout: float = 120.0):
         self._executor = ThreadPoolExecutor(
@@ -292,14 +313,7 @@ class WorkerManager:
         self._default_timeout = default_timeout
 
     def spawn_batch(self, tasks: list[dict]) -> list[dict]:
-        """并行启动多个子 Agent，等待全部完成。
-
-        Args:
-            tasks: [{"description": "...", "prompt": "...", "subagent_type": "worker"}, ...]
-
-        Returns:
-            每个子 Agent的结果列表
-        """
+        """并行启动多个子 Agent，等待全部完成。"""
         futures = [
             self._executor.submit(self._run_worker, task)
             for task in tasks
@@ -317,7 +331,7 @@ class WorkerManager:
 ```
 
 **改动文件：**
-- 修改 `core/coding/worker_manager.py` - 并行 + 超时
+- 修改 `core/coding/multiagent/manager.py` - 并行 + 超时
 - 修改 `core/coding/tools/agent_tools.py` - 新增 batch agent 工具
 - 新增 `tests/core/coding/test_parallel_workers.py`
 
@@ -325,7 +339,9 @@ class WorkerManager:
 
 ## Task 7：前端审批 UI 优化（P2）
 
-**现状：** 审批弹窗功能已有但体验粗糙。
+> 依赖 V5.1 前端基础设施完成。
+
+**现状：** `frontend/src/components/coding/chat/CodingApprovalCard.vue` 功能已有但体验粗糙。
 
 **目标：**
 1. 审批弹窗显示 diff 预览（write_file/patch_file 时）
@@ -334,16 +350,15 @@ class WorkerManager:
 4. 审批历史时间线
 
 **改动文件：**
-- 修改 `frontend/src/components/CodingApprovalCard.vue` - diff 预览
-- 新增 `frontend/src/components/ApprovalTimeline.vue` - 审批历史
-- 修改 `frontend/src/stores/coding.ts` - 审批状态管理
-- 修改 `frontend/src/types/api.ts` - 审批事件类型
+- 修改 `frontend/src/components/coding/chat/CodingApprovalCard.vue` - diff 预览
+- 新增 `frontend/src/components/coding/chat/ApprovalTimeline.vue` - 审批历史
+- 修改 `frontend/src/stores/codingStream.ts` - 审批状态管理
 
 ---
 
 ## Task 8：MCP 集成（P2 - 后续开展）
 
-**现状：** Sage 直接持有 client 方法，不走 MCP 协议。
+**现状：** Sage 旅游工具直接持有 client 方法（`core/coding/tools/travel_tools.py`），不走 MCP 协议。
 
 **目标：** 支持接入外部 MCP Server（如 GitHub MCP、文件系统 MCP）。
 
@@ -371,22 +386,22 @@ class McpToolIntegration:
 
 ```
 Phase A（安全基石）:
-  Task 1 (AST 发现) → Task 2 (文件状态协调) → Task 3 (并发锁)
+  Task 1 (AST 发现) -> Task 2 (文件状态协调) -> Task 3 (并发锁)
 
 Phase B（智能审批）:
-  Task 4 (辅助LLM审批) → Task 5 (子Agent隔离)
+  Task 4 (辅助LLM审批) -> Task 5 (子Agent隔离)
 
 Phase C（并行能力）:
   Task 6 (并行子Agent)
 
 Phase D（体验 + 生态）:
-  Task 7 (前端审批UI) → Task 8 (MCP集成)
+  Task 7 (前端审批UI, 依赖V5.1) -> Task 8 (MCP集成)
 ```
 
 ## 约束
 
 - commit 消息用中文
-- 不破坏现有 229 backend tests + 15 frontend tests
+- 不破坏现有 357 backend tests + 70 frontend tests
 - 所有新代码有 type hints + mypy strict + ruff
 - 测试用 mock，不依赖真实 LLM/外部服务
 - 参考 Hermes 设计但不照搬 - Sage 面向 Web，Hermes 面向 CLI
