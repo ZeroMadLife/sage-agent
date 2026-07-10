@@ -135,6 +135,23 @@ it('starts a new coding session from the sidebar', async () => {
   expect(store.startNewSession).toHaveBeenCalled()
 })
 
+it('renders memory panel collapsed by default and expands to show the hint', async () => {
+  const wrapper = mount(CodingSidebar)
+
+  // Memory panel collapsed by default -> hint hidden.
+  expect(wrapper.text()).not.toContain('记住项目约定')
+
+  const memoryToggle = wrapper
+    .findAll('.panel-toggle')
+    .find((btn) => btn.text().includes('记忆'))
+  await memoryToggle?.trigger('click')
+
+  expect(wrapper.text()).toContain('/remember')
+  expect(wrapper.text()).toContain('记住项目约定')
+  expect(wrapper.text()).toContain('/dream')
+  expect(wrapper.text()).toContain('整理记忆')
+})
+
 it('renders run detail as a readable worklog timeline', async () => {
   const store = useCodingStore()
   store.runs = [

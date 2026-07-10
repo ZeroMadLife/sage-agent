@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  Brain,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -19,7 +20,7 @@ const store = useCodingStore()
 const emit = defineEmits<{ useSkill: [name: string] }>()
 
 // Collapsible panels: Sessions expanded by default, others collapsed.
-const collapsedPanels = ref<Set<string>>(new Set(['skills', 'runs', 'mcp']))
+const collapsedPanels = ref<Set<string>>(new Set(['skills', 'runs', 'mcp', 'memory']))
 
 function togglePanel(panel: string) {
   const next = new Set(collapsedPanels.value)
@@ -211,6 +212,24 @@ function runIcon(status: string) {
 
     <section class="sidebar-section">
       <div class="section-heading">
+        <button class="panel-toggle" @click="togglePanel('memory')">
+          <component
+            :is="isPanelCollapsed('memory') ? ChevronRight : ChevronDown"
+            :size="13"
+          />
+          <h3><Brain :size="13" /> 记忆</h3>
+        </button>
+      </div>
+      <div v-if="!isPanelCollapsed('memory')">
+        <p class="memory-hint">
+          <code>/remember</code> 记住项目约定<br />
+          <code>/dream</code> 整理记忆
+        </p>
+      </div>
+    </section>
+
+    <section class="sidebar-section">
+      <div class="section-heading">
         <button class="panel-toggle" @click="togglePanel('runs')">
           <component
             :is="isPanelCollapsed('runs') ? ChevronRight : ChevronDown"
@@ -360,6 +379,20 @@ function runIcon(status: string) {
 .empty {
   color: #9ca3af;
   font-size: 12px;
+}
+
+.memory-hint {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.6;
+  padding: 4px 0;
+}
+
+.memory-hint code {
+  background: #f3f4f6;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 11px;
 }
 
 .session-item {
