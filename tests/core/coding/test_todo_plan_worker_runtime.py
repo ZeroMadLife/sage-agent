@@ -105,10 +105,11 @@ async def test_runtime_persists_session_events_and_run_trace(tmp_path: Path) -> 
 
     events = [event async for event in runtime.run_turn("读 README")]
 
-    assert events[-1]["type"] == "final"
+    assert [event["type"] for event in events][-3:] == ["final", "run_finished", "turn_finished"]
     assert (tmp_path / ".coding" / "sessions" / "s-runtime.json").is_file()
     assert (tmp_path / ".coding" / "sessions" / "s-runtime.events.jsonl").is_file()
-    run_dirs = list((tmp_path / ".coding" / "runs").iterdir())
+    # Session-partitioned runs live under evidence/<session_id>/runs.
+    run_dirs = list((tmp_path / ".coding" / "runs" / "evidence" / "s-runtime" / "runs").iterdir())
     assert run_dirs
     assert (run_dirs[0] / "trace.jsonl").is_file()
 
@@ -183,7 +184,7 @@ async def test_runtime_persists_activated_deferred_tools(tmp_path: Path) -> None
         storage_root=tmp_path / ".coding",
     )
 
-    assert events[-1]["type"] == "final"
+    assert events[-1]["type"] == "turn_finished"
     assert "todo_add" in original.activated_tools
     assert "todo_update" in original.session["activated_tools"]
     assert "todo_add" in resumed.activated_tools
@@ -226,8 +227,10 @@ async def test_run_turn_emits_runtime_mode_changed_on_plan_entry(tmp_path: Path)
     assert types[mode_idx - 1] == "tool_result"
     assert events[mode_idx - 1]["tool"] == "enter_plan_mode"
 
-    # Final answer still lands at the end of the turn.
-    assert events[-1]["type"] == "final"
+    # Final answer still lands near the end of the turn (followed by
+    # run_finished + turn_finished terminal events).
+    assert "final" in types
+    assert types[-2:] == ["run_finished", "turn_finished"]
     assert runtime.runtime_mode == "plan"
 
 
@@ -274,7 +277,7 @@ async def test_run_turn_emits_plan_ready_for_review_on_plan_exit(tmp_path: Path)
     assert types[review_idx - 1] == "tool_result"
     assert events[review_idx - 1]["tool"] == "exit_plan_mode"
 
-    assert events[-1]["type"] == "final"
+    assert events[-1]["type"] == "turn_finished"
     # Still in plan mode until the user approves.
     assert runtime.runtime_mode == "plan"
     assert runtime.plan_review_manager.pending is not None

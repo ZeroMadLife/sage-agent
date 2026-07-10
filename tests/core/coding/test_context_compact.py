@@ -153,7 +153,8 @@ async def test_workspace_reminder_does_not_enter_session_replay(tmp_path: Path) 
 
     events = [event async for event in runtime.run_turn("say hi")]
 
-    assert events[-1]["type"] == "final"
+    assert "final" in [event["type"] for event in events]
+    assert events[-1]["type"] == "turn_finished"
     assert "Project-only instruction" in model.prompts[0]
     assert runtime.session["history"] == [
         {
@@ -260,7 +261,7 @@ async def test_skill_prompt_injected_into_llm_request_but_not_history(tmp_path: 
         )
     ]
 
-    assert events[-1]["type"] == "final"
+    assert events[-1]["type"] == "turn_finished"
     # The skill body is in the LLM request.
     assert "你正在使用 Sage 的 travel-planning domain skill" in model.prompts[0]
     # The original command text is the persisted user message; the skill body is not.

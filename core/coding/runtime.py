@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -11,7 +12,9 @@ from typing import Any, cast
 from core.coding.context import IGNORED_PATH_NAMES, ContextManager, WorkspaceContext, now
 from core.coding.engine.engine import Engine
 from core.coding.engine.events import (
+    ErrorEvent,
     PlanReadyForReviewEvent,
+    RunFinishedEvent,
     RuntimeModeChangedEvent,
     TurnFinishedEvent,
     TurnStartedEvent,
@@ -53,7 +56,7 @@ class CodingRuntime:
         self.model_factory = model_factory or (lambda: model)
         self.storage_root = Path(storage_root)
         self.session_store = CodingSessionStore(self.storage_root / "sessions")
-        self.run_store = RunStore(self.storage_root / "runs")
+        self.run_store = RunStore(self.storage_root / "runs", session_id=session_id)
         self.session_event_bus = SessionEventBus(
             session_id=session_id,
             path=self.session_store.event_path(session_id),
@@ -96,6 +99,7 @@ class CodingRuntime:
         self.approval_manager = ApprovalManager()
         self.plan_review_manager = PlanReviewManager()
         self.stop_requested = False
+        self.active_run_id: str | None = None
         self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
         self.policy_checker = ToolPolicyChecker(self.workspace)
@@ -314,10 +318,29 @@ class CodingRuntime:
 
         ``skill_prompt`` is an expanded skill instruction injected into the LLM
         prompt for this turn only; it is never persisted to session history.
+
+        An active-run lease prevents two concurrent turns on the same session:
+        if ``active_run_id`` is already set the call short-circuits with an
+        ``error`` event. The whole engine loop is wrapped in try/except so a
+        runtime exception is converted into an ``error`` event and the lease is
+        always released after emitting a ``run_finished`` + ``turn_finished``
+        pair.
         """
+        # Active-run lease: reject if a run is already in progress.
+        if self.active_run_id is not None:
+            yield event_to_dict(
+                ErrorEvent(
+                    run_id="",
+                    message="A run is already in progress for this session",
+                )
+            )
+            return
+
         self.stop_requested = False
         run_id = f"run_{uuid.uuid4().hex[:12]}"
-        self.run_store.start_run(run_id)
+        self.active_run_id = run_id
+        run_start_time = time.monotonic()
+        self.run_store.start_run(run_id, session_id=self.session_id)
         started = event_to_dict(TurnStartedEvent(run_id=run_id))
         self.run_store.append_trace(run_id, started)
         self.session_event_bus.emit("turn_started", started)
@@ -339,58 +362,91 @@ class CodingRuntime:
             workspace_reminders=self._workspace_reminders(),
             max_steps=50,
         )
-        async for event in engine.run_turn(user_message, skill_prompt=skill_prompt):
-            event = {"run_id": run_id, **event}
-            # Skip persisting ephemeral text_delta events to avoid trace bloat;
-            # they are streamed to the client but not stored in the run trace.
-            if event["type"] != "text_delta":
-                self.run_store.append_trace(run_id, event)
-            self.session_event_bus.emit(event["type"], event)
-            self._sync_session_state()
-            yield event
-            # Surface runtime mode changes (enter/exit plan mode) that happen
-            # during tool execution to the WebSocket stream. These mutations are
-            # performed on the runtime via the tool context, so they are not
-            # part of the engine's own event stream and must be re-injected.
-            if self.runtime_mode != prev_mode:
-                mode_event = event_to_dict(
-                    RuntimeModeChangedEvent(
-                        run_id=run_id,
-                        mode=self.runtime_mode,
-                        topic=self.plan_mode.topic,
-                        plan_path=self.plan_mode.plan_path,
+        try:
+            async for event in engine.run_turn(user_message, skill_prompt=skill_prompt):
+                event = {"run_id": run_id, **event}
+                # Skip persisting ephemeral text_delta events to avoid trace bloat;
+                # they are streamed to the client but not stored in the run trace.
+                if event["type"] != "text_delta":
+                    self.run_store.append_trace(run_id, event)
+                self.session_event_bus.emit(event["type"], event)
+                self._sync_session_state()
+                yield event
+                # Surface runtime mode changes (enter/exit plan mode) that happen
+                # during tool execution to the WebSocket stream. These mutations are
+                # performed on the runtime via the tool context, so they are not
+                # part of the engine's own event stream and must be re-injected.
+                if self.runtime_mode != prev_mode:
+                    mode_event = event_to_dict(
+                        RuntimeModeChangedEvent(
+                            run_id=run_id,
+                            mode=self.runtime_mode,
+                            topic=self.plan_mode.topic,
+                            plan_path=self.plan_mode.plan_path,
+                        )
                     )
-                )
-                mode_event = {"run_id": run_id, **mode_event}
-                self.run_store.append_trace(run_id, mode_event)
-                yield mode_event
-                prev_mode = self.runtime_mode
-            # Surface a pending plan review exactly once per outstanding request.
-            # The exit_plan_mode tool submits a review instead of exiting; the
-            # actual mode switch happens when the user approves via the REST API.
-            pending = self.plan_review_manager.pending
-            if (
-                pending is not None
-                and not pending.event.is_set()
-                and pending.review_id != last_notified_review_id
-            ):
-                review_event = event_to_dict(
-                    PlanReadyForReviewEvent(
-                        run_id=run_id,
-                        review_id=pending.review_id,
-                        plan_path=pending.plan_path,
-                        summary=pending.summary,
+                    mode_event = {"run_id": run_id, **mode_event}
+                    self.run_store.append_trace(run_id, mode_event)
+                    yield mode_event
+                    prev_mode = self.runtime_mode
+                # Surface a pending plan review exactly once per outstanding request.
+                # The exit_plan_mode tool submits a review instead of exiting; the
+                # actual mode switch happens when the user approves via the REST API.
+                pending = self.plan_review_manager.pending
+                if (
+                    pending is not None
+                    and not pending.event.is_set()
+                    and pending.review_id != last_notified_review_id
+                ):
+                    review_event = event_to_dict(
+                        PlanReadyForReviewEvent(
+                            run_id=run_id,
+                            review_id=pending.review_id,
+                            plan_path=pending.plan_path,
+                            summary=pending.summary,
+                        )
                     )
-                )
-                review_event = {"run_id": run_id, **review_event}
-                self.run_store.append_trace(run_id, review_event)
-                self.session_event_bus.emit("plan_ready_for_review", review_event)
-                yield review_event
-                last_notified_review_id = pending.review_id
-        finished = event_to_dict(TurnFinishedEvent(run_id=run_id))
+                    review_event = {"run_id": run_id, **review_event}
+                    self.run_store.append_trace(run_id, review_event)
+                    self.session_event_bus.emit("plan_ready_for_review", review_event)
+                    yield review_event
+                    last_notified_review_id = pending.review_id
+        except Exception as exc:
+            error_event = event_to_dict(ErrorEvent(run_id=run_id, message=str(exc)))
+            error_event = {"run_id": run_id, **error_event}
+            self.run_store.append_trace(run_id, error_event)
+            self.session_event_bus.emit("error", error_event)
+            yield error_event
+
+        # Post-run terminal events. Always emitted (even after an error) so the
+        # client learns the run has ended and the lease is released. Note: these
+        # run AFTER try/except but outside any finally block, so yielding here is
+        # legal for an async generator (yield is forbidden inside finally).
+        duration_ms = int((time.monotonic() - run_start_time) * 1000)
+        status = self.run_store.run_status(run_id)
+        tool_steps = self.run_store.run_tool_count(run_id)
+        finished = event_to_dict(
+            RunFinishedEvent(
+                run_id=run_id,
+                status=status,
+                duration_ms=duration_ms,
+                tool_steps=tool_steps,
+            )
+        )
+        finished = {"run_id": run_id, **finished}
         self.run_store.append_trace(run_id, finished)
-        self.session_event_bus.emit("turn_finished", finished)
+        self.session_event_bus.emit("run_finished", finished)
+        yield finished
+
+        finished_turn = event_to_dict(TurnFinishedEvent(run_id=run_id))
+        finished_turn = {"run_id": run_id, **finished_turn}
+        self.run_store.append_trace(run_id, finished_turn)
+        self.session_event_bus.emit("turn_finished", finished_turn)
+        yield finished_turn
+
+        # Cleanup: release the lease and persist session state.
         self.stop_requested = False
+        self.active_run_id = None
         self._save_session()
 
     def request_stop(self) -> None:
@@ -398,7 +454,10 @@ class CodingRuntime:
         self.stop_requested = True
         self.approval_manager.cancel_session(self.session_id)
         self.plan_review_manager.cancel()
-        self.session_event_bus.emit("stop_requested", {"session_id": self.session_id})
+        self.session_event_bus.emit(
+            "stop_requested",
+            {"session_id": self.session_id, "run_id": self.active_run_id},
+        )
 
     def _permission_checker(self) -> PermissionChecker:
         return PermissionChecker(

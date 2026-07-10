@@ -8,40 +8,66 @@ from typing import Any
 
 
 class RunStore:
-    """Persist trace files for individual coding runs."""
+    """Persist trace files for individual coding runs.
 
-    def __init__(self, root: Path) -> None:
+    When ``session_id`` is provided, run traces are partitioned under
+    ``root / "evidence" / session_id / "runs"`` so that different sessions
+    never share the same flat directory. When ``session_id`` is empty the
+    store falls back to the legacy global ``root`` layout for backward
+    compatibility.
+    """
+
+    def __init__(self, root: Path, session_id: str = "") -> None:
         self.root = root
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.session_id = session_id
+        if session_id:
+            self.evidence_root = root / "evidence" / session_id / "runs"
+        else:
+            self.evidence_root = root  # backward compat: global runs/
+        self.evidence_root.mkdir(parents=True, exist_ok=True)
 
-    def start_run(self, run_id: str) -> Path:
-        """Create and return a run directory."""
-        path = self.root / run_id
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+    def start_run(self, run_id: str, session_id: str = "") -> Path:
+        """Create and return a run directory.
+
+        ``session_id`` is accepted for API symmetry; the active partition is
+        already fixed at construction time. A non-empty override is ignored
+        when the store already has a session_id bound.
+        """
+        run_dir = self.evidence_root / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
 
     def append_trace(self, run_id: str, event: dict[str, Any]) -> Path:
         """Append one trace event."""
-        path = self.root / run_id / "trace.jsonl"
+        path = self.evidence_root / run_id / "trace.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
         return path
 
-    def list_runs(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Return run summaries ordered by most recently updated."""
+    def list_runs(self, limit: int = 30, session_id: str = "") -> list[dict[str, Any]]:
+        """Return run summaries ordered by most recently updated.
+
+        If ``session_id`` is provided and this store has no bound session_id,
+        the summaries are read from that session's partition instead of the
+        default evidence root. This lets a session-less (global) store still
+        inspect a specific session's runs.
+        """
+        evidence_root = self._resolve_evidence_root(session_id)
         summaries: list[dict[str, Any]] = []
-        for path in self.root.iterdir():
+        if not evidence_root.is_dir():
+            return summaries
+        for path in evidence_root.iterdir():
             if not path.is_dir():
                 continue
-            summary = self._summarize_run(path.name)
+            summary = self._summarize_run(path.name, session_id=session_id)
             if summary is not None:
                 summaries.append(summary)
         return sorted(summaries, key=lambda item: str(item["updated_at"]), reverse=True)[:limit]
 
-    def get_run(self, run_id: str) -> dict[str, Any]:
+    def get_run(self, run_id: str, session_id: str = "") -> dict[str, Any]:
         """Return one run trace."""
-        events = self._read_events(run_id)
+        events = self._read_events(run_id, session_id=session_id)
         if not events:
             raise FileNotFoundError(run_id)
         return {
@@ -50,13 +76,42 @@ class RunStore:
             "timeline": _timeline_from_events(events),
         }
 
-    def _summarize_run(self, run_id: str) -> dict[str, Any] | None:
-        events = self._read_events(run_id)
+    def run_status(self, run_id: str, session_id: str = "") -> str:
+        """Return the terminal status of a run from its trace."""
+        evidence_root = self._resolve_evidence_root(session_id)
+        run_dir = evidence_root / run_id
+        if not run_dir.is_dir():
+            return "unknown"
+        events = self._read_events(run_id, session_id=session_id)
+        return _status_from_events(events)
+
+    def run_tool_count(self, run_id: str, session_id: str = "") -> int:
+        """Count tool_result events in a run trace."""
+        evidence_root = self._resolve_evidence_root(session_id)
+        run_dir = evidence_root / run_id
+        if not run_dir.is_dir():
+            return 0
+        events = self._read_events(run_id, session_id=session_id)
+        return sum(1 for event in events if event.get("type") == "tool_result")
+
+    def _resolve_evidence_root(self, session_id: str) -> Path:
+        """Pick the partition root honoring a per-call session override.
+
+        The per-call ``session_id`` only matters for a session-less (global)
+        store: it lets the global store inspect a specific session partition.
+        A store already bound to a session always uses its own partition.
+        """
+        if session_id and not self.session_id:
+            return self.root / "evidence" / session_id / "runs"
+        return self.evidence_root
+
+    def _summarize_run(self, run_id: str, session_id: str = "") -> dict[str, Any] | None:
+        events = self._read_events(run_id, session_id=session_id)
         if not events:
             return None
         first = events[0]
         business_events = [
-            event for event in events if str(event.get("type", "")) != "turn_finished"
+            event for event in events if str(event.get("type", "")) not in {"turn_finished", "run_finished"}
         ]
         last = business_events[-1] if business_events else events[-1]
         return {
@@ -72,8 +127,9 @@ class RunStore:
             "updated_at": str(last.get("created_at") or first.get("created_at") or ""),
         }
 
-    def _read_events(self, run_id: str) -> list[dict[str, Any]]:
-        path = self.root / run_id / "trace.jsonl"
+    def _read_events(self, run_id: str, session_id: str = "") -> list[dict[str, Any]]:
+        evidence_root = self._resolve_evidence_root(session_id)
+        path = evidence_root / run_id / "trace.jsonl"
         if not path.is_file():
             return []
         events: list[dict[str, Any]] = []
@@ -91,6 +147,11 @@ class RunStore:
 
 def _status_from_events(events: list[dict[str, Any]]) -> str:
     event_types = [str(event.get("type", "")) for event in events]
+    if "run_finished" in event_types:
+        # Prefer the explicit status recorded on the run_finished event.
+        for event in reversed(events):
+            if event.get("type") == "run_finished":
+                return str(event.get("status", "completed"))
     if "cancelled" in event_types:
         return "cancelled"
     if "error" in event_types:
@@ -210,6 +271,15 @@ def _timeline_entry(event: dict[str, Any]) -> dict[str, str] | None:
             title="Protocol retry",
             detail=_clip(str(event.get("content", ""))),
             status="error",
+            timestamp=timestamp,
+        )
+    if event_type == "run_finished":
+        status = str(event.get("status", "completed"))
+        return _entry(
+            kind="system",
+            title="Run finished",
+            detail=status,
+            status="error" if status in {"error", "cancelled"} else "done",
             timestamp=timestamp,
         )
     return None

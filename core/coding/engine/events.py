@@ -143,6 +143,15 @@ class PlanReadyForReviewEvent(RunEventBase):
     summary: str = ""
 
 
+class RunFinishedEvent(RunEventBase):
+    """A run has reached a terminal state and its lease is released."""
+
+    type: Literal["run_finished"] = "run_finished"
+    status: str = "completed"
+    duration_ms: int = 0
+    tool_steps: int = 0
+
+
 RunEvent: TypeAlias = (
     TurnStartedEvent
     | ModelRequestedEvent
@@ -160,6 +169,7 @@ RunEvent: TypeAlias = (
     | TurnFinishedEvent
     | RuntimeModeChangedEvent
     | PlanReadyForReviewEvent
+    | RunFinishedEvent
 )
 
 
