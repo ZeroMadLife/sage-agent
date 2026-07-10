@@ -17,6 +17,27 @@ const diffPath = computed(() => {
   const path = props.approval.args.path
   return typeof path === 'string' && path.trim() ? path : props.approval.tool
 })
+
+const approvalSummary = computed(() => {
+  const content = props.approval.args.content
+  if (props.approval.tool === 'write_file' && typeof content === 'string') {
+    return `将写入 ${Math.max(1, content.split('\n').filter(Boolean).length)} 行到 ${diffPath.value}`
+  }
+  const command = props.approval.args.command
+  if (props.approval.tool === 'run_shell' && typeof command === 'string') {
+    return command
+  }
+  return JSON.stringify(compactArgs(props.approval.args), null, 2)
+})
+
+function compactArgs(args: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => [
+      key,
+      key === 'content' && typeof value === 'string' ? `${value.length} characters` : value,
+    ]),
+  )
+}
 </script>
 
 <template>
@@ -29,7 +50,7 @@ const diffPath = computed(() => {
         <div class="diff-preview-header">
           <span>{{ diffPath }}</span>
           <button class="view-diff" type="button" @click="showFullDiff = true">
-            <Maximize2 :size="13" /> View diff
+            <Maximize2 :size="13" /> 查看差异
           </button>
         </div>
         <div
@@ -43,17 +64,17 @@ const diffPath = computed(() => {
           <span>{{ line.text || ' ' }}</span>
         </div>
       </div>
-      <pre v-else>{{ JSON.stringify(approval.args, null, 2) }}</pre>
+      <pre v-else>{{ approvalSummary }}</pre>
     </div>
     <div class="actions">
-      <button class="deny" :disabled="busy" @click="emit('respond', 'deny')">Deny</button>
+      <button class="deny" :disabled="busy" @click="emit('respond', 'deny')">拒绝</button>
       <button class="session" :disabled="busy" @click="emit('respond', 'session')">
-        Allow session
+        本会话允许
       </button>
       <button class="always" :disabled="busy" @click="emit('respond', 'always')">
-        Always
+        始终允许
       </button>
-      <button class="allow" :disabled="busy" @click="emit('respond', 'once')">Allow once</button>
+      <button class="allow" :disabled="busy" @click="emit('respond', 'once')">允许一次</button>
     </div>
 
     <div
@@ -90,15 +111,13 @@ const diffPath = computed(() => {
 
 <style scoped>
 .approval-card {
-  position: absolute;
-  right: 18px;
-  bottom: 96px;
-  left: 18px;
-  z-index: 5;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 14px;
   align-items: end;
+  max-width: 760px;
+  max-height: min(520px, calc(100vh - 132px));
+  margin: 0 0 12px;
   padding: 12px;
   border: 1px solid #f59e0b;
   border-radius: 8px;
@@ -108,6 +127,7 @@ const diffPath = computed(() => {
 
 .approval-main {
   min-width: 0;
+  overflow: auto;
 }
 
 .eyebrow {
@@ -136,6 +156,8 @@ pre {
   color: #4b5563;
   font-size: 12px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .actions {
@@ -143,6 +165,17 @@ pre {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .approval-card {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
 }
 
 button {
@@ -225,6 +258,8 @@ button:disabled {
   grid-template-columns: 18px 1fr;
   padding: 1px 6px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .diff-prefix {

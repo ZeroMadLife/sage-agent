@@ -75,6 +75,7 @@ export const useCodingStore = defineStore('coding', () => {
   const contextChars = ref(0)
   const contextBudget = 60000
   const pendingApproval = ref<CodingApproval | null>(null)
+  const approvalBusy = ref(false)
   const thinkingPhase = ref('')
   const runtimeMode = ref('default')
   const permissionMode = ref<PermissionMode>('default')
@@ -116,6 +117,7 @@ export const useCodingStore = defineStore('coding', () => {
     const session = await startCodingSession()
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
+    permissionMode.value = session.permission_mode
     await Promise.all([
       loadSkills(),
       loadMcpServers(),
@@ -227,6 +229,15 @@ export const useCodingStore = defineStore('coding', () => {
     }
     if (approval.tool !== 'write_file') return
     const content = typeof approval.args.content === 'string' ? approval.args.content : ''
+    const fileExists = await workspaceFileExists(path)
+    if (!fileExists) {
+      if (pendingApproval.value?.approval_id !== approval.approval_id) return
+      pendingApproval.value = {
+        ...pendingApproval.value,
+        diff_preview: buildSimpleDiff('', content),
+      }
+      return
+    }
     try {
       const current = await fetchCodingFile(sessionId.value, path)
       if (pendingApproval.value?.approval_id !== approval.approval_id) return
@@ -242,11 +253,25 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
+  async function workspaceFileExists(path: string): Promise<boolean> {
+    if (!sessionId.value) return false
+    const segments = path.replace(/^\.\//, '').split('/')
+    const name = segments.pop()
+    if (!name) return false
+    const parent = segments.join('/') || '.'
+    try {
+      const listing = await fetchCodingFiles(sessionId.value, parent)
+      return listing.entries.some((entry) => entry.name === name && !entry.is_dir)
+    } catch {
+      // A diff preview is non-critical. Avoid requesting an unknown file and
+      // presenting a browser-visible 400 while an approval is pending.
+      return false
+    }
+  }
+
   function buildSimpleDiff(before: string, after: string): CodingDiffLine[] {
-    const beforeLines = before.split('\n')
-    const afterLines = after.split('\n')
-    if (before.endsWith('\n')) beforeLines.pop()
-    if (after.endsWith('\n')) afterLines.pop()
+    const beforeLines = diffLines(before)
+    const afterLines = diffLines(after)
     if (before === after) {
       return beforeLines.slice(0, 40).map((text) => ({ type: 'context', text }))
     }
@@ -256,11 +281,25 @@ export const useCodingStore = defineStore('coding', () => {
     ]
   }
 
+  function diffLines(content: string): string[] {
+    if (!content) return []
+    const lines = content.split('\n')
+    if (content.endsWith('\n')) lines.pop()
+    return lines
+  }
+
   async function respondApproval(choice: CodingApprovalChoice) {
-    if (!sessionId.value || !pendingApproval.value) return
+    if (!sessionId.value || !pendingApproval.value || approvalBusy.value) return
     const approvalId = pendingApproval.value.approval_id
-    await respondCodingApproval(sessionId.value, approvalId, choice)
-    pendingApproval.value = null
+    approvalBusy.value = true
+    try {
+      await respondCodingApproval(sessionId.value, approvalId, choice)
+      pendingApproval.value = null
+    } catch (error) {
+      errorMessage.value = error instanceof Error ? error.message : String(error)
+    } finally {
+      approvalBusy.value = false
+    }
   }
 
   async function stopCurrentRun() {
@@ -292,16 +331,6 @@ export const useCodingStore = defineStore('coding', () => {
       await rejectCodingPlan(sessionId.value)
       // Backend stays in plan mode (no runtime_mode_changed), so clear locally.
       planReview.value = null
-    } catch (e) {
-      errorMessage.value = String(e)
-    }
-  }
-
-  async function changePermissionMode(mode: PermissionMode) {
-    if (!sessionId.value) return
-    try {
-      await switchPermissionMode(sessionId.value, mode)
-      permissionMode.value = mode
     } catch (e) {
       errorMessage.value = String(e)
     }
@@ -363,6 +392,7 @@ export const useCodingStore = defineStore('coding', () => {
     const session = await resumeCodingSession(targetSessionId)
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
+    permissionMode.value = session.permission_mode
     messages.value = await loadSessionMessages(session.session_id)
     isThinking.value = false
     errorMessage.value = ''
@@ -370,7 +400,6 @@ export const useCodingStore = defineStore('coding', () => {
     thinkingPhase.value = ''
     planReview.value = null
     runtimeMode.value = 'default'
-    permissionMode.value = 'default'
     planTopic.value = ''
     planPath.value = ''
     runs.value = []
@@ -387,6 +416,7 @@ export const useCodingStore = defineStore('coding', () => {
     const session = await startCodingSession()
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
+    permissionMode.value = session.permission_mode
     messages.value = []
     isThinking.value = false
     errorMessage.value = ''
@@ -394,7 +424,6 @@ export const useCodingStore = defineStore('coding', () => {
     thinkingPhase.value = ''
     planReview.value = null
     runtimeMode.value = 'default'
-    permissionMode.value = 'default'
     planTopic.value = ''
     planPath.value = ''
     runs.value = []
@@ -486,6 +515,18 @@ export const useCodingStore = defineStore('coding', () => {
     currentModelId.value = modelId
   }
 
+  async function changePermissionMode(mode: PermissionMode): Promise<boolean> {
+    if (!sessionId.value || isThinking.value) return false
+    try {
+      const result = await switchPermissionMode(sessionId.value, mode)
+      permissionMode.value = result.mode
+      return true
+    } catch (error) {
+      errorMessage.value = String(error)
+      return false
+    }
+  }
+
   function disconnect() {
     stream?.disconnect()
     stream = null
@@ -503,6 +544,7 @@ export const useCodingStore = defineStore('coding', () => {
     contextBudget,
     contextPercent,
     pendingApproval,
+    approvalBusy,
     thinkingPhase,
     runtimeMode,
     permissionMode,
@@ -529,7 +571,6 @@ export const useCodingStore = defineStore('coding', () => {
     stopCurrentRun,
     approvePlan,
     rejectPlan,
-    changePermissionMode,
     selectSession,
     startNewSession,
     connectSocket,
@@ -544,6 +585,7 @@ export const useCodingStore = defineStore('coding', () => {
     refreshWorkspaceView,
     loadFilePreview,
     changeModel,
+    changePermissionMode,
     disconnect,
   }
 })

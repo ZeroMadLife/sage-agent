@@ -49,6 +49,10 @@ DEFAULT_SYSTEM_PROMPT = """You are Sage, a personal coding agent running in the 
 
 # Response protocol
 - Return exactly one or more <tool> calls, or one <final> answer.
+- For a tool call, use JSON inside the tag, for example:
+  <tool>{"name":"read_file","args":{"path":"README.md"}}</tool>
+- For a final user-facing response, use:
+  <final>Concise answer for the user.</final>
 - Do not mix ordinary assistant prose with tool calls in the same response."""
 
 
@@ -262,9 +266,7 @@ class ContextManager:
     @staticmethod
     def _assemble(sections: dict[str, SectionRender]) -> str:
         order = ("prefix", "skill_prompt", "history", "current_request")
-        return "\n\n".join(
-            sections[name].rendered for name in order if name in sections
-        ).strip()
+        return "\n\n".join(sections[name].rendered for name in order if name in sections).strip()
 
 
 def tail_clip(text: str, limit: int) -> str:

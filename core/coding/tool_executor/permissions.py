@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.coding.context import WorkspaceContext
+from core.coding.tool_executor.approval import check_dangerous_command
 from core.coding.tools.base import RegisteredTool
 
 PermissionMode = Literal["default", "accept_edits", "auto", "plan"]
@@ -87,6 +88,10 @@ class PermissionChecker:
 
         # Mode-specific decisions for risky tools (write_file, patch_file, run_shell).
         if self.permission_mode == "auto":
+            if tool.name == "run_shell":
+                dangerous, _, _ = check_dangerous_command(str(args.get("command", "")))
+                if dangerous:
+                    return PermissionDecision.allow("approval_required")
             return PermissionDecision.allow("approval_auto")
         if self.permission_mode == "accept_edits":
             # Auto-approve file edits, but ask for shell commands
@@ -95,9 +100,8 @@ class PermissionChecker:
             # run_shell and other risky tools still need approval
             if self.approval_callback is None:
                 return PermissionDecision.allow("approval_required")
-        if self.permission_mode == "default":
-            if self.approval_callback is None:
-                return PermissionDecision.allow("approval_required")
+        if self.permission_mode == "default" and self.approval_callback is None:
+            return PermissionDecision.allow("approval_required")
         # Legacy fallback for old approval_policy callers (worker subagents)
         if self.approval_policy == "auto":
             return PermissionDecision.allow("approval_auto")

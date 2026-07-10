@@ -175,3 +175,19 @@ it('selects a skill by mouse click', async () => {
 
   expect((textarea(wrapper).element as HTMLTextAreaElement).value).toBe('/test ')
 })
+
+it('opens the permission drawer and switches the active mode', async () => {
+  const { wrapper, store } = mountComposer()
+  store.changePermissionMode = vi.fn().mockResolvedValue(true)
+
+  await wrapper.find('.permission-trigger').trigger('click')
+  expect(document.body.textContent).toContain('选择 Sage 的执行权限')
+
+  const options = document.body.querySelectorAll('.mode-option')
+  const acceptEdits = Array.from(options).find((option) => option.textContent?.includes('接受编辑'))
+  expect(acceptEdits).toBeTruthy()
+  ;(acceptEdits as HTMLElement).click()
+  await nextTick()
+
+  expect(store.changePermissionMode).toHaveBeenCalledWith('accept_edits')
+})

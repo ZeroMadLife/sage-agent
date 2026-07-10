@@ -18,18 +18,22 @@ it('truncates long tool results and can expand them', async () => {
     },
   })
 
-  expect(wrapper.text()).toContain('Show more')
+  expect(wrapper.find('.tool-list').exists()).toBe(false)
+
+  await wrapper.find('.activity-header').trigger('click')
+
+  expect(wrapper.text()).toContain('展开输出')
   expect(wrapper.text()).not.toContain('removed')
 
   await wrapper.find('button.show-more').trigger('click')
 
-  expect(wrapper.text()).toContain('Show less')
+  expect(wrapper.text()).toContain('收起输出')
   expect(wrapper.text()).toContain('removed')
   expect(wrapper.find('.diff-add').exists()).toBe(true)
   expect(wrapper.find('.diff-remove').exists()).toBe(true)
 })
 
-it('renders human readable tool action summaries instead of raw JSON args', () => {
+it('renders human readable tool action summaries instead of raw JSON args', async () => {
   const wrapper = mount(CodingToolActivity, {
     props: {
       isThinking: true,
@@ -55,6 +59,10 @@ it('renders human readable tool action summaries instead of raw JSON args', () =
       ],
     },
   })
+
+  expect(wrapper.find('.tool-list').exists()).toBe(false)
+
+  await wrapper.find('.activity-header').trigger('click')
 
   expect(wrapper.text()).toContain('Read README.md')
   expect(wrapper.text()).toContain('Run pytest -q')

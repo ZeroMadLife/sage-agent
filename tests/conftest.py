@@ -5,6 +5,10 @@ from collections.abc import Iterator
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
+# A local editor backup with stale pre-v5 imports. Keep the user file intact
+# while preventing pytest from treating it as a repository test module.
+collect_ignore = ["core/coding/test_tool_executor 2.py"]
+
 
 @pytest.fixture(autouse=True)
 def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:

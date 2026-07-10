@@ -113,6 +113,34 @@ async def test_auto_approval_path_executes_tool(tmp_path: Path) -> None:
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "approved"
 
 
+async def test_invalid_write_arguments_fail_before_approval(tmp_path: Path) -> None:
+    """An incomplete write request never reaches the user approval queue."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_policy="ask", approval_manager=manager)
+    stream = executor.execute({"name": "write_file", "args": {"content": "missing path"}})
+
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert isinstance(first, ToolResultEvent)
+    assert first.is_error is True
+    assert "path" in first.content.lower()
+    assert manager.pending("coding_1") is None
+
+
+async def test_auto_mode_still_requires_approval_for_dangerous_shell(tmp_path: Path) -> None:
+    """Dangerous shell commands keep an approval boundary in automatic mode."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_manager=manager)
+    stream = executor.execute({"name": "run_shell", "args": {"command": "git reset --hard HEAD"}})
+
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert isinstance(first, ApprovalRequiredEvent)
+    assert "reset" in first.description.lower()
+
+
 async def test_ask_approval_granted_then_executes_tool(tmp_path: Path) -> None:
     """Ask approval mode blocks, resumes, and then executes after approval."""
     manager = ApprovalManager()

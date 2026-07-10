@@ -67,6 +67,12 @@ async def test_agent_loop_user_to_tool_to_final(tmp_path: Path) -> None:
         "final",
     ]
     assert events[-1]["content"] == "README says Sage."
+    assert not [
+        event for event in events if event["type"] == "text_delta" and "<tool" in event["delta"]
+    ]
+    assert "".join(event["delta"] for event in events if event["type"] == "text_delta") == (
+        "README says Sage."
+    )
 
 
 async def test_agent_loop_user_to_final(tmp_path: Path) -> None:
@@ -81,6 +87,56 @@ async def test_agent_loop_user_to_final(tmp_path: Path) -> None:
         "final",
     ]
     assert events[-1]["content"] == "hello"
+
+
+async def test_agent_loop_keeps_protocol_corrections_out_of_session_history(tmp_path: Path) -> None:
+    """Malformed output is corrected transiently instead of polluting the chat history."""
+    engine = _engine(
+        tmp_path,
+        [
+            "I will read the file now.",
+            "<final>Recovered after the format correction.</final>",
+        ],
+    )
+
+    events = [event async for event in engine.run_turn("read README")]
+
+    assert [event["type"] for event in events if event["type"] == "retry"] == ["retry"]
+    assert events[-1]["type"] == "final"
+    assert all(
+        "previous response could not be executed" not in str(item.get("content", "")).lower()
+        for item in engine.history
+    )
+
+
+async def test_agent_loop_stops_after_bounded_protocol_retries(tmp_path: Path) -> None:
+    """Repeated malformed model output ends in a clear final response, not a long retry loop."""
+
+    class InvalidProtocolClient:
+        async def complete(self, _prompt: str) -> str:
+            return "I will keep using plain prose."
+
+    workspace = WorkspaceContext(root=tmp_path)
+    engine = Engine(
+        model=InvalidProtocolClient(),
+        workspace=workspace,
+        tools=build_tool_registry(workspace),
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(permission_mode="auto", approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        max_steps=5,
+    )
+
+    events = [event async for event in engine.run_turn("read README")]
+
+    assert len([event for event in events if event["type"] == "retry"]) == 2
+    assert len([event for event in events if event["type"] == "model_requested"]) == 3
+    assert events[-1]["type"] == "final"
+    assert "无法执行的操作格式" in events[-1]["content"]
+    assert all(
+        "previous response could not be executed" not in str(item.get("content", "")).lower()
+        for item in engine.history
+    )
 
 
 async def test_agent_loop_policy_denied_then_final(tmp_path: Path) -> None:
@@ -107,9 +163,7 @@ async def test_agent_loop_policy_denied_then_final(tmp_path: Path) -> None:
         "model_parsed",
         "final",
     ]
-    policy_error = next(
-        event for event in events if event["type"] == "tool_result"
-    )
+    policy_error = next(event for event in events if event["type"] == "tool_result")
     assert policy_error["is_error"] is True
     assert policy_error["policy_reason"] == "prior_read_required"
 

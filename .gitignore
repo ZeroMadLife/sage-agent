@@ -70,3 +70,6 @@ graphify-out-*/
 Kimi_Agent_多智能体协作平台/
 multiagent_project.agent.final/
 multiagent_project.agent.final.footnote.docx
+.ustht/
+.playwright-cli/
+.zcode/

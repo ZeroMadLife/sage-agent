@@ -2,17 +2,11 @@
 import { computed, ref } from 'vue'
 import { Send, Square } from 'lucide-vue-next'
 import { useCodingStore } from '../../../stores/coding'
-import type { CodingSkillSummary, PermissionMode } from '../../../types/api'
+import type { CodingSkillSummary } from '../../../types/api'
+import CodingPermissionModeDrawer from './CodingPermissionModeDrawer.vue'
 
 const store = useCodingStore()
 const input = ref('')
-
-const permissionModes = [
-  { value: 'default' as PermissionMode, label: '默认', title: '每次操作都需要确认' },
-  { value: 'accept_edits' as PermissionMode, label: '接受编辑', title: '自动接受文件编辑,命令仍需确认' },
-  { value: 'auto' as PermissionMode, label: '自动', title: '全部自动执行' },
-  { value: 'plan' as PermissionMode, label: '计划', title: '只读模式,只规划不执行' },
-]
 
 const canSend = computed(
   () => Boolean(input.value.trim()) && Boolean(store.sessionId) && !store.isThinking,
@@ -134,16 +128,7 @@ defineExpose({
         压缩
       </button>
 
-      <div class="permission-modes">
-        <button
-          v-for="m in permissionModes"
-          :key="m.value"
-          :class="['mode-btn', { active: store.permissionMode === m.value }]"
-          :title="m.title"
-          type="button"
-          @click="store.changePermissionMode(m.value)"
-        >{{ m.label }}</button>
-      </div>
+      <CodingPermissionModeDrawer />
 
       <div class="context-ring" :title="contextTooltip">
         <svg width="32" height="32" viewBox="0 0 32 32">
@@ -245,33 +230,6 @@ defineExpose({
 
 .compact-hint + .context-ring {
   margin-left: 0;
-}
-
-.permission-modes {
-  display: flex;
-  gap: 2px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-.mode-btn {
-  padding: 3px 8px;
-  font-size: 11px;
-  border: 0;
-  background: #fff;
-  color: #6b7280;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.mode-btn:hover {
-  background: #f3f4f6;
-}
-
-.mode-btn.active {
-  background: #111827;
-  color: #fff;
 }
 
 .context-pct {

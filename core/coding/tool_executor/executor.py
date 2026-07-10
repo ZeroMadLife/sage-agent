@@ -20,6 +20,7 @@ from core.coding.tool_executor.approval import ApprovalManager, check_dangerous_
 from core.coding.tool_executor.permissions import PermissionChecker
 from core.coding.tool_executor.policy import ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool, ToolResult
+from core.coding.tools.registry import validate_tool
 
 
 class ToolExecutor:
@@ -60,6 +61,16 @@ class ToolExecutor:
                 args=args,
                 content=f"unknown tool: {name}",
                 is_error=True,
+            )
+            return
+
+        try:
+            args = validate_tool(self.workspace, name, args)
+        except ValueError as exc:
+            yield self._tool_result_event(
+                name,
+                args,
+                ToolResult(content=str(exc), is_error=True),
             )
             return
 

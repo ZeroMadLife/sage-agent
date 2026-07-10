@@ -223,7 +223,7 @@ def test_build_ainvoke_messages_falls_back_to_single_user_message() -> None:
 
 
 async def test_engine_streams_text_delta(tmp_path: Path) -> None:
-    """run_turn yields text_delta events whose deltas reassemble the response."""
+    """run_turn streams only user-facing final text, never XML protocol tags."""
     final_text = "README says Sage."
     full_response = f"<final>{final_text}</final>"
     workspace = WorkspaceContext(root=tmp_path)
@@ -244,7 +244,8 @@ async def test_engine_streams_text_delta(tmp_path: Path) -> None:
     delta_events = [event for event in events if event["type"] == "text_delta"]
     assert delta_events, "expected at least one text_delta event from the stream"
     reassembled = "".join(event["delta"] for event in delta_events)
-    assert reassembled == full_response
+    assert reassembled == final_text
+    assert "<final>" not in reassembled
 
     # text_delta chunks must arrive before the matching model_parsed event and
     # must never appear after a final/terminal event.
@@ -341,7 +342,9 @@ async def test_engine_detects_repeated_write_same_path_different_content(tmp_pat
         max_steps=50,
     )
     # Patch the policy checker to skip prior-read requirement for this test.
-    engine.policy_checker.check = lambda tool, args: type("P", (), {"allowed": True, "reason": "", "message": ""})()
+    engine.policy_checker.check = lambda tool, args: type(
+        "P", (), {"allowed": True, "reason": "", "message": ""}
+    )()
 
     events = [event async for event in engine.run_turn("循环写文件")]
 

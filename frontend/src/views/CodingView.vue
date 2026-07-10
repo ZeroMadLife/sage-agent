@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CodingApprovalCard,
   CodingComposer,
+  CodingExecutionLog,
   CodingFileTree,
   CodingGitBadge,
   CodingPlanApproval,
@@ -18,6 +19,7 @@ const store = useCodingStore()
 const messagesRef = ref<HTMLElement | null>(null)
 const composerRef = ref<InstanceType<typeof CodingComposer> | null>(null)
 const showPlanPreview = ref(false)
+const isNearBottom = ref(true)
 const { render } = useMarkdown()
 
 // Show the thinking bar only while thinking and before any tool activity card
@@ -37,23 +39,18 @@ function scrollToBottom() {
   })
 }
 
-const isAtBottom = ref(true)
-
-function handleScroll() {
+function handleMessageScroll() {
   if (!messagesRef.value) return
-  const { scrollTop, scrollHeight, clientHeight } = messagesRef.value
-  isAtBottom.value = scrollHeight - scrollTop - clientHeight < 80
-}
-
-function autoScroll() {
-  if (isAtBottom.value) {
-    scrollToBottom()
-  }
+  const { scrollHeight, scrollTop, clientHeight } = messagesRef.value
+  isNearBottom.value = scrollHeight - scrollTop - clientHeight < 80
 }
 
 watch(
-  () => store.messages.map(m => m.content + (m.tools ? m.tools.length : 0)).join(''),
-  () => autoScroll(),
+  () => store.messages,
+  () => {
+    if (isNearBottom.value) scrollToBottom()
+  },
+  { deep: true, flush: 'post' },
 )
 
 function onUseSkill(command: string) {
@@ -99,11 +96,16 @@ onBeforeUnmount(() => {
       </div>
 
       <main class="pane-center">
-        <section ref="messagesRef" class="message-area" @scroll="handleScroll">
+        <section ref="messagesRef" class="message-area" @scroll="handleMessageScroll">
           <div v-if="store.messages.length === 0" class="empty-state">
             <p>Sage 已就绪。输入任务或 /review 调用 skill。</p>
           </div>
           <template v-for="(msg, i) in store.messages" :key="i">
+            <CodingExecutionLog
+              v-if="msg.activities && msg.activities.length > 0"
+              :activities="msg.activities"
+              :is-thinking="!!msg.isThinking"
+            />
             <div v-if="msg.tools && msg.tools.length > 0" class="activity-row">
               <CodingToolActivity :tools="msg.tools" :is-thinking="!!msg.isThinking" />
             </div>
@@ -111,17 +113,17 @@ onBeforeUnmount(() => {
               <div v-html="render(msg.content)" class="message-content"></div>
             </article>
           </template>
+          <CodingApprovalCard
+            v-if="store.pendingApproval"
+            :approval="store.pendingApproval"
+            :busy="store.approvalBusy"
+            @respond="store.respondApproval"
+          />
           <CodingThinkingIndicator v-if="showThinkingIndicator" :phase="store.thinkingPhase" />
           <CodingPlanApproval v-if="store.planReview" />
           <p v-if="store.errorMessage" class="error-text">{{ store.errorMessage }}</p>
         </section>
 
-        <CodingApprovalCard
-          v-if="store.pendingApproval"
-          :approval="store.pendingApproval"
-          :busy="false"
-          @respond="store.respondApproval"
-        />
         <CodingComposer ref="composerRef" />
       </main>
 
@@ -262,6 +264,7 @@ onBeforeUnmount(() => {
 }
 
 .message {
+  min-width: 0;
   max-width: 760px;
   margin: 0 0 12px;
   padding: 10px 14px;
@@ -270,6 +273,8 @@ onBeforeUnmount(() => {
   background: #fff;
   font-size: 14px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .message.user {

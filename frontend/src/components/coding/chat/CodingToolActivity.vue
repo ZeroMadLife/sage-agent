@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import {
   CheckCircle2,
   ChevronDown,
@@ -17,7 +17,6 @@ const props = defineProps<{
 }>()
 
 const expanded = ref(false)
-const keepOpen = ref(false)
 const expandedResults = ref<Set<number>>(new Set())
 
 const doneCount = computed(
@@ -33,15 +32,7 @@ const runningCount = computed(
 const allSettled = computed(
   () => !props.isThinking && runningCount.value === 0,
 )
-const isOpen = computed(() => expanded.value || keepOpen.value || props.isThinking)
-
-watch(allSettled, async (settled) => {
-  if (!settled) return
-  keepOpen.value = true
-  await nextTick()
-  keepOpen.value = false
-  expanded.value = false
-})
+const isOpen = computed(() => expanded.value)
 
 function toggle() {
   expanded.value = !expanded.value
@@ -122,16 +113,16 @@ function toolSummary(tool: ToolActivity) {
       <component :is="isOpen ? ChevronDown : ChevronRight" :size="14" />
       <Wrench :size="13" />
       <span class="activity-label">
-        Activity: {{ tools.length }} tool{{ tools.length > 1 ? 's' : '' }}
+        工具调用 {{ tools.length }} 项
       </span>
       <span v-if="runningCount > 0" class="activity-badge running">
-        {{ runningCount }} running
+        {{ runningCount }} 执行中
       </span>
       <span v-if="errorCount > 0" class="activity-badge error">
-        {{ errorCount }} error
+        {{ errorCount }} 失败
       </span>
       <span v-else-if="allSettled" class="activity-badge done">
-        {{ doneCount }} done
+        {{ doneCount }} 已完成
       </span>
     </button>
 
@@ -154,7 +145,7 @@ function toolSummary(tool: ToolActivity) {
             class="show-more"
             @click="toggleResult(i)"
           >
-            {{ expandedResults.has(i) ? 'Show less' : 'Show more' }}
+            {{ expandedResults.has(i) ? '收起输出' : '展开输出' }}
           </button>
         </div>
       </div>

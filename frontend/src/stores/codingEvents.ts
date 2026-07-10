@@ -15,10 +15,18 @@ export type ToolActivity = {
   durationMs?: number
 }
 
+export type ExecutionActivity = {
+  kind: 'model' | 'tool' | 'approval' | 'retry'
+  label: string
+  detail?: string
+  status: 'running' | 'done' | 'error'
+}
+
 export type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   tools?: ToolActivity[]
+  activities?: ExecutionActivity[]
   isThinking?: boolean
 }
 
@@ -54,10 +62,16 @@ export function applyCodingEvent(
 ): CodingEventEffect {
   if (event.type === 'turn_started') {
     state.thinkingPhase.value = '思考中'
+    appendExecutionActivity(state.messages.value, {
+      kind: 'model',
+      label: '开始处理请求',
+      status: 'running',
+    })
     return {}
   }
   if (event.type === 'turn_finished') {
     state.thinkingPhase.value = ''
+    settleAllExecutionActivities(state.messages.value)
     return {}
   }
   if (event.type === 'runtime_mode_changed') {
@@ -80,18 +94,31 @@ export function applyCodingEvent(
   if (event.type === 'model_requested') {
     if (event.prompt_chars) state.contextChars.value = event.prompt_chars
     state.thinkingPhase.value = '正在请求模型...'
+    settleExecutionActivity(state.messages.value, 'retry')
+    appendExecutionActivity(state.messages.value, {
+      kind: 'model',
+      label: '请求模型响应',
+      status: 'running',
+    })
     return {}
   }
   if (event.type === 'model_parsed') {
     if (event.kind === 'retry') {
       state.thinkingPhase.value = '模型响应异常,正在重试...'
+      settleExecutionActivity(state.messages.value, 'model', 'error')
     } else if (event.kind === 'tool' || event.kind === 'tools') {
       state.thinkingPhase.value = '正在执行工具...'
+      settleExecutionActivity(state.messages.value, 'model')
     }
     return {}
   }
   if (event.type === 'retry') {
     state.thinkingPhase.value = '正在重试...'
+    appendExecutionActivity(state.messages.value, {
+      kind: 'retry',
+      label: '正在调整执行方式',
+      status: 'running',
+    })
     return {}
   }
   if (event.type === 'text_delta') {
@@ -108,16 +135,23 @@ export function applyCodingEvent(
     return {}
   }
   if (event.type === 'tool_call') {
-    const last = state.messages.value[state.messages.value.length - 1]
-    if (last && last.isThinking && last.content) {
-      last.content = ''
-    }
     appendToolActivity(state.messages.value, event)
+    appendExecutionActivity(state.messages.value, {
+      kind: 'tool',
+      label: toolActionLabel(event.tool, event.args),
+      status: 'running',
+    })
     return {}
   }
   if (event.type === 'approval_required') {
     state.pendingApproval.value = approvalFromEvent(state.sessionId.value, event)
     appendToolActivity(state.messages.value, event, `等待确认: ${event.description}`)
+    appendExecutionActivity(state.messages.value, {
+      kind: 'approval',
+      label: `等待确认 ${event.tool}`,
+      detail: event.description,
+      status: 'running',
+    })
     state.thinkingPhase.value = '等待工具确认...'
     return { approvalRequired: true }
   }
@@ -125,22 +159,33 @@ export function applyCodingEvent(
     const target = findRunningTool(state.messages.value, event.tool)
     if (target) target.content = '已确认,正在执行...'
     state.thinkingPhase.value = '正在执行工具...'
+    settleExecutionActivity(state.messages.value, 'approval')
     return {}
   }
   if (event.type === 'tool_result') {
     updateToolActivity(state.messages.value, event)
+    if (event.is_error) {
+      settleExecutionActivity(state.messages.value, 'approval', 'error')
+    }
+    settleExecutionActivity(
+      state.messages.value,
+      'tool',
+      event.is_error ? 'error' : 'done',
+    )
     return { toolResult: event }
   }
   if (event.type === 'final' || event.type === 'step_limit' || event.type === 'cancelled') {
     finalizeCurrentMessage(state.messages.value, event.content)
     state.isThinking.value = false
     state.thinkingPhase.value = ''
+    settleAllExecutionActivities(state.messages.value)
     return { terminal: true }
   }
   if (event.type === 'error') {
     state.errorMessage.value = event.message
     state.isThinking.value = false
     state.thinkingPhase.value = ''
+    settleAllExecutionActivities(state.messages.value, 'error')
     return { terminal: true }
   }
   return {}
@@ -168,6 +213,7 @@ function appendToolActivity(
       role: 'assistant',
       content: '',
       tools: [],
+      activities: [],
       isThinking: true,
     })
   }
@@ -203,6 +249,7 @@ function appendSettledToolActivity(messages: ChatMessage[], event: CodingToolRes
       role: 'assistant',
       content: '',
       tools: [],
+      activities: [],
       isThinking: true,
     })
   }
@@ -248,4 +295,77 @@ function finalizeCurrentMessage(messages: ChatMessage[], content: string) {
   } else {
     messages.push({ role: 'assistant', content })
   }
+}
+
+function appendExecutionActivity(messages: ChatMessage[], activity: ExecutionActivity) {
+  const current = currentAssistantMessage(messages)
+  current.activities = current.activities || []
+  const latest = current.activities[current.activities.length - 1]
+  if (
+    latest &&
+    latest.kind === activity.kind &&
+    latest.label === activity.label &&
+    latest.status === 'running'
+  ) {
+    latest.detail = activity.detail || latest.detail
+    return
+  }
+  current.activities.push(activity)
+}
+
+function settleExecutionActivity(
+  messages: ChatMessage[],
+  kind: ExecutionActivity['kind'],
+  status: ExecutionActivity['status'] = 'done',
+) {
+  for (const message of [...messages].reverse()) {
+    const activity = [...(message.activities || [])]
+      .reverse()
+      .find((item) => item.kind === kind && item.status === 'running')
+    if (activity) {
+      activity.status = status
+      return
+    }
+  }
+}
+
+function settleAllExecutionActivities(
+  messages: ChatMessage[],
+  status: ExecutionActivity['status'] = 'done',
+) {
+  for (const message of messages) {
+    for (const activity of message.activities || []) {
+      if (activity.status === 'running') activity.status = status
+    }
+  }
+}
+
+function currentAssistantMessage(messages: ChatMessage[]): ChatMessage {
+  const last = messages[messages.length - 1]
+  if (last && last.role === 'assistant' && last.isThinking) return last
+  const message: ChatMessage = {
+    role: 'assistant',
+    content: '',
+    tools: [],
+    activities: [],
+    isThinking: true,
+  }
+  messages.push(message)
+  return message
+}
+
+function toolActionLabel(tool: string, args: Record<string, unknown>): string {
+  const path = stringArg(args, 'path')
+  if (tool === 'read_file') return `读取 ${path || '文件'}`
+  if (tool === 'list_files') return `列出 ${path || '工作区'} 文件`
+  if (tool === 'search') return `搜索 ${stringArg(args, 'pattern') || '工作区内容'}`
+  if (tool === 'run_shell') return `执行 ${stringArg(args, 'command') || '命令'}`
+  if (tool === 'write_file') return `写入 ${path || '文件'}`
+  if (tool === 'patch_file') return `修改 ${path || '文件'}`
+  return `调用 ${tool}`
+}
+
+function stringArg(args: Record<string, unknown>, key: string): string {
+  const value = args[key]
+  return typeof value === 'string' ? value.trim() : ''
 }

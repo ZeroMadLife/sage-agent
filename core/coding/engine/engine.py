@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
@@ -47,6 +46,8 @@ ModelClient = ApiClient
 
 class Engine:
     """Turn control loop: model -> parse -> tool -> final."""
+
+    MAX_PROTOCOL_RETRIES = 2
 
     def __init__(
         self,
@@ -93,8 +94,10 @@ class Engine:
         self.history.append({"role": "user", "content": user_message, "created_at": now()})
         tool_steps = 0
         attempts = 0
+        protocol_retries = 0
+        protocol_correction = ""
 
-        last_tool_signature: tuple[str, str] = ("", "")
+        last_tool_signature: tuple[str, tuple[str, str, str]] = ("", ("", "", ""))
         repeat_count = 0
         MAX_REPEAT = 3
 
@@ -111,6 +114,8 @@ class Engine:
                 deferred_tools=self._deferred_tool_names(),
                 skill_prompt=skill_prompt,
             )
+            if protocol_correction:
+                prompt = f"{prompt}\n\n<protocol-correction>\n{protocol_correction}\n</protocol-correction>"
             yield event_to_dict(
                 ModelRequestedEvent(
                     run_id=self.run_id,
@@ -121,6 +126,7 @@ class Engine:
             )
 
             raw = ""
+            streamed_final_chars = 0
             astream = getattr(self.model, "astream", None)
             if callable(astream):
                 messages = self._build_ainvoke_messages(prompt)
@@ -133,9 +139,13 @@ class Engine:
                         )
                     if delta:
                         raw += str(delta)
-                        yield event_to_dict(
-                            TextDeltaEvent(run_id=self.run_id, delta=str(delta))
+                        visible_delta, streamed_final_chars = self._visible_final_delta(
+                            raw, streamed_final_chars
                         )
+                        if visible_delta:
+                            yield event_to_dict(
+                                TextDeltaEvent(run_id=self.run_id, delta=visible_delta)
+                            )
             else:
                 raw = await self._call_model(prompt)
             if self.should_stop():
@@ -153,9 +163,10 @@ class Engine:
                     # the model slightly varies on each retry, defeating exact match).
                     tool_name = str(tool_payload.get("name", ""))
                     tool_args = tool_payload.get("args", {})
-                    key_fields = tuple(
-                        str(tool_args.get(k, ""))
-                        for k in ("path", "command", "query")
+                    key_fields = (
+                        str(tool_args.get("path", "")),
+                        str(tool_args.get("command", "")),
+                        str(tool_args.get("query", "")),
                     )
                     sig = (tool_name, key_fields)
                     if sig == last_tool_signature:
@@ -164,9 +175,7 @@ class Engine:
                         repeat_count = 0
                         last_tool_signature = sig
                     if repeat_count >= MAX_REPEAT:
-                        notice = (
-                            f"检测到工具 {sig[0]} 连续重复调用 {MAX_REPEAT} 次,已停止以避免无限循环。"
-                        )
+                        notice = f"检测到工具 {sig[0]} 连续重复调用 {MAX_REPEAT} 次,已停止以避免无限循环。"
                         self.history.append(
                             {"role": "assistant", "content": notice, "created_at": now()}
                         )
@@ -186,7 +195,15 @@ class Engine:
 
             if kind == "retry":
                 notice = str(payload)
-                self.history.append({"role": "assistant", "content": notice, "created_at": now()})
+                if protocol_retries >= self.MAX_PROTOCOL_RETRIES:
+                    content = "模型连续返回了无法执行的操作格式，已停止本次运行。请重试，或换用更兼容的模型。"
+                    self.history.append(
+                        {"role": "assistant", "content": content, "created_at": now()}
+                    )
+                    yield event_to_dict(FinalEvent(run_id=self.run_id, content=content))
+                    return
+                protocol_retries += 1
+                protocol_correction = notice
                 yield event_to_dict(RetryEvent(run_id=self.run_id, content=notice))
                 continue
 
@@ -283,6 +300,36 @@ class Engine:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ]
+
+    @staticmethod
+    def _visible_final_delta(raw: str, emitted_chars: int) -> tuple[str, int]:
+        """Expose only user-facing ``<final>`` text during a streamed response.
+
+        The XML tool protocol shares the model token stream with the final answer.
+        Forwarding raw chunks would briefly render tool JSON in the chat before the
+        parser identifies it. Keep the protocol private and stream only final text,
+        with a small closing-tag lookbehind so ``</final>`` never leaks into prose.
+        """
+        open_tag = "<final>"
+        close_tag = "</final>"
+        start = raw.find(open_tag)
+        if start < 0:
+            return "", emitted_chars
+        tool_start = raw.find("<tool")
+        if 0 <= tool_start < start:
+            return "", emitted_chars
+
+        content_start = start + len(open_tag)
+        close_at = raw.find(close_tag, content_start)
+        if close_at >= 0:
+            content_end = close_at
+        else:
+            content_end = max(content_start, len(raw) - len(close_tag) + 1)
+
+        visible = raw[content_start:content_end]
+        if len(visible) <= emitted_chars:
+            return "", emitted_chars
+        return visible[emitted_chars:], len(visible)
 
     def _tool_descriptions(self) -> list[str]:
         active_tools = get_active_tools(self.tools, self.activated_tools)

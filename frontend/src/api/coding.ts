@@ -124,12 +124,13 @@ export async function switchCodingModel(
 export async function switchPermissionMode(
   sessionId: string,
   mode: PermissionMode,
-): Promise<void> {
+): Promise<{ ok: boolean; mode: PermissionMode }> {
   const response = await fetch(
     new URL(`/api/v1/coding/${sessionId}/permission-mode`, API_BASE_URL),
     { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode }) },
   )
   if (!response.ok) throw new Error(`switch permission mode failed: ${response.status}`)
+  return (await response.json()) as { ok: boolean; mode: PermissionMode }
 }
 
 export async function fetchCodingSkills(): Promise<CodingSkillsResponse> {

@@ -93,7 +93,9 @@ def test_session_store_empty_session_title_is_新会话(tmp_path: Path) -> None:
     assert _session_title([], "/tmp/tour-agent") == "新会话"
     assert _session_title([{"role": "assistant", "content": "hi"}], "/tmp/tour-agent") == "新会话"
     # Non-empty history still uses the first user message.
-    assert _session_title([{"role": "user", "content": "读 README"}], "/tmp/tour-agent") == "读 README"
+    assert (
+        _session_title([{"role": "user", "content": "读 README"}], "/tmp/tour-agent") == "读 README"
+    )
 
 
 def test_session_store_returns_replayable_chat_messages(tmp_path: Path) -> None:

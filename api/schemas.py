@@ -32,6 +32,7 @@ class CodingSessionResponse(BaseModel):
 
     session_id: str
     workspace_root: str
+    permission_mode: Literal["default", "accept_edits", "auto", "plan"] = "default"
 
 
 class CodingSessionSummary(BaseModel):

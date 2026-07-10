@@ -175,6 +175,9 @@ describe('codingEvents', () => {
     applyCodingEvent(current, { type: 'model_requested', prompt_chars: 1234 })
     expect(current.thinkingPhase.value).toBe('正在请求模型...')
     expect(current.contextChars.value).toBe(1234)
+    expect(
+      (current.messages.value[0].activities || []).some((item) => item.detail?.includes('上下文')),
+    ).toBe(false)
 
     applyCodingEvent(current, { type: 'model_parsed', kind: 'tool' })
     expect(current.thinkingPhase.value).toBe('正在执行工具...')
@@ -184,6 +187,98 @@ describe('codingEvents', () => {
 
     applyCodingEvent(current, { type: 'retry', content: 'bad output' })
     expect(current.thinkingPhase.value).toBe('正在重试...')
+  })
+
+  it('does not expose raw protocol correction text in the execution log', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, {
+      type: 'retry',
+      content: 'Your previous response could not be executed. Problem: invalid XML.',
+    })
+
+    const activities = current.messages.value[0].activities || []
+    expect(activities).toContainEqual({
+      kind: 'retry',
+      label: '正在调整执行方式',
+      status: 'running',
+    })
+    expect(activities.some((item) => item.detail?.includes('invalid XML'))).toBe(false)
+  })
+
+  it('settles a failed model request before recording the correction', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, { type: 'model_requested', prompt_chars: 1234 })
+    applyCodingEvent(current, { type: 'model_parsed', kind: 'retry' })
+    applyCodingEvent(current, { type: 'retry', content: 'malformed protocol' })
+
+    const activities = current.messages.value[0].activities || []
+    expect(activities).toEqual([
+      { kind: 'model', label: '请求模型响应', status: 'error' },
+      { kind: 'retry', label: '正在调整执行方式', status: 'running' },
+    ])
+  })
+
+  it('settles a correction before issuing the next model request', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, { type: 'model_requested', prompt_chars: 1234 })
+    applyCodingEvent(current, { type: 'model_parsed', kind: 'retry' })
+    applyCodingEvent(current, { type: 'retry', content: 'malformed protocol' })
+    applyCodingEvent(current, { type: 'model_requested', prompt_chars: 1250 })
+
+    const activities = current.messages.value[0].activities || []
+    expect(activities).toEqual([
+      { kind: 'model', label: '请求模型响应', status: 'error' },
+      { kind: 'retry', label: '正在调整执行方式', status: 'done' },
+      { kind: 'model', label: '请求模型响应', status: 'running' },
+    ])
+  })
+
+  it('settles an approval as failed when the user denies it', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, {
+      type: 'approval_required',
+      approval_id: 'appr_1',
+      tool: 'write_file',
+      args: { path: 'README.md' },
+      description: 'write_file requires approval.',
+      pattern_key: 'tool:write_file',
+    })
+    applyCodingEvent(current, {
+      type: 'tool_result',
+      tool: 'write_file',
+      args: { path: 'README.md' },
+      content: 'approval denied',
+      is_error: true,
+    })
+
+    const activities = current.messages.value[0].activities || []
+    expect(activities).toContainEqual({
+      kind: 'approval',
+      label: '等待确认 write_file',
+      detail: 'write_file requires approval.',
+      status: 'error',
+    })
+  })
+
+  it('settles all remaining execution rows when a turn finishes', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, { type: 'model_requested', prompt_chars: 1234 })
+    applyCodingEvent(current, { type: 'retry', content: 'malformed protocol' })
+    applyCodingEvent(current, { type: 'final', content: '已结束' })
+
+    expect(
+      (current.messages.value[0].activities || []).every((activity) => activity.status !== 'running'),
+    ).toBe(true)
   })
 
   it('clears thinking phase on terminal events', () => {
@@ -243,7 +338,7 @@ describe('codingEvents', () => {
     expect(current.messages.value[0].isThinking).toBe(false)
   })
 
-  it('tool_call clears accumulated streaming text', () => {
+  it('keeps accumulated streaming text when a tool starts', () => {
     const current = state()
     current.isThinking.value = true
 
@@ -260,10 +355,28 @@ describe('codingEvents', () => {
     })
 
     expect(current.messages.value).toHaveLength(1)
-    expect(current.messages.value[0].content).toBe('')
+    expect(current.messages.value[0].content).toBe('我来读取文件的内容')
     expect(current.messages.value[0].tools).toHaveLength(1)
     expect(current.messages.value[0].tools![0].tool).toBe('read_file')
     expect(current.messages.value[0].tools![0].status).toBe('running')
+  })
+
+  it('records user-visible execution activity without exposing hidden reasoning', () => {
+    const current = state()
+    current.isThinking.value = true
+
+    applyCodingEvent(current, { type: 'turn_started' })
+    applyCodingEvent(current, { type: 'model_requested', prompt_chars: 432 })
+    applyCodingEvent(current, {
+      type: 'tool_call',
+      tool: 'read_file',
+      args: { path: 'README.md' },
+    })
+
+    const activities = current.messages.value[0].activities || []
+    expect(activities.map((item) => item.label)).toContain('读取 README.md')
+    expect(activities.some((item) => item.label.includes('请求模型响应'))).toBe(true)
+    expect(activities.every((item) => !item.label.includes('chain of thought'))).toBe(true)
   })
 
   it('enters plan mode on runtime_mode_changed', () => {

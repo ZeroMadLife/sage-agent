@@ -51,6 +51,26 @@ it('renders diff preview when provided', () => {
   expect(wrapper.find('.diff-add').exists()).toBe(true)
 })
 
+it('summarizes write content instead of rendering the full payload', () => {
+  const content = 'def two_sum():\n    return [0, 1]\n'
+  const wrapper = mount(CodingApprovalCard, {
+    props: {
+      approval: {
+        approval_id: 'appr_1',
+        session_id: 'c1',
+        tool: 'write_file',
+        args: { path: 'two_sum.py', content },
+        description: 'write_file requires approval.',
+        pattern_key: 'tool:write_file',
+      },
+    },
+  })
+
+  expect(wrapper.text()).toContain('two_sum.py')
+  expect(wrapper.text()).toContain('将写入 2 行')
+  expect(wrapper.text()).not.toContain(content)
+})
+
 it('opens a full diff modal for approval review', async () => {
   const wrapper = mount(CodingApprovalCard, {
     props: {

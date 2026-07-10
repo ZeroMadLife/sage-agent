@@ -6,7 +6,7 @@ import subprocess
 import uuid
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.coding.context import IGNORED_PATH_NAMES, ContextManager, WorkspaceContext, now
 from core.coding.engine.engine import Engine
@@ -25,6 +25,7 @@ from core.coding.skills import SkillRegistry
 from core.coding.tool_executor import (
     ApprovalManager,
     PermissionChecker,
+    PermissionMode,
     ToolPolicyChecker,
 )
 from core.coding.tools.base import ToolContext
@@ -44,7 +45,7 @@ class CodingRuntime:
         approval_policy: str = "auto",
         session_state: dict[str, Any] | None = None,
         save_on_init: bool = True,
-        permission_mode: str = "default",
+        permission_mode: PermissionMode = "default",
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -85,7 +86,13 @@ class CodingRuntime:
         self.worker_manager = WorkerManager(self.workspace, self.model_factory)
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
-        self.permission_mode = str(self.session.get("permission_mode", permission_mode))
+        persisted_permission_mode = str(self.session.get("permission_mode", permission_mode))
+        self.permission_mode: PermissionMode = cast(
+            PermissionMode,
+            persisted_permission_mode
+            if persisted_permission_mode in {"default", "accept_edits", "auto", "plan"}
+            else "default",
+        )
         self.approval_manager = ApprovalManager()
         self.plan_review_manager = PlanReviewManager()
         self.stop_requested = False
@@ -233,7 +240,7 @@ class CodingRuntime:
         self.model = model_factory()
         self.model_spec = model_spec
 
-    def set_permission_mode(self, mode: str) -> None:
+    def set_permission_mode(self, mode: PermissionMode) -> None:
         """Switch the active permission mode at runtime."""
         self.permission_mode = mode
         self.permission_checker = self._permission_checker()

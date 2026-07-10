@@ -1,5 +1,9 @@
 """LLM factory - routes to OpenAI-compatible or Anthropic-native client."""
+
 from typing import Any
+
+from langchain_anthropic import ChatAnthropic
+from langchain_openai import ChatOpenAI
 
 from core.llm_anthropic import create_anthropic_llm
 from core.llm_openai import create_openai_llm
@@ -7,7 +11,9 @@ from core.llm_openai import create_openai_llm
 _ANTHROPIC_PROVIDERS = {"anthropic", "deepseek_anthropic"}
 
 
-def create_llm(model_spec: str, temperature: float = 0.0, **kwargs: Any):
+def create_llm(
+    model_spec: str, temperature: float = 0.0, **kwargs: Any
+) -> ChatOpenAI | ChatAnthropic:
     """Create an LLM client from a provider:model spec.
 
     Routes Anthropic-native providers (``anthropic``, ``deepseek_anthropic``)

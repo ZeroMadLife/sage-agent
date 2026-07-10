@@ -70,7 +70,9 @@ async def create_coding_session(
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
     return CodingSessionResponse(
-        session_id=session_id, workspace_root=str(workspace_root.resolve())
+        session_id=session_id,
+        workspace_root=str(workspace_root.resolve()),
+        permission_mode=runtime.permission_mode,
     )
 
 
@@ -119,6 +121,7 @@ async def resume_coding_session(
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(runtime.workspace.root.resolve()),
+        permission_mode=runtime.permission_mode,
     )
 
 
@@ -355,7 +358,9 @@ async def get_coding_run(
 async def list_coding_models(request: Request) -> CodingModelsResponse:
     """Return available models (simplified: deepseek v4 flash/pro only)."""
     models = [
-        CodingModel(id="deepseek:deepseek-v4-flash", label="DeepSeek V4 Flash", provider="deepseek"),
+        CodingModel(
+            id="deepseek:deepseek-v4-flash", label="DeepSeek V4 Flash", provider="deepseek"
+        ),
         CodingModel(id="deepseek:deepseek-v4-pro", label="DeepSeek V4 Pro", provider="deepseek"),
     ]
     return CodingModelsResponse(models=models, current="deepseek:deepseek-v4-flash")
@@ -383,7 +388,7 @@ async def switch_coding_model(
 @router.patch("/api/v1/coding/{session_id}/permission-mode")
 async def switch_permission_mode(
     session_id: str, payload: PermissionModeSwitchRequest, request: Request
-) -> dict:
+) -> dict[str, Any]:
     """Switch the active permission mode at runtime."""
     runtime = _require_runtime(request, session_id)
     runtime.set_permission_mode(payload.mode)

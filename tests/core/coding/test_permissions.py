@@ -129,6 +129,21 @@ def test_permission_mode_auto_allows_all(tmp_path: Path) -> None:
     assert shell_decision.reason == "approval_auto"
 
 
+def test_permission_mode_auto_keeps_dangerous_shell_behind_approval(tmp_path: Path) -> None:
+    """Automatic mode does not bypass approval for destructive shell commands."""
+    workspace, tools = _tools(tmp_path)
+    checker = PermissionChecker(permission_mode="auto")
+
+    decision = checker.check(
+        tools["run_shell"],
+        {"command": "git reset --hard HEAD"},
+        workspace,
+    )
+
+    assert decision.allowed is True
+    assert decision.reason == "approval_required"
+
+
 def test_permission_mode_plan_blocks_writes(tmp_path: Path) -> None:
     """plan mode denies write_file with the plan write guard."""
     workspace, tools = _tools(tmp_path)

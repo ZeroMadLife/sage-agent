@@ -84,9 +84,17 @@ describe('coding store', () => {
   })
 
   it('builds write approval diff preview from current file content', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ path: 'README.md', content: 'old title\n', lines: 1 }),
+    const fetchMock = vi.fn().mockImplementation((url: URL) => {
+      if (url.pathname.endsWith('/files')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ path: '.', entries: [{ name: 'README.md', is_dir: false }] }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ path: 'README.md', content: 'old title\n', lines: 1 }),
+      })
     })
     vi.stubGlobal('fetch', fetchMock)
     const store = useCodingStore()
@@ -109,6 +117,41 @@ describe('coding store', () => {
     store.disconnect()
   })
 
+  it('does not request a nonexistent file while previewing a new write approval', async () => {
+    const fetchMock = vi.fn().mockImplementation((url: URL) => {
+      if (url.pathname.endsWith('/files')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ path: '.', entries: [] }),
+        })
+      }
+      return Promise.resolve({ ok: false, status: 400 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    store.handleServerEvent({
+      type: 'approval_required',
+      approval_id: 'appr_1',
+      tool: 'write_file',
+      args: { path: 'new-note.txt', content: 'first\n\nthird\n' },
+      description: 'write_file requires approval.',
+      pattern_key: 'tool:write_file',
+    } as never)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchMock.mock.calls.map(([url]) => (url as URL).pathname)).toEqual([
+      '/api/v1/coding/c1/files',
+    ])
+    expect(store.pendingApproval?.diff_preview).toEqual([
+      { type: 'add', text: 'first' },
+      { type: 'add', text: '' },
+      { type: 'add', text: 'third' },
+    ])
+    store.disconnect()
+  })
+
   it('responds to pending approval and clears it', async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true })
     vi.stubGlobal('fetch', fetchMock)
@@ -127,6 +170,26 @@ describe('coding store', () => {
 
     expect(fetchMock).toHaveBeenCalled()
     expect(store.pendingApproval).toBeNull()
+  })
+
+  it('keeps the approval available when submitting the decision fails', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 500 })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.pendingApproval = {
+      approval_id: 'appr_1',
+      session_id: 'c1',
+      tool: 'write_file',
+      args: { path: 'README.md' },
+      description: 'write_file requires approval.',
+      pattern_key: 'tool:write_file',
+    }
+
+    await store.respondApproval('once')
+
+    expect(store.pendingApproval?.approval_id).toBe('appr_1')
+    expect(store.errorMessage).toContain('respond approval failed: 500')
   })
 
   it('caches file tree directories', async () => {
@@ -228,6 +291,22 @@ describe('coding store', () => {
     expect(store.messages[0].content).toBe('完成')
     expect(store.messages[0].isThinking).toBe(false)
     expect(store.isThinking).toBe(false)
+  })
+
+  it('switches permission mode through the REST API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, mode: 'accept_edits' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    await expect(store.changePermissionMode('accept_edits')).resolves.toBe(true)
+
+    expect(store.permissionMode).toBe('accept_edits')
+    const url = fetchMock.mock.calls[0][0] as URL
+    expect(url.pathname).toBe('/api/v1/coding/c1/permission-mode')
   })
 
   it('resets thinking state and phase when the websocket errors', () => {

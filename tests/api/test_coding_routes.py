@@ -51,6 +51,7 @@ def test_create_coding_session(tmp_path: Path) -> None:
     data = response.json()
     assert data["session_id"]
     assert data["workspace_root"] == str(tmp_path.resolve())
+    assert data["permission_mode"] == "default"
 
 
 def test_create_coding_session_accepts_approval_policy(tmp_path: Path) -> None:
@@ -116,6 +117,7 @@ def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["session_id"] == session_id
+    assert response.json()["permission_mode"] == "default"
     assert session_id in app.state.coding_sessions
     assert app.state.coding_sessions[session_id].session["history"][0]["content"] == "读 README.md"
 
@@ -761,7 +763,9 @@ def test_coding_websocket_slash_command_persists_original_text(tmp_path: Path) -
     # History stores the original slash command text, not the expanded prompt.
     history = runtime.session["history"]
     user_messages = [item for item in history if item.get("role") == "user"]
-    assert user_messages == [{"role": "user", "content": "/review", "created_at": user_messages[0]["created_at"]}]
+    assert user_messages == [
+        {"role": "user", "content": "/review", "created_at": user_messages[0]["created_at"]}
+    ]
     # The expanded review prompt (git diff instructions) is never persisted to history.
     assert all("git diff" not in str(item.get("content", "")) for item in history)
 
@@ -801,15 +805,12 @@ def test_coding_websocket_slash_command_with_args_keeps_original(tmp_path: Path)
     # The expanded prompt body is injected into the LLM request but not history.
     assert "你正在使用 Sage 的 travel-planning domain skill" in runtime.model.prompts[0]
     assert all(
-        "你正在使用 Sage 的 travel-planning domain skill"
-        not in str(item.get("content", ""))
+        "你正在使用 Sage 的 travel-planning domain skill" not in str(item.get("content", ""))
         for item in runtime.session["history"]
     )
 
     # Replayed messages also expose only the original command text.
-    messages = client.get(
-        f"/api/v1/coding/session/{session_id}/messages"
-    ).json()["messages"]
+    messages = client.get(f"/api/v1/coding/session/{session_id}/messages").json()["messages"]
     assert messages[0]["role"] == "user"
     assert messages[0]["content"] == "/travel-planning 我要去莆田"
 

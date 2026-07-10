@@ -22,7 +22,7 @@ describe('coding API client', () => {
   it('creates a coding session', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ session_id: 'c1', workspace_root: '/tmp/repo' }),
+      json: async () => ({ session_id: 'c1', workspace_root: '/tmp/repo', permission_mode: 'default' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
@@ -193,7 +193,7 @@ describe('coding API client', () => {
   it('resumes a coding session', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ session_id: 's1', workspace_root: '/tmp/repo' }),
+      json: async () => ({ session_id: 's1', workspace_root: '/tmp/repo', permission_mode: 'auto' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 

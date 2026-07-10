@@ -29,10 +29,7 @@ class ScriptedApiClient:
     async def astream(self, messages: list[dict[str, str]]) -> AsyncIterator[Any]:
         """Yield the scripted response in chunks to simulate streaming."""
         self.calls.append([dict(msg) for msg in messages])
-        if not self._responses:
-            full = "<final>done</final>"
-        else:
-            full = self._responses.pop(0)
+        full = "<final>done</final>" if not self._responses else self._responses.pop(0)
         chunk_size = 10
         for i in range(0, len(full), chunk_size):
             chunk_text = full[i : i + chunk_size]

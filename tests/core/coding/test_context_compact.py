@@ -270,7 +270,6 @@ async def test_skill_prompt_injected_into_llm_request_but_not_history(tmp_path: 
         "created_at": runtime.session["history"][0]["created_at"],
     }
     assert all(
-        "你正在使用 Sage 的 travel-planning domain skill"
-        not in str(item.get("content", ""))
+        "你正在使用 Sage 的 travel-planning domain skill" not in str(item.get("content", ""))
         for item in runtime.session["history"]
     )
