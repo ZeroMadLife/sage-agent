@@ -5,23 +5,21 @@ from __future__ import annotations
 import errno
 import fcntl
 import os
-import re
 import secrets
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 
 EXPORT_NAME = "transcript.jsonl"
 LOCK_NAME = ".export.lock"
 
 _FILE_FLAGS = os.O_CLOEXEC | os.O_NOFOLLOW
-_BACKUP_PATTERN = re.compile(r"\.transcript\.jsonl\.[0-9a-f]{32}\.bak\Z")
 
 
-def publish_jsonl(directory_fd: int, payload: bytes) -> None:
-    """Publish one payload while holding the session export lock."""
+def publish_jsonl(directory_fd: int, payload_factory: Callable[[], bytes]) -> None:
+    """Build and publish one payload while holding the session export lock."""
     with _export_lock(directory_fd):
-        _publish_locked(directory_fd, payload)
+        _publish_locked(directory_fd, payload_factory())
 
 
 @contextmanager
@@ -112,7 +110,6 @@ def _publish_locked(directory_fd: int, payload: bytes) -> None:
 
         backup_name = _best_effort_remove(directory_fd, backup_name)
         preserve_backup = bool(backup_name)
-        _cleanup_stale_backups(directory_fd)
     finally:
         if target_fd >= 0:
             os.close(target_fd)
@@ -208,26 +205,6 @@ def _best_effort_remove(directory_fd: int, name: str) -> str:
     with suppress(OSError):
         os.fsync(directory_fd)
     return ""
-
-
-def _cleanup_stale_backups(directory_fd: int) -> None:
-    try:
-        candidates = os.listdir(directory_fd)
-    except OSError:
-        return
-    for candidate in candidates:
-        if _BACKUP_PATTERN.fullmatch(candidate) is None:
-            continue
-        try:
-            candidate_fd = _open_verified_file(
-                directory_fd,
-                candidate,
-                flags=os.O_RDONLY | os.O_NONBLOCK,
-            )
-        except (OSError, ValueError):
-            continue
-        os.close(candidate_fd)
-        _best_effort_remove(directory_fd, candidate)
 
 
 def _restore_target(directory_fd: int, source_fd: int) -> None:

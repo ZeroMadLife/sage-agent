@@ -734,7 +734,7 @@ def test_backup_unlink_failure_after_commit_returns_new_export_and_keeps_backup(
     assert [item.message_id for item in store.read_all()] == ["m1", "m2"]
 
 
-def test_later_successful_export_best_effort_cleans_stale_regular_backup(tmp_path, monkeypatch):
+def test_later_successful_export_preserves_prior_recovery_backup(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
@@ -751,26 +751,29 @@ def test_later_successful_export_best_effort_cleans_stale_regular_backup(tmp_pat
         context.setattr(atomic_export_module.os, "unlink", fail_backup_unlink)
         assert store.export_jsonl() == export_path
 
-    assert len(list(export_path.parent.glob(".transcript.jsonl.*.bak"))) == 1
+    backups = list(export_path.parent.glob(".transcript.jsonl.*.bak"))
+    assert len(backups) == 1
+    recovery_path = backups[0]
+    recovery_payload = recovery_path.read_bytes()
 
     store.append(TranscriptItem(message_id="m3", role="assistant", content="third"))
     assert store.export_jsonl() == export_path
 
-    assert list(export_path.parent.glob(".transcript.jsonl.*.bak")) == []
+    assert recovery_path.read_bytes() == recovery_payload
     assert [item.message_id for item in store.read_all()] == ["m1", "m2", "m3"]
 
 
-def test_stale_backup_scan_failure_after_commit_returns_new_export(tmp_path, monkeypatch):
+def test_successful_export_never_scans_historical_backups(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
     previous_export = export_path.read_bytes()
     store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
 
-    def fail_listdir(path):
-        raise OSError("stale backup scan failed")
+    def forbid_listdir(path):
+        raise AssertionError("historical backup scan attempted")
 
-    monkeypatch.setattr(atomic_export_module.os, "listdir", fail_listdir)
+    monkeypatch.setattr(atomic_export_module.os, "listdir", forbid_listdir)
 
     assert store.export_jsonl() == export_path
 
@@ -859,6 +862,68 @@ def test_second_export_blocks_while_first_has_active_durable_backup(tmp_path, mo
     assert first_result == second_result == [
         tmp_path / "evidence" / "s1" / "exports" / "transcript.jsonl"
     ]
+
+
+def test_export_lock_covers_snapshot_so_older_export_cannot_overwrite_newer_snapshot(
+    tmp_path, monkeypatch
+):
+    stores = [TranscriptStore(tmp_path, "s1"), TranscriptStore(tmp_path, "s1")]
+    first = TranscriptItem(message_id="m1", role="user", content="first")
+    second = TranscriptItem(message_id="m2", role="assistant", content="second")
+    stores[0].append(first)
+    old_snapshot_encoded = threading.Event()
+    release_old_export = threading.Event()
+    new_export_started = threading.Event()
+    failures: list[BaseException] = []
+    real_dumps = json.dumps
+
+    def pause_old_snapshot(value, *args, **kwargs):
+        if threading.current_thread().name == "old-snapshot-export":
+            old_snapshot_encoded.set()
+            if not release_old_export.wait(10):
+                raise RuntimeError("old snapshot release timed out")
+        return real_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(transcript_module.json, "dumps", pause_old_snapshot)
+
+    def export_old_snapshot() -> None:
+        try:
+            stores[0].export_jsonl()
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            failures.append(exc)
+
+    def export_new_snapshot() -> None:
+        new_export_started.set()
+        try:
+            stores[1].export_jsonl()
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            failures.append(exc)
+
+    old_export = threading.Thread(target=export_old_snapshot, name="old-snapshot-export")
+    new_export = threading.Thread(target=export_new_snapshot, name="new-snapshot-export")
+    old_export.start()
+    assert old_snapshot_encoded.wait(10)
+    stores[1].append(second)
+    new_export.start()
+    assert new_export_started.wait(2)
+    new_export.join(timeout=0.2)
+    new_export_was_blocked = new_export.is_alive()
+
+    try:
+        release_old_export.set()
+        old_export.join(timeout=10)
+        new_export.join(timeout=10)
+    finally:
+        release_old_export.set()
+
+    assert new_export_was_blocked, "new exporter read its snapshot before acquiring the lock"
+    assert not old_export.is_alive()
+    assert not new_export.is_alive()
+    assert failures == []
+    export_path = stores[0].path.parent / "exports" / "transcript.jsonl"
+    assert [
+        TranscriptItem(**json.loads(line)) for line in export_path.read_text().splitlines()
+    ] == [first, second]
 
 
 def test_threaded_exporters_publish_complete_snapshot_without_recovery_loss(tmp_path):
@@ -957,29 +1022,24 @@ def test_export_lock_is_private_and_rejects_links(tmp_path):
     assert _mode(outside) == 0o640
 
 
-def test_stale_cleanup_only_matches_exact_backup_provenance(tmp_path):
+def test_operator_owned_matching_backup_name_is_never_deleted(tmp_path):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
-    stale = export_path.parent / f".transcript.jsonl.{'a' * 32}.bak"
+    operator_backup = export_path.parent / f".transcript.jsonl.{'a' * 32}.bak"
     unrelated = [
         export_path.parent / ".transcript.jsonl.notes.bak",
         export_path.parent / f".transcript.jsonl.{'D' * 32}.bak",
         export_path.parent / f".transcript.jsonl.{'b' * 31}.bak",
     ]
-    stale.write_bytes(b"stale recovery")
+    operator_backup.write_bytes(b"operator recovery evidence")
     for path in unrelated:
         path.write_bytes(path.name.encode())
 
     store.export_jsonl()
 
-    assert not stale.exists()
+    assert operator_backup.read_bytes() == b"operator recovery evidence"
     assert all(path.exists() for path in unrelated)
-    backups = [path.name for path in export_path.parent.iterdir() if path.suffix == ".bak"]
-    assert all(
-        not re.fullmatch(r"\.transcript\.jsonl\.[0-9a-f]{32}\.bak", name)
-        for name in backups
-    )
 
 
 def test_export_rejects_symlink_target_before_external_change(tmp_path):

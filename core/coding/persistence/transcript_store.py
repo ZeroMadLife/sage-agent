@@ -132,6 +132,14 @@ class TranscriptStore:
 
     def export_jsonl(self) -> Path:
         """Atomically replace the manual JSONL audit export from one snapshot."""
+        directory_fd = _open_directory(self._root, (*self._components, "exports"))
+        try:
+            publish_jsonl(directory_fd, self._snapshot_jsonl_payload)
+        finally:
+            os.close(directory_fd)
+        return self.path.parent / "exports" / EXPORT_NAME
+
+    def _snapshot_jsonl_payload(self) -> bytes:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN")
@@ -145,15 +153,9 @@ class TranscriptStore:
             self._raise_if_corrupt(exc)
             raise
 
-        payload = "".join(
+        return "".join(
             json.dumps(asdict(item), ensure_ascii=False, sort_keys=True) + "\n" for item in items
         ).encode("utf-8")
-        directory_fd = _open_directory(self._root, (*self._components, "exports"))
-        try:
-            publish_jsonl(directory_fd, payload)
-        finally:
-            os.close(directory_fd)
-        return self.path.parent / "exports" / EXPORT_NAME
 
     def check_integrity(self) -> bool:
         """Return true for an intact database, raising on corruption."""
