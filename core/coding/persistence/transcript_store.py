@@ -281,16 +281,31 @@ def _rollback(connection: sqlite3.Connection) -> None:
 
 
 def _trusted_root(root: Path) -> Path:
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
     metadata = root.lstat()
     if stat.S_ISLNK(metadata.st_mode):
         raise ValueError(f"trusted root must not be a symlink: {root}")
     if not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"trusted root is not a directory: {root}")
-    resolved = root.resolve(strict=True)
-    root_fd = os.open(resolved, _DIRECTORY_FLAGS)
-    os.close(root_fd)
-    return resolved
+    root_fd = os.open(root, _DIRECTORY_FLAGS)
+    try:
+        opened = os.fstat(root_fd)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise ValueError(f"trusted root changed while opening: {root}")
+        if opened.st_uid != os.geteuid():
+            raise ValueError(f"trusted root must be owned by the service user: {root}")
+        os.fchmod(root_fd, 0o700)
+        os.fsync(root_fd)
+        resolved = root.resolve(strict=True)
+        resolved_metadata = resolved.stat()
+        if (opened.st_dev, opened.st_ino) != (
+            resolved_metadata.st_dev,
+            resolved_metadata.st_ino,
+        ):
+            raise ValueError(f"trusted root escaped while resolving: {root}")
+        return resolved
+    finally:
+        os.close(root_fd)
 
 
 def _open_directory(root: Path, components: tuple[str, ...]) -> int:
@@ -353,9 +368,14 @@ def _prepare_database_file(directory_fd: int) -> None:
         _secure_optional_file(directory_fd, _DATABASE_NAME + suffix)
 
 
-def _open_verified_file(directory_fd: int, name: str) -> int:
+def _open_verified_file(
+    directory_fd: int,
+    name: str,
+    *,
+    flags: int = os.O_RDWR,
+) -> int:
     try:
-        file_fd = os.open(name, os.O_RDWR | _FILE_FLAGS, dir_fd=directory_fd)
+        file_fd = os.open(name, flags | _FILE_FLAGS, dir_fd=directory_fd)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise ValueError(f"symlink file rejected: {name}") from exc
@@ -388,38 +408,132 @@ def _validate_file(file_fd: int, name: str) -> None:
 
 
 def _atomic_replace(directory_fd: int, name: str, payload: bytes) -> None:
+    target_fd = _open_optional_export_target(directory_fd, name)
     temp_name = ""
     temp_fd = -1
+    backup_name = ""
+    backup_fd = -1
+    published = False
+    preserve_backup = False
     try:
-        for _ in range(100):
-            temp_name = f".{name}.{secrets.token_hex(8)}.tmp"
-            try:
-                temp_fd = os.open(
-                    temp_name,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _FILE_FLAGS,
-                    0o600,
-                    dir_fd=directory_fd,
-                )
-                break
-            except FileExistsError:
-                continue
-        if temp_fd < 0:
-            raise OSError("unable to allocate transcript export temporary file")
+        temp_name, temp_fd = _open_unique_export_file(directory_fd, name, "tmp")
         os.fchmod(temp_fd, 0o600)
         _write_all(temp_fd, payload)
         os.fsync(temp_fd)
         completed_fd = temp_fd
         temp_fd = -1
         os.close(completed_fd)
-        os.replace(temp_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
-        temp_name = ""
-        os.fsync(directory_fd)
+
+        if target_fd >= 0:
+            backup_name, backup_fd = _open_unique_export_file(directory_fd, name, "bak")
+            target_metadata = os.fstat(target_fd)
+            os.fchmod(backup_fd, stat.S_IMODE(target_metadata.st_mode))
+            _copy_file(target_fd, backup_fd)
+            os.fsync(backup_fd)
+            completed_fd = backup_fd
+            backup_fd = -1
+            os.close(completed_fd)
+            os.fsync(directory_fd)
+
+        try:
+            os.replace(temp_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+            temp_name = ""
+            published = True
+            os.fsync(directory_fd)
+
+            if backup_name:
+                os.unlink(backup_name, dir_fd=directory_fd)
+                backup_name = ""
+                os.fsync(directory_fd)
+        except Exception as publish_error:
+            try:
+                if published and target_fd >= 0:
+                    if backup_name:
+                        os.replace(
+                            backup_name,
+                            name,
+                            src_dir_fd=directory_fd,
+                            dst_dir_fd=directory_fd,
+                        )
+                    else:
+                        _restore_export_from_fd(directory_fd, name, target_fd)
+                    backup_name = ""
+                    published = False
+                    os.fsync(directory_fd)
+                elif published:
+                    os.unlink(name, dir_fd=directory_fd)
+                    published = False
+                    os.fsync(directory_fd)
+            except Exception as rollback_error:
+                preserve_backup = bool(backup_name)
+                raise rollback_error from publish_error
+            raise
     finally:
+        cleanup_changed = False
+        if target_fd >= 0:
+            os.close(target_fd)
         if temp_fd >= 0:
             os.close(temp_fd)
+        if backup_fd >= 0:
+            os.close(backup_fd)
         if temp_name:
             with suppress(FileNotFoundError):
                 os.unlink(temp_name, dir_fd=directory_fd)
+                cleanup_changed = True
+        if backup_name and not preserve_backup:
+            with suppress(FileNotFoundError):
+                os.unlink(backup_name, dir_fd=directory_fd)
+                cleanup_changed = True
+        if cleanup_changed:
+            os.fsync(directory_fd)
+
+
+def _open_optional_export_target(directory_fd: int, name: str) -> int:
+    try:
+        return _open_verified_file(
+            directory_fd,
+            name,
+            flags=os.O_RDONLY | os.O_NONBLOCK,
+        )
+    except FileNotFoundError:
+        return -1
+
+
+def _open_unique_export_file(directory_fd: int, name: str, suffix: str) -> tuple[str, int]:
+    for _ in range(100):
+        candidate = f".{name}.{secrets.token_hex(8)}.{suffix}"
+        try:
+            file_fd = os.open(
+                candidate,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL | _FILE_FLAGS,
+                0o600,
+                dir_fd=directory_fd,
+            )
+            return candidate, file_fd
+        except FileExistsError:
+            continue
+    raise OSError(f"unable to allocate transcript export {suffix} file")
+
+
+def _copy_file(source_fd: int, destination_fd: int) -> None:
+    os.lseek(source_fd, 0, os.SEEK_SET)
+    while chunk := os.read(source_fd, 64 * 1024):
+        _write_all(destination_fd, chunk)
+
+
+def _restore_export_from_fd(directory_fd: int, name: str, source_fd: int) -> None:
+    recovery_name, recovery_fd = _open_unique_export_file(directory_fd, name, "bak")
+    try:
+        os.fchmod(recovery_fd, stat.S_IMODE(os.fstat(source_fd).st_mode))
+        _copy_file(source_fd, recovery_fd)
+        os.fsync(recovery_fd)
+    except Exception:
+        os.close(recovery_fd)
+        with suppress(FileNotFoundError):
+            os.unlink(recovery_name, dir_fd=directory_fd)
+        raise
+    os.close(recovery_fd)
+    os.replace(recovery_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
 
 
 def _write_all(file_fd: int, data: bytes) -> None:

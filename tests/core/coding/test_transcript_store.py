@@ -242,6 +242,7 @@ def test_busy_writer_raises_operational_error_with_bounded_wait(tmp_path, monkey
         blocker.rollback()
         blocker.close()
 
+    assert elapsed >= 0.08
     assert elapsed < 1.5
 
 
@@ -333,6 +334,195 @@ def test_failed_export_preserves_database_and_previous_export(tmp_path, monkeypa
     assert list(export_path.parent.iterdir()) == [export_path]
 
 
+def test_post_replace_directory_sync_failure_restores_previous_export(tmp_path, monkeypatch):
+    store = TranscriptStore(tmp_path, "s1")
+    first = TranscriptItem(message_id="m1", role="user", content="first")
+    second = TranscriptItem(message_id="m2", role="assistant", content="second")
+    store.append(first)
+    export_path = store.export_jsonl()
+    previous_export = export_path.read_bytes()
+    store.append(second)
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_after_publish(fd: int) -> None:
+        nonlocal failed
+        if (
+            not failed
+            and stat.S_ISDIR(os.fstat(fd).st_mode)
+            and export_path.read_bytes() != previous_export
+        ):
+            failed = True
+            raise OSError("publish directory sync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(transcript_module.os, "fsync", fail_after_publish)
+
+    with pytest.raises(OSError, match="publish directory sync failed"):
+        store.export_jsonl()
+
+    assert failed is True
+    assert export_path.read_bytes() == previous_export
+    assert store.read_all() == [first, second]
+    assert list(export_path.parent.iterdir()) == [export_path]
+
+
+def test_post_replace_directory_sync_failure_removes_new_export(tmp_path, monkeypatch):
+    store = TranscriptStore(tmp_path, "s1")
+    item = TranscriptItem(message_id="m1", role="user", content="first")
+    store.append(item)
+    export_path = store.path.parent / "exports" / "transcript.jsonl"
+    export_path.parent.mkdir(mode=0o700)
+    real_fsync = os.fsync
+    failed = False
+
+    def fail_after_publish(fd: int) -> None:
+        nonlocal failed
+        if not failed and stat.S_ISDIR(os.fstat(fd).st_mode) and export_path.exists():
+            failed = True
+            raise OSError("publish directory sync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(transcript_module.os, "fsync", fail_after_publish)
+
+    with pytest.raises(OSError, match="publish directory sync failed"):
+        store.export_jsonl()
+
+    assert failed is True
+    assert not export_path.exists()
+    assert store.read_all() == [item]
+    assert list(export_path.parent.iterdir()) == []
+
+
+def test_export_reports_rollback_sync_failure_with_publish_error_as_cause(tmp_path, monkeypatch):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    previous_export = export_path.read_bytes()
+    store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
+    real_fsync = os.fsync
+    publish_failed = False
+
+    def fail_publish_and_rollback_sync(fd: int) -> None:
+        nonlocal publish_failed
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            if not publish_failed and export_path.read_bytes() != previous_export:
+                publish_failed = True
+                raise OSError("publish directory sync failed")
+            if publish_failed and export_path.read_bytes() == previous_export:
+                raise OSError("rollback directory sync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(transcript_module.os, "fsync", fail_publish_and_rollback_sync)
+
+    with pytest.raises(OSError, match="rollback directory sync failed") as exc_info:
+        store.export_jsonl()
+
+    assert isinstance(exc_info.value.__cause__, OSError)
+    assert "publish directory sync failed" in str(exc_info.value.__cause__)
+    assert export_path.read_bytes() == previous_export
+
+
+def test_backup_cleanup_sync_failure_restores_previous_export(tmp_path, monkeypatch):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    previous_export = export_path.read_bytes()
+    store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
+    real_fsync = os.fsync
+    directory_syncs_after_publish = 0
+
+    def fail_backup_cleanup_sync(fd: int) -> None:
+        nonlocal directory_syncs_after_publish
+        if stat.S_ISDIR(os.fstat(fd).st_mode) and export_path.read_bytes() != previous_export:
+            directory_syncs_after_publish += 1
+            if directory_syncs_after_publish == 2:
+                raise OSError("backup cleanup sync failed")
+        real_fsync(fd)
+
+    monkeypatch.setattr(transcript_module.os, "fsync", fail_backup_cleanup_sync)
+
+    with pytest.raises(OSError, match="backup cleanup sync failed"):
+        store.export_jsonl()
+
+    assert directory_syncs_after_publish == 2
+    assert export_path.read_bytes() == previous_export
+    assert list(export_path.parent.iterdir()) == [export_path]
+
+
+def test_export_rejects_symlink_target_before_external_change(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    item = TranscriptItem(message_id="m1", role="user", content="first")
+    store.append(item)
+    outside = tmp_path / "outside.jsonl"
+    original = b"outside"
+    outside.write_bytes(original)
+    outside.chmod(0o640)
+    export_path = store.path.parent / "exports" / "transcript.jsonl"
+    export_path.parent.mkdir(mode=0o700)
+    export_path.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.export_jsonl()
+
+    assert export_path.is_symlink()
+    assert outside.read_bytes() == original
+    assert _mode(outside) == 0o640
+    assert store.read_all() == [item]
+
+
+def test_export_rejects_hardlink_target_before_external_change(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    item = TranscriptItem(message_id="m1", role="user", content="first")
+    store.append(item)
+    outside = tmp_path / "outside.jsonl"
+    original = b"outside"
+    outside.write_bytes(original)
+    outside.chmod(0o640)
+    export_path = store.path.parent / "exports" / "transcript.jsonl"
+    export_path.parent.mkdir(mode=0o700)
+    os.link(outside, export_path)
+
+    with pytest.raises(ValueError, match="hardlink"):
+        store.export_jsonl()
+
+    assert export_path.samefile(outside)
+    assert outside.read_bytes() == original
+    assert _mode(outside) == 0o640
+    assert store.read_all() == [item]
+
+
+def test_export_unique_temp_and_backup_names_ignore_precreated_symlinks(tmp_path, monkeypatch):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
+    outside = tmp_path / "outside"
+    original = b"outside"
+    outside.write_bytes(original)
+    outside.chmod(0o640)
+    temp_link = export_path.parent / ".transcript.jsonl.taken.tmp"
+    backup_link = export_path.parent / ".transcript.jsonl.taken.bak"
+    temp_link.symlink_to(outside)
+    backup_link.symlink_to(outside)
+    tokens = ["taken", "temp-ok", "taken", "backup-ok"]
+
+    def next_token(size: int) -> str:
+        assert size == 8
+        return tokens.pop(0)
+
+    monkeypatch.setattr(transcript_module.secrets, "token_hex", next_token)
+
+    assert store.export_jsonl() == export_path
+
+    assert tokens == []
+    assert temp_link.is_symlink()
+    assert backup_link.is_symlink()
+    assert outside.read_bytes() == original
+    assert _mode(outside) == 0o640
+    assert [item.message_id for item in store.read_all()] == ["m1", "m2"]
+
+
 def test_legacy_jsonl_is_not_imported_or_overwritten(tmp_path):
     legacy = tmp_path / "evidence" / "s1" / "transcript.jsonl"
     legacy.parent.mkdir(parents=True)
@@ -361,6 +551,27 @@ def test_symlinked_root_is_rejected_without_outside_changes(tmp_path):
         TranscriptStore(root, "s1")
 
     assert list(outside.iterdir()) == []
+
+
+def test_new_trusted_root_is_private_under_default_umask(tmp_path):
+    root = tmp_path / "trusted"
+    previous_umask = os.umask(0o022)
+    try:
+        TranscriptStore(root, "s1")
+    finally:
+        os.umask(previous_umask)
+
+    assert _mode(root) == 0o700
+
+
+def test_existing_owned_trusted_root_is_tightened_to_private_mode(tmp_path):
+    root = tmp_path / "trusted"
+    root.mkdir(mode=0o755)
+    root.chmod(0o755)
+
+    TranscriptStore(root, "s1")
+
+    assert _mode(root) == 0o700
 
 
 def test_symlinked_session_is_rejected_without_outside_changes(tmp_path):
