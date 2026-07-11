@@ -1,0 +1,8 @@
+{
+  "context_usage_updated": {
+    "required": ["session_id", "run_id", "used_tokens", "model_limit_tokens", "output_reserve_tokens", "effective_limit_tokens", "usage_ratio", "level", "estimated", "compactable"]
+  },
+  "memory_proposal_ready": {
+    "required": ["session_id", "run_id", "reflection_id", "proposal_id", "candidate_count", "base_revision"]
+  }
+}
