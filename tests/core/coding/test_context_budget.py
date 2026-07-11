@@ -1,6 +1,13 @@
+from dataclasses import FrozenInstanceError
+
 import pytest
 
-from core.coding.context.budget import ContextPolicy, TokenCounter
+from core.coding.context.budget import (
+    ContextPolicy,
+    ContextUsage,
+    TokenCount,
+    TokenCounter,
+)
 
 
 def test_effective_limit_subtracts_output_reserve():
@@ -113,7 +120,7 @@ def test_counter_clamps_model_count_to_one():
 def test_counter_fallback_is_conservative_and_labeled():
     count = TokenCounter().count("中文 context")
 
-    assert count.tokens > 0
+    assert count.tokens == 4
     assert count.estimated is True
 
 
@@ -126,3 +133,26 @@ def test_counter_falls_back_when_model_counter_raises():
 
     assert count.tokens == 2
     assert count.estimated is True
+
+
+@pytest.mark.parametrize(
+    ("instance", "field", "value"),
+    [
+        (TokenCount(tokens=1, estimated=True), "tokens", 2),
+        (
+            ContextUsage(
+                used_tokens=1,
+                effective_limit_tokens=2,
+                usage_ratio=0.5,
+                level="budget",
+                estimated=False,
+            ),
+            "level",
+            "normal",
+        ),
+        (ContextPolicy(context_window_tokens=200_000), "budget_ratio", 0.51),
+    ],
+)
+def test_context_contract_dataclasses_are_frozen(instance, field, value):
+    with pytest.raises(FrozenInstanceError):
+        setattr(instance, field, value)
