@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -14,6 +15,7 @@ from queue import Empty
 
 import pytest
 
+from core.coding.persistence import atomic_export as atomic_export_module
 from core.coding.persistence import transcript_store as transcript_module
 from core.coding.persistence.transcript_store import (
     TranscriptCorruptionError,
@@ -36,6 +38,24 @@ def _spawn_append(
         return
     try:
         results.put(store.append(TranscriptItem(message_id="m1", role="user", content="hello")))
+    except Exception as exc:  # pragma: no cover - reported to the parent assertion
+        results.put(exc)
+
+
+def _spawn_export(
+    root: str,
+    ready: multiprocessing.Queue,
+    start: multiprocessing.synchronize.Event,
+    results: multiprocessing.Queue,
+) -> None:
+    store = TranscriptStore(Path(root), "s1")
+    ready.put(True)
+    if not start.wait(10):
+        results.put(RuntimeError("spawn start timed out"))
+        return
+    try:
+        path = store.export_jsonl()
+        results.put(path.read_bytes())
     except Exception as exc:  # pragma: no cover - reported to the parent assertion
         results.put(exc)
 
@@ -79,6 +99,12 @@ def _transcript_schema(
         {created_at}
     )
     """
+
+
+def _add_schema_objects(path: Path, statements: list[str]) -> None:
+    with sqlite3.connect(path) as connection:
+        for statement in statements:
+            connection.execute(statement)
 
 
 def test_path_append_and_rebuild_idempotency(tmp_path):
@@ -298,6 +324,33 @@ def test_v0_database_with_any_user_table_is_rejected_without_upgrade(tmp_path, s
         )
 
 
+@pytest.mark.parametrize(
+    "statements",
+    [
+        ["CREATE VIEW user_view AS SELECT 1 AS value"],
+        [
+            "CREATE TABLE sqliteX (value TEXT)",
+            "CREATE TRIGGER user_trigger AFTER INSERT ON sqliteX BEGIN SELECT 1; END",
+        ],
+        [
+            "CREATE TABLE sqliteX (value TEXT)",
+            "CREATE INDEX user_index ON sqliteX(value)",
+        ],
+    ],
+    ids=["view", "trigger", "index"],
+)
+def test_v0_database_with_any_user_schema_object_is_rejected(tmp_path, statements):
+    path = _precreate_database(tmp_path, None, 0)
+    _add_schema_objects(path, statements)
+
+    with pytest.raises(TranscriptStoreError) as exc_info:
+        TranscriptStore(tmp_path, "s1")
+
+    assert str(path) in str(exc_info.value)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
+
+
 def test_truly_empty_v0_database_is_created_as_v1_and_reopens(tmp_path):
     path = _precreate_database(tmp_path, None, 0)
 
@@ -308,6 +361,44 @@ def test_truly_empty_v0_database_is_created_as_v1_and_reopens(tmp_path):
     assert reopened.read_all() == []
     with sqlite3.connect(path) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "CREATE VIEW user_view AS SELECT message_id FROM transcript",
+        "CREATE INDEX user_index ON transcript(role)",
+        """
+        CREATE TRIGGER delete_evidence AFTER INSERT ON transcript
+        BEGIN
+            DELETE FROM transcript WHERE message_id = NEW.message_id;
+        END
+        """,
+    ],
+    ids=["view", "index", "trigger-delete-evidence"],
+)
+def test_v1_canonical_table_with_any_extra_user_object_is_rejected(tmp_path, statement):
+    store = TranscriptStore(tmp_path, "s1")
+    _add_schema_objects(store.path, [statement])
+
+    with pytest.raises(TranscriptStoreError) as exc_info:
+        TranscriptStore(tmp_path, "s1")
+
+    assert str(store.path) in str(exc_info.value)
+
+
+def test_v1_check_constraint_cannot_spoof_autoincrement_schema(tmp_path):
+    schema = _transcript_schema(sequence="INTEGER PRIMARY KEY").replace(
+        "message_id TEXT NOT NULL UNIQUE,",
+        "message_id TEXT NOT NULL UNIQUE CHECK "
+        "('sequence INTEGER PRIMARY KEY AUTOINCREMENT' != ''),",
+    )
+    path = _precreate_database(tmp_path, schema, 1)
+
+    with pytest.raises(TranscriptStoreError) as exc_info:
+        TranscriptStore(tmp_path, "s1")
+
+    assert str(path) in str(exc_info.value)
 
 
 def test_schema_inspection_operational_error_includes_path_and_cause(tmp_path, monkeypatch):
@@ -471,14 +562,14 @@ def test_failed_export_preserves_database_and_previous_export(tmp_path, monkeypa
         def fail_write(fd: int, data: bytes) -> None:
             raise OSError("write failed")
 
-        monkeypatch.setattr(transcript_module, "_write_all", fail_write)
+        monkeypatch.setattr(atomic_export_module, "_write_all", fail_write)
         error = "write failed"
     else:
 
         def fail_replace(*args, **kwargs) -> None:
             raise OSError("replace failed")
 
-        monkeypatch.setattr(transcript_module.os, "replace", fail_replace)
+        monkeypatch.setattr(atomic_export_module.os, "replace", fail_replace)
         error = "replace failed"
 
     with pytest.raises(OSError, match=error):
@@ -487,7 +578,10 @@ def test_failed_export_preserves_database_and_previous_export(tmp_path, monkeypa
     assert store.read_all() == [first, second]
     assert export_path.read_bytes() == original_export
     assert export_path.stat().st_ino == original_inode
-    assert list(export_path.parent.iterdir()) == [export_path]
+    assert set(export_path.parent.iterdir()) == {
+        export_path,
+        export_path.parent / ".export.lock",
+    }
 
 
 def test_post_replace_directory_sync_failure_restores_previous_export(tmp_path, monkeypatch):
@@ -512,7 +606,7 @@ def test_post_replace_directory_sync_failure_restores_previous_export(tmp_path, 
             raise OSError("publish directory sync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(transcript_module.os, "fsync", fail_after_publish)
+    monkeypatch.setattr(atomic_export_module.os, "fsync", fail_after_publish)
 
     with pytest.raises(OSError, match="publish directory sync failed"):
         store.export_jsonl()
@@ -520,7 +614,10 @@ def test_post_replace_directory_sync_failure_restores_previous_export(tmp_path, 
     assert failed is True
     assert export_path.read_bytes() == previous_export
     assert store.read_all() == [first, second]
-    assert list(export_path.parent.iterdir()) == [export_path]
+    assert set(export_path.parent.iterdir()) == {
+        export_path,
+        export_path.parent / ".export.lock",
+    }
 
 
 def test_post_replace_directory_sync_failure_removes_new_export(tmp_path, monkeypatch):
@@ -539,7 +636,7 @@ def test_post_replace_directory_sync_failure_removes_new_export(tmp_path, monkey
             raise OSError("publish directory sync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(transcript_module.os, "fsync", fail_after_publish)
+    monkeypatch.setattr(atomic_export_module.os, "fsync", fail_after_publish)
 
     with pytest.raises(OSError, match="publish directory sync failed"):
         store.export_jsonl()
@@ -547,7 +644,7 @@ def test_post_replace_directory_sync_failure_removes_new_export(tmp_path, monkey
     assert failed is True
     assert not export_path.exists()
     assert store.read_all() == [item]
-    assert list(export_path.parent.iterdir()) == []
+    assert list(export_path.parent.iterdir()) == [export_path.parent / ".export.lock"]
 
 
 def test_export_reports_rollback_sync_failure_with_publish_error_as_cause(tmp_path, monkeypatch):
@@ -569,7 +666,7 @@ def test_export_reports_rollback_sync_failure_with_publish_error_as_cause(tmp_pa
                 raise OSError("rollback directory sync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(transcript_module.os, "fsync", fail_publish_and_rollback_sync)
+    monkeypatch.setattr(atomic_export_module.os, "fsync", fail_publish_and_rollback_sync)
 
     with pytest.raises(OSError, match="rollback directory sync failed") as exc_info:
         store.export_jsonl()
@@ -600,7 +697,7 @@ def test_backup_cleanup_sync_failure_after_commit_returns_new_export(tmp_path, m
                 raise OSError("backup cleanup sync failed")
         real_fsync(fd)
 
-    monkeypatch.setattr(transcript_module.os, "fsync", fail_backup_cleanup_sync)
+    monkeypatch.setattr(atomic_export_module.os, "fsync", fail_backup_cleanup_sync)
 
     assert store.export_jsonl() == export_path
 
@@ -625,7 +722,7 @@ def test_backup_unlink_failure_after_commit_returns_new_export_and_keeps_backup(
             raise OSError("backup unlink failed")
         real_unlink(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(transcript_module.os, "unlink", fail_backup_unlink)
+    monkeypatch.setattr(atomic_export_module.os, "unlink", fail_backup_unlink)
 
     assert store.export_jsonl() == export_path
 
@@ -651,7 +748,7 @@ def test_later_successful_export_best_effort_cleans_stale_regular_backup(tmp_pat
                 raise OSError("backup unlink failed")
             real_unlink(path, dir_fd=dir_fd)
 
-        context.setattr(transcript_module.os, "unlink", fail_backup_unlink)
+        context.setattr(atomic_export_module.os, "unlink", fail_backup_unlink)
         assert store.export_jsonl() == export_path
 
     assert len(list(export_path.parent.glob(".transcript.jsonl.*.bak"))) == 1
@@ -673,7 +770,7 @@ def test_stale_backup_scan_failure_after_commit_returns_new_export(tmp_path, mon
     def fail_listdir(path):
         raise OSError("stale backup scan failed")
 
-    monkeypatch.setattr(transcript_module.os, "listdir", fail_listdir)
+    monkeypatch.setattr(atomic_export_module.os, "listdir", fail_listdir)
 
     assert store.export_jsonl() == export_path
 
@@ -683,6 +780,206 @@ def test_stale_backup_scan_failure_after_commit_returns_new_export(tmp_path, mon
         TranscriptItem(message_id="m1", role="user", content="first"),
         TranscriptItem(message_id="m2", role="assistant", content="second"),
     ]
+
+
+def test_unrelated_backup_like_file_is_never_deleted(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    notes = export_path.parent / ".transcript.jsonl.notes.bak"
+    notes.write_bytes(b"operator notes")
+    notes.chmod(0o640)
+
+    assert store.export_jsonl() == export_path
+
+    assert notes.read_bytes() == b"operator notes"
+    assert _mode(notes) == 0o640
+
+
+def test_second_export_blocks_while_first_has_active_durable_backup(tmp_path, monkeypatch):
+    stores = [TranscriptStore(tmp_path, "s1"), TranscriptStore(tmp_path, "s1")]
+    stores[0].append(TranscriptItem(message_id="m1", role="user", content="first"))
+    stores[0].export_jsonl()
+    stores[0].append(TranscriptItem(message_id="m2", role="assistant", content="second"))
+    backup_durable = threading.Event()
+    release_first = threading.Event()
+    second_started = threading.Event()
+    first_result: list[Path] = []
+    second_result: list[Path] = []
+    failures: list[BaseException] = []
+    real_fsync = os.fsync
+    export_directory = stores[0].path.parent / "exports"
+
+    def pause_after_backup_fsync(fd: int) -> None:
+        real_fsync(fd)
+        metadata = os.fstat(fd)
+        if (
+            stat.S_ISDIR(metadata.st_mode)
+            and any(
+                re.fullmatch(r"\.transcript\.jsonl\.[0-9a-f]{32}\.bak", path.name)
+                for path in export_directory.iterdir()
+            )
+            and not backup_durable.is_set()
+        ):
+            backup_durable.set()
+            if not release_first.wait(10):
+                raise RuntimeError("first exporter release timed out")
+
+    monkeypatch.setattr(atomic_export_module.os, "fsync", pause_after_backup_fsync)
+
+    def export_first() -> None:
+        try:
+            first_result.append(stores[0].export_jsonl())
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            failures.append(exc)
+
+    def export_second() -> None:
+        second_started.set()
+        try:
+            second_result.append(stores[1].export_jsonl())
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            failures.append(exc)
+
+    first = threading.Thread(target=export_first)
+    second = threading.Thread(target=export_second)
+    first.start()
+    assert backup_durable.wait(10)
+    second.start()
+    assert second_started.wait(2)
+    second.join(timeout=0.2)
+
+    try:
+        assert second.is_alive(), "second exporter did not block on the session export lock"
+    finally:
+        release_first.set()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+    assert failures == []
+    assert first_result == second_result == [
+        tmp_path / "evidence" / "s1" / "exports" / "transcript.jsonl"
+    ]
+
+
+def test_threaded_exporters_publish_complete_snapshot_without_recovery_loss(tmp_path):
+    stores = [TranscriptStore(tmp_path, "s1"), TranscriptStore(tmp_path, "s1")]
+    items = [
+        TranscriptItem(message_id="m1", role="user", content="first"),
+        TranscriptItem(message_id="m2", role="assistant", content="second"),
+    ]
+    for item in items:
+        stores[0].append(item)
+    stores[0].export_jsonl()
+    barrier = threading.Barrier(2)
+    failures: list[BaseException] = []
+
+    def export(store: TranscriptStore) -> None:
+        try:
+            barrier.wait()
+            store.export_jsonl()
+        except BaseException as exc:  # pragma: no cover - asserted in parent thread
+            failures.append(exc)
+
+    threads = [threading.Thread(target=export, args=(store,)) for store in stores]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert failures == []
+    export_path = stores[0].path.parent / "exports" / "transcript.jsonl"
+    assert [TranscriptItem(**json.loads(line)) for line in export_path.read_text().splitlines()] == items
+    assert list(export_path.parent.glob(".transcript.jsonl.*.bak")) == []
+
+
+def test_spawn_exporters_publish_complete_snapshot(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    items = [
+        TranscriptItem(message_id="m1", role="user", content="first"),
+        TranscriptItem(message_id="m2", role="assistant", content="second"),
+    ]
+    for item in items:
+        store.append(item)
+    store.export_jsonl()
+    context = multiprocessing.get_context("spawn")
+    ready = context.Queue()
+    start = context.Event()
+    results = context.Queue()
+    processes = [
+        context.Process(target=_spawn_export, args=(str(tmp_path), ready, start, results))
+        for _ in range(2)
+    ]
+    started_processes = []
+
+    try:
+        for process in processes:
+            process.start()
+            started_processes.append(process)
+        for _ in processes:
+            assert ready.get(timeout=10) is True
+        start.set()
+        for process in processes:
+            process.join(timeout=10)
+
+        assert [process.exitcode for process in processes] == [0, 0]
+        payloads = [results.get(timeout=2) for _ in processes]
+        assert all(isinstance(payload, bytes) for payload in payloads)
+        expected = store.export_jsonl().read_bytes()
+        assert payloads == [expected, expected]
+        assert list((store.path.parent / "exports").glob(".transcript.jsonl.*.bak")) == []
+    finally:
+        start.set()
+        for process in started_processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+
+
+def test_export_lock_is_private_and_rejects_links(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    lock_path = export_path.parent / ".export.lock"
+
+    assert _mode(lock_path) == 0o600
+
+    lock_path.unlink()
+    outside = tmp_path / "outside.lock"
+    outside.write_bytes(b"outside")
+    outside.chmod(0o640)
+    lock_path.symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.export_jsonl()
+
+    assert outside.read_bytes() == b"outside"
+    assert _mode(outside) == 0o640
+
+
+def test_stale_cleanup_only_matches_exact_backup_provenance(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="m1", role="user", content="first"))
+    export_path = store.export_jsonl()
+    stale = export_path.parent / f".transcript.jsonl.{'a' * 32}.bak"
+    unrelated = [
+        export_path.parent / ".transcript.jsonl.notes.bak",
+        export_path.parent / f".transcript.jsonl.{'D' * 32}.bak",
+        export_path.parent / f".transcript.jsonl.{'b' * 31}.bak",
+    ]
+    stale.write_bytes(b"stale recovery")
+    for path in unrelated:
+        path.write_bytes(path.name.encode())
+
+    store.export_jsonl()
+
+    assert not stale.exists()
+    assert all(path.exists() for path in unrelated)
+    backups = [path.name for path in export_path.parent.iterdir() if path.suffix == ".bak"]
+    assert all(
+        not re.fullmatch(r"\.transcript\.jsonl\.[0-9a-f]{32}\.bak", name)
+        for name in backups
+    )
 
 
 def test_export_rejects_symlink_target_before_external_change(tmp_path):
@@ -736,17 +1033,20 @@ def test_export_unique_temp_and_backup_names_ignore_precreated_symlinks(tmp_path
     original = b"outside"
     outside.write_bytes(original)
     outside.chmod(0o640)
-    temp_link = export_path.parent / ".transcript.jsonl.taken.tmp"
-    backup_link = export_path.parent / ".transcript.jsonl.taken.bak"
+    taken = "a" * 32
+    temp_ok = "b" * 32
+    backup_ok = "c" * 32
+    temp_link = export_path.parent / f".transcript.jsonl.{taken}.tmp"
+    backup_link = export_path.parent / f".transcript.jsonl.{taken}.bak"
     temp_link.symlink_to(outside)
     backup_link.symlink_to(outside)
-    tokens = ["taken", "temp-ok", "taken", "backup-ok"]
+    tokens = [taken, temp_ok, taken, backup_ok]
 
     def next_token(size: int) -> str:
-        assert size == 8
+        assert size == 16
         return tokens.pop(0)
 
-    monkeypatch.setattr(transcript_module.secrets, "token_hex", next_token)
+    monkeypatch.setattr(atomic_export_module.secrets, "token_hex", next_token)
 
     assert store.export_jsonl() == export_path
 
