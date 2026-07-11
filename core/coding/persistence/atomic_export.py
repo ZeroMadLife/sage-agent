@@ -9,7 +9,7 @@ import os
 import secrets
 import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 
 EXPORT_NAME = "transcript.jsonl"
 LOCK_NAME = ".export.lock"
@@ -92,18 +92,28 @@ def _publish_locked(directory_fd: int, payload: bytes) -> None:
         os.fchmod(temp_fd, 0o600)
         _write_all(temp_fd, payload)
         os.fsync(temp_fd)
-        completed_fd = temp_fd
-        temp_fd = -1
-        os.close(completed_fd)
+        try:
+            os.close(temp_fd)
+        except BaseException:
+            if not _fd_is_open(temp_fd):
+                temp_fd = -1
+            raise
+        else:
+            temp_fd = -1
 
         if target_fd >= 0:
             backup_name, backup_fd = _open_unique_file(directory_fd, "bak")
             os.fchmod(backup_fd, 0o600)
             _copy_file(target_fd, backup_fd)
             os.fsync(backup_fd)
-            completed_fd = backup_fd
-            backup_fd = -1
-            os.close(completed_fd)
+            try:
+                os.close(backup_fd)
+            except BaseException:
+                if not _fd_is_open(backup_fd):
+                    backup_fd = -1
+                raise
+            else:
+                backup_fd = -1
             os.fsync(directory_fd)
 
         replaced = False
@@ -263,9 +273,14 @@ def _restore_target(directory_fd: int, source_fd: int) -> None:
         os.fchmod(recovery_fd, 0o600)
         _copy_file(source_fd, recovery_fd)
         os.fsync(recovery_fd)
-        completed_fd = recovery_fd
-        recovery_fd = -1
-        os.close(completed_fd)
+        try:
+            os.close(recovery_fd)
+        except BaseException:
+            if not _fd_is_open(recovery_fd):
+                recovery_fd = -1
+            raise
+        else:
+            recovery_fd = -1
         os.replace(
             recovery_name,
             EXPORT_NAME,
@@ -308,6 +323,26 @@ def _attempt_teardown(
         errors.append((label, exc))
 
 
+def _fd_is_open(file_fd: int) -> bool:
+    try:
+        os.fstat(file_fd)
+    except OSError as exc:
+        return exc.errno != errno.EBADF
+    except Exception:
+        return True
+    return True
+
+
+def _best_effort_log(label: str, error: Exception) -> None:
+    with suppress(Exception):
+        _LOGGER.warning(
+            "transcript export teardown failed during %s: %s",
+            label,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+
 def _resolve_teardown_errors(
     errors: list[tuple[str, Exception]],
     *,
@@ -317,11 +352,6 @@ def _resolve_teardown_errors(
     if not errors:
         return
     for label, error in errors:
-        _LOGGER.warning(
-            "transcript export teardown failed during %s: %s",
-            label,
-            error,
-            exc_info=(type(error), error, error.__traceback__),
-        )
+        _best_effort_log(label, error)
     if not committed and primary is None:
         raise errors[0][1]
