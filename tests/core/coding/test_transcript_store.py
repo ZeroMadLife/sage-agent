@@ -706,9 +706,7 @@ def test_export_reports_rollback_sync_failure_with_publish_error_as_cause(tmp_pa
     assert _mode(backups[0]) == 0o600
 
 
-def test_rollback_recovery_close_direct_failure_retains_fd_for_teardown_retry(
-    tmp_path, monkeypatch
-):
+def test_rollback_recovery_close_direct_failure_is_not_retried(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
@@ -716,12 +714,17 @@ def test_rollback_recovery_close_direct_failure_retains_fd_for_teardown_retry(
     store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
     real_close = os.close
     real_fsync = os.fsync
-    opened = _track_atomic_open_fds(monkeypatch)
     publish_failed = False
-    failed_once = False
-    original_backup_name = ""
+    real_open_unique_file = atomic_export_module._open_unique_file
+    backup_fds: list[int] = []
     recovery_fd = -1
     recovery_close_attempts = 0
+
+    def track_backup_fds(directory_fd: int, suffix: str) -> tuple[str, int]:
+        name, file_fd = real_open_unique_file(directory_fd, suffix)
+        if suffix == "bak":
+            backup_fds.append(file_fd)
+        return name, file_fd
 
     def fail_publish_sync(fd: int) -> None:
         nonlocal publish_failed
@@ -734,30 +737,28 @@ def test_rollback_recovery_close_direct_failure_retains_fd_for_teardown_retry(
             raise OSError("publish directory sync failed")
         real_fsync(fd)
 
-    def fail_recovery_close_once(file_fd: int) -> None:
-        nonlocal original_backup_name, failed_once, recovery_fd, recovery_close_attempts
-        name = opened.get(file_fd, "")
-        if name.endswith(".bak") and not original_backup_name:
-            original_backup_name = name
-        elif name.endswith(".bak") and name != original_backup_name:
+    def fail_recovery_close(file_fd: int) -> None:
+        nonlocal recovery_fd, recovery_close_attempts
+        if len(backup_fds) == 2 and file_fd == backup_fds[1]:
             recovery_fd = file_fd
             recovery_close_attempts += 1
-            if not failed_once:
-                failed_once = True
-                raise OSError("recovery close interrupted before close")
+            raise OSError("recovery close outcome ambiguous")
         real_close(file_fd)
 
+    monkeypatch.setattr(atomic_export_module, "_open_unique_file", track_backup_fds)
     monkeypatch.setattr(atomic_export_module.os, "fsync", fail_publish_sync)
-    monkeypatch.setattr(atomic_export_module.os, "close", fail_recovery_close_once)
+    monkeypatch.setattr(atomic_export_module.os, "close", fail_recovery_close)
 
     try:
-        with pytest.raises(OSError, match="recovery close interrupted before close"):
+        with pytest.raises(OSError, match="recovery close outcome ambiguous") as exc_info:
             store.export_jsonl()
 
         assert publish_failed is True
-        assert recovery_close_attempts == 2
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(recovery_fd)
+        assert recovery_close_attempts == 1
+        assert os.fstat(recovery_fd)
+        assert isinstance(exc_info.value.__cause__, OSError)
+        assert "publish directory sync failed" in str(exc_info.value.__cause__)
+        assert export_path.read_bytes() == previous_export
     finally:
         with suppress(OSError):
             real_close(recovery_fd)
@@ -876,9 +877,7 @@ def test_postcommit_logger_failure_does_not_change_success(tmp_path, monkeypatch
     assert b'"message_id": "m2"' in export_path.read_bytes()
 
 
-def test_precommit_temp_close_error_survives_target_close_error_and_cleans_name(
-    tmp_path, monkeypatch
-):
+def test_postcommit_temp_and_target_close_errors_do_not_change_success(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
@@ -907,48 +906,49 @@ def test_precommit_temp_close_error_survives_target_close_error_and_cleans_name(
     monkeypatch.setattr(atomic_export_module.os, "close", fail_selected_close)
     monkeypatch.setattr(atomic_export_module.os, "unlink", record_unlink)
 
-    with pytest.raises(OSError, match="temp close failed"):
-        store.export_jsonl()
+    assert store.export_jsonl() == export_path
 
-    assert teardown_attempts == ["temp-close", "target-close", "temp-unlink"]
-    assert export_path.read_bytes() == previous_export
+    assert teardown_attempts == ["target-close", "temp-close"]
+    assert export_path.read_bytes() != previous_export
+    assert b'"message_id": "m2"' in export_path.read_bytes()
 
 
-def test_precommit_temp_close_direct_failure_retains_fd_for_teardown_retry(tmp_path, monkeypatch):
+def test_temp_close_error_never_retries_reused_fd_number(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     real_close = os.close
     opened = _track_atomic_open_fds(monkeypatch)
-    failed_once = False
-    temp_fd = -1
+    injected = False
+    victim_fd = -1
     temp_close_attempts = 0
 
-    def fail_temp_close_once(file_fd: int) -> None:
-        nonlocal failed_once, temp_fd, temp_close_attempts
+    def close_then_reuse_temp_fd(file_fd: int) -> None:
+        nonlocal injected, victim_fd, temp_close_attempts
         name = opened.get(file_fd, "")
         if name.endswith(".tmp"):
-            temp_fd = file_fd
             temp_close_attempts += 1
-            if not failed_once:
-                failed_once = True
-                raise OSError("temp close interrupted before close")
+            if not injected:
+                injected = True
+                real_close(file_fd)
+                victim_fd = os.open(os.devnull, os.O_RDONLY)
+                assert victim_fd == file_fd
+                raise OSError("temp close outcome ambiguous")
         real_close(file_fd)
 
-    monkeypatch.setattr(atomic_export_module.os, "close", fail_temp_close_once)
+    monkeypatch.setattr(atomic_export_module.os, "close", close_then_reuse_temp_fd)
 
     try:
-        with pytest.raises(OSError, match="temp close interrupted before close"):
-            store.export_jsonl()
+        export_path = store.export_jsonl()
 
-        assert temp_close_attempts == 2
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(temp_fd)
+        assert temp_close_attempts == 1
+        assert os.fstat(victim_fd)
+        assert b'"message_id": "m1"' in export_path.read_bytes()
     finally:
         with suppress(OSError):
-            real_close(temp_fd)
+            real_close(victim_fd)
 
 
-def test_precommit_backup_close_error_attempts_all_fds_and_name_cleanup(tmp_path, monkeypatch):
+def test_postcommit_backup_close_error_attempts_all_fds_and_name_cleanup(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     export_path = store.export_jsonl()
@@ -981,49 +981,44 @@ def test_precommit_backup_close_error_attempts_all_fds_and_name_cleanup(tmp_path
     monkeypatch.setattr(atomic_export_module.os, "close", fail_backup_close)
     monkeypatch.setattr(atomic_export_module.os, "unlink", fail_temp_unlink)
 
-    with pytest.raises(OSError, match="backup close failed"):
-        store.export_jsonl()
+    assert store.export_jsonl() == export_path
 
     assert teardown_attempts == [
-        "backup-close",
         "target-close",
-        "temp-unlink",
+        "backup-close",
         "backup-unlink",
     ]
-    assert export_path.read_bytes() == previous_export
+    assert export_path.read_bytes() != previous_export
+    assert b'"message_id": "m2"' in export_path.read_bytes()
 
 
-def test_precommit_backup_close_direct_failure_retains_fd_for_teardown_retry(tmp_path, monkeypatch):
+def test_backup_close_direct_failure_is_not_retried(tmp_path, monkeypatch):
     store = TranscriptStore(tmp_path, "s1")
     store.append(TranscriptItem(message_id="m1", role="user", content="first"))
     store.export_jsonl()
     store.append(TranscriptItem(message_id="m2", role="assistant", content="second"))
     real_close = os.close
     opened = _track_atomic_open_fds(monkeypatch)
-    failed_once = False
     backup_fd = -1
     backup_close_attempts = 0
 
-    def fail_backup_close_once(file_fd: int) -> None:
-        nonlocal failed_once, backup_fd, backup_close_attempts
+    def fail_backup_close(file_fd: int) -> None:
+        nonlocal backup_fd, backup_close_attempts
         name = opened.get(file_fd, "")
         if name.endswith(".bak"):
             backup_fd = file_fd
             backup_close_attempts += 1
-            if not failed_once:
-                failed_once = True
-                raise OSError("backup close interrupted before close")
+            raise OSError("backup close outcome ambiguous")
         real_close(file_fd)
 
-    monkeypatch.setattr(atomic_export_module.os, "close", fail_backup_close_once)
+    monkeypatch.setattr(atomic_export_module.os, "close", fail_backup_close)
 
     try:
-        with pytest.raises(OSError, match="backup close interrupted before close"):
-            store.export_jsonl()
+        export_path = store.export_jsonl()
 
-        assert backup_close_attempts == 2
-        with pytest.raises(OSError, match="Bad file descriptor"):
-            os.fstat(backup_fd)
+        assert backup_close_attempts == 1
+        assert os.fstat(backup_fd)
+        assert b'"message_id": "m2"' in export_path.read_bytes()
     finally:
         with suppress(OSError):
             real_close(backup_fd)

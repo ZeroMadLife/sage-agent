@@ -92,28 +92,12 @@ def _publish_locked(directory_fd: int, payload: bytes) -> None:
         os.fchmod(temp_fd, 0o600)
         _write_all(temp_fd, payload)
         os.fsync(temp_fd)
-        try:
-            os.close(temp_fd)
-        except BaseException:
-            if not _fd_is_open(temp_fd):
-                temp_fd = -1
-            raise
-        else:
-            temp_fd = -1
 
         if target_fd >= 0:
             backup_name, backup_fd = _open_unique_file(directory_fd, "bak")
             os.fchmod(backup_fd, 0o600)
             _copy_file(target_fd, backup_fd)
             os.fsync(backup_fd)
-            try:
-                os.close(backup_fd)
-            except BaseException:
-                if not _fd_is_open(backup_fd):
-                    backup_fd = -1
-                raise
-            else:
-                backup_fd = -1
             os.fsync(directory_fd)
 
         replaced = False
@@ -273,14 +257,6 @@ def _restore_target(directory_fd: int, source_fd: int) -> None:
         os.fchmod(recovery_fd, 0o600)
         _copy_file(source_fd, recovery_fd)
         os.fsync(recovery_fd)
-        try:
-            os.close(recovery_fd)
-        except BaseException:
-            if not _fd_is_open(recovery_fd):
-                recovery_fd = -1
-            raise
-        else:
-            recovery_fd = -1
         os.replace(
             recovery_name,
             EXPORT_NAME,
@@ -321,16 +297,6 @@ def _attempt_teardown(
         action()
     except Exception as exc:
         errors.append((label, exc))
-
-
-def _fd_is_open(file_fd: int) -> bool:
-    try:
-        os.fstat(file_fd)
-    except OSError as exc:
-        return exc.errno != errno.EBADF
-    except Exception:
-        return True
-    return True
 
 
 def _best_effort_log(label: str, error: Exception) -> None:
