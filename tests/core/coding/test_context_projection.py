@@ -5,8 +5,7 @@ from typing import Any
 
 import pytest
 
-from core.coding.context.manager import ContextManager
-from core.coding.context.projection import ContextProjector
+from core.coding.context import ContextLevel, ContextManager, ContextProjector
 
 
 def _tool(
@@ -67,7 +66,7 @@ def test_projection_keeps_latest_three_tool_results() -> None:
         ("emergency", 15_000),
     ],
 )
-def test_projection_applies_level_specific_tool_output_cap(level: str, cap: int) -> None:
+def test_projection_applies_level_specific_tool_output_cap(level: ContextLevel, cap: int) -> None:
     history = [_tool("run_shell", "", "x" * (cap + 100), artifact_ref="call-1.txt")]
 
     projected = ContextProjector().project(history, level=level)
@@ -122,6 +121,81 @@ def test_projection_signature_includes_tool_name_and_path() -> None:
         "second read",
         "same path different tool",
     ]
+
+
+def test_projection_keeps_searches_with_different_patterns() -> None:
+    history = [
+        {
+            **_tool("search", "core", "class matches"),
+            "args": {"pattern": "class", "path": "core"},
+        },
+        {
+            **_tool("search", "core", "function matches"),
+            "args": {"pattern": "def", "path": "core"},
+        },
+        _tool("run_shell", "", "one"),
+        _tool("run_shell", "", "two"),
+        _tool("run_shell", "", "three"),
+    ]
+
+    projected = ContextProjector().project(history, level="compact")
+
+    assert projected[0]["content"] == "class matches"
+    assert projected[1]["content"] == "function matches"
+
+
+def test_projection_keeps_reads_with_different_line_ranges() -> None:
+    history = [
+        {
+            **_tool("read_file", "core/app.py", "first range"),
+            "args": {"path": "core/app.py", "start": 1, "end": 100},
+        },
+        {
+            **_tool("read_file", "core/app.py", "second range"),
+            "args": {"path": "core/app.py", "start": 101, "end": 200},
+        },
+        _tool("run_shell", "", "one"),
+        _tool("run_shell", "", "two"),
+        _tool("run_shell", "", "three"),
+    ]
+
+    projected = ContextProjector().project(history, level="compact")
+
+    assert projected[0]["content"] == "first range"
+    assert projected[1]["content"] == "second range"
+
+
+def test_projection_deduplicates_equal_args_with_different_mapping_order() -> None:
+    history = [
+        {**_tool("search", "core", "old"), "args": {"path": "core", "pattern": "class"}},
+        {
+            **_tool("search", "core", "new"),
+            "args": {"pattern": "class", "path": "core"},
+        },
+        _tool("run_shell", "", "one"),
+        _tool("run_shell", "", "two"),
+        _tool("run_shell", "", "three"),
+    ]
+
+    projected = ContextProjector().project(history, level="compact")
+
+    assert "older duplicate result removed" in projected[0]["content"]
+    assert projected[1]["content"] == "new"
+
+
+def test_projection_signature_preserves_scalar_types() -> None:
+    history = [
+        {**_tool("read_file", "core/app.py", "boolean"), "args": {"path": True}},
+        {**_tool("read_file", "core/app.py", "integer"), "args": {"path": 1}},
+        _tool("run_shell", "", "one"),
+        _tool("run_shell", "", "two"),
+        _tool("run_shell", "", "three"),
+    ]
+
+    projected = ContextProjector().project(history, level="compact")
+
+    assert projected[0]["content"] == "boolean"
+    assert projected[1]["content"] == "integer"
 
 
 @pytest.mark.parametrize("name", ["write_file", "patch_file", "run_shell"])
@@ -186,5 +260,24 @@ def test_context_manager_does_not_clip_current_request_or_system_prefix() -> Non
     assert (
         metadata["sections"]["prefix"]["raw_chars"]
         == metadata["sections"]["prefix"]["rendered_chars"]
+    )
+    assert metadata["prompt_over_budget"] is True
+
+
+def test_context_manager_preserves_assistant_final_and_compact_summary() -> None:
+    assistant_final = "ASSISTANT_FINAL_SENTINEL:" + "f" * 2_000
+    compact_summary = "COMPACT_SUMMARY_SENTINEL:" + "s" * 2_000
+    history = [
+        {"role": "assistant", "content": assistant_final},
+        {"role": "system", "kind": "compact_summary", "content": compact_summary},
+    ]
+
+    prompt, metadata = ContextManager(total_budget=500).build("current request", history=history)
+
+    assert assistant_final in prompt
+    assert compact_summary in prompt
+    assert (
+        metadata["sections"]["history"]["rendered_chars"]
+        == metadata["sections"]["history"]["raw_chars"]
     )
     assert metadata["prompt_over_budget"] is True

@@ -9,6 +9,7 @@ from core.coding.context.manager import (
     normalize_text,
     tail_clip,
 )
+from core.coding.context.projection import ContextLevel, ContextProjector
 from core.coding.context.workspace import (
     IGNORED_PATH_NAMES,
     WorkspaceContext,
@@ -31,7 +32,9 @@ __all__ = [
     "MAX_FILE_SIZE",
     "SYSTEM_PROMPT_DYNAMIC_BOUNDARY",
     "CompactManager",
+    "ContextLevel",
     "ContextManager",
+    "ContextProjector",
     "FileChange",
     "FileSnapshot",
     "SectionRender",

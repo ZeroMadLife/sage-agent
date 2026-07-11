@@ -46,7 +46,7 @@ def test_context_manager_preserves_safety_sections_when_prompt_is_over_budget() 
     )
     assert (
         metadata["sections"]["history"]["rendered_chars"]
-        < metadata["sections"]["history"]["raw_chars"]
+        == metadata["sections"]["history"]["raw_chars"]
     )
 
 

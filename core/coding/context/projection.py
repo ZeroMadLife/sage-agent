@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Hashable, Mapping
 from copy import deepcopy
 from typing import Any, Literal
 
@@ -31,21 +32,22 @@ class ContextProjector:
         cap = _OUTPUT_CAPS[level]
         tool_indexes = [index for index, item in enumerate(projected) if item.get("role") == "tool"]
         protected = set(tool_indexes[-3:])
-        seen_reads: set[tuple[str, str]] = set()
+        seen_reads: set[tuple[str, Hashable]] = set()
 
         for index in reversed(tool_indexes):
             item = projected[index]
             name = str(item.get("name", ""))
             args = item.get("args")
-            path = str(args.get("path", "")) if isinstance(args, dict) else ""
-            signature = (name, path)
-            duplicate_read = name in _READ_TOOLS and signature in seen_reads
+            signature = _tool_signature(name, args)
+            duplicate_read = (
+                name in _READ_TOOLS and signature is not None and signature in seen_reads
+            )
 
             if level in _DEDUP_LEVELS and index not in protected and duplicate_read:
                 artifact_ref = str(item.get("artifact_ref", "")) or "unavailable"
                 item["content"] = f"[older duplicate result removed; artifact_ref={artifact_ref}]"
             else:
-                if name in _READ_TOOLS:
+                if name in _READ_TOOLS and signature is not None:
                     seen_reads.add(signature)
                 item["content"] = _bounded_preview(
                     str(item.get("content", "")),
@@ -53,6 +55,40 @@ class ContextProjector:
                     str(item.get("artifact_ref", "")),
                 )
         return projected
+
+
+def _tool_signature(name: str, args: Any) -> tuple[str, Hashable] | None:
+    """Return a stable, type-preserving signature for complete tool arguments."""
+    try:
+        frozen_args = _freeze(args)
+    except TypeError:
+        return None
+    return name, frozen_args
+
+
+def _freeze(value: Any) -> Hashable:
+    """Recursively freeze supported argument values without erasing their types."""
+    if value is None:
+        return ("none",)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, float):
+        return ("float", value.hex())
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, bytes):
+        return ("bytes", value)
+    if isinstance(value, Mapping):
+        items = [(_freeze(key), _freeze(item)) for key, item in value.items()]
+        items.sort(key=lambda pair: repr(pair[0]))
+        return ("mapping", tuple(items))
+    if isinstance(value, list):
+        return ("list", tuple(_freeze(item) for item in value))
+    if isinstance(value, tuple):
+        return ("tuple", tuple(_freeze(item) for item in value))
+    raise TypeError(f"unsupported tool argument type: {type(value).__name__}")
 
 
 def _bounded_preview(content: str, cap: int, artifact_ref: str) -> str:

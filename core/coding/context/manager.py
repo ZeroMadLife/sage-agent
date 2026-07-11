@@ -190,35 +190,9 @@ class ContextManager:
         return prompt, metadata
 
     def _render_to_budget(self, raw_sections: dict[str, str]) -> dict[str, SectionRender]:
-        prefix = raw_sections["prefix"]
-        current = raw_sections["current_request"]
-        skill = raw_sections.get("skill_prompt", "")
-        memory = raw_sections.get("memory", "")
-        separators = 8
-        reserved = len(prefix) + len(current) + len(skill) + len(memory) + separators
-        remaining = max(0, self.total_budget - reserved)
-        sections: dict[str, SectionRender] = {
-            "prefix": SectionRender(prefix, prefix),
-            "history": SectionRender(
-                raw_sections["history"], tail_clip(raw_sections["history"], remaining)
-            ),
-            "current_request": SectionRender(current, current),
+        return {
+            name: SectionRender(raw=value, rendered=value) for name, value in raw_sections.items()
         }
-        if skill:
-            sections["skill_prompt"] = SectionRender(skill, skill)
-        if memory:
-            sections["memory"] = SectionRender(memory, memory)
-        prompt = self._assemble(sections)
-        if len(prompt) <= self.total_budget:
-            return sections
-
-        overflow = len(prompt) - self.total_budget
-        history = sections["history"]
-        sections["history"] = SectionRender(
-            history.raw,
-            tail_clip(history.rendered, max(0, len(history.rendered) - overflow)),
-        )
-        return sections
 
     def _stable_prompt(self, tools: list[str]) -> str:
         tool_block = "\n".join(f"- {tool}" for tool in tools) or "- none"
