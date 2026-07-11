@@ -4,6 +4,7 @@ import stat
 
 import pytest
 
+from core.coding.persistence import tool_result_store as tool_result_module
 from core.coding.persistence.tool_result_store import (
     PREVIEW_CHARS,
     ToolResultStore,
@@ -89,3 +90,44 @@ def test_archive_rejects_invalid_call_ids(tmp_path, call_id):
 
     with pytest.raises(ValueError):
         store.archive(call_id, "content")
+
+
+def test_tool_store_rejects_symlinked_result_directory_before_outside_write(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    result_root = tmp_path / "evidence" / "s1" / "runs" / "run_1" / "tool-results"
+    result_root.parent.mkdir(parents=True)
+    result_root.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symlink"):
+        ToolResultStore(tmp_path, "s1", "run_1")
+
+    assert list(outside.iterdir()) == []
+
+
+def test_archive_rejects_symlinked_artifact_before_outside_write(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original", encoding="utf-8")
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    store.root.mkdir(parents=True)
+    (store.root / "call_1.txt").symlink_to(outside)
+
+    with pytest.raises(ValueError, match="symlink"):
+        store.archive("call_1", "replacement")
+
+    assert outside.read_text(encoding="utf-8") == "original"
+
+
+def test_artifact_is_durable_before_preview_failure(tmp_path, monkeypatch):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+
+    def fail_preview(content, call_id):
+        raise RuntimeError("preview failed")
+
+    monkeypatch.setattr(tool_result_module, "_bounded_preview", fail_preview)
+
+    with pytest.raises(RuntimeError, match="preview failed"):
+        store.archive("call_1", "complete result")
+
+    assert (store.root / "call_1.txt").read_text(encoding="utf-8") == "complete result"
+    assert list(store.root.iterdir()) == [store.root / "call_1.txt"]
