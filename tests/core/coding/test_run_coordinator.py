@@ -108,6 +108,18 @@ async def test_multiple_coordinators_share_one_persistent_run_lease(tmp_path: Pa
     conflicts = [result for result in results if isinstance(result, ActiveRunConflictError)]
     assert len(tasks) == 1
     assert len(conflicts) == 1
+    winner_index = next(
+        index for index, result in enumerate(results) if isinstance(result, asyncio.Task)
+    )
+    winner_run_id = f"run-{winner_index + 1}"
+    persistent = SessionEventJournal(tmp_path, "session-1")
+    assert persistent.active_run_id() == winner_run_id
+
+    third = RunCoordinator(SessionEventJournal(tmp_path, "session-1"))
+    with pytest.raises(ActiveRunConflictError, match=winner_run_id):
+        await third.start_run("run-3", _events())
+    assert persistent.active_run_id() == winner_run_id
+
     release.set()
     await tasks[0]
     assert SessionEventJournal(tmp_path, "session-1").active_run_id() is None
