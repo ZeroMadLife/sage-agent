@@ -549,10 +549,7 @@ async def test_cancel_waits_for_inflight_append_before_terminal(
 @pytest.mark.asyncio
 async def test_restart_marks_unfinished_run_interrupted_and_retryable(tmp_path: Path) -> None:
     journal = SessionEventJournal(tmp_path, "session-1")
-    journal.acquire_run_lease("abandoned")
-    journal.append(
-        run_id="abandoned", kind="system", status="running", payload={"event": "run_started"}
-    )
+    journal.begin_run("abandoned", owner_id="legacy", owner_pid=-1)
     coordinator = RunCoordinator(SessionEventJournal(tmp_path, "session-1"))
 
     recovered = await coordinator.recover_interrupted_runs()

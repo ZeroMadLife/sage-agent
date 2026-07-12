@@ -15,7 +15,7 @@ import re
 import sqlite3
 import stat
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Collection, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -351,11 +351,19 @@ class SessionEventJournal:
                 connection.rollback()
                 raise
 
-    def release_run_lease(self, run_id: str) -> bool:
+    def release_run_lease(
+        self, run_id: str, *, owner_id: str, fencing_token: int
+    ) -> bool:
         """Release a matching lease, used when startup fails before task ownership."""
         validated_run = _validate_identifier("run_id", run_id)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            _assert_run_lease(
+                connection,
+                run_id=validated_run,
+                owner_id=owner_id,
+                fencing_token=fencing_token,
+            )
             cursor = connection.execute(
                 "DELETE FROM active_run_lease WHERE lease_key = 1 AND run_id = ?",
                 (validated_run,),
@@ -371,7 +379,12 @@ class SessionEventJournal:
             ).fetchone()
         return str(row[0]) if row is not None else None
 
-    def recover_run_lease(self, *, recovery_owner_id: str = "recovery") -> SessionEvent | None:
+    def recover_run_lease(
+        self,
+        *,
+        recovery_owner_id: str = "recovery",
+        live_owner_ids: Collection[str] = (),
+    ) -> SessionEvent | None:
         """Atomically interrupt and release a lease abandoned by a prior process."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -387,7 +400,10 @@ class SessionEventJournal:
                 if str(row[1]) == owner:
                     connection.commit()
                     return None
-                if _pid_is_alive(int(row[2])):
+                owner_pid = int(row[2])
+                if _pid_is_alive(owner_pid) and (
+                    owner_pid != os.getpid() or str(row[1]) in live_owner_ids
+                ):
                     connection.commit()
                     return None
                 existing = connection.execute(
@@ -858,7 +874,15 @@ def _assert_run_lease(
     fencing_token: int | None,
 ) -> None:
     if owner_id is None and fencing_token is None:
-        return
+        active = connection.execute(
+            "SELECT 1 FROM active_run_lease WHERE lease_key = 1 AND run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if active is None:
+            return
+        raise SessionRunLeaseLostError(
+            f"run lease owner and fencing token are required for {run_id}"
+        )
     if owner_id is None or fencing_token is None or fencing_token < 1:
         raise ValueError("lease owner and positive fencing token must be provided together")
     validated_owner = _validate_identifier("lease_owner_id", owner_id)

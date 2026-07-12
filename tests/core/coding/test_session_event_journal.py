@@ -233,7 +233,7 @@ def test_unlinked_open_wal_inode_is_a_normal_sqlite_lifecycle(tmp_path: Path) ->
 
 def test_run_lease_is_persistent_atomic_and_terminal_releases_it(tmp_path: Path) -> None:
     first = SessionEventJournal(tmp_path, "session-1")
-    first.acquire_run_lease("run-1")
+    begun = first.begin_run("run-1", owner_id="owner-1")
 
     reopened = SessionEventJournal(tmp_path, "session-1")
     assert reopened.active_run_id() == "run-1"
@@ -241,10 +241,57 @@ def test_run_lease_is_persistent_atomic_and_terminal_releases_it(tmp_path: Path)
         reopened.acquire_run_lease("run-2")
 
     terminal = reopened.append_terminal_and_release(
-        run_id="run-1", status="completed", payload={"answer": "done"}
+        run_id="run-1",
+        status="completed",
+        payload={"answer": "done"},
+        lease_owner_id="owner-1",
+        fencing_token=begun.fencing_token,
     )
     assert terminal.kind == "terminal"
     assert reopened.active_run_id() is None
+
+
+def test_active_lease_cannot_be_bypassed_by_omitting_fencing_credentials(
+    tmp_path: Path,
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.begin_run("run-1", owner_id="owner-1")
+
+    with pytest.raises(SessionEventJournalError, match="lease|fenc|owner"):
+        journal.append(run_id="run-1", kind="tool", status="done", payload={})
+    with pytest.raises(SessionEventJournalError, match="lease|fenc|owner"):
+        journal.append_terminal_and_release(
+            run_id="run-1", status="completed", payload={}
+        )
+
+    assert journal.active_run_id() == "run-1"
+
+
+def test_release_requires_matching_owner_and_fencing_token(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    begun = journal.begin_run("run-1", owner_id="owner-1", owner_pid=os.getpid())
+
+    with pytest.raises(SessionEventJournalError, match="lease|fenc|owner"):
+        journal.release_run_lease(
+            "run-1", owner_id="wrong-owner", fencing_token=begun.fencing_token
+        )
+    assert journal.active_run_id() == "run-1"
+    assert journal.release_run_lease(
+        "run-1", owner_id="owner-1", fencing_token=begun.fencing_token
+    ) is True
+
+
+def test_pid_reuse_does_not_make_previous_process_owner_live(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.begin_run("run-1", owner_id="previous-process", owner_pid=os.getpid())
+
+    recovered = journal.recover_run_lease(
+        recovery_owner_id="current-process", live_owner_ids={"current-process"}
+    )
+
+    assert recovered is not None
+    assert recovered.status == "interrupted"
+    assert journal.active_run_id() is None
 
 
 def test_recover_run_lease_marks_interrupted_and_releases_atomically(tmp_path: Path) -> None:
