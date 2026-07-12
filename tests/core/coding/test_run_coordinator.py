@@ -135,10 +135,10 @@ async def test_cancel_during_begin_run_closes_committed_lease_before_propagating
     allow_begin = threading.Event()
     original_begin = journal.begin_run
 
-    def blocked_begin(run_id: str):
+    def blocked_begin(run_id: str, *, owner_id: str):
         begin_started.set()
         assert allow_begin.wait(timeout=2)
-        return original_begin(run_id)
+        return original_begin(run_id, owner_id=owner_id)
 
     monkeypatch.setattr(journal, "begin_run", blocked_begin)
     start_task = asyncio.create_task(coordinator.start_run("run-1", _events()))
@@ -159,6 +159,124 @@ async def test_cancel_during_begin_run_closes_committed_lease_before_propagating
     ]
     next_task = await coordinator.start_run("run-2", _events())
     await next_task
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_waits_for_cleanup_and_closes_unowned_stream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    coordinator = RunCoordinator(journal)
+    begin_started = threading.Event()
+    allow_begin = threading.Event()
+    original_begin = journal.begin_run
+
+    class UnownedStream:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            raise StopAsyncIteration
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    stream = UnownedStream()
+
+    def blocked_begin(run_id: str, *, owner_id: str):
+        begin_started.set()
+        assert allow_begin.wait(timeout=2)
+        return original_begin(run_id, owner_id=owner_id)
+
+    monkeypatch.setattr(journal, "begin_run", blocked_begin)
+    start_task = asyncio.create_task(coordinator.start_run("run-1", stream))
+    assert await asyncio.to_thread(begin_started.wait, 1)
+    start_task.cancel()
+    start_task.cancel()
+    await asyncio.sleep(0.05)
+    allow_begin.set()
+    with pytest.raises(asyncio.CancelledError):
+        await start_task
+
+    assert stream.closed is True
+    assert journal.active_run_id() is None
+    assert [item.status for item in journal.replay(after=0, limit=10).items] == [
+        "running", "cancelled",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_recovery_respects_live_owner_and_new_owner_recovers(tmp_path: Path) -> None:
+    owner_a = RunCoordinator(SessionEventJournal(tmp_path, "session-1"), owner_id="owner-a")
+    same_owner = RunCoordinator(SessionEventJournal(tmp_path, "session-1"), owner_id="owner-a")
+    new_owner = RunCoordinator(SessionEventJournal(tmp_path, "session-1"), owner_id="owner-b")
+    release = asyncio.Event()
+
+    async def blocked():
+        await release.wait()
+        if False:
+            yield RunEvent(kind="tool", status="running", payload={})
+
+    task = await owner_a.start_run("run-1", blocked())
+    assert await same_owner.recover_interrupted_runs() == ()
+    assert same_owner.journal.active_run_id() == "run-1"
+    contender = RunCoordinator(SessionEventJournal(tmp_path, "session-1"), owner_id="owner-a")
+    with pytest.raises(ActiveRunConflictError, match="run-1"):
+        await contender.start_run("run-2", _events())
+
+    assert await new_owner.recover_interrupted_runs() == ("run-1",)
+    assert new_owner.journal.active_run_id() is None
+    release.set()
+    await task
+
+
+@pytest.mark.asyncio
+async def test_slow_subscriber_repairs_queue_overflow_from_journal(tmp_path: Path) -> None:
+    coordinator = RunCoordinator(
+        SessionEventJournal(tmp_path, "session-1"), subscriber_queue_size=4
+    )
+    subscription = coordinator.subscribe(after=0)
+    first_waiter = asyncio.create_task(anext(subscription))
+
+    async def many_events():
+        for index in range(20):
+            yield RunEvent(kind="tool", status="done", payload={"index": index})
+
+    task = await coordinator.start_run("run-1", many_events())
+    first = await first_waiter
+    await task
+    remaining = [await asyncio.wait_for(anext(subscription), 1) for _ in range(21)]
+    await subscription.aclose()
+
+    assert [item.sequence for item in [first, *remaining]] == list(range(1, 23))
+
+
+@pytest.mark.asyncio
+async def test_large_history_yields_before_all_pages_are_materialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    for index in range(550):
+        journal.append(run_id="run-1", kind="tool", status="done", payload={"i": index})
+    coordinator = RunCoordinator(journal)
+    calls = 0
+    original_replay = journal.replay
+
+    def counted_replay(*, after: int = 0, limit: int = 100):
+        nonlocal calls
+        calls += 1
+        return original_replay(after=after, limit=limit)
+
+    monkeypatch.setattr(journal, "replay", counted_replay)
+    subscription = coordinator.subscribe(after=0)
+    first = await anext(subscription)
+    await subscription.aclose()
+
+    assert first.sequence == 1
+    assert calls == 1
 
 
 @pytest.mark.asyncio

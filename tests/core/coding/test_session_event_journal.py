@@ -13,6 +13,7 @@ from core.coding.persistence.session_event_journal import (
     SessionEventJournal,
     SessionEventJournalCorruptionError,
     SessionEventJournalError,
+    SessionEventJournalOperationalError,
     SessionRunLeaseConflictError,
 )
 
@@ -282,7 +283,84 @@ def test_v1_journal_migrates_to_persistent_lease_schema(tmp_path: Path) -> None:
     assert [item.event_id for item in migrated.replay(after=0, limit=10).items] == ["event-1"]
     assert migrated.active_run_id() is None
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         assert connection.execute(
             "SELECT name FROM sqlite_schema WHERE name = 'active_run_lease'"
         ).fetchone() == ("active_run_lease",)
+
+
+def test_v2_migration_preserves_active_lease_as_legacy_owner(tmp_path: Path) -> None:
+    root = tmp_path / "evidence" / "session-1"
+    root.mkdir(parents=True)
+    path = root / "timeline.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(journal_module._EVENTS_SQL)
+        connection.execute(journal_module._RUN_INDEX_SQL)
+        connection.execute(journal_module._TERMINAL_INDEX_SQL)
+        connection.execute(journal_module._LEASE_V2_SQL)
+        connection.execute(
+            "INSERT INTO active_run_lease (lease_key, run_id, acquired_at) "
+            "VALUES (1, 'run-1', '2026-07-12T10:00:00+08:00')"
+        )
+        connection.execute("PRAGMA user_version=2")
+
+    migrated = SessionEventJournal(tmp_path, "session-1")
+
+    assert migrated.active_run_id() == "run-1"
+    recovered = migrated.recover_run_lease(recovery_owner_id="new-process")
+    assert recovered is not None
+    assert recovered.status == "interrupted"
+    assert migrated.active_run_id() is None
+
+
+def test_locked_database_is_transient_not_corruption(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1", busy_timeout_seconds=0.01)
+    blocker = sqlite3.connect(journal.path)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(SessionEventJournalOperationalError, match="busy|locked"):
+            _append(journal)
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_analyze_internal_schema_reopens_without_weakening_app_schema(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    _append(journal)
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute("ANALYZE")
+
+    reopened = SessionEventJournal(tmp_path, "session-1")
+    assert len(reopened.replay(after=0, limit=10).items) == 1
+
+
+def test_connect_rejects_group_writable_session_directory(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.root.chmod(0o770)
+    try:
+        with pytest.raises(SessionEventJournalCorruptionError, match="unsafe"):
+            journal.replay(after=0, limit=10)
+    finally:
+        journal.root.chmod(0o700)
+
+
+def test_reopen_does_not_silently_repair_unsafe_session_permissions(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.root.chmod(0o770)
+    try:
+        with pytest.raises((ValueError, SessionEventJournalCorruptionError), match="unsafe"):
+            SessionEventJournal(tmp_path, "session-1")
+    finally:
+        journal.root.chmod(0o700)
+
+
+def test_reopen_does_not_silently_repair_unsafe_storage_root(tmp_path: Path) -> None:
+    SessionEventJournal(tmp_path, "session-1")
+    original_mode = tmp_path.stat().st_mode & 0o777
+    tmp_path.chmod(0o770)
+    try:
+        with pytest.raises(ValueError, match="unsafe"):
+            SessionEventJournal(tmp_path, "session-1")
+    finally:
+        tmp_path.chmod(original_mode)

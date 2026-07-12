@@ -1,4 +1,9 @@
-"""Durable, session-scoped browser event journal."""
+"""Durable, session-scoped browser event journal.
+
+Paths are fail-closed against accidental links, ownership changes, and writable
+service directories. Same-UID malicious concurrent replacement is outside the
+stdlib sqlite3 threat boundary and requires a process sandbox or fd-backed VFS.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _DATABASE_NAME = "timeline.sqlite3"
 _MAX_PAYLOAD_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -53,11 +58,26 @@ _TERMINAL_INDEX_SQL = """
 CREATE UNIQUE INDEX session_events_terminal_idx ON session_events(run_id)
 WHERE kind = 'terminal'
 """
-_LEASE_SQL = """
+_LEASE_V2_SQL = """
 CREATE TABLE active_run_lease (
     lease_key INTEGER PRIMARY KEY CHECK (lease_key = 1),
     run_id TEXT NOT NULL UNIQUE,
     acquired_at TEXT NOT NULL
+)
+"""
+_LEASE_SQL = """
+CREATE TABLE active_run_lease (
+    lease_key INTEGER PRIMARY KEY CHECK (lease_key = 1),
+    run_id TEXT NOT NULL UNIQUE,
+    owner_id TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
+    acquired_at TEXT NOT NULL
+)
+"""
+_FENCE_SQL = """
+CREATE TABLE run_fence_state (
+    state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
+    next_token INTEGER NOT NULL CHECK (next_token > 0)
 )
 """
 
@@ -68,6 +88,10 @@ class SessionEventJournalError(RuntimeError):
 
 class SessionEventJournalCorruptionError(SessionEventJournalError):
     """The journal path, database, schema, or stored data is unsafe."""
+
+
+class SessionEventJournalOperationalError(SessionEventJournalError):
+    """A transient SQLite operational condition such as BUSY or LOCKED."""
 
 
 class SessionRunLeaseConflictError(SessionEventJournalError):
@@ -100,13 +124,20 @@ class ReplayPage:
 class SessionEventJournal:
     """SQLite event journal bound to one server-owned session directory."""
 
-    def __init__(self, storage_root: Path, session_id: str) -> None:
+    def __init__(
+        self, storage_root: Path, session_id: str, *, busy_timeout_seconds: float = 5.0
+    ) -> None:
+        if busy_timeout_seconds < 0:
+            raise ValueError("busy_timeout_seconds must be non-negative")
+        self._busy_timeout_seconds = busy_timeout_seconds
         self.session_id = _validate_identifier("session_id", session_id)
         self._root = _trusted_root(storage_root)
         self._components = ("evidence", self.session_id)
         self.root = self._root.joinpath(*self._components)
         self.path = self.root / _DATABASE_NAME
-        directory_fd = _open_directory(self._root, self._components)
+        directory_fd = _open_directory(
+            self._root, self._components, create=True, tighten=True
+        )
         try:
             _prepare_database_file(directory_fd)
         finally:
@@ -206,9 +237,10 @@ class SessionEventJournal:
                 connection.rollback()
                 raise
 
-    def acquire_run_lease(self, run_id: str) -> None:
+    def acquire_run_lease(self, run_id: str, *, owner_id: str = "legacy") -> None:
         """Atomically acquire this session's singleton persistent run lease."""
         validated_run = _validate_identifier("run_id", run_id)
+        validated_owner = _validate_identifier("owner_id", owner_id)
         acquired_at = datetime.now(UTC).isoformat()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -219,10 +251,12 @@ class SessionEventJournal:
                 ).fetchone()
                 if terminal is not None:
                     raise SessionEventJournalError(f"run {validated_run} is already terminal")
+                token = _allocate_fencing_token(connection)
                 connection.execute(
-                    "INSERT INTO active_run_lease (lease_key, run_id, acquired_at) "
-                    "VALUES (1, ?, ?)",
-                    (validated_run, acquired_at),
+                    "INSERT INTO active_run_lease "
+                    "(lease_key, run_id, owner_id, fencing_token, acquired_at) "
+                    "VALUES (1, ?, ?, ?, ?)",
+                    (validated_run, validated_owner, token, acquired_at),
                 )
                 connection.commit()
             except sqlite3.IntegrityError as exc:
@@ -236,9 +270,10 @@ class SessionEventJournal:
                 connection.rollback()
                 raise
 
-    def begin_run(self, run_id: str) -> SessionEvent:
+    def begin_run(self, run_id: str, *, owner_id: str = "legacy") -> SessionEvent:
         """Acquire the singleton lease and persist run_started atomically."""
         validated_run = _validate_identifier("run_id", run_id)
+        validated_owner = _validate_identifier("owner_id", owner_id)
         acquired_at = datetime.now(UTC).isoformat()
         values = _validated_event_input(
             run_id=validated_run,
@@ -262,10 +297,12 @@ class SessionEventJournal:
                 ).fetchone()
                 if terminal is not None:
                     raise SessionEventJournalError(f"run {validated_run} is already terminal")
+                token = _allocate_fencing_token(connection)
                 connection.execute(
-                    "INSERT INTO active_run_lease (lease_key, run_id, acquired_at) "
-                    "VALUES (1, ?, ?)",
-                    (validated_run, acquired_at),
+                    "INSERT INTO active_run_lease "
+                    "(lease_key, run_id, owner_id, fencing_token, acquired_at) "
+                    "VALUES (1, ?, ?, ?, ?)",
+                    (validated_run, validated_owner, token, acquired_at),
                 )
                 stored = self._insert(connection, **values)
                 connection.commit()
@@ -294,18 +331,22 @@ class SessionEventJournal:
             ).fetchone()
         return str(row[0]) if row is not None else None
 
-    def recover_run_lease(self) -> SessionEvent | None:
+    def recover_run_lease(self, *, recovery_owner_id: str = "recovery") -> SessionEvent | None:
         """Atomically interrupt and release a lease abandoned by a prior process."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
+                owner = _validate_identifier("recovery_owner_id", recovery_owner_id)
                 row = connection.execute(
-                    "SELECT run_id FROM active_run_lease WHERE lease_key = 1"
+                    "SELECT run_id, owner_id FROM active_run_lease WHERE lease_key = 1"
                 ).fetchone()
                 if row is None:
                     connection.commit()
                     return None
                 run_id = str(row[0])
+                if str(row[1]) == owner:
+                    connection.commit()
+                    return None
                 existing = connection.execute(
                     "SELECT * FROM session_events WHERE run_id = ? AND kind = 'terminal'",
                     (run_id,),
@@ -356,9 +397,17 @@ class SessionEventJournal:
                 "HAVING SUM(CASE WHEN status = 'running' AND "
                 "json_extract(payload_json, '$.event') = 'run_started' THEN 1 ELSE 0 END) > 0 "
                 "AND SUM(CASE WHEN kind = 'terminal' "
-                "THEN 1 ELSE 0 END) = 0 ORDER BY MIN(sequence)"
+                "THEN 1 ELSE 0 END) = 0 "
+                "AND run_id NOT IN (SELECT run_id FROM active_run_lease) "
+                "ORDER BY MIN(sequence)"
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
+
+    def latest_sequence(self) -> int:
+        """Return the durable high-water sequence for this session."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM session_events").fetchone()
+        return int(row[0])
 
     def _insert(
         self,
@@ -407,10 +456,40 @@ class SessionEventJournal:
                     connection.execute(_RUN_INDEX_SQL)
                     connection.execute(_TERMINAL_INDEX_SQL)
                     connection.execute(_LEASE_SQL)
+                    connection.execute(_FENCE_SQL)
+                    connection.execute(
+                        "INSERT INTO run_fence_state (state_key, next_token) VALUES (1, 1)"
+                    )
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif version == 1:
-                    _validate_schema(connection, self.path, require_lease=False)
+                    _validate_schema(connection, self.path, lease_version=0)
                     connection.execute(_LEASE_SQL)
+                    connection.execute(_FENCE_SQL)
+                    connection.execute(
+                        "INSERT INTO run_fence_state (state_key, next_token) VALUES (1, 1)"
+                    )
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif version == 2:
+                    _validate_schema(connection, self.path, lease_version=2)
+                    existing = connection.execute(
+                        "SELECT run_id, acquired_at FROM active_run_lease WHERE lease_key = 1"
+                    ).fetchone()
+                    connection.execute("DROP TABLE active_run_lease")
+                    connection.execute(_LEASE_SQL)
+                    connection.execute(_FENCE_SQL)
+                    next_token = 1
+                    if existing is not None:
+                        connection.execute(
+                            "INSERT INTO active_run_lease "
+                            "(lease_key, run_id, owner_id, fencing_token, acquired_at) "
+                            "VALUES (1, ?, 'legacy', 1, ?)",
+                            (str(existing[0]), str(existing[1])),
+                        )
+                        next_token = 2
+                    connection.execute(
+                        "INSERT INTO run_fence_state (state_key, next_token) VALUES (1, ?)",
+                        (next_token,),
+                    )
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif version != SCHEMA_VERSION:
                     raise SessionEventJournalError(
@@ -433,13 +512,21 @@ class SessionEventJournal:
         expected = self._verify_database_and_sidecars()
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(self.path, timeout=5)
+            connection = sqlite3.connect(self.path, timeout=self._busy_timeout_seconds)
             self._verify_connected_inode(expected)
             connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA busy_timeout=5000")
+            connection.execute(f"PRAGMA busy_timeout={int(self._busy_timeout_seconds * 1000)}")
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             yield connection
+        except sqlite3.OperationalError as exc:
+            if _is_busy_or_locked(exc):
+                raise SessionEventJournalOperationalError(
+                    f"session event database busy or locked at {self.path}"
+                ) from exc
+            raise SessionEventJournalError(
+                f"session event database operational error at {self.path}"
+            ) from exc
         except sqlite3.DatabaseError as exc:
             raise SessionEventJournalCorruptionError(
                 f"session event database error at {self.path}"
@@ -453,7 +540,9 @@ class SessionEventJournal:
 
     def _verify_database_and_sidecars(self) -> tuple[int, int]:
         try:
-            directory_fd = _open_directory(self._root, self._components)
+            directory_fd = _open_directory(
+                self._root, self._components, create=False, tighten=False
+            )
             try:
                 database_fd = _open_verified_file(directory_fd, _DATABASE_NAME)
                 try:
@@ -627,7 +716,7 @@ def _schema_objects(connection: sqlite3.Connection) -> list[tuple[str, str, str 
 
 
 def _validate_schema(
-    connection: sqlite3.Connection, path: Path, *, require_lease: bool = True
+    connection: sqlite3.Connection, path: Path, *, lease_version: int = 3
 ) -> None:
     expected_columns = [
         "sequence", "event_id", "session_id", "run_id", "kind", "status", "timestamp",
@@ -642,22 +731,33 @@ def _validate_schema(
         ("table", "session_events"),
         ("table", "sqlite_sequence"),
     }
-    if require_lease:
+    if lease_version:
         expected_objects.add(("table", "active_run_lease"))
-    actual_objects = {(kind, name) for kind, name, _ in _schema_objects(connection)}
+    if lease_version == 3:
+        expected_objects.add(("table", "run_fence_state"))
+    objects = _schema_objects(connection)
+    allowed_internal = {("table", "sqlite_stat1"), ("table", "sqlite_stat4")}
+    actual_objects = {
+        (kind, name) for kind, name, _ in objects if (kind, name) not in allowed_internal
+    }
     if actual_objects != expected_objects:
         raise SessionEventJournalError(f"unexpected session event schema objects at {path}")
-    object_sql = {(kind, name): sql for kind, name, sql in _schema_objects(connection)}
+    object_sql = {(kind, name): sql for kind, name, sql in objects}
     if _normalize_sql(object_sql[("table", "session_events")]) != _normalize_sql(_EVENTS_SQL):
         raise SessionEventJournalError(f"non-canonical session event schema at {path}")
     if _normalize_sql(object_sql[("index", "session_events_run_idx")]) != _normalize_sql(
         _RUN_INDEX_SQL
     ):
         raise SessionEventJournalError(f"non-canonical session event run index at {path}")
-    if require_lease and _normalize_sql(
+    expected_lease_sql = _LEASE_SQL if lease_version == 3 else _LEASE_V2_SQL
+    if lease_version and _normalize_sql(
         object_sql[("table", "active_run_lease")]
-    ) != _normalize_sql(_LEASE_SQL):
+    ) != _normalize_sql(expected_lease_sql):
         raise SessionEventJournalError(f"non-canonical active run lease schema at {path}")
+    if lease_version == 3 and _normalize_sql(
+        object_sql[("table", "run_fence_state")]
+    ) != _normalize_sql(_FENCE_SQL):
+        raise SessionEventJournalError(f"non-canonical run fence schema at {path}")
     run_columns = [row[2] for row in connection.execute("PRAGMA index_info(session_events_run_idx)")]
     if run_columns != ["run_id", "sequence"]:
         raise SessionEventJournalError(f"invalid session event run index at {path}")
@@ -674,6 +774,27 @@ def _normalize_sql(sql: str | None) -> str:
     return re.sub(r"\s+", "", sql or "").casefold()
 
 
+def _allocate_fencing_token(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT next_token FROM run_fence_state WHERE state_key = 1"
+    ).fetchone()
+    if row is None or int(row[0]) < 1:
+        raise SessionEventJournalCorruptionError("run fence state is invalid")
+    token = int(row[0])
+    connection.execute(
+        "UPDATE run_fence_state SET next_token = ? WHERE state_key = 1", (token + 1,)
+    )
+    return token
+
+
+def _is_busy_or_locked(exc: sqlite3.OperationalError) -> bool:
+    code = getattr(exc, "sqlite_errorcode", None)
+    primary = int(code) & 0xFF if isinstance(code, int) else None
+    return primary in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED} or any(
+        marker in str(exc).casefold() for marker in ("busy", "locked")
+    )
+
+
 def _trusted_root(root: Path) -> Path:
     _reject_untrusted_ancestor_symlinks(root)
     root.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -687,6 +808,8 @@ def _trusted_root(root: Path) -> Path:
         opened = os.fstat(root_fd)
         if opened.st_uid != os.geteuid():
             raise ValueError(f"trusted root must be owned by the service user: {root}")
+        if stat.S_IMODE(opened.st_mode) & 0o022:
+            raise ValueError(f"trusted root permissions are unsafe: {root}")
         if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
             raise ValueError(f"trusted root changed while opening: {root}")
         os.fchmod(root_fd, 0o700)
@@ -708,16 +831,24 @@ def _reject_untrusted_ancestor_symlinks(root: Path) -> None:
             raise ValueError(f"untrusted symlink in storage root path: {current}")
 
 
-def _open_directory(root: Path, components: tuple[str, ...]) -> int:
+def _open_directory(
+    root: Path,
+    components: tuple[str, ...],
+    *,
+    create: bool,
+    tighten: bool,
+) -> int:
     directory_fd = os.open(root, _DIRECTORY_FLAGS)
     try:
+        _validate_directory(directory_fd, "storage root")
         for component in components:
             created = False
-            try:
-                os.mkdir(component, mode=0o700, dir_fd=directory_fd)
-                created = True
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=directory_fd)
+                    created = True
+                except FileExistsError:
+                    pass
             if created:
                 os.fsync(directory_fd)
             try:
@@ -726,13 +857,23 @@ def _open_directory(root: Path, components: tuple[str, ...]) -> int:
                 if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
                     raise ValueError(f"symlink path component rejected: {component}") from exc
                 raise
-            os.fchmod(next_fd, 0o700)
+            _validate_directory(next_fd, component)
+            if tighten:
+                os.fchmod(next_fd, 0o700)
             os.close(directory_fd)
             directory_fd = next_fd
         return directory_fd
     except Exception:
         os.close(directory_fd)
         raise
+
+
+def _validate_directory(directory_fd: int, name: str) -> None:
+    metadata = os.fstat(directory_fd)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid():
+        raise ValueError(f"directory ownership is unsafe: {name}")
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise ValueError(f"directory permissions are unsafe: {name}")
 
 
 def _prepare_database_file(directory_fd: int) -> None:
