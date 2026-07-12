@@ -10,8 +10,9 @@ import stat
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
 
 from core.coding.persistence.atomic_export import EXPORT_NAME, publish_jsonl
 from core.coding.persistence.transcript_schema import (
@@ -22,6 +23,7 @@ from core.coding.persistence.transcript_schema import (
 )
 
 __all__ = [
+    "TranscriptConflictError",
     "TranscriptCorruptionError",
     "TranscriptItem",
     "TranscriptSchemaError",
@@ -34,15 +36,19 @@ _DATABASE_NAME = "transcript.sqlite3"
 _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 _FILE_FLAGS = os.O_CLOEXEC | os.O_NOFOLLOW
 _SIDECAR_SUFFIXES = ("-wal", "-shm")
-_SELECT_SQL = """
-SELECT message_id, role, content, run_id, turn_id, call_id, artifact_ref, created_at
-FROM transcript
-ORDER BY sequence
-"""
+_STORED_COLUMNS = (
+    "message_id, role, content, run_id, turn_id, call_id, artifact_ref, created_at, "
+    "name, args_json, is_error, policy_reason, security_event_type"
+)
+_SELECT_SQL = f"SELECT sequence, {_STORED_COLUMNS} FROM transcript ORDER BY sequence"
 
 
 class TranscriptCorruptionError(TranscriptStoreError):
     """Raised when the canonical SQLite database cannot be read safely."""
+
+
+class TranscriptConflictError(TranscriptStoreError):
+    """Raised when a message id is reused for different canonical evidence."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,12 @@ class TranscriptItem:
     call_id: str = ""
     artifact_ref: str = ""
     created_at: str = ""
+    sequence: int = field(default=0, compare=False)
+    name: str = ""
+    args: dict[str, Any] = field(default_factory=dict)
+    is_error: bool = False
+    policy_reason: str = ""
+    security_event_type: str = ""
 
 
 class TranscriptStore:
@@ -88,32 +100,44 @@ class TranscriptStore:
 
     def append(self, item: TranscriptItem) -> bool:
         """Insert ``item`` once by message id in a short transaction."""
+        return self.append_and_get_sequence(item)[0]
+
+    def append_and_get_sequence(self, item: TranscriptItem) -> tuple[bool, int]:
+        """Insert canonical evidence or return its existing stable sequence."""
+        args_json = _canonical_args_json(item.args)
+        values = _stored_values(item, args_json)
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 try:
+                    existing = connection.execute(
+                        f"SELECT sequence, {_STORED_COLUMNS} FROM transcript WHERE message_id = ?",
+                        (item.message_id,),
+                    ).fetchone()
+                    if existing is not None:
+                        if tuple(existing[1:]) != values:
+                            raise TranscriptConflictError(
+                                f"conflicting transcript message_id {item.message_id!r} at {self.path}"
+                            )
+                        connection.commit()
+                        return False, int(existing[0])
                     cursor = connection.execute(
                         """
                         INSERT INTO transcript (
                             message_id, role, content, run_id, turn_id, call_id,
-                            artifact_ref, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(message_id) DO NOTHING
+                            artifact_ref, created_at, name, args_json, is_error,
+                            policy_reason, security_event_type
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (
-                            item.message_id,
-                            item.role,
-                            item.content,
-                            item.run_id,
-                            item.turn_id,
-                            item.call_id,
-                            item.artifact_ref,
-                            item.created_at,
-                        ),
+                        values,
                     )
-                    inserted = cursor.rowcount == 1
+                    if cursor.lastrowid is None:
+                        raise TranscriptStoreError(
+                            f"transcript insert returned no sequence at {self.path}"
+                        )
+                    sequence = int(cursor.lastrowid)
                     connection.commit()
-                    return inserted
+                    return True, sequence
                 except Exception:
                     _rollback(connection)
                     raise
@@ -125,7 +149,24 @@ class TranscriptStore:
         """Read transcript entries in their insertion sequence."""
         try:
             with self._connect() as connection:
-                return _read_items(connection)
+                return _read_items(connection, self.path, _SELECT_SQL)
+        except sqlite3.DatabaseError as exc:
+            self._raise_if_corrupt(exc)
+            raise
+
+    def read_range(self, start: int, end: int) -> list[TranscriptItem]:
+        """Read an inclusive sequence range in canonical order."""
+        if not isinstance(start, int) or isinstance(start, bool) or start < 1:
+            raise ValueError("start must be an integer >= 1")
+        if not isinstance(end, int) or isinstance(end, bool) or end < start:
+            raise ValueError("end must be an integer >= start")
+        sql = (
+            f"SELECT sequence, {_STORED_COLUMNS} FROM transcript "
+            "WHERE sequence BETWEEN ? AND ? ORDER BY sequence"
+        )
+        try:
+            with self._connect() as connection:
+                return _read_items(connection, self.path, sql, (start, end))
         except sqlite3.DatabaseError as exc:
             self._raise_if_corrupt(exc)
             raise
@@ -144,7 +185,7 @@ class TranscriptStore:
             with self._connect() as connection:
                 connection.execute("BEGIN")
                 try:
-                    items = _read_items(connection)
+                    items = _read_items(connection, self.path, _SELECT_SQL)
                     connection.commit()
                 except Exception:
                     _rollback(connection)
@@ -251,8 +292,99 @@ class TranscriptStore:
             ) from exc
 
 
-def _read_items(connection: sqlite3.Connection) -> list[TranscriptItem]:
-    return [TranscriptItem(*row) for row in connection.execute(_SELECT_SQL).fetchall()]
+def _canonical_args_json(args: dict[str, Any]) -> str:
+    if not isinstance(args, dict):
+        raise TypeError("transcript args must be a dict")
+    _validate_json_value(args)
+    return json.dumps(
+        args,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _validate_json_value(value: Any) -> None:
+    if value is None or isinstance(value, str | bool | int):
+        return
+    if isinstance(value, float):
+        if not (value == value and abs(value) != float("inf")):
+            raise ValueError("transcript args must contain finite JSON numbers")
+        return
+    if isinstance(value, list):
+        for child in value:
+            _validate_json_value(child)
+        return
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise TypeError("transcript args object keys must be strings")
+            _validate_json_value(child)
+        return
+    raise TypeError(f"transcript args contains non-JSON value {type(value).__name__}")
+
+
+def _stored_values(item: TranscriptItem, args_json: str) -> tuple[Any, ...]:
+    return (
+        item.message_id,
+        item.role,
+        item.content,
+        item.run_id,
+        item.turn_id,
+        item.call_id,
+        item.artifact_ref,
+        item.created_at,
+        item.name,
+        args_json,
+        int(item.is_error),
+        item.policy_reason,
+        item.security_event_type,
+    )
+
+
+def _read_items(
+    connection: sqlite3.Connection,
+    path: Path,
+    sql: str,
+    parameters: tuple[Any, ...] = (),
+) -> list[TranscriptItem]:
+    return [_row_to_item(row, path) for row in connection.execute(sql, parameters).fetchall()]
+
+
+def _row_to_item(row: tuple[Any, ...], path: Path) -> TranscriptItem:
+    message_id = str(row[1])
+    try:
+        args = json.loads(row[10], parse_constant=_reject_json_constant)
+        _validate_json_value(args)
+    except (TypeError, ValueError) as exc:
+        raise TranscriptCorruptionError(
+            f"invalid args_json for transcript message {message_id!r} at {path}: {exc}"
+        ) from exc
+    if not isinstance(args, dict):
+        raise TranscriptCorruptionError(
+            f"invalid args_json object for transcript message {message_id!r} at {path}"
+        )
+    return TranscriptItem(
+        message_id=message_id,
+        role=str(row[2]),
+        content=str(row[3]),
+        run_id=str(row[4]),
+        turn_id=str(row[5]),
+        call_id=str(row[6]),
+        artifact_ref=str(row[7]),
+        created_at=str(row[8]),
+        sequence=int(row[0]),
+        name=str(row[9]),
+        args=args,
+        is_error=bool(row[11]),
+        policy_reason=str(row[12]),
+        security_event_type=str(row[13]),
+    )
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON number {value}")
 
 
 def _ensure_wal(connection: sqlite3.Connection, path: Path) -> None:

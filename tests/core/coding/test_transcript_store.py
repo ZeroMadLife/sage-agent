@@ -216,13 +216,13 @@ def test_spawn_processes_append_same_message_once(tmp_path):
 def test_schema_version_columns_and_connection_pragmas(tmp_path):
     store = TranscriptStore(tmp_path, "s1")
 
-    assert store.schema_version == 1
+    assert store.schema_version == 2
     with store._connect() as connection:
         columns = connection.execute("PRAGMA table_info(transcript)").fetchall()
         create_sql = connection.execute(
             "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'transcript'"
         ).fetchone()[0]
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         assert connection.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert connection.execute("PRAGMA synchronous").fetchone()[0] == 2
         assert connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
@@ -238,13 +238,23 @@ def test_schema_version_columns_and_connection_pragmas(tmp_path):
         "call_id",
         "artifact_ref",
         "created_at",
+        "name",
+        "args_json",
+        "is_error",
+        "policy_reason",
+        "security_event_type",
     ]
     assert columns[0][2:] == ("INTEGER", 0, None, 1)
     assert columns[1][2:] == ("TEXT", 1, None, 0)
     assert columns[2][2:] == ("TEXT", 1, None, 0)
     assert columns[3][2:] == ("TEXT", 1, None, 0)
-    for column in columns[4:]:
+    for column in columns[4:9]:
         assert column[2:] == ("TEXT", 1, "''", 0)
+    assert columns[9][2:] == ("TEXT", 1, "''", 0)
+    assert columns[10][2:] == ("TEXT", 1, "'{}'", 0)
+    assert columns[11][2:] == ("INTEGER", 1, "0", 0)
+    assert columns[12][2:] == ("TEXT", 1, "''", 0)
+    assert columns[13][2:] == ("TEXT", 1, "''", 0)
     assert "PRIMARY KEY AUTOINCREMENT" in create_sql.upper()
     assert "MESSAGE_ID TEXT NOT NULL UNIQUE" in create_sql.upper()
 
@@ -253,14 +263,14 @@ def test_unknown_newer_schema_version_is_rejected_with_path(tmp_path):
     path = tmp_path / "evidence" / "s1" / "transcript.sqlite3"
     path.parent.mkdir(parents=True)
     with sqlite3.connect(path) as connection:
-        connection.execute("PRAGMA user_version=2")
+        connection.execute("PRAGMA user_version=3")
 
     with pytest.raises(RuntimeError) as exc_info:
         TranscriptStore(tmp_path, "s1")
 
     assert str(path) in str(exc_info.value)
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_negative_schema_version_is_rejected_with_path_and_version(tmp_path):
@@ -377,7 +387,7 @@ def test_v0_database_with_any_user_schema_object_is_rejected(tmp_path, statement
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 0
 
 
-def test_truly_empty_v0_database_is_created_as_v1_and_reopens(tmp_path):
+def test_truly_empty_v0_database_is_created_as_v2_and_reopens(tmp_path):
     path = _precreate_database(tmp_path, None, 0)
 
     store = TranscriptStore(tmp_path, "s1")
@@ -386,7 +396,7 @@ def test_truly_empty_v0_database_is_created_as_v1_and_reopens(tmp_path):
     assert store.read_all() == []
     assert reopened.read_all() == []
     with sqlite3.connect(path) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 @pytest.mark.parametrize(
