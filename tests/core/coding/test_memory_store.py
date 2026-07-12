@@ -68,6 +68,8 @@ def test_projection_failure_is_replayed_after_restart(tmp_path: Path, monkeypatc
         manager.approve(proposal.proposal_id, 0)
     reopened = MemoryManager(tmp_path / "storage", workspace)
     assert [f.content for f in reopened.durable.list_facts()] == ["recover"]
+    topic = reopened.durable.root / "project-conventions.md"
+    assert topic.read_text(encoding="utf-8").count('"content": "recover"') == 1
     monkeypatch.setattr(manager.durable, "approve_dream", original)
 
 
@@ -75,3 +77,19 @@ def test_projection_failure_is_replayed_after_restart(tmp_path: Path, monkeypatc
 def test_store_rejects_unsafe_workspace_ids(tmp_path: Path, bad: str) -> None:
     with pytest.raises(ValueError):
         MemoryStore(tmp_path / "storage", bad)
+
+
+def test_reject_ignores_fact_base_staleness(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "storage", "workspace")
+    first = store.create_proposal([MemoryCandidate("one")], proposal_id="one")
+    second = store.create_proposal([MemoryCandidate("two")], proposal_id="two")
+    store.approve(first.proposal_id, 0)
+    rejected = store.reject(second.proposal_id, 0)
+    assert rejected.status == "rejected"
+
+
+def test_same_proposal_id_requires_metadata_match(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "storage", "workspace")
+    store.create_proposal([MemoryCandidate("same")], proposal_id="p", run_id="r1")
+    with pytest.raises(MemoryConflictError):
+        store.create_proposal([MemoryCandidate("same")], proposal_id="p", run_id="r2")
