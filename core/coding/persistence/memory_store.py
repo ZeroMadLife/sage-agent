@@ -159,26 +159,34 @@ class MemoryStore:
 
     def _init_db(self) -> None:
         with self._connect() as db:
-            version = int(db.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, SCHEMA_VERSION}:
-                raise MemoryStoreError(f"unsupported memory schema version {version}")
-            objects = _schema_objects(db)
-            if version == 0:
-                if objects:
-                    _migrate_legacy_v0(db, objects)
-                else:
-                    db.execute(_FACTS_SQL)
-                    db.execute(_PROPOSALS_SQL)
-                    db.execute(_EVENTS_SQL)
-                    db.execute(_EVENT_INDEX_SQL)
-                db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-            _validate_schema(db, self.path)
-            integrity = db.execute("PRAGMA integrity_check").fetchall()
-            if [tuple(row) for row in integrity] != [("ok",)]:
-                raise MemoryCorruptionError(f"memory database failed integrity check at {self.path}")
-            with suppress(OSError):
-                os.chmod(self.path, 0o600)
-            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                version = int(db.execute("PRAGMA user_version").fetchone()[0])
+                if version not in {0, SCHEMA_VERSION}:
+                    raise MemoryStoreError(f"unsupported memory schema version {version}")
+                objects = _schema_objects(db)
+                if version == 0:
+                    if objects:
+                        _migrate_legacy_v0(db, objects)
+                    else:
+                        db.execute(_FACTS_SQL)
+                        db.execute(_PROPOSALS_SQL)
+                        db.execute(_EVENTS_SQL)
+                        db.execute(_EVENT_INDEX_SQL)
+                    db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                _validate_schema(db, self.path)
+                integrity = db.execute("PRAGMA integrity_check").fetchall()
+                if [tuple(row) for row in integrity] != [("ok",)]:
+                    raise MemoryCorruptionError(
+                        f"memory database failed integrity check at {self.path}"
+                    )
+                with suppress(OSError):
+                    os.chmod(self.path, 0o600)
+                db.commit()
+            except Exception:
+                if db.in_transaction:
+                    db.rollback()
+                raise
 
     def _verify_database_and_sidecars(self) -> tuple[int, int]:
         try:
@@ -450,7 +458,7 @@ def _migrate_legacy_v0(db: sqlite3.Connection, objects: list[tuple[str, str, str
     db.execute("ALTER TABLE memory_proposals RENAME TO memory_proposals_legacy")
     db.execute("DROP INDEX memory_events_proposal_idx")
     db.execute(_PROPOSALS_SQL)
-    db.execute("INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) SELECT proposal_id, workspace_id, candidates_json, status, CASE WHEN status='approved' THEN 'complete' ELSE 'pending' END, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at FROM memory_proposals_legacy")
+    db.execute("INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) SELECT proposal_id, workspace_id, candidates_json, status, 'pending', revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at FROM memory_proposals_legacy")
     db.execute("DROP TABLE memory_proposals_legacy")
     db.execute(_EVENT_INDEX_SQL)
 

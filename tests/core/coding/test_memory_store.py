@@ -106,8 +106,6 @@ def test_same_proposal_id_requires_metadata_match(tmp_path: Path) -> None:
 
 
 def test_legacy_v0_proposal_schema_migrates(tmp_path: Path) -> None:
-    import sqlite3
-
     root = tmp_path / "storage" / "memory" / "workspace"
     root.mkdir(parents=True)
     path = root / "memory.sqlite3"
@@ -119,12 +117,73 @@ def test_legacy_v0_proposal_schema_migrates(tmp_path: Path) -> None:
     CREATE INDEX memory_events_proposal_idx ON memory_events(proposal_id, created_at);
     PRAGMA user_version=0;
     """)
+    candidates = json.dumps([
+        {
+            "content": "legacy fact",
+            "topic": "project-conventions",
+            "source": "dream_proposal",
+            "source_ref": "run-1",
+            "created_at": "2026-07-12T00:00:00+00:00",
+        }
+    ])
+    db.execute(
+        "INSERT INTO memory_proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "legacy-approved",
+            "workspace",
+            candidates,
+            "approved",
+            1,
+            "session-1",
+            "run-1",
+            "reflection-1",
+            0,
+            "2026-07-12T00:00:00+00:00",
+            "2026-07-12T00:00:00+00:00",
+        ),
+    )
     db.commit()
     db.close()
     store = MemoryStore(tmp_path / "storage", "workspace")
     assert store.path.exists()
     with sqlite3.connect(store.path) as check:
         assert check.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert check.execute(
+            "SELECT projection_status FROM memory_proposals WHERE proposal_id=?",
+            ("legacy-approved",),
+        ).fetchone()[0] == "pending"
+
+
+def test_legacy_migration_rolls_back_and_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.coding.persistence import memory_store as module
+
+    root = tmp_path / "storage" / "memory" / "workspace"
+    root.mkdir(parents=True)
+    path = root / "memory.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+        CREATE TABLE memory_facts (content_hash TEXT PRIMARY KEY, content TEXT NOT NULL, topic TEXT NOT NULL, source TEXT NOT NULL, source_ref TEXT NOT NULL, created_at TEXT NOT NULL, proposal_id TEXT NOT NULL DEFAULT '');
+        CREATE TABLE memory_proposals (proposal_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, candidates_json TEXT NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, session_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', reflection_id TEXT NOT NULL DEFAULT '', base_revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE memory_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, proposal_id TEXT NOT NULL, workspace_id TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', reflection_id TEXT NOT NULL DEFAULT '', candidate_count INTEGER NOT NULL, base_revision INTEGER NOT NULL, revision INTEGER NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX memory_events_proposal_idx ON memory_events(proposal_id, created_at);
+        PRAGMA user_version=0;
+        """)
+
+    original_sql = module._PROPOSALS_SQL
+    monkeypatch.setattr(module, "_PROPOSALS_SQL", "INVALID SQL")
+    with pytest.raises(sqlite3.Error):
+        MemoryStore(tmp_path / "storage", "workspace")
+
+    with sqlite3.connect(path) as db:
+        names = {row[0] for row in db.execute("SELECT name FROM sqlite_schema")}
+        assert "memory_proposals" in names
+        assert "memory_proposals_legacy" not in names
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 0
+
+    monkeypatch.setattr(module, "_PROPOSALS_SQL", original_sql)
+    assert MemoryStore(tmp_path / "storage", "workspace").path == path
 
 
 def test_store_rejects_symlink_in_storage_path(tmp_path: Path) -> None:
