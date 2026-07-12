@@ -194,18 +194,15 @@ async def test_workspace_reminder_does_not_enter_session_replay(tmp_path: Path) 
     assert "final" in [event["type"] for event in events]
     assert events[-1]["type"] == "turn_finished"
     assert "Project-only instruction" in model.prompts[0]
-    assert runtime.session["history"] == [
-        {
-            "role": "user",
-            "content": "say hi",
-            "created_at": runtime.session["history"][0]["created_at"],
-        },
-        {
-            "role": "assistant",
-            "content": "done",
-            "created_at": runtime.session["history"][1]["created_at"],
-        },
+    assert [(item["role"], item["content"]) for item in runtime.session["history"]] == [
+        ("user", "say hi"),
+        ("assistant", "done"),
     ]
+    assert all(
+        "Project-only instruction" not in item["content"]
+        for item in runtime.session["history"]
+    )
+    assert all(item["message_id"] and item["sequence"] > 0 for item in runtime.session["history"])
 
 
 async def test_compact_manager_invalidates_context_cache_after_compaction() -> None:
@@ -304,11 +301,10 @@ async def test_skill_prompt_injected_into_llm_request_but_not_history(tmp_path: 
     # The skill body is in the LLM request.
     assert "你正在使用 Sage 的 travel-planning domain skill" in model.prompts[0]
     # The original command text is the persisted user message; the skill body is not.
-    assert runtime.session["history"][0] == {
-        "role": "user",
-        "content": "/travel-planning 我要去莆田",
-        "created_at": runtime.session["history"][0]["created_at"],
-    }
+    assert runtime.session["history"][0]["role"] == "user"
+    assert runtime.session["history"][0]["content"] == "/travel-planning 我要去莆田"
+    assert runtime.session["history"][0]["message_id"]
+    assert runtime.session["history"][0]["sequence"] == 1
     assert all(
         "你正在使用 Sage 的 travel-planning domain skill" not in str(item.get("content", ""))
         for item in runtime.session["history"]

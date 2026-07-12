@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import AsyncIterator, Callable
+from copy import deepcopy
 from typing import Any, Protocol
 
 from core.coding.context import (
@@ -15,6 +16,7 @@ from core.coding.context import (
 )
 from core.coding.engine.events import (
     CancelledEvent,
+    ErrorEvent,
     FinalEvent,
     ModelParsedEvent,
     ModelRequestedEvent,
@@ -45,6 +47,19 @@ class ApiClient(Protocol):
 ModelClient = ApiClient
 
 
+class PreparedContextLike(Protocol):
+    """Read-only model-request projection returned by a runtime safe-point hook."""
+
+    @property
+    def events(self) -> tuple[Any, ...]: ...
+
+    @property
+    def allow_model_request(self) -> bool: ...
+
+    @property
+    def projected_history(self) -> list[dict[str, Any]]: ...
+
+
 class Engine:
     """Turn control loop: model -> parse -> tool -> final."""
 
@@ -67,6 +82,13 @@ class Engine:
         run_id: str = "",
         workspace_reminders: list[str] | None = None,
         max_steps: int = 50,
+        append_user: bool = True,
+        current_message_id: str | None = None,
+        append_history: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        before_model_request: Callable[
+            [list[dict[str, Any]]], PreparedContextLike
+        ]
+        | None = None,
     ) -> None:
         self.model = model
         self.workspace = workspace
@@ -83,6 +105,10 @@ class Engine:
         self.run_id = run_id
         self.workspace_reminders = workspace_reminders or []
         self.max_steps = max_steps
+        self.append_user = append_user
+        self.current_message_id = current_message_id
+        self.append_history = append_history
+        self.before_model_request = before_model_request
 
     async def run_turn(
         self, user_message: str, skill_prompt: str | None = None, memory_block: str | None = None
@@ -96,7 +122,8 @@ class Engine:
         injected into the LLM prompt for this turn only; it is never written to
         ``self.history``.
         """
-        self.history.append({"role": "user", "content": user_message, "created_at": now()})
+        if self.append_user:
+            self._append_history({"role": "user", "content": user_message, "created_at": now()})
         tool_steps = 0
         attempts = 0
         protocol_retries = 0
@@ -110,15 +137,41 @@ class Engine:
             if self.should_stop():
                 yield self._cancelled_event()
                 return
+            prompt_history = self._history_without_current()
+            if self.before_model_request is not None:
+                prepared = self.before_model_request(deepcopy(self.history))
+                for context_event in prepared.events:
+                    yield event_to_dict(context_event)
+                if not prepared.allow_model_request:
+                    message = "context emergency: model request blocked"
+                    self._append_history(
+                        {
+                            "role": "assistant",
+                            "content": message,
+                            "is_error": True,
+                            "created_at": now(),
+                        }
+                    )
+                    yield event_to_dict(
+                        ErrorEvent(
+                            run_id=self.run_id,
+                            message=message,
+                        )
+                    )
+                    yield self._cancelled_event()
+                    return
+                prompt_history = prepared.projected_history
+            prompt_history = self._history_for_prompt(prompt_history)
             attempts += 1
             prompt, metadata = self.context_manager.build(
                 user_message=user_message,
-                history=self.history,
+                history=prompt_history,
                 tools=self._tool_descriptions(),
                 workspace_reminders=self.workspace_reminders,
                 deferred_tools=self._deferred_tool_names(),
                 skill_prompt=skill_prompt,
                 memory_block=memory_block,
+                include_current_request=self.current_message_id is None,
             )
             if protocol_correction:
                 prompt = f"{prompt}\n\n<protocol-correction>\n{protocol_correction}\n</protocol-correction>"
@@ -182,7 +235,7 @@ class Engine:
                         last_tool_signature = sig
                     if repeat_count >= MAX_REPEAT:
                         notice = f"检测到工具 {sig[0]} 连续重复调用 {MAX_REPEAT} 次,已停止以避免无限循环。"
-                        self.history.append(
+                        self._append_history(
                             {"role": "assistant", "content": notice, "created_at": now()}
                         )
                         yield event_to_dict(FinalEvent(run_id=self.run_id, content=notice))
@@ -203,7 +256,7 @@ class Engine:
                 notice = str(payload)
                 if protocol_retries >= self.MAX_PROTOCOL_RETRIES:
                     content = "模型连续返回了无法执行的操作格式，已停止本次运行。请重试，或换用更兼容的模型。"
-                    self.history.append(
+                    self._append_history(
                         {"role": "assistant", "content": content, "created_at": now()}
                     )
                     yield event_to_dict(FinalEvent(run_id=self.run_id, content=content))
@@ -214,12 +267,12 @@ class Engine:
                 continue
 
             final = str(payload).strip()
-            self.history.append({"role": "assistant", "content": final, "created_at": now()})
+            self._append_history({"role": "assistant", "content": final, "created_at": now()})
             yield event_to_dict(FinalEvent(run_id=self.run_id, content=final))
             return
 
         content = self._step_limit_summary(user_message, tool_steps)
-        self.history.append({"role": "assistant", "content": content, "created_at": now()})
+        self._append_history({"role": "assistant", "content": content, "created_at": now()})
         yield event_to_dict(StepLimitEvent(run_id=self.run_id, content=content))
 
     async def _execute_tool_payload(self, payload: Any) -> AsyncIterator[dict[str, Any]]:
@@ -246,13 +299,15 @@ class Engine:
         return event_to_dict(CancelledEvent(run_id=self.run_id, content=content))
 
     def _append_tool_history(self, event: ToolResultEvent) -> None:
-        self.history.append(
+        self._append_history(
             {
                 "role": "tool",
                 "name": event.tool,
                 "args": event.args,
                 "content": event.content,
                 "is_error": event.is_error,
+                "policy_reason": event.policy_reason or "",
+                "security_event_type": event.security_event_type or "",
                 "created_at": now(),
             }
         )
@@ -264,7 +319,62 @@ class Engine:
             and self.history[-1].get("content") == content
         ):
             return
-        self.history.append({"role": "assistant", "content": content, "created_at": now()})
+        self._append_history({"role": "assistant", "content": content, "created_at": now()})
+
+    def _append_history(self, item: dict[str, Any]) -> dict[str, Any]:
+        if self.append_history is not None:
+            return self.append_history(item)
+        self.history.append(item)
+        return item
+
+    def _history_without_current(self) -> list[dict[str, Any]]:
+        history = deepcopy(self.history)
+        if self.current_message_id is None:
+            return history
+        indexes = [
+            index
+            for index, item in enumerate(history)
+            if item.get("message_id") == self.current_message_id
+        ]
+        if len(indexes) > 1:
+            raise ValueError("current_message_id is not unique in history")
+        if indexes:
+            history.pop(indexes[0])
+        return history
+
+    def _history_for_prompt(
+        self, projected_history: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        history = deepcopy(projected_history)
+        if self.current_message_id is None:
+            return history
+        current = [
+            item
+            for item in self.history
+            if item.get("message_id") == self.current_message_id
+        ]
+        if len(current) != 1:
+            raise ValueError("current_message_id must identify exactly one history item")
+        history = [
+            item
+            for item in history
+            if item.get("message_id") != self.current_message_id
+        ]
+        current_item = deepcopy(current[0])
+        current_sequence = current_item.get("sequence")
+        insert_at = len(history)
+        if isinstance(current_sequence, int) and not isinstance(current_sequence, bool):
+            for index, item in enumerate(history):
+                sequence = item.get("sequence")
+                if (
+                    isinstance(sequence, int)
+                    and not isinstance(sequence, bool)
+                    and sequence > current_sequence
+                ):
+                    insert_at = index
+                    break
+        history.insert(insert_at, current_item)
+        return history
 
     async def _call_model(self, prompt: str) -> str:
         complete = getattr(self.model, "complete", None)

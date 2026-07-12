@@ -5,8 +5,12 @@ and the try/except cleanup that guarantees the lease is released even when the
 engine raises.
 """
 
+import asyncio
 from pathlib import Path
 
+import pytest
+
+from core.coding.context import ContextPolicy
 from core.coding.runtime import CodingRuntime
 
 
@@ -109,7 +113,9 @@ async def test_run_turn_cleanup_on_exception(tmp_path: Path) -> None:
     assert types[-2:] == ["run_finished", "turn_finished"]
 
     error_event = next(event for event in events if event["type"] == "error")
-    assert "engine blew up" in error_event["message"]
+    assert error_event["message"] == "Model request failed"
+    assert "engine blew up" not in str(runtime.run_store.get_run(error_event["run_id"]))
+    assert "engine blew up" not in str(runtime.transcript_store.read_all())
 
     finished = events[-2]
     assert finished["type"] == "run_finished"
@@ -239,6 +245,103 @@ async def test_run_turn_releases_lease_on_aclose(tmp_path: Path) -> None:
     # The lease is released even though the turn never completed.
     assert runtime.active_run_id is None
     assert runtime.stop_requested is False
+    detail = runtime.run_store.get_run(first["run_id"])
+    assert [event["type"] for event in detail["events"]][-3:] == [
+        "cancelled",
+        "run_finished",
+        "turn_finished",
+    ]
+    assert runtime.run_store.run_status(first["run_id"]) == "cancelled"
+
+
+async def test_pre_engine_failure_closes_run_and_releases_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
+
+    def fail_snapshot() -> None:
+        raise OSError("snapshot-secret")
+
+    monkeypatch.setattr(runtime.diff_tracker, "snapshot_before_run", fail_snapshot)
+
+    events = [event async for event in runtime.run_turn("hello")]
+
+    assert [event["type"] for event in events] == [
+        "error",
+        "run_finished",
+        "turn_finished",
+    ]
+    assert events[0]["message"] == "Run preparation failed"
+    assert events[1]["status"] == "error"
+    assert runtime.run_store.run_status(events[0]["run_id"]) == "error"
+    assert runtime.active_run_id is None
+
+
+async def test_engine_construction_failure_closes_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
+
+    class BrokenEngine:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+            raise RuntimeError("engine-constructor-secret")
+
+    monkeypatch.setattr("core.coding.runtime.Engine", BrokenEngine)
+    events = [event async for event in runtime.run_turn("hello")]
+
+    assert [event["type"] for event in events] == [
+        "error",
+        "run_finished",
+        "turn_finished",
+    ]
+    assert events[0]["message"] == "Run preparation failed"
+    assert "engine-constructor-secret" not in str(events)
+    assert runtime.run_store.run_status(events[0]["run_id"]) == "error"
+    assert runtime.active_run_id is None
+
+
+async def test_cancel_during_context_preparation_persists_terminal_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    runtime = CodingRuntime(
+        session_id="s-context-cancel",
+        workspace_root=tmp_path,
+        model=FakeModel(["<final>unused</final>"]),
+        storage_root=tmp_path / ".coding",
+        context_policy=ContextPolicy(
+            context_window_tokens=100_000, output_reserve_tokens=10_000
+        ),
+    )
+
+    async def block_context(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        entered.set()
+        await release.wait()
+        raise AssertionError("unreachable")
+
+    assert runtime.context_controller is not None
+    monkeypatch.setattr(runtime.context_controller, "on_turn_start", block_context)
+    stream = runtime.run_turn("hello")
+    pending = asyncio.create_task(anext(stream))
+    await entered.wait()
+    run_id = runtime.active_run_id
+    assert run_id is not None
+
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+
+    detail = runtime.run_store.get_run(run_id)
+    assert [event["type"] for event in detail["events"]][-3:] == [
+        "cancelled",
+        "run_finished",
+        "turn_finished",
+    ]
+    assert runtime.run_store.run_status(run_id) == "cancelled"
+    assert runtime.active_run_id is None
 
 
 def test_request_stop_rejects_stale_run_id(tmp_path: Path) -> None:

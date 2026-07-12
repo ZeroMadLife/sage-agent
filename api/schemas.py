@@ -119,6 +119,12 @@ class CodingModelSwitchRequest(BaseModel):
     model_id: str = Field(min_length=1)
 
 
+class CodingRunStopRequest(BaseModel):
+    """Run-bound cancellation request guarded against stale clients."""
+
+    run_id: str = Field(min_length=1)
+
+
 class PermissionModeSwitchRequest(BaseModel):
     """Request body for switching a session's permission mode."""
 

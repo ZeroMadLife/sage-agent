@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
-from core.coding.context import now
+
+def _event_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class RunEventBase(BaseModel):
@@ -14,7 +17,7 @@ class RunEventBase(BaseModel):
 
     type: str
     run_id: str = ""
-    created_at: str = Field(default_factory=now)
+    created_at: str = Field(default_factory=_event_now)
 
 
 class TurnStartedEvent(RunEventBase):
@@ -169,6 +172,61 @@ class MemoryProposalReadyEvent(RunEventBase):
     facts: list[dict[str, str]] = Field(default_factory=list)
 
 
+class ContextUsageUpdatedEvent(RunEventBase):
+    """The effective model context pressure changed."""
+
+    type: Literal["context_usage_updated"] = "context_usage_updated"
+    session_id: str
+    used_tokens: int = Field(ge=0)
+    model_limit_tokens: int = Field(gt=0)
+    output_reserve_tokens: int = Field(gt=0)
+    effective_limit_tokens: int = Field(gt=0)
+    usage_ratio: float = Field(ge=0)
+    level: Literal["normal", "budget", "snip", "compact", "high", "emergency"]
+    estimated: bool
+    compactable: bool
+
+
+class ContextCompactionStartedEvent(RunEventBase):
+    """A semantic context compaction attempt started."""
+
+    type: Literal["context_compaction_started"] = "context_compaction_started"
+    session_id: str
+    compaction_id: str
+    trigger: str
+    before_tokens: int = Field(ge=0)
+
+
+class ContextCompactionCompletedEvent(RunEventBase):
+    """A semantic context compaction attempt completed."""
+
+    type: Literal["context_compaction_completed"] = "context_compaction_completed"
+    session_id: str
+    compaction_id: str
+    before_tokens: int = Field(ge=0)
+    after_tokens: int = Field(ge=0)
+    archived_items: int = Field(ge=0)
+    saved_ratio: float = Field(default=0.0, ge=0, le=1)
+
+    def model_post_init(self, context: Any, /) -> None:
+        del context
+        ratio = 0.0
+        if self.before_tokens > 0:
+            ratio = min(1.0, max(0.0, (self.before_tokens - self.after_tokens) / self.before_tokens))
+        object.__setattr__(self, "saved_ratio", ratio)
+
+
+class ContextCompactionFailedEvent(RunEventBase):
+    """A semantic context compaction attempt failed without losing evidence."""
+
+    type: Literal["context_compaction_failed"] = "context_compaction_failed"
+    session_id: str
+    compaction_id: str
+    reason: str
+    preserved_original: bool = True
+    retryable: bool = False
+
+
 RunEvent: TypeAlias = (
     TurnStartedEvent
     | ModelRequestedEvent
@@ -188,6 +246,10 @@ RunEvent: TypeAlias = (
     | PlanReadyForReviewEvent
     | WorkspaceDiffReadyEvent
     | MemoryProposalReadyEvent
+    | ContextUsageUpdatedEvent
+    | ContextCompactionStartedEvent
+    | ContextCompactionCompletedEvent
+    | ContextCompactionFailedEvent
     | RunFinishedEvent
 )
 

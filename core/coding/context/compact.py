@@ -25,6 +25,8 @@ from core.coding.context.summary import (
 )
 from core.coding.context.workspace import now
 
+_COMPACTION_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+
 
 class Summarizer(Protocol):
     async def summarize(
@@ -112,10 +114,14 @@ class CompactManager:
         previous_checkpoint: CompactionCheckpoint | None = None,
         transcript_range: tuple[int, int] | None = None,
         context_manager: CacheInvalidator | None = None,
+        compaction_id: str | None = None,
     ) -> CompactionResult:
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("session_id must be non-empty")
-        compaction_id = f"compact-{uuid4().hex}"
+        if compaction_id is None:
+            compaction_id = f"compact-{uuid4().hex}"
+        elif not isinstance(compaction_id, str) or not _COMPACTION_ID.fullmatch(compaction_id):
+            raise ValueError("compaction_id is invalid")
         original = deepcopy(history)
         before_tokens = self._safe_count(original)
         state = self._states.setdefault(session_id, _SessionState())

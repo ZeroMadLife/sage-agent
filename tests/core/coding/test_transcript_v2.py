@@ -242,6 +242,21 @@ def test_duplicate_returns_original_sequence_but_conflicting_payload_raises(tmp_
         )
 
 
+def test_append_many_rolls_back_entire_legacy_backfill_on_conflict(tmp_path):
+    store = TranscriptStore(tmp_path, "s1")
+    store.append(TranscriptItem(message_id="existing", role="user", content="old"))
+
+    with pytest.raises(TranscriptConflictError):
+        store.append_many(
+            [
+                TranscriptItem(message_id="new", role="user", content="new"),
+                TranscriptItem(message_id="existing", role="user", content="changed"),
+            ]
+        )
+
+    assert [item.message_id for item in store.read_all()] == ["existing"]
+
+
 def test_duplicate_compares_canonical_args_not_dict_insertion_order(tmp_path):
     store = TranscriptStore(tmp_path, "s1")
     first = TranscriptItem(message_id="m1", role="tool", content="ok", args={"a": 1, "b": 2})

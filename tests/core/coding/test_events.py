@@ -1,5 +1,10 @@
 """Typed coding run event tests."""
 
+import subprocess
+import sys
+
+import pytest
+
 from core.coding.engine import (
     ApprovalRequiredEvent,
     CancelledEvent,
@@ -10,6 +15,12 @@ from core.coding.engine import (
     ToolCallEvent,
     ToolResultEvent,
     event_to_dict,
+)
+from core.coding.engine.events import (
+    ContextCompactionCompletedEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
+    ContextUsageUpdatedEvent,
 )
 
 
@@ -149,3 +160,63 @@ def test_plan_ready_for_review_event_defaults_to_empty_fields() -> None:
     assert event.review_id == ""
     assert event.plan_path == ""
     assert event.summary == ""
+
+
+def test_context_events_use_the_approved_wire_contract() -> None:
+    usage = ContextUsageUpdatedEvent(
+        session_id="s1", run_id="run-1", used_tokens=72_000,
+        model_limit_tokens=200_000, output_reserve_tokens=20_000,
+        effective_limit_tokens=180_000, usage_ratio=0.4, level="normal",
+        estimated=True, compactable=True,
+    )
+    started = ContextCompactionStartedEvent(
+        session_id="s1", compaction_id="cmp-1", trigger="manual", before_tokens=128_000
+    )
+    completed = ContextCompactionCompletedEvent(
+        session_id="s1", compaction_id="cmp-1", before_tokens=128_000,
+        after_tokens=42_000, archived_items=86,
+    )
+    failed = ContextCompactionFailedEvent(
+        session_id="s1", compaction_id="cmp-1", reason="summary_schema_invalid",
+        preserved_original=True, retryable=True,
+    )
+
+    assert event_to_dict(usage)["effective_limit_tokens"] == 180_000
+    assert event_to_dict(started)["session_id"] == "s1"
+    assert completed.saved_ratio == pytest.approx((128_000 - 42_000) / 128_000)
+    assert ContextCompactionCompletedEvent(
+        session_id="s1", compaction_id="cmp-2", before_tokens=0, after_tokens=0,
+        archived_items=0,
+    ).saved_ratio == 0.0
+    assert event_to_dict(failed)["preserved_original"] is True
+
+
+def test_context_event_token_counts_reject_negative_values() -> None:
+    with pytest.raises(ValueError):
+        ContextCompactionCompletedEvent(
+            session_id="s1", compaction_id="cmp-1", before_tokens=-1,
+            after_tokens=0, archived_items=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "import core.coding.engine; import core.coding.context",
+        "import core.coding.context; import core.coding.engine",
+    ],
+)
+def test_engine_and_context_import_cleanly_in_either_order(imports: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", imports], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_context_events_are_public_engine_exports() -> None:
+    import core.coding.engine as engine
+
+    assert engine.ContextUsageUpdatedEvent is ContextUsageUpdatedEvent
+    assert engine.ContextCompactionStartedEvent is ContextCompactionStartedEvent
+    assert engine.ContextCompactionCompletedEvent is ContextCompactionCompletedEvent
+    assert engine.ContextCompactionFailedEvent is ContextCompactionFailedEvent

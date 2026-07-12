@@ -22,6 +22,7 @@ from api.schemas import (
     CodingModelSwitchRequest,
     CodingRunDetailResponse,
     CodingRunsResponse,
+    CodingRunStopRequest,
     CodingRunSummary,
     CodingSessionMessage,
     CodingSessionMessagesResponse,
@@ -297,21 +298,12 @@ async def coding_approval_respond(
 
 
 @router.post("/api/v1/coding/{session_id}/run/stop")
-async def stop_coding_run(session_id: str, request: Request) -> dict[str, bool]:
-    """Request cancellation for the active coding run.
-
-    The request body may optionally carry a ``run_id`` to guard against a late
-    stop request for a previous run polluting a newer active run. When
-    ``run_id`` is omitted or ``None`` the stop is applied unconditionally
-    (backward compatible).
-    """
+async def stop_coding_run(
+    session_id: str, payload: CodingRunStopRequest, request: Request
+) -> dict[str, bool]:
+    """Cancel only the explicitly identified active coding run."""
     runtime = _require_runtime(request, session_id)
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    run_id = body.get("run_id") if isinstance(body, dict) else None
-    stopped = runtime.request_stop(run_id=run_id)
+    stopped = runtime.request_stop(run_id=payload.run_id)
     return {"ok": stopped}
 
 

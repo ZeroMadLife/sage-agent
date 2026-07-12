@@ -197,6 +197,54 @@ class TranscriptStore:
         """Insert ``item`` once by message id in a short transaction."""
         return self.append_and_get_sequence(item)[0]
 
+    def append_many(self, items: Sequence[TranscriptItem]) -> list[int]:
+        """Insert a legacy batch atomically and return stable sequences."""
+        prepared = [
+            (item, _stored_values(item, _canonical_args_json(item.args)))
+            for item in items
+        ]
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                sequences: list[int] = []
+                try:
+                    for item, values in prepared:
+                        existing = connection.execute(
+                            f"SELECT sequence, {_STORED_COLUMNS} FROM transcript WHERE message_id = ?",
+                            (item.message_id,),
+                        ).fetchone()
+                        if existing is not None:
+                            existing_item = _row_to_item(existing, self.path)
+                            if _stored_values(existing_item, _canonical_args_json(existing_item.args)) != values:
+                                raise TranscriptConflictError(
+                                    f"conflicting transcript message_id {item.message_id!r} at {self.path}"
+                                )
+                            sequences.append(int(existing[0]))
+                            continue
+                        cursor = connection.execute(
+                            """
+                            INSERT INTO transcript (
+                                message_id, role, content, run_id, turn_id, call_id,
+                                artifact_ref, created_at, name, args_json, is_error,
+                                policy_reason, security_event_type
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            values,
+                        )
+                        if cursor.lastrowid is None:
+                            raise TranscriptStoreError(
+                                f"transcript insert returned no sequence at {self.path}"
+                            )
+                        sequences.append(int(cursor.lastrowid))
+                    connection.commit()
+                    return sequences
+                except Exception:
+                    _rollback(connection)
+                    raise
+        except sqlite3.DatabaseError as exc:
+            self._raise_if_corrupt(exc)
+            raise
+
     def append_and_get_sequence(self, item: TranscriptItem) -> tuple[bool, int]:
         """Insert canonical evidence or return its existing stable sequence."""
         _validate_is_error(item.is_error)

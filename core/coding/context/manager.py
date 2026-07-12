@@ -145,6 +145,7 @@ class ContextManager:
         deferred_tools: list[str] | None = None,
         skill_prompt: str | None = None,
         memory_block: str | None = None,
+        include_current_request: bool = True,
     ) -> tuple[str, dict[str, Any]]:
         """Return a budgeted prompt and metadata.
 
@@ -165,8 +166,11 @@ class ContextManager:
         raw_sections: dict[str, str] = {
             "prefix": system_prompt,
             "history": self._render_history(history),
-            "current_request": f"Current user request:\n{normalize_text(user_message)}",
         }
+        if include_current_request:
+            raw_sections["current_request"] = (
+                f"Current user request:\n{normalize_text(user_message)}"
+            )
         if skill_prompt:
             raw_sections["skill_prompt"] = (
                 f"<skill-instructions>\n{normalize_text(skill_prompt)}\n</skill-instructions>"

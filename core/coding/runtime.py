@@ -2,24 +2,44 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
+from contextlib import suppress
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
 from core.coding.context import (
     IGNORED_PATH_NAMES,
+    CompactionCheckpoint,
+    CompactionResult,
+    CompactManager,
+    ContextBusyError,
+    ContextController,
     ContextManager,
+    ContextPolicy,
+    ContextProjector,
+    ModelCapabilityRegistry,
+    PreparedContext,
+    StructuredSummarizer,
+    TokenCounter,
     WorkspaceContext,
     WorkspaceDiffTracker,
     now,
 )
 from core.coding.engine.engine import Engine
 from core.coding.engine.events import (
+    CancelledEvent,
+    ContextCompactionCompletedEvent,
+    ContextCompactionFailedEvent,
+    ContextCompactionStartedEvent,
     ErrorEvent,
     PlanReadyForReviewEvent,
+    RunEventBase,
     RunFinishedEvent,
     RuntimeModeChangedEvent,
     TurnFinishedEvent,
@@ -29,7 +49,15 @@ from core.coding.engine.events import (
 )
 from core.coding.memory import MemoryManager
 from core.coding.multiagent import WorkerManager
-from core.coding.persistence import CodingSessionStore, RunStore, SessionEventBus, TodoLedger
+from core.coding.persistence import (
+    CodingSessionStore,
+    CompactionStore,
+    RunStore,
+    SessionEventBus,
+    TodoLedger,
+    TranscriptItem,
+    TranscriptStore,
+)
 from core.coding.plan_mode import PlanModeManager
 from core.coding.plan_review import PlanReviewManager
 from core.coding.skills import SkillRegistry
@@ -57,6 +85,10 @@ class CodingRuntime:
         session_state: dict[str, Any] | None = None,
         save_on_init: bool = True,
         permission_mode: PermissionMode = "default",
+        context_policy: ContextPolicy | None = None,
+        model_capabilities: ModelCapabilityRegistry | None = None,
+        checkpoint_anchor_key: bytes | None = None,
+        context_controller: ContextController | None = None,
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -65,6 +97,10 @@ class CodingRuntime:
         self.storage_root = Path(storage_root)
         self.session_store = CodingSessionStore(self.storage_root / "sessions")
         self.run_store = RunStore(self.storage_root, session_id=session_id)
+        self.transcript_store = TranscriptStore(self.storage_root, session_id)
+        self.compaction_store = CompactionStore(
+            self.storage_root, checkpoint_anchor_key=checkpoint_anchor_key
+        )
         self.diff_tracker = WorkspaceDiffTracker(self.workspace.root)
         self.session_event_bus = SessionEventBus(
             session_id=session_id,
@@ -109,6 +145,7 @@ class CodingRuntime:
         self.plan_review_manager = PlanReviewManager()
         self.stop_requested = False
         self.active_run_id: str | None = None
+        self._context_operation_lock = asyncio.Lock()
         self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
         self.policy_checker = ToolPolicyChecker(self.workspace)
@@ -125,6 +162,18 @@ class CodingRuntime:
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.memory_manager = MemoryManager(self.storage_root, self.workspace.root)
         self.model_spec: str = ""
+        self._turn_id = ""
+        self._backfill_transcript()
+        self.model_capabilities = model_capabilities or ModelCapabilityRegistry()
+        self.context_policy = context_policy or self.model_capabilities.resolve(model)
+        self.context_controller = context_controller
+        if self.context_controller is None and self.context_policy is not None:
+            self.context_controller = self._build_context_controller(
+                model, self.context_policy
+            )
+        elif self.context_controller is not None:
+            self.context_controller.lifecycle_sink = self._context_lifecycle_sink
+        self._restore_context_state()
         if save_on_init:
             self._save_session()
 
@@ -136,6 +185,9 @@ class CodingRuntime:
         storage_root: Path | str,
         model_factory: Callable[[], Any] | None = None,
         approval_policy: str = "auto",
+        context_policy: ContextPolicy | None = None,
+        model_capabilities: ModelCapabilityRegistry | None = None,
+        checkpoint_anchor_key: bytes | None = None,
     ) -> CodingRuntime:
         """Rehydrate a persisted coding runtime for a new WebSocket connection."""
         storage_path = Path(storage_root)
@@ -153,6 +205,9 @@ class CodingRuntime:
             approval_policy=approval_policy,
             session_state=session_state,
             save_on_init=False,
+            context_policy=context_policy,
+            model_capabilities=model_capabilities,
+            checkpoint_anchor_key=checkpoint_anchor_key,
         )
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:
@@ -251,8 +306,22 @@ class CodingRuntime:
 
     def switch_model(self, model_spec: str, model_factory: Callable[[], Any]) -> None:
         """Replace the active model client."""
-        self.model = model_factory()
+        if self.active_run_id is not None or self._context_operation_lock.locked():
+            raise ContextBusyError("context operation is active")
+        replacement = model_factory()
+        policy = self.model_capabilities.resolve(model_spec)
+        if policy is None:
+            policy = self.model_capabilities.resolve(replacement)
+        controller = (
+            self._build_context_controller(replacement, policy)
+            if policy is not None
+            else None
+        )
+        self.model = replacement
         self.model_spec = model_spec
+        self.context_policy = policy
+        self.context_controller = controller
+        self._save_session()
 
     def set_permission_mode(self, mode: PermissionMode) -> None:
         """Switch the active permission mode at runtime."""
@@ -321,6 +390,401 @@ class CodingRuntime:
         content = target.read_text(encoding="utf-8", errors="replace")
         return content[:2000]
 
+    def _render_context_for_count(
+        self, history: list[dict[str, Any]], user_message: str
+    ) -> str:
+        prompt, _ = self.context_manager.build(
+            user_message=user_message,
+            history=history,
+            tools=[
+                f"{tool.name}: {tool.description} schema={tool.schema}"
+                for tool in self.tools.values()
+            ],
+            workspace_reminders=self._workspace_reminders(),
+        )
+        return prompt
+
+    def _build_context_controller(
+        self, model: Any, policy: ContextPolicy
+    ) -> ContextController:
+        counter = TokenCounter(model)
+        compactor = CompactManager(
+            summarizer=StructuredSummarizer(model),
+            policy=policy,
+            counter=counter,
+            checkpoint_verifier=self.compaction_store.verify_checkpoint,
+        )
+        return ContextController(
+            session_id=self.session_id,
+            policy=policy,
+            counter=counter,
+            projector=ContextProjector(),
+            compactor=compactor,
+            renderer=self._render_context_for_count,
+            history_provider=lambda: deepcopy(self.session["history"]),
+            active_run_id=lambda: self.active_run_id,
+            lifecycle_sink=self._context_lifecycle_sink,
+        )
+
+    def _backfill_transcript(self) -> None:
+        persisted = self.transcript_store.read_all()
+        if persisted:
+            self.session["history"] = [self._transcript_item_to_history(item) for item in persisted]
+            return
+        legacy = deepcopy(list(self.session.get("history", [])))
+        batch: list[TranscriptItem] = []
+        for index, item in enumerate(legacy):
+            enriched = deepcopy(item)
+            if not enriched.get("message_id"):
+                identity = json.dumps(
+                    item, ensure_ascii=False, sort_keys=True, default=str
+                )
+                enriched["message_id"] = "legacy_" + uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    f"sage:{self.session_id}:{index}:{identity}",
+                ).hex
+            enriched.setdefault("run_id", "")
+            enriched.setdefault("turn_id", "")
+            enriched.setdefault("created_at", now())
+            batch.append(self._history_to_transcript_item(enriched))
+        if batch:
+            self.transcript_store.append_many(batch)
+        persisted = self.transcript_store.read_all()
+        self.session["history"] = [
+            self._transcript_item_to_history(item) for item in persisted
+        ]
+
+    def _restore_context_state(self) -> None:
+        canonical = deepcopy(self.session["history"])
+        self._active_checkpoint = None
+        self._active_projection = canonical
+        state = self.session.setdefault("context_state", {})
+        state["checkpoint_resume_enabled"] = self.compaction_store.checkpoint_resume_enabled
+        if not self.compaction_store.checkpoint_resume_enabled:
+            state["resume_status"] = "disabled_missing_anchor_key"
+            state["active_projection"] = deepcopy(canonical)
+            state["checkpoint_id"] = ""
+            return
+        checkpoint = self.compaction_store.load_latest_checkpoint(self.session_id)
+        if checkpoint is None or not self._checkpoint_matches_transcript(
+            checkpoint, canonical
+        ):
+            state["resume_status"] = "canonical_fallback"
+            state["active_projection"] = deepcopy(canonical)
+            state["checkpoint_id"] = ""
+            return
+        tail = [
+            item
+            for item in canonical
+            if isinstance(item.get("sequence"), int)
+            and int(item["sequence"]) > checkpoint.transcript_end
+        ]
+        summary = {
+            "role": "system",
+            "kind": "compact_summary",
+            "content": checkpoint.summary.render_for_prompt(),
+            "created_at": now(),
+        }
+        self._active_checkpoint = checkpoint
+        self._active_projection = [summary, *tail]
+        state["resume_status"] = "checkpoint_restored"
+        state["active_projection"] = deepcopy(self._active_projection)
+        state["checkpoint_id"] = checkpoint.compaction_id
+
+    def _checkpoint_matches_transcript(
+        self,
+        checkpoint: CompactionCheckpoint,
+        canonical: list[dict[str, Any]],
+    ) -> bool:
+        try:
+            if checkpoint.transcript_start < 1 or checkpoint.transcript_end < checkpoint.transcript_start:
+                return False
+            sequences = [item.get("sequence") for item in canonical]
+            if not sequences:
+                return False
+            numeric: list[int] = []
+            for value in sequences:
+                if not isinstance(value, int) or isinstance(value, bool):
+                    return False
+                numeric.append(value)
+            if numeric != list(range(1, len(numeric) + 1)):
+                return False
+            if checkpoint.transcript_end > numeric[-1]:
+                return False
+            evidence = self.transcript_store.read_range(
+                checkpoint.transcript_start, checkpoint.transcript_end
+            )
+            if [item.sequence for item in evidence] != list(
+                range(checkpoint.transcript_start, checkpoint.transcript_end + 1)
+            ):
+                return False
+            evidence_history = [
+                self._transcript_item_to_history(item) for item in evidence
+            ]
+            if CompactManager._evidence_hash(evidence_history) != checkpoint.evidence_hash:
+                return False
+            prefix: list[dict[str, Any]] = []
+            for item in canonical:
+                if item.get("role") == "user":
+                    break
+                if item.get("role") == "system" and item.get("kind") != "compact_summary":
+                    prefix.append(item)
+            return CompactManager._prefix_hash(prefix) == checkpoint.prefix_hash
+        except Exception:
+            return False
+
+    def _append_canonical_item(
+        self,
+        item: dict[str, Any],
+        *,
+        append_active: bool = True,
+    ) -> dict[str, Any]:
+        enriched = deepcopy(item)
+        enriched.setdefault("message_id", f"msg_{uuid.uuid4().hex}")
+        enriched.setdefault("run_id", self.active_run_id or "")
+        enriched.setdefault("turn_id", self._turn_id)
+        enriched.setdefault("created_at", now())
+        transcript_item = self._history_to_transcript_item(enriched)
+        _, sequence = self.transcript_store.append_and_get_sequence(transcript_item)
+        enriched["sequence"] = sequence
+        self.session["history"].append(deepcopy(enriched))
+        if append_active:
+            self._active_projection.append(deepcopy(enriched))
+        return enriched
+
+    @staticmethod
+    def _history_to_transcript_item(enriched: dict[str, Any]) -> TranscriptItem:
+        return TranscriptItem(
+            message_id=str(enriched["message_id"]),
+            role=str(enriched.get("role", "")),
+            content=str(enriched.get("content", "")),
+            run_id=str(enriched.get("run_id", "")),
+            turn_id=str(enriched.get("turn_id", "")),
+            call_id=str(enriched.get("call_id", "")),
+            artifact_ref=str(enriched.get("artifact_ref", "")),
+            created_at=str(enriched.get("created_at", "")),
+            name=str(enriched.get("name", "")),
+            args=enriched.get("args", {}),
+            is_error=bool(enriched.get("is_error", False)),
+            policy_reason=str(enriched.get("policy_reason") or ""),
+            security_event_type=str(enriched.get("security_event_type") or ""),
+        )
+
+    @staticmethod
+    def _transcript_item_to_history(item: TranscriptItem) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "message_id": item.message_id,
+            "sequence": item.sequence,
+            "role": item.role,
+            "content": item.content,
+            "run_id": item.run_id,
+            "turn_id": item.turn_id,
+            "created_at": item.created_at,
+        }
+        optional = {
+            "call_id": item.call_id,
+            "artifact_ref": item.artifact_ref,
+            "name": item.name,
+            "policy_reason": item.policy_reason,
+            "security_event_type": item.security_event_type,
+        }
+        result.update({key: value for key, value in optional.items() if value})
+        if item.role == "tool":
+            result["args"] = dict(item.args)
+        if item.is_error:
+            result["is_error"] = True
+        return result
+
+    async def _context_lifecycle_sink(
+        self, event: RunEventBase, result: CompactionResult | None
+    ) -> None:
+        event_dict = event_to_dict(event)
+        if isinstance(event, ContextCompactionStartedEvent):
+            self.compaction_store.begin(
+                self.session_id,
+                event.compaction_id,
+                {
+                    "run_id": event.run_id,
+                    "trigger": event.trigger,
+                    "before_tokens": event.before_tokens,
+                },
+            )
+        elif isinstance(event, ContextCompactionCompletedEvent):
+            if result is None or result.checkpoint is None:
+                raise ValueError("completed compaction is missing its result")
+            self.compaction_store.complete(
+                self.session_id,
+                event.compaction_id,
+                result,
+                evidence={"transcript_range": list(result.checkpoint.summary.source_transcript_range)},
+            )
+        elif isinstance(event, ContextCompactionFailedEvent):
+            if result is None:
+                raise ValueError("failed compaction is missing its result")
+            self.compaction_store.fail(self.session_id, event.compaction_id, result)
+        if event.run_id:
+            self.run_store.append_trace(event.run_id, event_dict)
+        self.session_event_bus.emit(event.type, event_dict)
+
+    async def manual_compact(self, focus: str = "") -> CompactionResult:
+        if self.context_controller is None:
+            raise ValueError("context window is not configured")
+        await self._acquire_context_operation()
+        try:
+            if self.active_run_id is not None:
+                raise ContextBusyError("active run")
+            compaction_id = f"compact-{uuid.uuid4().hex}"
+            before = self.context_controller.before_model_request(
+                self._active_projection, user_message=focus
+            ).usage.used_tokens
+            started = ContextCompactionStartedEvent(
+                session_id=self.session_id,
+                compaction_id=compaction_id,
+                trigger="manual",
+                before_tokens=before,
+            )
+            await self._context_lifecycle_sink(started, None)
+            try:
+                result = await self.context_controller.manual_compact(
+                    focus,
+                    history=self._active_projection,
+                    previous_checkpoint=self._active_checkpoint,
+                    transcript_range=self._active_transcript_range(),
+                    compaction_id=compaction_id,
+                )
+            except BaseException as exc:
+                failed_result = CompactionResult(
+                    applied=False,
+                    projected_history=deepcopy(self._active_projection),
+                    checkpoint=self._active_checkpoint,
+                    before_tokens=before,
+                    after_tokens=before,
+                    archived_items=0,
+                    reason="compaction_failed",
+                    compaction_id=compaction_id,
+                    trigger="manual",
+                    retryable=True,
+                )
+                failed = ContextCompactionFailedEvent(
+                    session_id=self.session_id,
+                    compaction_id=compaction_id,
+                    reason="compaction_failed",
+                    preserved_original=True,
+                    retryable=True,
+                )
+                with suppress(Exception):
+                    await self._context_lifecycle_sink(failed, failed_result)
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise RuntimeError("manual compaction failed") from None
+            terminal: RunEventBase
+            if result.applied:
+                terminal = ContextCompactionCompletedEvent(
+                    session_id=self.session_id,
+                    compaction_id=compaction_id,
+                    before_tokens=result.before_tokens,
+                    after_tokens=result.after_tokens,
+                    archived_items=result.archived_items,
+                )
+            else:
+                terminal = ContextCompactionFailedEvent(
+                    session_id=self.session_id,
+                    compaction_id=compaction_id,
+                    reason=result.reason or "compaction_failed",
+                    preserved_original=True,
+                    retryable=result.retryable,
+                )
+            await self._context_lifecycle_sink(terminal, result)
+            if result.applied:
+                self._apply_compaction_result(result)
+            return result
+        finally:
+            self._context_operation_lock.release()
+
+    async def _acquire_context_operation(self) -> None:
+        if self._context_operation_lock.locked():
+            raise ContextBusyError("context operation is active")
+        await self._context_operation_lock.acquire()
+
+    def _active_transcript_range(self) -> tuple[int, int] | None:
+        sequences = [
+            int(item["sequence"])
+            for item in self._active_projection
+            if isinstance(item.get("sequence"), int)
+        ]
+        if not sequences:
+            return None
+        return sequences[0], sequences[-1]
+
+    def _apply_compaction_result(self, result: CompactionResult) -> None:
+        self._active_projection = deepcopy(result.projected_history)
+        self._active_checkpoint = result.checkpoint
+        state = self.session.setdefault("context_state", {})
+        state["active_projection"] = deepcopy(self._active_projection)
+        state["checkpoint_id"] = result.compaction_id
+        state["resume_status"] = "checkpoint_active"
+
+    def _persist_run_terminal(
+        self,
+        run_id: str,
+        run_start_time: float,
+        *,
+        forced_status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Durably close a run once, including disconnect-only paths."""
+        try:
+            existing = self.run_store.get_run(run_id)["events"]
+        except FileNotFoundError:
+            existing = []
+        event_types = {str(event.get("type", "")) for event in existing}
+        created: list[dict[str, Any]] = []
+        status = forced_status or self.run_store.run_status(run_id)
+        if status in {"running", "unknown"}:
+            status = "cancelled"
+        if status == "cancelled" and "cancelled" not in event_types:
+            cancelled = event_to_dict(
+                CancelledEvent(run_id=run_id, content="Run cancelled before completion")
+            )
+            self.run_store.append_trace(run_id, cancelled)
+            with suppress(Exception):
+                self.session_event_bus.emit("cancelled", cancelled)
+            created.append(cancelled)
+        if "run_finished" not in event_types:
+            finished = event_to_dict(
+                RunFinishedEvent(
+                    run_id=run_id,
+                    status=status,
+                    duration_ms=int((time.monotonic() - run_start_time) * 1000),
+                    tool_steps=self.run_store.run_tool_count(run_id),
+                )
+            )
+            self.run_store.append_trace(run_id, finished)
+            with suppress(Exception):
+                self.session_event_bus.emit("run_finished", finished)
+            created.append(finished)
+        if "turn_finished" not in event_types:
+            finished_turn = event_to_dict(TurnFinishedEvent(run_id=run_id))
+            self.run_store.append_trace(run_id, finished_turn)
+            with suppress(Exception):
+                self.session_event_bus.emit("turn_finished", finished_turn)
+            created.append(finished_turn)
+        return created
+
+    def _record_run_failure(
+        self, run_id: str, run_start_time: float, message: str
+    ) -> list[dict[str, Any]]:
+        error_event = event_to_dict(ErrorEvent(run_id=run_id, message=message))
+        with suppress(Exception):
+            self.run_store.append_trace(run_id, error_event)
+        with suppress(Exception):
+            self.session_event_bus.emit("error", error_event)
+        terminals: list[dict[str, Any]] = []
+        with suppress(Exception):
+            terminals = self._persist_run_terminal(
+                run_id, run_start_time, forced_status="error"
+            )
+        return [error_event, *terminals]
+
     async def run_turn(
         self, user_message: str, skill_prompt: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
@@ -350,46 +814,122 @@ class CodingRuntime:
 
         self.stop_requested = False
         run_id = f"run_{uuid.uuid4().hex[:12]}"
+        self._turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         self.active_run_id = run_id
         run_start_time = time.monotonic()
-        self.run_store.start_run(run_id, session_id=self.session_id)
-        # Capture workspace state before the engine mutates any files so a
-        # bounded diff artifact can be produced after the run completes.
-        self.diff_tracker.snapshot_before_run()
-        # Build per-run working memory and assemble a combined memory context
-        # block (working + durable) injected into the LLM prompt for this turn
-        # only. It is never persisted to session history.
-        self.memory_manager.build_working_memory(
-            self.session, self.runtime_mode, self.permission_mode
-        )
-        memory_block = self.memory_manager.get_context_block()
-        started = event_to_dict(TurnStartedEvent(run_id=run_id))
-        self.run_store.append_trace(run_id, started)
-        self.session_event_bus.emit("turn_started", started)
         prev_mode = self.runtime_mode
         last_notified_review_id = ""
-        engine = Engine(
-            model=self.model,
-            workspace=self.workspace,
-            tools=self.tools,
-            context_manager=self.context_manager,
-            permission_checker=self.permission_checker,
-            policy_checker=self.policy_checker,
-            session_id=self.session_id,
-            approval_manager=self.approval_manager,
-            should_stop=lambda: self.stop_requested,
-            history=self.session["history"],
-            activated_tools=self.activated_tools,
-            run_id=run_id,
-            workspace_reminders=self._workspace_reminders(),
-            max_steps=50,
-        )
+        prepared_events: list[dict[str, Any]] = []
+        current_message_id = f"msg_{uuid.uuid4().hex}"
         try:
+            self.run_store.start_run(run_id, session_id=self.session_id)
+            self.diff_tracker.snapshot_before_run()
+            self.memory_manager.build_working_memory(
+                self.session, self.runtime_mode, self.permission_mode
+            )
+            memory_block = self.memory_manager.get_context_block()
+            started = event_to_dict(TurnStartedEvent(run_id=run_id))
+            self.run_store.append_trace(run_id, started)
+            self.session_event_bus.emit("turn_started", started)
+            if self.context_controller is not None:
+                await self._acquire_context_operation()
+                try:
+                    prepared = await self.context_controller.on_turn_start(
+                        deepcopy(self._active_projection),
+                        user_message,
+                        run_id,
+                        previous_checkpoint=self._active_checkpoint,
+                        transcript_range=self._active_transcript_range(),
+                    )
+                finally:
+                    self._context_operation_lock.release()
+                if prepared.compaction_result is not None and prepared.compaction_result.applied:
+                    self._apply_compaction_result(prepared.compaction_result)
+                prepared_events = [event_to_dict(event) for event in prepared.events]
+            self._append_canonical_item(
+                {
+                    "message_id": current_message_id,
+                    "role": "user",
+                    "content": user_message,
+                    "created_at": now(),
+                }
+            )
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                self._persist_run_terminal(
+                    run_id, run_start_time, forced_status="cancelled"
+                )
+            self.active_run_id = None
+            self.stop_requested = False
+            self._save_session()
+            raise
+        except Exception:
+            failure_events = self._record_run_failure(
+                run_id, run_start_time, "Run preparation failed"
+            )
+            self.active_run_id = None
+            self.stop_requested = False
+            self._save_session()
+            for event in failure_events:
+                yield event
+            return
+
+        def before_model_request(history: list[dict[str, Any]]) -> PreparedContext:
+            assert self.context_controller is not None
+            return self.context_controller.before_model_request(
+                history,
+                user_message=user_message,
+                run_id=run_id,
+                current_message_id=current_message_id,
+            )
+
+        try:
+            engine = Engine(
+                model=self.model,
+                workspace=self.workspace,
+                tools=self.tools,
+                context_manager=self.context_manager,
+                permission_checker=self.permission_checker,
+                policy_checker=self.policy_checker,
+                session_id=self.session_id,
+                approval_manager=self.approval_manager,
+                should_stop=lambda: self.stop_requested,
+                history=self._active_projection,
+                activated_tools=self.activated_tools,
+                run_id=run_id,
+                workspace_reminders=self._workspace_reminders(),
+                max_steps=50,
+                append_user=False,
+                current_message_id=current_message_id,
+                append_history=self._append_canonical_item,
+                before_model_request=(before_model_request if self.context_controller else None),
+            )
+            engine_stream = engine.run_turn(
+                user_message, skill_prompt=skill_prompt, memory_block=memory_block
+            )
+        except Exception:
+            failure_events = self._record_run_failure(
+                run_id, run_start_time, "Run preparation failed"
+            )
+            self.active_run_id = None
+            self.stop_requested = False
+            self._save_session()
+            for event in failure_events:
+                yield event
+            return
+        try:
+            for context_event in prepared_events:
+                if context_event["type"] not in {
+                    "context_compaction_started",
+                    "context_compaction_completed",
+                    "context_compaction_failed",
+                }:
+                    self.run_store.append_trace(run_id, context_event)
+                    self.session_event_bus.emit(context_event["type"], context_event)
+                yield context_event
             # --- Engine loop ---
             try:
-                async for event in engine.run_turn(
-                    user_message, skill_prompt=skill_prompt, memory_block=memory_block
-                ):
+                async for event in engine_stream:
                     event = {"run_id": run_id, **event}
                     # Skip persisting ephemeral text_delta events to avoid trace bloat;
                     # they are streamed to the client but not stored in the run trace.
@@ -437,8 +977,18 @@ class CodingRuntime:
                         self.session_event_bus.emit("plan_ready_for_review", review_event)
                         yield review_event
                         last_notified_review_id = pending.review_id
-            except Exception as exc:
-                error_event = event_to_dict(ErrorEvent(run_id=run_id, message=str(exc)))
+            except Exception:
+                self._append_canonical_item(
+                    {
+                        "role": "assistant",
+                        "content": "Model request failed; the run was safely terminated.",
+                        "is_error": True,
+                        "created_at": now(),
+                    }
+                )
+                error_event = event_to_dict(
+                    ErrorEvent(run_id=run_id, message="Model request failed")
+                )
                 error_event = {"run_id": run_id, **error_event}
                 self.run_store.append_trace(run_id, error_event)
                 self.session_event_bus.emit("error", error_event)
@@ -501,6 +1051,10 @@ class CodingRuntime:
             # whether the turn completed normally, the engine raised, or the
             # consumer closed the generator early (GeneratorExit). Note: no
             # yield is allowed inside finally for an async generator.
+            with suppress(Exception):
+                await cast(Any, engine_stream).aclose()
+            with suppress(Exception):
+                self._persist_run_terminal(run_id, run_start_time)
             self.stop_requested = False
             self.active_run_id = None
             self._save_session()

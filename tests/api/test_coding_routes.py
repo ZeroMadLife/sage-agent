@@ -290,16 +290,20 @@ def test_stop_coding_run_marks_runtime_stop_requested(tmp_path: Path) -> None:
     )
     client = TestClient(app)
     session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    runtime = app.state.coding_sessions[session_id]
+    runtime.active_run_id = "run_active"
 
-    response = client.post(f"/api/v1/coding/{session_id}/run/stop")
+    response = client.post(
+        f"/api/v1/coding/{session_id}/run/stop", json={"run_id": "run_active"}
+    )
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
     assert app.state.coding_sessions[session_id].stop_requested is True
 
 
-def test_stop_coding_run_without_body_stops_unconditionally(tmp_path: Path) -> None:
-    """POST /run/stop with no body is accepted (backward compatible)."""
+def test_stop_coding_run_without_body_requires_run_id(tmp_path: Path) -> None:
+    """POST /run/stop cannot affect a run without an explicit run id."""
     app = create_app(
         coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
@@ -307,18 +311,13 @@ def test_stop_coding_run_without_body_stops_unconditionally(tmp_path: Path) -> N
     )
     client = TestClient(app)
     session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-    runtime = app.state.coding_sessions[session_id]
-
-    # No body at all.
     response = client.post(
         f"/api/v1/coding/{session_id}/run/stop",
         content=b"",
         headers={"content-type": "application/json"},
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
-    assert runtime.stop_requested is True
+    assert response.status_code == 422
 
 
 def test_stop_coding_run_with_matching_run_id(tmp_path: Path) -> None:
@@ -836,9 +835,10 @@ def test_coding_websocket_slash_command_persists_original_text(tmp_path: Path) -
     # History stores the original slash command text, not the expanded prompt.
     history = runtime.session["history"]
     user_messages = [item for item in history if item.get("role") == "user"]
-    assert user_messages == [
-        {"role": "user", "content": "/review", "created_at": user_messages[0]["created_at"]}
-    ]
+    assert len(user_messages) == 1
+    assert user_messages[0]["content"] == "/review"
+    assert user_messages[0]["message_id"]
+    assert user_messages[0]["sequence"] == 1
     # The expanded review prompt (git diff instructions) is never persisted to history.
     assert all("git diff" not in str(item.get("content", "")) for item in history)
 
