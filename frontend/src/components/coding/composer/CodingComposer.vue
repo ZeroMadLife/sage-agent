@@ -25,7 +25,9 @@ const dashOffset = computed(
 )
 const contextTooltip = computed(
   () =>
-    `${store.contextChars} chars used / ${store.contextBudget} budget (${store.contextPercent}%)`,
+    store.contextConfigured
+      ? `上下文 ${store.contextChars.toLocaleString()} / ${store.contextBudget.toLocaleString()} tokens (${store.contextPercent}%)`
+      : '当前模型未配置上下文窗口',
 )
 
 // --- Skill menu (triggered when input starts with "/") ---
@@ -120,12 +122,15 @@ defineExpose({
   <div class="composer">
     <div class="composer-controls">
       <button
-        v-if="store.contextPercent > 75"
+        v-if="store.contextConfigured"
         class="compact-hint"
         type="button"
         :title="contextTooltip"
+        :disabled="store.isThinking || store.contextBusy || !store.contextCompactable"
+        :aria-busy="store.contextBusy"
+        @click="store.compactContext()"
       >
-        压缩
+        {{ store.contextBusy ? '压缩中…' : '压缩' }}
       </button>
 
       <CodingPermissionModeDrawer />
@@ -148,6 +153,7 @@ defineExpose({
         </svg>
         <span class="context-pct">{{ store.contextPercent }}%</span>
       </div>
+      <span v-if="store.compactionError" class="context-error">{{ store.compactionError }}</span>
     </div>
 
     <div class="composer-input">
@@ -207,6 +213,20 @@ defineExpose({
   align-items: center;
   gap: 10px;
   margin-bottom: 8px;
+}
+
+.compact-hint:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.context-error {
+  color: #b91c1c;
+  font-size: 11px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .context-ring {

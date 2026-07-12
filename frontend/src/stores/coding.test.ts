@@ -17,17 +17,51 @@ describe('coding store', () => {
     expect(store.messages).toEqual([])
     expect(store.isThinking).toBe(false)
     expect(store.skills).toEqual([])
-    expect(store.contextBudget).toBe(60000)
+    expect(store.contextBudget).toBe(0)
   })
 
   it('computes context percent from chars', () => {
     const store = useCodingStore()
+    store.contextSnapshot = {
+      configured: true,
+      used_tokens: 0,
+      model_limit_tokens: 100000,
+      effective_limit_tokens: 60000,
+      output_reserve_tokens: 40000,
+      usage_ratio: 0,
+      level: 'normal',
+      estimated: false,
+      compactable: true,
+      active_run_id: null,
+      context_operation_active: false,
+      checkpoint_id: '',
+      resume_status: 'canonical_fallback',
+      checkpoint_resume_enabled: true,
+      stale_started: false,
+    }
     store.contextChars = 30000
     expect(store.contextPercent).toBe(50)
   })
 
   it('clamps context percent at 100', () => {
     const store = useCodingStore()
+    store.contextSnapshot = {
+      configured: true,
+      used_tokens: 0,
+      model_limit_tokens: 100000,
+      effective_limit_tokens: 60000,
+      output_reserve_tokens: 40000,
+      usage_ratio: 0,
+      level: 'normal',
+      estimated: false,
+      compactable: true,
+      active_run_id: null,
+      context_operation_active: false,
+      checkpoint_id: '',
+      resume_status: 'canonical_fallback',
+      checkpoint_resume_enabled: true,
+      stale_started: false,
+    }
     store.contextChars = 99999
     expect(store.contextPercent).toBe(100)
   })
@@ -307,6 +341,50 @@ describe('coding store', () => {
     expect(store.permissionMode).toBe('accept_edits')
     const url = fetchMock.mock.calls[0][0] as URL
     expect(url.pathname).toBe('/api/v1/coding/c1/permission-mode')
+  })
+
+  it('requests manual context compaction and applies the returned snapshot', async () => {
+    const snapshot = {
+      configured: true,
+      used_tokens: 12000,
+      model_limit_tokens: 100000,
+      effective_limit_tokens: 80000,
+      output_reserve_tokens: 20000,
+      usage_ratio: 0.15,
+      level: 'normal',
+      estimated: false,
+      compactable: true,
+      active_run_id: null,
+      context_operation_active: false,
+      checkpoint_id: 'compact-1',
+      resume_status: 'checkpoint_active',
+      checkpoint_resume_enabled: true,
+      stale_started: false,
+    }
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        compaction_id: 'compact-1',
+        applied: true,
+        before_tokens: 50000,
+        after_tokens: 12000,
+        archived_items: 9,
+        retryable: false,
+        reason: '',
+        context: snapshot,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.contextSnapshot = { ...snapshot, used_tokens: 50000, checkpoint_id: '' }
+
+    await expect(store.compactContext()).resolves.toBe(true)
+
+    expect(store.contextChars).toBe(12000)
+    expect(store.compactionState).toBe('succeeded')
+    const url = fetchMock.mock.calls[0][0] as URL
+    expect(url.pathname).toBe('/api/v1/coding/c1/context/compact')
   })
 
   it('resets thinking state and phase when the websocket errors', () => {

@@ -258,6 +258,46 @@ export type CodingRunFinishedEvent = CodingEventMeta & {
   tool_steps: number
 }
 
+export type CodingContextUsageEvent = CodingEventMeta & {
+  type: 'context_usage_updated'
+  session_id: string
+  used_tokens: number
+  model_limit_tokens: number
+  output_reserve_tokens: number
+  effective_limit_tokens: number
+  usage_ratio: number
+  level: string
+  estimated: boolean
+  compactable: boolean
+}
+
+export type CodingCompactionStartedEvent = CodingEventMeta & {
+  type: 'context_compaction_started'
+  session_id: string
+  compaction_id: string
+  trigger: string
+  before_tokens: number
+}
+
+export type CodingCompactionCompletedEvent = CodingEventMeta & {
+  type: 'context_compaction_completed'
+  session_id: string
+  compaction_id: string
+  before_tokens: number
+  after_tokens: number
+  archived_items: number
+  saved_ratio?: number
+}
+
+export type CodingCompactionFailedEvent = CodingEventMeta & {
+  type: 'context_compaction_failed'
+  session_id: string
+  compaction_id: string
+  reason: string
+  preserved_original: boolean
+  retryable: boolean
+}
+
 export type CodingErrorEvent = CodingEventMeta & {
   type: 'error'
   message: string
@@ -281,6 +321,10 @@ export type CodingServerEvent =
   | CodingPlanReadyForReviewEvent
   | CodingWorkspaceDiffReadyEvent
   | CodingRunFinishedEvent
+  | CodingContextUsageEvent
+  | CodingCompactionStartedEvent
+  | CodingCompactionCompletedEvent
+  | CodingCompactionFailedEvent
 
 export type CodingFileEntry = {
   name: string
@@ -309,11 +353,45 @@ export type CodingModel = {
   id: string
   label: string
   provider: string
+  context_window_tokens?: number | null
+  output_reserve_tokens?: number | null
+  context_configured?: boolean
 }
 
 export type CodingModelsResponse = {
   models: CodingModel[]
   current: string | null
+}
+
+export type CodingContextSnapshot = {
+  model_id?: string | null
+  configured: boolean
+  used_tokens: number | null
+  model_limit_tokens: number | null
+  effective_limit_tokens: number | null
+  output_reserve_tokens: number | null
+  usage_ratio: number | null
+  level: string
+  estimated: boolean | null
+  compactable: boolean
+  active_run_id: string | null
+  context_operation_active: boolean
+  checkpoint_id: string | null
+  resume_status: string
+  checkpoint_resume_enabled: boolean
+  latest_attempt?: Record<string, unknown> | null
+  stale_started: boolean
+}
+
+export type CodingCompactResponse = {
+  compaction_id: string
+  applied: boolean
+  before_tokens: number
+  after_tokens: number
+  archived_items: number
+  reason: string
+  retryable: boolean
+  context: CodingContextSnapshot
 }
 
 export type CodingSkillSummary = {
