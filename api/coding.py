@@ -324,7 +324,7 @@ async def compact_coding_context(
             raise HTTPException(
                 status_code=422, detail="context window is not configured"
             ) from exc
-        raise HTTPException(status_code=422, detail="invalid compaction request") from exc
+        raise HTTPException(status_code=500, detail="context compaction failed") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="context compaction failed") from exc
     try:
