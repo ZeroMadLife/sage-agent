@@ -456,23 +456,41 @@ def _migrate_legacy_v0(db: sqlite3.Connection, objects: list[tuple[str, str, str
 
 
 def _trusted_root(root: Path) -> Path:
-    absolute = root.absolute()
-    anchor = Path(absolute.anchor)
-    components = tuple(part for part in absolute.parts if part != absolute.anchor)
-    root_fd = _open_directory(anchor, components, tighten=False)
+    _reject_untrusted_ancestor_symlinks(root)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    metadata = root.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"trusted root must not be a symlink: {root}")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"trusted root is not a directory: {root}")
+    root_fd = os.open(root, _DIRECTORY_FLAGS)
     try:
         opened = os.fstat(root_fd)
+        if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise ValueError(f"trusted root changed while opening: {root}")
         if opened.st_uid != os.geteuid():
             raise ValueError(f"trusted root must be owned by the service user: {root}")
         os.fchmod(root_fd, 0o700)
         os.fsync(root_fd)
-        resolved = absolute.resolve(strict=True)
+        resolved = root.resolve(strict=True)
         metadata = resolved.stat()
         if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
             raise ValueError(f"trusted root escaped while resolving: {root}")
         return resolved
     finally:
         os.close(root_fd)
+
+
+def _reject_untrusted_ancestor_symlinks(root: Path) -> None:
+    current = Path(root.absolute().anchor)
+    for component in root.absolute().parts[1:]:
+        current /= component
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            break
+        if stat.S_ISLNK(metadata.st_mode) and metadata.st_uid != 0:
+            raise ValueError(f"untrusted symlink in memory root path: {current}")
 
 
 def _open_directory(
