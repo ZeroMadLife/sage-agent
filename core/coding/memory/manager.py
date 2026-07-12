@@ -120,6 +120,9 @@ class MemoryManager:
                                 status="proposed") for c in proposal.candidates]
             self.durable.approve_dream(facts)
             self.memory_store.mark_projection_complete(proposal_id)
+            refreshed = self.memory_store.get_proposal(proposal_id)
+            if refreshed is not None:
+                proposal = refreshed
         return proposal
 
     def reject(self, proposal_id: str, expected_revision: int = 0) -> MemoryProposal:

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from inspect import signature
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, WebSocket
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 
 from api.schemas import (
     CodingApprovalRespondRequest,
@@ -21,6 +21,13 @@ from api.schemas import (
     CodingGitStatusResponse,
     CodingMcpServer,
     CodingMcpServersResponse,
+    CodingMemoryCandidate,
+    CodingMemoryEvent,
+    CodingMemoryProposal,
+    CodingMemoryProposalDecisionRequest,
+    CodingMemoryProposalDetail,
+    CodingMemoryProposalsResponse,
+    CodingMemoryProposalTransitionRequest,
     CodingModel,
     CodingModelsResponse,
     CodingModelSwitchRequest,
@@ -42,7 +49,13 @@ from api.schemas import (
     UserMessage,
 )
 from core.coding.context import ContextBusyError, ModelCapabilityRegistry
-from core.coding.persistence import CodingSessionStore
+from core.coding.persistence import (
+    CodingSessionStore,
+    MemoryConflictError,
+    MemoryEvent,
+    MemoryProposal,
+    MemoryStoreError,
+)
 from core.coding.runtime import CodingRuntime
 
 router = APIRouter()
@@ -411,22 +424,116 @@ async def reject_plan(session_id: str, request: Request) -> dict[str, str]:
     return {"status": "rejected", "mode": runtime.runtime_mode}
 
 
-@router.post("/api/v1/coding/{session_id}/memory/proposal/approve")
-async def approve_memory_proposal(session_id: str, request: Request) -> dict[str, str]:
-    """Approve the pending memory consolidation proposal and persist it."""
+@router.get(
+    "/api/v1/coding/{session_id}/memory/proposals",
+    response_model=CodingMemoryProposalsResponse,
+)
+async def list_memory_proposals(
+    session_id: str,
+    request: Request,
+    status: Literal["pending", "approved", "rejected"] | None = None,
+) -> CodingMemoryProposalsResponse:
+    """List only proposals owned by this coding session."""
     runtime = _require_runtime(request, session_id)
-    success = runtime.memory_manager.approve_dream()
-    if not success:
-        raise HTTPException(status_code=400, detail="no pending memory proposal")
-    return {"ok": "true", "status": "approved"}
+    try:
+        proposals = [
+            proposal
+            for proposal in runtime.memory_manager.list_proposals(status)
+            if proposal.session_id == session_id
+        ]
+    except MemoryStoreError as exc:
+        raise _memory_storage_error() from exc
+    return CodingMemoryProposalsResponse(
+        proposals=[_memory_proposal_response(proposal) for proposal in proposals]
+    )
 
 
-@router.post("/api/v1/coding/{session_id}/memory/proposal/reject")
-async def reject_memory_proposal(session_id: str, request: Request) -> dict[str, str]:
-    """Reject the pending memory consolidation proposal and discard it."""
+@router.get(
+    "/api/v1/coding/{session_id}/memory/proposals/{proposal_id}",
+    response_model=CodingMemoryProposalDetail,
+)
+async def get_memory_proposal(
+    session_id: str, proposal_id: str, request: Request
+) -> CodingMemoryProposalDetail:
+    """Return a session-owned proposal and its durable event trail."""
     runtime = _require_runtime(request, session_id)
-    runtime.memory_manager.reject_dream()
-    return {"ok": "true", "status": "rejected"}
+    proposal = _session_memory_proposal(runtime, session_id, proposal_id)
+    try:
+        events = runtime.memory_manager.list_memory_events(proposal_id)
+    except MemoryStoreError as exc:
+        raise _memory_storage_error() from exc
+    return CodingMemoryProposalDetail(
+        proposal=_memory_proposal_response(proposal),
+        events=[_memory_event_response(event) for event in events],
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/proposals/{proposal_id}/approve",
+    response_model=CodingMemoryProposal,
+)
+async def approve_memory_proposal_by_id(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingMemoryProposalTransitionRequest,
+    request: Request,
+) -> CodingMemoryProposal:
+    """Approve one persisted proposal with optimistic revision control."""
+    return _transition_memory_proposal(
+        request, session_id, proposal_id, payload.expected_revision, "approved"
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/proposals/{proposal_id}/reject",
+    response_model=CodingMemoryProposal,
+)
+async def reject_memory_proposal_by_id(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingMemoryProposalTransitionRequest,
+    request: Request,
+) -> CodingMemoryProposal:
+    """Reject one persisted proposal with optimistic revision control."""
+    return _transition_memory_proposal(
+        request, session_id, proposal_id, payload.expected_revision, "rejected"
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/proposal/approve",
+    response_model=CodingMemoryProposal,
+    deprecated=True,
+)
+async def approve_memory_proposal(
+    session_id: str,
+    payload: CodingMemoryProposalDecisionRequest,
+    request: Request,
+    response: Response,
+) -> CodingMemoryProposal:
+    """Deprecated compatibility route; still requires ID plus revision CAS."""
+    response.headers["Deprecation"] = "true"
+    return _transition_memory_proposal(
+        request, session_id, payload.proposal_id, payload.expected_revision, "approved"
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/proposal/reject",
+    response_model=CodingMemoryProposal,
+    deprecated=True,
+)
+async def reject_memory_proposal(
+    session_id: str,
+    payload: CodingMemoryProposalDecisionRequest,
+    request: Request,
+    response: Response,
+) -> CodingMemoryProposal:
+    """Deprecated compatibility route; still requires ID plus revision CAS."""
+    response.headers["Deprecation"] = "true"
+    return _transition_memory_proposal(
+        request, session_id, payload.proposal_id, payload.expected_revision, "rejected"
+    )
 
 
 @router.get("/api/v1/coding/{session_id}/runs", response_model=CodingRunsResponse)
@@ -595,6 +702,82 @@ def _require_runtime(request: Request, session_id: str) -> CodingRuntime:
     if runtime is None:
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
     return runtime
+
+
+def _session_memory_proposal(
+    runtime: CodingRuntime, session_id: str, proposal_id: str
+) -> MemoryProposal:
+    """Resolve a proposal without exposing another session or workspace."""
+    if not proposal_id or len(proposal_id) > 128:
+        raise HTTPException(status_code=404, detail="memory proposal not found")
+    try:
+        proposal = runtime.memory_manager.get_proposal(proposal_id)
+    except MemoryStoreError as exc:
+        raise _memory_storage_error() from exc
+    if proposal is None or proposal.session_id != session_id:
+        raise HTTPException(status_code=404, detail="memory proposal not found")
+    return proposal
+
+
+def _transition_memory_proposal(
+    request: Request,
+    session_id: str,
+    proposal_id: str,
+    expected_revision: int,
+    status: Literal["approved", "rejected"],
+) -> CodingMemoryProposal:
+    runtime = _require_runtime(request, session_id)
+    _session_memory_proposal(runtime, session_id, proposal_id)
+    try:
+        proposal = (
+            runtime.memory_manager.approve(proposal_id, expected_revision)
+            if status == "approved"
+            else runtime.memory_manager.reject(proposal_id, expected_revision)
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="memory proposal not found") from exc
+    except MemoryConflictError as exc:
+        raise HTTPException(
+            status_code=409, detail="memory proposal conflict"
+        ) from exc
+    except (MemoryStoreError, OSError) as exc:
+        raise _memory_storage_error() from exc
+    return _memory_proposal_response(proposal)
+
+
+def _memory_proposal_response(proposal: MemoryProposal) -> CodingMemoryProposal:
+    return CodingMemoryProposal(
+        proposal_id=proposal.proposal_id,
+        workspace_id=proposal.workspace_id,
+        session_id=proposal.session_id,
+        run_id=proposal.run_id,
+        reflection_id=proposal.reflection_id,
+        status=cast(Any, proposal.status),
+        projection_status=cast(Any, proposal.projection_status),
+        revision=proposal.revision,
+        base_revision=proposal.base_revision,
+        candidate_count=len(proposal.candidates),
+        candidates=[
+            CodingMemoryCandidate(
+                content=candidate.content,
+                topic=candidate.topic,
+                source=candidate.source,
+                source_ref=candidate.source_ref,
+                created_at=candidate.created_at,
+            )
+            for candidate in proposal.candidates
+        ],
+        created_at=proposal.created_at,
+        updated_at=proposal.updated_at,
+    )
+
+
+def _memory_event_response(event: MemoryEvent) -> CodingMemoryEvent:
+    return CodingMemoryEvent(**event.__dict__)
+
+
+def _memory_storage_error() -> HTTPException:
+    return HTTPException(status_code=500, detail="memory proposal operation failed")
 
 
 def _resolve_workspace_root(default_workspace: Path, override: str | None) -> Path:

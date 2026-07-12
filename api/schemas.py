@@ -231,6 +231,75 @@ class CodingApprovalRespondRequest(BaseModel):
     choice: Literal["once", "session", "always", "deny"]
 
 
+class CodingMemoryCandidate(BaseModel):
+    """One evidence-backed candidate in a memory proposal."""
+
+    content: str
+    topic: str
+    source: str
+    source_ref: str = ""
+    created_at: str = ""
+
+
+class CodingMemoryEvent(BaseModel):
+    """One persisted memory proposal lifecycle event."""
+
+    event_id: str
+    event_type: str
+    proposal_id: str
+    workspace_id: str
+    session_id: str = ""
+    run_id: str = ""
+    reflection_id: str = ""
+    candidate_count: int = Field(default=0, ge=0)
+    base_revision: int = Field(default=0, ge=0)
+    revision: int = Field(default=0, ge=0)
+    created_at: str = ""
+
+
+class CodingMemoryProposal(BaseModel):
+    """One persisted memory proposal returned to the review UI."""
+
+    proposal_id: str
+    workspace_id: str
+    session_id: str = ""
+    run_id: str = ""
+    reflection_id: str = ""
+    status: Literal["pending", "approved", "rejected"]
+    projection_status: Literal["pending", "complete"]
+    revision: int = Field(ge=0)
+    base_revision: int = Field(default=0, ge=0)
+    candidate_count: int = Field(ge=0)
+    candidates: list[CodingMemoryCandidate]
+    created_at: str = ""
+    updated_at: str = ""
+
+
+class CodingMemoryProposalsResponse(BaseModel):
+    """Session-scoped memory proposal listing."""
+
+    proposals: list[CodingMemoryProposal]
+
+
+class CodingMemoryProposalDetail(BaseModel):
+    """A proposal plus its persisted lifecycle evidence."""
+
+    proposal: CodingMemoryProposal
+    events: list[CodingMemoryEvent]
+
+
+class CodingMemoryProposalTransitionRequest(BaseModel):
+    """Revision guard for an ID-addressed proposal transition."""
+
+    expected_revision: int = Field(ge=0)
+
+
+class CodingMemoryProposalDecisionRequest(CodingMemoryProposalTransitionRequest):
+    """Legacy collection-style transition request with an explicit ID."""
+
+    proposal_id: str = Field(min_length=1, max_length=128)
+
+
 class CodingRunSummary(BaseModel):
     """One coding run summary for the workbench run history."""
 
