@@ -112,10 +112,14 @@ class DurableMemory:
 
     def approve_dream(self, facts: list[MemoryFact]) -> None:
         """Write approved dream facts to durable files."""
+        existing = {(fact.content, fact.source_ref) for fact in self.list_facts()}
         for fact in facts:
             if fact.status == "proposed":
                 fact.status = "active"
-                self._append_topic_file(fact)
+                key = (fact.content, fact.source_ref)
+                if key not in existing:
+                    self._append_topic_file(fact)
+                    existing.add(key)
         self._rebuild_index()
 
     def _append_daily_log(self, fact: MemoryFact) -> None:

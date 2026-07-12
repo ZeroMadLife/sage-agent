@@ -175,7 +175,11 @@ class MemoryStore:
                            (proposal, self._workspace_id(), payload, session_id, run_id, reflection_id, base, now, now))
             except sqlite3.IntegrityError as exc:
                 existing = db.execute("SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal,)).fetchone()
-                if existing is None or existing["candidates_json"] != payload:
+                if existing is None or existing["candidates_json"] != payload or any(
+                    existing[key] != value for key, value in {
+                        "session_id": session_id, "run_id": run_id, "reflection_id": reflection_id,
+                    }.items()
+                ):
                     raise MemoryConflictError(f"proposal id conflict: {proposal}") from exc
                 db.rollback()
                 return _proposal(existing)
@@ -227,7 +231,7 @@ class MemoryStore:
             if current.revision != expected:
                 raise MemoryConflictError(f"proposal revision conflict: expected {expected}, got {current.revision}")
             current_fact_count = int(db.execute("SELECT COUNT(*) FROM memory_facts").fetchone()[0])
-            if current.status == "pending" and current_fact_count != current.base_revision:
+            if status == "approved" and current.status == "pending" and current_fact_count != current.base_revision:
                 raise MemoryConflictError("proposal base revision is stale")
             if current.status != "pending":
                 if current.status == status:

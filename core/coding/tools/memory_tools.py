@@ -58,7 +58,11 @@ def dream(
 ) -> ToolResult:
     _ = workspace, args
     runtime = _require_context_attr(tool_context, "runtime")
-    proposals = runtime.memory_manager.propose_dream()
+    run_id = getattr(runtime, "active_run_id", "") or "system"
+    session_id = getattr(runtime, "session_id", "") or "system"
+    proposals = runtime.memory_manager.propose_dream(
+        session_id=session_id, run_id=run_id, reflection_id=f"dream_{run_id}",
+    )
     if not proposals:
         return ToolResult(content="No facts to consolidate.")
     # Emit a proposal-ready event through the runtime's session event bus so the
