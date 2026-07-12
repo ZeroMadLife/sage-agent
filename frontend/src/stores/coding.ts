@@ -70,6 +70,16 @@ function filterFileEntries(entries: CodingFileEntry[]): CodingFileEntry[] {
   return entries.filter((entry) => !isFileTreeNoise(entry.name))
 }
 
+function contextReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    insufficient_history: '历史内容不足，暂不需要压缩',
+    compaction_busy: '已有压缩任务正在进行',
+    context_emergency: '上下文已达到安全上限',
+    invalid_previous_checkpoint: '历史压缩检查点无效',
+  }
+  return labels[reason] || '上下文压缩未完成'
+}
+
 export const useCodingStore = defineStore('coding', () => {
   const sessionId = ref('')
   const workspaceRoot = ref('')
@@ -116,6 +126,7 @@ export const useCodingStore = defineStore('coding', () => {
   let stream: CodingStream | null = null
   let approvalPollTimer: number | null = null
   let fileTreeGeneration = 0
+  let contextRequestGeneration = 0
   const dirCache = new Map<string, CodingFileEntry[]>()
 
   const contextBudget = computed(() => contextSnapshot.value?.effective_limit_tokens ?? 0)
@@ -197,6 +208,7 @@ export const useCodingStore = defineStore('coding', () => {
     }
     if (effect.terminal) {
       stopApprovalPolling()
+      void loadContext()
       if (event.type !== 'error') {
         void loadSessions()
         void loadRuns()
@@ -392,11 +404,18 @@ export const useCodingStore = defineStore('coding', () => {
 
   async function loadContext() {
     if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    const requestGeneration = ++contextRequestGeneration
     try {
-      contextSnapshot.value = await fetchCodingContext(sessionId.value)
+      const snapshot = await fetchCodingContext(targetSessionId)
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return
+      contextSnapshot.value = snapshot
       contextChars.value = contextSnapshot.value.used_tokens ?? 0
+      if (snapshot.model_id) currentModelId.value = snapshot.model_id
     } catch {
-      contextSnapshot.value = null
+      if (targetSessionId === sessionId.value && requestGeneration === contextRequestGeneration) {
+        contextSnapshot.value = null
+      }
     }
   }
 
@@ -424,6 +443,11 @@ export const useCodingStore = defineStore('coding', () => {
     stopApprovalPolling()
     stream?.disconnect()
     stream = null
+    contextRequestGeneration += 1
+    contextSnapshot.value = null
+    contextChars.value = 0
+    compactionState.value = 'idle'
+    compactionError.value = ''
     const session = await resumeCodingSession(targetSessionId)
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
@@ -451,6 +475,11 @@ export const useCodingStore = defineStore('coding', () => {
     stopApprovalPolling()
     stream?.disconnect()
     stream = null
+    contextRequestGeneration += 1
+    contextSnapshot.value = null
+    contextChars.value = 0
+    compactionState.value = 'idle'
+    compactionError.value = ''
     const session = await startCodingSession()
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
@@ -587,14 +616,18 @@ export const useCodingStore = defineStore('coding', () => {
     }
     compactionState.value = 'running'
     compactionError.value = ''
+    const targetSessionId = sessionId.value
+    const requestGeneration = contextRequestGeneration
     try {
-      const response = await requestCodingCompaction(sessionId.value)
+      const response = await requestCodingCompaction(targetSessionId)
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
       contextSnapshot.value = response.context
       contextChars.value = response.after_tokens
       compactionState.value = response.applied ? 'succeeded' : 'failed'
-      if (!response.applied) compactionError.value = response.reason || '上下文压缩未应用'
+      if (!response.applied) compactionError.value = contextReasonLabel(response.reason)
       return response.applied
     } catch (error) {
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
       compactionState.value = 'failed'
       compactionError.value = String(error)
       errorMessage.value = compactionError.value

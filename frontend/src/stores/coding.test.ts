@@ -23,6 +23,7 @@ describe('coding store', () => {
   it('computes context percent from chars', () => {
     const store = useCodingStore()
     store.contextSnapshot = {
+      model_id: 'model-a',
       configured: true,
       used_tokens: 0,
       model_limit_tokens: 100000,
@@ -37,6 +38,7 @@ describe('coding store', () => {
       checkpoint_id: '',
       resume_status: 'canonical_fallback',
       checkpoint_resume_enabled: true,
+      latest_attempt: null,
       stale_started: false,
     }
     store.contextChars = 30000
@@ -46,6 +48,7 @@ describe('coding store', () => {
   it('clamps context percent at 100', () => {
     const store = useCodingStore()
     store.contextSnapshot = {
+      model_id: 'model-a',
       configured: true,
       used_tokens: 0,
       model_limit_tokens: 100000,
@@ -60,6 +63,7 @@ describe('coding store', () => {
       checkpoint_id: '',
       resume_status: 'canonical_fallback',
       checkpoint_resume_enabled: true,
+      latest_attempt: null,
       stale_started: false,
     }
     store.contextChars = 99999
@@ -345,6 +349,7 @@ describe('coding store', () => {
 
   it('requests manual context compaction and applies the returned snapshot', async () => {
     const snapshot = {
+      model_id: 'model-a',
       configured: true,
       used_tokens: 12000,
       model_limit_tokens: 100000,
@@ -359,6 +364,7 @@ describe('coding store', () => {
       checkpoint_id: 'compact-1',
       resume_status: 'checkpoint_active',
       checkpoint_resume_enabled: true,
+      latest_attempt: null,
       stale_started: false,
     }
     const fetchMock = vi.fn().mockResolvedValue({
@@ -385,6 +391,31 @@ describe('coding store', () => {
     expect(store.compactionState).toBe('succeeded')
     const url = fetchMock.mock.calls[0][0] as URL
     expect(url.pathname).toBe('/api/v1/coding/c1/context/compact')
+  })
+
+  it('ignores a context response from a previously selected session', async () => {
+    let resolveResponse: ((value: unknown) => void) | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockReturnValue(
+        new Promise((resolve) => {
+          resolveResponse = resolve
+        }),
+      ),
+    )
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    const pending = store.loadContext()
+    store.sessionId = 'c2'
+    resolveResponse?.({
+      ok: true,
+      json: async () => ({ configured: true, used_tokens: 999 }),
+    })
+
+    await pending
+
+    expect(store.contextSnapshot).toBeNull()
+    expect(store.contextChars).toBe(0)
   })
 
   it('resets thinking state and phase when the websocket errors', () => {

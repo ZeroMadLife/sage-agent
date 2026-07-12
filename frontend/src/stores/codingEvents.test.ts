@@ -66,7 +66,7 @@ describe('codingEvents', () => {
       retryable: false,
     })
     expect(current.compactionState.value).toBe('failed')
-    expect(current.compactionError.value).toBe('insufficient_history')
+    expect(current.compactionError.value).toBe('历史内容不足，暂不需要压缩')
   })
 
   it('appends tool activity on tool_call', () => {

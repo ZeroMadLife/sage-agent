@@ -266,7 +266,7 @@ export type CodingContextUsageEvent = CodingEventMeta & {
   output_reserve_tokens: number
   effective_limit_tokens: number
   usage_ratio: number
-  level: string
+  level: 'normal' | 'budget' | 'snip' | 'compact' | 'high' | 'emergency'
   estimated: boolean
   compactable: boolean
 }
@@ -286,7 +286,7 @@ export type CodingCompactionCompletedEvent = CodingEventMeta & {
   before_tokens: number
   after_tokens: number
   archived_items: number
-  saved_ratio?: number
+  saved_ratio: number
 }
 
 export type CodingCompactionFailedEvent = CodingEventMeta & {
@@ -353,9 +353,9 @@ export type CodingModel = {
   id: string
   label: string
   provider: string
-  context_window_tokens?: number | null
-  output_reserve_tokens?: number | null
-  context_configured?: boolean
+  context_window_tokens: number | null
+  output_reserve_tokens: number | null
+  context_configured: boolean
 }
 
 export type CodingModelsResponse = {
@@ -364,7 +364,7 @@ export type CodingModelsResponse = {
 }
 
 export type CodingContextSnapshot = {
-  model_id?: string | null
+  model_id: string | null
   configured: boolean
   used_tokens: number | null
   model_limit_tokens: number | null
@@ -379,7 +379,7 @@ export type CodingContextSnapshot = {
   checkpoint_id: string | null
   resume_status: string
   checkpoint_resume_enabled: boolean
-  latest_attempt?: Record<string, unknown> | null
+  latest_attempt: Record<string, unknown> | null
   stale_started: boolean
 }
 

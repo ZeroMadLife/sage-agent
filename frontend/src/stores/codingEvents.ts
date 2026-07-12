@@ -68,6 +68,16 @@ export type CodingEventEffect = {
   toolResult?: CodingToolResultEvent
 }
 
+function contextReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    insufficient_history: '历史内容不足，暂不需要压缩',
+    compaction_busy: '已有压缩任务正在进行',
+    context_emergency: '上下文已达到安全上限',
+    invalid_previous_checkpoint: '历史压缩检查点无效',
+  }
+  return labels[reason] || '上下文压缩未完成'
+}
+
 export function applyCodingEvent(
   state: CodingEventState,
   event: CodingServerEvent,
@@ -160,7 +170,7 @@ export function applyCodingEvent(
     if (state.contextSnapshot.value) {
       state.contextSnapshot.value.context_operation_active = false
     }
-    state.compactionError.value = event.reason
+    state.compactionError.value = contextReasonLabel(event.reason)
     if (!state.isThinking.value) state.thinkingPhase.value = ''
     return {}
   }

@@ -135,7 +135,15 @@ defineExpose({
 
       <CodingPermissionModeDrawer />
 
-      <div class="context-ring" :title="contextTooltip">
+      <div
+        class="context-ring"
+        :title="contextTooltip"
+        role="progressbar"
+        :aria-label="contextTooltip"
+        :aria-valuenow="store.contextPercent"
+        aria-valuemin="0"
+        aria-valuemax="100"
+      >
         <svg width="32" height="32" viewBox="0 0 32 32">
           <circle cx="16" cy="16" r="14" fill="none" stroke="#e5e7eb" stroke-width="3" />
           <circle
@@ -153,7 +161,9 @@ defineExpose({
         </svg>
         <span class="context-pct">{{ store.contextPercent }}%</span>
       </div>
-      <span v-if="store.compactionError" class="context-error">{{ store.compactionError }}</span>
+      <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">
+        {{ store.compactionError }}
+      </span>
     </div>
 
     <div class="composer-input">
