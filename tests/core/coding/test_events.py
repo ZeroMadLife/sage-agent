@@ -1,5 +1,8 @@
 """Typed coding run event tests."""
 
+import subprocess
+import sys
+
 import pytest
 
 from core.coding.engine import (
@@ -194,3 +197,26 @@ def test_context_event_token_counts_reject_negative_values() -> None:
             session_id="s1", compaction_id="cmp-1", before_tokens=-1,
             after_tokens=0, archived_items=0,
         )
+
+
+@pytest.mark.parametrize(
+    "imports",
+    [
+        "import core.coding.engine; import core.coding.context",
+        "import core.coding.context; import core.coding.engine",
+    ],
+)
+def test_engine_and_context_import_cleanly_in_either_order(imports: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-c", imports], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_context_events_are_public_engine_exports() -> None:
+    import core.coding.engine as engine
+
+    assert engine.ContextUsageUpdatedEvent is ContextUsageUpdatedEvent
+    assert engine.ContextCompactionStartedEvent is ContextCompactionStartedEvent
+    assert engine.ContextCompactionCompletedEvent is ContextCompactionCompletedEvent
+    assert engine.ContextCompactionFailedEvent is ContextCompactionFailedEvent

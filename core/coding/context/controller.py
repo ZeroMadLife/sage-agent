@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import asyncio
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
@@ -25,8 +26,13 @@ class ContextBusyError(RuntimeError):
     """Manual compaction was requested while a run owns the session."""
 
 
+class ContextLifecycleSinkError(RuntimeError):
+    """A lifecycle event could not be durably accepted by its sink."""
+
+
 Renderer = Callable[[list[dict[str, Any]], str], str]
 HistoryProvider = Callable[[], list[dict[str, Any]]]
+LifecycleSink = Callable[[RunEventBase], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,7 @@ class ContextController:
         renderer: Renderer,
         history_provider: HistoryProvider | None = None,
         active_run_id: Callable[[], str | None] | None = None,
+        lifecycle_sink: LifecycleSink | None = None,
     ) -> None:
         if not session_id.strip():
             raise ValueError("session_id must be non-empty")
@@ -84,6 +91,7 @@ class ContextController:
         self.renderer = renderer
         self.history_provider = history_provider
         self.active_run_id = active_run_id or (lambda: None)
+        self.lifecycle_sink = lifecycle_sink
         self.current_user_message = ""
         self.last_usage: ContextUsage | None = None
 
@@ -94,23 +102,29 @@ class ContextController:
         run_id: str,
         previous_checkpoint: CompactionCheckpoint | None = None,
         transcript_range: tuple[int, int] | None = None,
+        current_message_id: str | None = None,
     ) -> PreparedContext:
+        """Prepare prior history; current content is supplied only to ``renderer``.
+
+        Callers must exclude the current user item. If it has already been
+        archived, ``current_message_id`` removes exactly that stable identity.
+        """
         self.current_user_message = user_message
-        original = deepcopy(history)
+        original = self._prior_history(history, current_message_id)
         projected, usage = self._project_and_count(original, user_message)
         result: CompactionResult | None = None
         events: list[RunEventBase] = []
         if usage.level in {"compact", "high", "emergency"}:
             compaction_id = f"compact-{uuid4().hex}"
-            events.append(
-                ContextCompactionStartedEvent(
+            started = ContextCompactionStartedEvent(
                     session_id=self.session_id,
                     run_id=run_id,
                     compaction_id=compaction_id,
                     trigger="auto",
                     before_tokens=usage.used_tokens,
                 )
-            )
+            events.append(started)
+            await self._deliver_lifecycle(started)
             result = await self.compactor.compact(
                 history=original,
                 session_id=self.session_id,
@@ -122,8 +136,7 @@ class ContextController:
             )
             if result.applied:
                 projected, usage = self._project_and_count(result.projected_history, user_message)
-                events.append(
-                    ContextCompactionCompletedEvent(
+                terminal: RunEventBase = ContextCompactionCompletedEvent(
                         session_id=self.session_id,
                         run_id=run_id,
                         compaction_id=compaction_id,
@@ -131,12 +144,9 @@ class ContextController:
                         after_tokens=result.after_tokens,
                         archived_items=result.archived_items,
                     )
-                )
             else:
-                projected = deepcopy(original)
-                usage = self._count(projected, user_message)
-                events.append(
-                    ContextCompactionFailedEvent(
+                projected, usage = self._project_and_count(original, user_message)
+                terminal = ContextCompactionFailedEvent(
                         session_id=self.session_id,
                         run_id=run_id,
                         compaction_id=compaction_id,
@@ -144,7 +154,8 @@ class ContextController:
                         preserved_original=True,
                         retryable=result.retryable,
                     )
-                )
+            events.append(terminal)
+            await self._deliver_lifecycle(terminal)
         self.last_usage = usage
         events.append(self._usage_event(usage, run_id))
         return PreparedContext.create(
@@ -223,5 +234,32 @@ class ContextController:
             usage_ratio=usage.usage_ratio,
             level=usage.level,
             estimated=usage.estimated,
-            compactable=usage.level in {"compact", "high", "emergency"},
+            compactable=True,
         )
+
+    async def _deliver_lifecycle(self, event: RunEventBase) -> None:
+        if self.lifecycle_sink is None:
+            return
+        try:
+            await self.lifecycle_sink(event)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            raise ContextLifecycleSinkError("context lifecycle sink failed") from None
+
+    @staticmethod
+    def _prior_history(
+        history: list[dict[str, Any]], current_message_id: str | None
+    ) -> list[dict[str, Any]]:
+        copied = deepcopy(history)
+        if current_message_id is None:
+            return copied
+        matches = [
+            index for index, item in enumerate(copied)
+            if item.get("message_id") == current_message_id
+        ]
+        if len(matches) > 1:
+            raise ValueError("current_message_id is not unique in history")
+        if matches:
+            copied.pop(matches[0])
+        return copied

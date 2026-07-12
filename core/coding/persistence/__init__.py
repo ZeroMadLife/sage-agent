@@ -2,6 +2,7 @@
 
 from core.coding.persistence.compaction_store import (
     CompactionConflictError,
+    CompactionCorruptionError,
     CompactionStore,
     CompactionStoreError,
 )
@@ -19,6 +20,7 @@ from core.coding.persistence.transcript_store import (
 __all__ = [
     "CodingSessionStore",
     "CompactionConflictError",
+    "CompactionCorruptionError",
     "CompactionStore",
     "CompactionStoreError",
     "RunStore",

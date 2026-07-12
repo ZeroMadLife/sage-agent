@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
-from core.coding.context.workspace import now
+
+def _event_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class RunEventBase(BaseModel):
@@ -14,7 +17,7 @@ class RunEventBase(BaseModel):
 
     type: str
     run_id: str = ""
-    created_at: str = Field(default_factory=now)
+    created_at: str = Field(default_factory=_event_now)
 
 
 class TurnStartedEvent(RunEventBase):

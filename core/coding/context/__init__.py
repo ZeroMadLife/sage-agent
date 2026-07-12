@@ -7,7 +7,12 @@ from core.coding.context.compact import (
     CompactManager,
     Summarizer,
 )
-from core.coding.context.controller import ContextBusyError, ContextController, PreparedContext
+from core.coding.context.controller import (
+    ContextBusyError,
+    ContextController,
+    ContextLifecycleSinkError,
+    PreparedContext,
+)
 from core.coding.context.manager import (
     DEFAULT_SYSTEM_PROMPT,
     SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -55,6 +60,7 @@ __all__ = [
     "ContextBusyError",
     "ContextController",
     "ContextLevel",
+    "ContextLifecycleSinkError",
     "ContextManager",
     "ContextProjector",
     "FileChange",

@@ -11,6 +11,7 @@ import pytest
 from core.coding.context.budget import ContextPolicy, TokenCount, TokenCounter
 from core.coding.context.compact import CompactManager
 from core.coding.context.controller import ContextBusyError, ContextController, PreparedContext
+from core.coding.context.manager import ContextManager
 from core.coding.context.model_capabilities import ModelCapabilityRegistry
 from core.coding.context.projection import ContextProjector
 from core.coding.context.summarizer import StructuredSummarizer
@@ -41,6 +42,14 @@ class RecordingCompactor:
         return self.result
 
 
+class LifecycleSink:
+    def __init__(self) -> None:
+        self.events: list[Any] = []
+
+    async def __call__(self, event: Any) -> None:
+        self.events.append(event)
+
+
 def _policy() -> ContextPolicy:
     return ContextPolicy(context_window_tokens=300, output_reserve_tokens=100)
 
@@ -65,6 +74,7 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
     history = [{"role": "user", "content": "x" * 140}]
     compactor = RecordingCompactor(_result(history))
     renderer = RecordingRenderer()
+    sink = LifecycleSink()
     controller = ContextController(
         session_id="s1",
         policy=_policy(),
@@ -73,6 +83,7 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
         compactor=compactor,  # type: ignore[arg-type]
         renderer=renderer,
         active_run_id=lambda: None,
+        lifecycle_sink=sink,
     )
 
     prepared = await controller.on_turn_start(
@@ -96,13 +107,23 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
         "context_compaction_completed",
         "context_usage_updated",
     ]
+    assert [event.type for event in sink.events] == [
+        "context_compaction_started", "context_compaction_completed"
+    ]
     assert prepared.events[1].saved_ratio == pytest.approx((180 - 40) / 180)
     assert renderer.calls[-1][1] == "current"
     assert all(item.get("content") != "current" for item in history)
 
 
-async def test_compaction_failure_preserves_original_and_emergency_stops() -> None:
-    history = [{"role": "user", "content": "x" * 180}]
+async def test_compaction_failure_preserves_bounded_projection_and_emergency_stops() -> None:
+    history = [
+        {
+            "role": "tool", "name": "read_file", "args": {"path": "same.py"},
+            "content": "x" * 20_000, "artifact_ref": f"artifact-{index}",
+        }
+        for index in range(5)
+    ]
+    original = deepcopy(history)
     compactor = RecordingCompactor(_result(history, applied=False))
     controller = ContextController(
         session_id="s1",
@@ -116,11 +137,79 @@ async def test_compaction_failure_preserves_original_and_emergency_stops() -> No
 
     prepared = await controller.on_turn_start(history, "current", "run-1")
 
-    assert prepared.projected_history == history
+    assert prepared.projected_history != history
     assert prepared.projected_history is not history
+    assert history == original
+    assert all(len(str(item["content"])) <= 15_000 for item in prepared.projected_history)
     assert prepared.allow_model_request is False
     assert prepared.events[1].type == "context_compaction_failed"
     assert prepared.events[1].preserved_original is True
+
+
+async def test_started_sink_runs_before_compactor_and_terminal_sink_after_result() -> None:
+    order: list[str] = []
+    history = [{"role": "user", "content": "x" * 180}]
+
+    class OrderedCompactor(RecordingCompactor):
+        async def compact(self, history: list[dict[str, Any]], **kwargs: Any) -> CompactionResult:
+            assert order == ["context_compaction_started"]
+            order.append("compactor")
+            return await super().compact(history, **kwargs)
+
+    async def sink(event: Any) -> None:
+        order.append(event.type)
+
+    controller = ContextController(
+        session_id="s1", policy=_policy(), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=OrderedCompactor(_result(history)),
+        renderer=RecordingRenderer(), lifecycle_sink=sink,
+    )
+
+    await controller.on_turn_start(history, "current", "run-1")
+    assert order == [
+        "context_compaction_started", "compactor", "context_compaction_completed"
+    ]
+
+
+async def test_started_sink_failure_is_fail_closed_before_compactor() -> None:
+    history = [{"role": "user", "content": "x" * 180}]
+    compactor = RecordingCompactor(_result(history))
+
+    async def broken_sink(event: Any) -> None:
+        raise OSError("database secret")
+
+    controller = ContextController(
+        session_id="s1", policy=_policy(), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=compactor, renderer=RecordingRenderer(),
+        lifecycle_sink=broken_sink,
+    )
+
+    with pytest.raises(RuntimeError, match="context lifecycle sink failed") as exc_info:
+        await controller.on_turn_start(history, "current", "run-1")
+    assert "secret" not in str(exc_info.value)
+    assert compactor.calls == []
+
+
+async def test_terminal_sink_failure_surfaces_after_compaction() -> None:
+    history = [{"role": "user", "content": "x" * 180}]
+    compactor = RecordingCompactor(_result(history))
+    calls = 0
+
+    async def broken_terminal_sink(event: Any) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("database unavailable")
+
+    controller = ContextController(
+        session_id="s1", policy=_policy(), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=compactor, renderer=RecordingRenderer(),
+        lifecycle_sink=broken_terminal_sink,
+    )
+
+    with pytest.raises(RuntimeError, match="context lifecycle sink failed"):
+        await controller.on_turn_start(history, "current", "run-1")
+    assert len(compactor.calls) == 1
 
 
 def test_before_model_request_projects_twice_but_never_semantically_compacts() -> None:
@@ -142,6 +231,55 @@ def test_before_model_request_projects_twice_but_never_semantically_compacts() -
     assert prepared.allow_model_request is False
     assert prepared.usage.effective_limit_tokens == 200
     assert prepared.events[-1].type == "context_usage_updated"
+
+
+def test_configured_controller_is_compactable_at_normal_pressure() -> None:
+    controller = ContextController(
+        session_id="s1", policy=_policy(), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=RecordingCompactor(_result([])),
+        renderer=RecordingRenderer(),
+    )
+    prepared = controller.before_model_request([], user_message="hi", run_id="run-1")
+    assert prepared.usage.level == "normal"
+    assert prepared.events[-1].compactable is True
+
+
+async def test_context_manager_renders_current_request_exactly_once_and_not_in_history() -> None:
+    current = "UNIQUE-CURRENT-REQUEST"
+    manager = ContextManager(total_budget=100_000)
+    rendered_prompts: list[str] = []
+
+    def render(history: list[dict[str, Any]], user_message: str) -> str:
+        prompt, _ = manager.build(user_message=user_message, history=history)
+        rendered_prompts.append(prompt)
+        return prompt
+
+    history = [{"role": "user", "content": "prior request", "message_id": "m-old"}]
+    controller = ContextController(
+        session_id="s1", policy=ContextPolicy(200_000, 20_000), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=RecordingCompactor(_result(history)),
+        renderer=render,
+    )
+
+    prepared = await controller.on_turn_start(
+        history, current, "run-1", current_message_id="m-current"
+    )
+    assert all(prompt.count(current) == 1 for prompt in rendered_prompts)
+    assert all(item.get("content") != current for item in prepared.projected_history)
+
+
+async def test_current_message_id_is_removed_from_controller_history() -> None:
+    current = {"role": "user", "content": "current", "message_id": "m-current"}
+    history = [{"role": "user", "content": "older", "message_id": "m-old"}, current]
+    controller = ContextController(
+        session_id="s1", policy=_policy(), counter=LengthCounter(),
+        projector=ContextProjector(), compactor=RecordingCompactor(_result(history)),
+        renderer=RecordingRenderer(),
+    )
+    prepared = await controller.on_turn_start(
+        history, "current", "run-1", current_message_id="m-current"
+    )
+    assert [item["message_id"] for item in prepared.projected_history] == ["m-old"]
 
 
 async def test_manual_compact_rejects_an_active_run() -> None:
@@ -226,13 +364,29 @@ def test_model_registry_loads_integer_environment_value(monkeypatch: pytest.Monk
     assert policy.output_reserve_tokens < policy.context_window_tokens
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"model-a":200000,"model-a":300000}',
+        '{"model-a":99999999999999999999}',
+        "{" + ",".join(f'\"m{i}\":200000' for i in range(257)) + "}",
+        '{"model-a":200000,"padding":"' + ("x" * 70_000) + '"}',
+    ],
+)
+def test_model_registry_rejects_ambiguous_or_oversized_environment(payload: str) -> None:
+    with pytest.raises(ValueError):
+        ModelCapabilityRegistry.from_env(payload)
+
+
 class CompleteModel:
     def __init__(self, response: str) -> None:
         self.response = response
         self.prompts: list[str] = []
+        self.max_tokens: list[int] = []
 
-    async def complete(self, prompt: str) -> str:
+    async def complete(self, prompt: str, *, max_tokens: int) -> str:
         self.prompts.append(prompt)
+        self.max_tokens.append(max_tokens)
         return self.response
 
 
@@ -258,6 +412,7 @@ async def test_structured_summarizer_uses_canonical_json_and_parses_fence() -> N
     assert set(request) == {"archived", "previous", "focus", "range", "repair", "max_tokens"}
     assert request["focus"] == "current"
     assert request["repair"] == "bad schema"
+    assert model.max_tokens == [100]
 
 
 @pytest.mark.parametrize("response", ['before {"goal":"x"}', '{"a":1}{"b":2}'])
@@ -271,7 +426,7 @@ async def test_structured_summarizer_rejects_prose_and_repeated_objects(response
 
 async def test_structured_summarizer_times_out_without_leaking_model_error() -> None:
     class SlowModel:
-        async def complete(self, prompt: str) -> str:
+        async def complete(self, prompt: str, *, max_tokens: int) -> str:
             await asyncio.sleep(1)
             return "{}"
 
@@ -284,11 +439,40 @@ async def test_structured_summarizer_times_out_without_leaking_model_error() -> 
 
 async def test_structured_summarizer_propagates_cancellation() -> None:
     class CancelModel:
-        async def complete(self, prompt: str) -> str:
+        async def complete(self, prompt: str, *, max_tokens: int) -> str:
             raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
         await StructuredSummarizer(CancelModel()).summarize(
             archived_history=[], previous_summary=None, focus="", max_tokens=1,
+            source_transcript_range=(0, 0), repair_feedback=None,
+        )
+
+
+async def test_structured_summarizer_rejects_duplicate_json_keys() -> None:
+    model = CompleteModel('{"goal":"first","goal":"second"}')
+    with pytest.raises(ValueError, match="duplicate"):
+        await StructuredSummarizer(model).summarize(
+            archived_history=[], previous_summary=None, focus="", max_tokens=100,
+            source_transcript_range=(0, 0), repair_feedback=None,
+        )
+
+
+async def test_structured_summarizer_rejects_oversized_archived_input_before_model() -> None:
+    model = CompleteModel("{}")
+    with pytest.raises(ValueError, match="archived"):
+        await StructuredSummarizer(model).summarize(
+            archived_history=[{"role": "tool", "content": "x" * 1_100_000}],
+            previous_summary=None, focus="", max_tokens=100,
+            source_transcript_range=(0, 0), repair_feedback=None,
+        )
+    assert model.prompts == []
+
+
+async def test_structured_summarizer_rejects_oversized_raw_output() -> None:
+    model = CompleteModel('{"goal":"' + ("x" * 300_000) + '"}')
+    with pytest.raises(ValueError, match="output"):
+        await StructuredSummarizer(model).summarize(
+            archived_history=[], previous_summary=None, focus="", max_tokens=20_000,
             source_transcript_range=(0, 0), repair_feedback=None,
         )
