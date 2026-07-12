@@ -104,6 +104,9 @@ class CodingModel(BaseModel):
     id: str
     label: str
     provider: str
+    context_configured: bool = False
+    context_window_tokens: int | None = None
+    output_reserve_tokens: int | None = None
 
 
 class CodingModelsResponse(BaseModel):
@@ -117,6 +120,47 @@ class CodingModelSwitchRequest(BaseModel):
     """Request body for switching a session's model."""
 
     model_id: str = Field(min_length=1)
+
+
+class CodingContextCompactRequest(BaseModel):
+    """Request body for an explicit context compaction."""
+
+    focus: str = Field(default="", max_length=4000)
+
+
+class CodingContextSnapshot(BaseModel):
+    """Current context budget and durable compaction state."""
+
+    configured: bool
+    model_id: str | None = None
+    model_limit_tokens: int | None = None
+    output_reserve_tokens: int | None = None
+    effective_limit_tokens: int | None = None
+    used_tokens: int | None = None
+    usage_ratio: float | None = None
+    level: str
+    estimated: bool | None = None
+    compactable: bool
+    active_run_id: str | None = None
+    context_operation_active: bool = False
+    checkpoint_id: str | None = None
+    resume_status: str
+    checkpoint_resume_enabled: bool
+    latest_attempt: dict[str, Any] | None = None
+    stale_started: bool = False
+
+
+class CodingContextCompactResponse(BaseModel):
+    """Result of an explicit context compaction."""
+
+    compaction_id: str
+    applied: bool
+    before_tokens: int
+    after_tokens: int
+    archived_items: int
+    reason: str = ""
+    retryable: bool = False
+    context: CodingContextSnapshot
 
 
 class CodingRunStopRequest(BaseModel):
