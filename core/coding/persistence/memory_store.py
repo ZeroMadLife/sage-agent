@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import uuid
 from collections.abc import Iterable
 from contextlib import suppress
@@ -22,6 +23,10 @@ _TOPICS = {"project-conventions", "decisions"}
 
 class MemoryStoreError(RuntimeError):
     """Base error for memory persistence."""
+
+
+class MemoryCorruptionError(MemoryStoreError):
+    """Raised when the SQLite memory evidence is malformed or tampered."""
 
 
 class MemoryConflictError(MemoryStoreError):
@@ -95,7 +100,18 @@ class MemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
+        if self.path.exists():
+            try:
+                info = self.path.lstat()
+            except OSError as exc:
+                raise MemoryCorruptionError("memory database is unavailable") from exc
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise MemoryCorruptionError("memory database inode is unsafe")
         conn = sqlite3.connect(self.path, timeout=5)
+        info = self.path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            conn.close()
+            raise MemoryCorruptionError("memory database inode is unsafe")
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=5000")
@@ -106,8 +122,10 @@ class MemoryStore:
     def _init_db(self) -> None:
         with self._connect() as db:
             version = int(db.execute("PRAGMA user_version").fetchone()[0])
-            if version > SCHEMA_VERSION:
+            if version < 0 or version > SCHEMA_VERSION:
                 raise MemoryStoreError(f"unsupported memory schema version {version}")
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' LIMIT 1").fetchone():
+                raise MemoryStoreError("unexpected memory database trigger")
             db.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS memory_facts (
@@ -277,7 +295,11 @@ class MemoryStore:
 
 def _proposal(row: sqlite3.Row) -> MemoryProposal:
     data = dict(row)
-    candidates = tuple(MemoryCandidate(**item) for item in json.loads(data.pop("candidates_json")))
+    try:
+        raw_candidates = json.loads(data.pop("candidates_json"))
+        candidates = tuple(MemoryCandidate(**item) for item in raw_candidates)
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise MemoryCorruptionError("invalid memory proposal payload") from exc
     data["candidates"] = candidates
     return MemoryProposal(**data)
 
