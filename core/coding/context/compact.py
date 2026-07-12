@@ -190,6 +190,9 @@ class CompactManager:
             previous_summary = self._validated_previous_summary(previous_checkpoint, session_id)
             if has_old_summary and previous_checkpoint is None:
                 raise ValueError("invalid_previous_checkpoint")
+            prefix_hash = self._prefix_hash(prefix)
+            if previous_checkpoint is not None and prefix_hash != previous_checkpoint.prefix_hash:
+                raise ValueError("prefix_changed")
             if not archived:
                 return self._unchanged(
                     original,
@@ -200,7 +203,6 @@ class CompactManager:
                     trigger,
                 )
             archived_range = self._resolve_transcript_range(
-                prefix,
                 archived,
                 canonical,
                 transcript_range,
@@ -267,6 +269,7 @@ class CompactManager:
                 summary_hash=summary_hash,
                 previous_summary_hash=previous_hash,
                 evidence_hash=evidence_hash,
+                prefix_hash=prefix_hash,
             )
             state.ineffective_results = 0
             state.auto_circuit_open = False
@@ -292,6 +295,7 @@ class CompactManager:
                 "non_contiguous_transcript_range",
                 "invalid_previous_checkpoint",
                 "missing_transcript_sequence",
+                "prefix_changed",
                 "unsupported_control_layout",
             }
             reason = str(exc) if known_reason else "compaction_failed"
@@ -433,7 +437,6 @@ class CompactManager:
 
     @staticmethod
     def _resolve_transcript_range(
-        prefix: list[dict[str, Any]],
         archived: list[dict[str, Any]],
         canonical: list[dict[str, Any]],
         supplied: tuple[int, int] | None,
@@ -444,7 +447,7 @@ class CompactManager:
         if archived_positions != list(range(archived_positions[0], archived_positions[-1] + 1)):
             raise ValueError("non_contiguous_transcript_range")
         if previous is not None:
-            sequenced_items = [*prefix, *canonical]
+            sequenced_items = canonical
             if not all(
                 isinstance(item.get("sequence"), int) and not isinstance(item.get("sequence"), bool)
                 for item in sequenced_items
@@ -452,8 +455,6 @@ class CompactManager:
                 raise ValueError("missing_transcript_sequence")
             if any(int(item["sequence"]) < 0 for item in sequenced_items):
                 raise ValueError("invalid_transcript_range")
-            if any(int(item["sequence"]) > previous.transcript_end for item in prefix):
-                raise ValueError("non_contiguous_transcript_range")
         if supplied is not None:
             if (
                 len(supplied) != 2
@@ -634,6 +635,13 @@ class CompactManager:
     @staticmethod
     def _evidence_hash(history: list[dict[str, Any]]) -> str:
         rendered = json.dumps(history, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _prefix_hash(prefix: list[dict[str, Any]]) -> str:
+        if not prefix:
+            return ""
+        rendered = json.dumps(prefix, ensure_ascii=False, sort_keys=True, default=str)
         return hashlib.sha256(rendered.encode("utf-8")).hexdigest()
 
     @staticmethod

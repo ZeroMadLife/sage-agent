@@ -434,17 +434,17 @@ async def test_system_prefix_is_preserved_and_old_summary_is_removed() -> None:
         "role": "system",
         "content": "project safety policy",
         "marker": 7,
-        "sequence": 40,
     }
     stale = {"role": "system", "kind": "compact_summary", "content": "stale"}
     history: list[dict[str, Any]] = [prefix, stale, *_sequenced_history(45)]
     summarizer = QueueSummarizer(_summary((45, 53)))
+    previous = replace(_checkpoint(), prefix_hash=CompactManager._prefix_hash([prefix]))
 
     result = await CompactManager(
         summarizer=summarizer,
         policy=_policy(),
         checkpoint_verifier=_trusted_checkpoint,
-    ).compact(session_id="test", history=history, previous_checkpoint=_checkpoint())
+    ).compact(session_id="test", history=history, previous_checkpoint=previous)
 
     assert result.applied is True
     assert result.projected_history[0] == prefix
@@ -904,20 +904,15 @@ async def test_previous_checkpoint_without_sequences_fails_closed() -> None:
 
 
 async def test_verified_repeated_compaction_uses_real_sequences() -> None:
-    first_history = _history()
-    for sequence, item in enumerate(first_history):
-        item["sequence"] = sequence
+    prefix = {"role": "system", "content": "stable"}
+    first_history = [prefix, *_sequenced_history(0)]
     first = await CompactManager(
         summarizer=QueueSummarizer(_summary((0, 8))), policy=_policy()
     ).compact(session_id="test", history=first_history)
     assert first.checkpoint is not None
 
-    prefix = {"role": "system", "content": "stable", "sequence": 0}
     stale = {"role": "system", "kind": "compact_summary", "content": "old"}
-    second_history = _history()
-    for sequence, item in enumerate(second_history, start=9):
-        item["sequence"] = sequence
-    second_history = [prefix, stale, *second_history]
+    second_history = [deepcopy(prefix), stale, *_sequenced_history(9)]
     second = await CompactManager(
         summarizer=QueueSummarizer(_summary((9, 17))),
         policy=_policy(),
@@ -934,6 +929,49 @@ async def test_verified_repeated_compaction_uses_real_sequences() -> None:
         9,
         17,
     )
+
+
+async def test_repeated_compaction_rejects_changed_stable_prefix() -> None:
+    first_prefix = {"role": "system", "content": "stable"}
+    first = await CompactManager(
+        summarizer=QueueSummarizer(_summary((0, 8))), policy=_policy()
+    ).compact(session_id="test", history=[first_prefix, *_sequenced_history(0)])
+    assert first.checkpoint is not None
+    changed_prefix = {"role": "system", "content": "tampered"}
+    summarizer = QueueSummarizer(_summary((9, 17)))
+
+    second = await CompactManager(
+        summarizer=summarizer,
+        policy=_policy(),
+        checkpoint_verifier=_trusted_checkpoint,
+    ).compact(
+        session_id="test",
+        history=[changed_prefix, *_sequenced_history(9)],
+        previous_checkpoint=first.checkpoint,
+    )
+
+    assert second.applied is False
+    assert second.reason == "prefix_changed"
+    assert summarizer.calls == []
+
+
+async def test_legacy_checkpoint_cannot_adopt_nonempty_prefix() -> None:
+    prefix = {"role": "system", "content": "stable"}
+    legacy = replace(_checkpoint(), prefix_hash="")
+    summarizer = QueueSummarizer(_summary((45, 53)))
+
+    result = await CompactManager(
+        summarizer=summarizer,
+        policy=_policy(),
+        checkpoint_verifier=_trusted_checkpoint,
+    ).compact(
+        session_id="test",
+        history=[prefix, *_sequenced_history(45)],
+        previous_checkpoint=legacy,
+    )
+
+    assert result.reason == "prefix_changed"
+    assert summarizer.calls == []
 
 
 async def test_callback_cancellation_is_best_effort_after_commit() -> None:

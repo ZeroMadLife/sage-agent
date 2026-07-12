@@ -76,6 +76,7 @@ class CompactionCheckpoint:
     summary_hash: str
     previous_summary_hash: str = ""
     evidence_hash: str = ""
+    prefix_hash: str = ""
 
 
 @dataclass(frozen=True)
