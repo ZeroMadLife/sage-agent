@@ -6,6 +6,7 @@ import {
   fetchCodingFile,
   fetchCodingFiles,
   fetchCodingApprovalPending,
+  fetchCodingContext,
   fetchCodingGitStatus,
   fetchCodingMcpServers,
   fetchCodingModels,
@@ -16,6 +17,7 @@ import {
   fetchCodingSessions,
   fetchCodingSkills,
   rejectCodingPlan,
+  requestCodingCompaction,
   respondCodingApproval,
   resumeCodingSession,
   startCodingSession,
@@ -38,6 +40,7 @@ import type {
   CodingSessionSummary,
   CodingSkillSummary,
   CodingToolResultEvent,
+  CodingContextSnapshot,
   PermissionMode,
 } from '../types/api'
 import { applyCodingEvent } from './codingEvents'
@@ -67,6 +70,16 @@ function filterFileEntries(entries: CodingFileEntry[]): CodingFileEntry[] {
   return entries.filter((entry) => !isFileTreeNoise(entry.name))
 }
 
+function contextReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    insufficient_history: '历史内容不足，暂不需要压缩',
+    compaction_busy: '已有压缩任务正在进行',
+    context_emergency: '上下文已达到安全上限',
+    invalid_previous_checkpoint: '历史压缩检查点无效',
+  }
+  return labels[reason] || '上下文压缩未完成'
+}
+
 export const useCodingStore = defineStore('coding', () => {
   const sessionId = ref('')
   const workspaceRoot = ref('')
@@ -75,7 +88,9 @@ export const useCodingStore = defineStore('coding', () => {
   const errorMessage = ref('')
   const currentModelId = ref('')
   const contextChars = ref(0)
-  const contextBudget = 60000
+  const contextSnapshot = ref<CodingContextSnapshot | null>(null)
+  const compactionState = ref<'idle' | 'running' | 'succeeded' | 'failed'>('idle')
+  const compactionError = ref('')
   const pendingApproval = ref<CodingApproval | null>(null)
   const approvalBusy = ref(false)
   const thinkingPhase = ref('')
@@ -111,11 +126,22 @@ export const useCodingStore = defineStore('coding', () => {
   let stream: CodingStream | null = null
   let approvalPollTimer: number | null = null
   let fileTreeGeneration = 0
+  let contextRequestGeneration = 0
   const dirCache = new Map<string, CodingFileEntry[]>()
 
-  const contextPercent = computed(() =>
-    Math.min(100, Math.round((contextChars.value / contextBudget) * 100)),
+  const contextBudget = computed(() => contextSnapshot.value?.effective_limit_tokens ?? 0)
+  const contextConfigured = computed(() => contextSnapshot.value?.configured ?? false)
+  const contextCompactable = computed(() => contextSnapshot.value?.compactable ?? false)
+  const contextBusy = computed(
+    () =>
+      compactionState.value === 'running' ||
+      contextSnapshot.value?.context_operation_active === true,
   )
+  const contextPercent = computed(() => {
+    const limit = contextSnapshot.value?.effective_limit_tokens ?? 0
+    if (limit <= 0) return 0
+    return Math.min(100, Math.round((contextChars.value / limit) * 100))
+  })
 
   async function initialize() {
     if (sessionId.value) return
@@ -127,6 +153,7 @@ export const useCodingStore = defineStore('coding', () => {
       loadSkills(),
       loadMcpServers(),
       loadModels(),
+      loadContext(),
       loadGitStatus(),
       loadFiles('.'),
       loadSessions(),
@@ -157,6 +184,9 @@ export const useCodingStore = defineStore('coding', () => {
         isThinking,
         errorMessage,
         contextChars,
+        contextSnapshot,
+        compactionState,
+        compactionError,
         pendingApproval,
         thinkingPhase,
         runtimeMode,
@@ -167,6 +197,9 @@ export const useCodingStore = defineStore('coding', () => {
       },
       event,
     )
+    if (event.type === 'turn_finished') {
+      window.setTimeout(() => void loadContext(), 0)
+    }
     if (effect.approvalRequired) {
       void enrichApprovalPreview()
       startApprovalPolling()
@@ -371,6 +404,23 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
+  async function loadContext() {
+    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    const requestGeneration = ++contextRequestGeneration
+    try {
+      const snapshot = await fetchCodingContext(targetSessionId)
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return
+      contextSnapshot.value = snapshot
+      contextChars.value = contextSnapshot.value.used_tokens ?? 0
+      if (snapshot.model_id) currentModelId.value = snapshot.model_id
+    } catch {
+      if (targetSessionId === sessionId.value && requestGeneration === contextRequestGeneration) {
+        contextSnapshot.value = null
+      }
+    }
+  }
+
   async function loadRuns() {
     if (!sessionId.value) return
     try {
@@ -395,6 +445,11 @@ export const useCodingStore = defineStore('coding', () => {
     stopApprovalPolling()
     stream?.disconnect()
     stream = null
+    contextRequestGeneration += 1
+    contextSnapshot.value = null
+    contextChars.value = 0
+    compactionState.value = 'idle'
+    compactionError.value = ''
     const session = await resumeCodingSession(targetSessionId)
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
@@ -414,7 +469,7 @@ export const useCodingStore = defineStore('coding', () => {
     diffDrawerVisible.value = false
     currentDiffData.value = null
     dirCache.clear()
-    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns()])
+    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns(), loadContext()])
     connectSocket()
   }
 
@@ -422,6 +477,11 @@ export const useCodingStore = defineStore('coding', () => {
     stopApprovalPolling()
     stream?.disconnect()
     stream = null
+    contextRequestGeneration += 1
+    contextSnapshot.value = null
+    contextChars.value = 0
+    compactionState.value = 'idle'
+    compactionError.value = ''
     const session = await startCodingSession()
     sessionId.value = session.session_id
     workspaceRoot.value = session.workspace_root
@@ -441,7 +501,7 @@ export const useCodingStore = defineStore('coding', () => {
     diffDrawerVisible.value = false
     currentDiffData.value = null
     dirCache.clear()
-    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns()])
+    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns(), loadContext()])
     connectSocket()
   }
 
@@ -543,8 +603,38 @@ export const useCodingStore = defineStore('coding', () => {
 
   async function changeModel(modelId: string) {
     if (!sessionId.value) return
-    await switchCodingModel(sessionId.value, modelId)
-    currentModelId.value = modelId
+    try {
+      await switchCodingModel(sessionId.value, modelId)
+      currentModelId.value = modelId
+      await loadContext()
+    } catch (error) {
+      errorMessage.value = String(error)
+    }
+  }
+
+  async function compactContext(): Promise<boolean> {
+    if (!sessionId.value || isThinking.value || contextBusy.value || !contextCompactable.value) {
+      return false
+    }
+    compactionState.value = 'running'
+    compactionError.value = ''
+    const targetSessionId = sessionId.value
+    const requestGeneration = contextRequestGeneration
+    try {
+      const response = await requestCodingCompaction(targetSessionId)
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
+      contextSnapshot.value = response.context
+      contextChars.value = response.after_tokens
+      compactionState.value = response.applied ? 'succeeded' : 'failed'
+      if (!response.applied) compactionError.value = contextReasonLabel(response.reason)
+      return response.applied
+    } catch (error) {
+      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
+      compactionState.value = 'failed'
+      compactionError.value = String(error)
+      errorMessage.value = compactionError.value
+      return false
+    }
   }
 
   async function changePermissionMode(mode: PermissionMode): Promise<boolean> {
@@ -573,8 +663,14 @@ export const useCodingStore = defineStore('coding', () => {
     errorMessage,
     currentModelId,
     contextChars,
+    contextSnapshot,
     contextBudget,
+    contextConfigured,
+    contextCompactable,
+    contextBusy,
     contextPercent,
+    compactionState,
+    compactionError,
     pendingApproval,
     approvalBusy,
     thinkingPhase,
@@ -612,6 +708,7 @@ export const useCodingStore = defineStore('coding', () => {
     loadSkills,
     loadMcpServers,
     loadModels,
+    loadContext,
     loadSessions,
     loadRuns,
     loadRunDetail,
@@ -623,6 +720,7 @@ export const useCodingStore = defineStore('coding', () => {
     refreshWorkspaceView,
     loadFilePreview,
     changeModel,
+    compactContext,
     changePermissionMode,
     disconnect,
   }

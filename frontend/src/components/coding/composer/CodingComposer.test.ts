@@ -128,6 +128,39 @@ it('closes the menu and clears input on escape', async () => {
   expect(wrapper.find('.skill-menu').exists()).toBe(true)
 })
 
+it('shows an accessible token budget and triggers manual compaction', async () => {
+  const { wrapper, store } = mountComposer()
+  store.contextSnapshot = {
+    configured: true,
+    model_id: 'model-a',
+    used_tokens: 40000,
+    model_limit_tokens: 100000,
+    effective_limit_tokens: 80000,
+    output_reserve_tokens: 20000,
+    usage_ratio: 0.5,
+    level: 'compact',
+    estimated: false,
+    compactable: true,
+    active_run_id: null,
+    context_operation_active: false,
+    checkpoint_id: null,
+    resume_status: 'canonical_fallback',
+    checkpoint_resume_enabled: true,
+    latest_attempt: null,
+    stale_started: false,
+  }
+  store.contextChars = 40000
+  store.compactContext = vi.fn().mockResolvedValue(true)
+  await nextTick()
+
+  const progress = wrapper.find('[role="progressbar"]')
+  expect(progress.attributes('aria-valuenow')).toBe('50')
+  expect(progress.attributes('aria-label')).toContain('40,000 / 80,000 tokens')
+
+  await wrapper.find('.compact-hint').trigger('click')
+  expect(store.compactContext).toHaveBeenCalledOnce()
+})
+
 it('sends the message on enter after a skill has been selected', async () => {
   const { wrapper, store } = mountComposer()
   store.sendMessage = vi.fn()

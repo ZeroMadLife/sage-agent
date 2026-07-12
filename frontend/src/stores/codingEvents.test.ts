@@ -6,7 +6,7 @@ import {
   type DiffInfo,
   type PlanReviewState,
 } from './codingEvents'
-import type { CodingApproval } from '../types/api'
+import type { CodingApproval, CodingContextSnapshot } from '../types/api'
 
 function state() {
   return {
@@ -15,6 +15,9 @@ function state() {
     isThinking: ref(false),
     errorMessage: ref(''),
     contextChars: ref(0),
+    contextSnapshot: ref<CodingContextSnapshot | null>(null),
+    compactionState: ref<'idle' | 'running' | 'succeeded' | 'failed'>('idle'),
+    compactionError: ref(''),
     pendingApproval: ref<CodingApproval | null>(null),
     thinkingPhase: ref(''),
     runtimeMode: ref('default'),
@@ -26,6 +29,46 @@ function state() {
 }
 
 describe('codingEvents', () => {
+  it('tracks context usage and compaction lifecycle', () => {
+    const current = state()
+
+    applyCodingEvent(current, {
+      type: 'context_usage_updated',
+      session_id: 'coding_1',
+      used_tokens: 42000,
+      model_limit_tokens: 100000,
+      output_reserve_tokens: 20000,
+      effective_limit_tokens: 80000,
+      usage_ratio: 0.525,
+      level: 'compact',
+      estimated: false,
+      compactable: true,
+    })
+    expect(current.contextChars.value).toBe(42000)
+    expect(current.contextSnapshot.value?.effective_limit_tokens).toBe(80000)
+
+    applyCodingEvent(current, {
+      type: 'context_compaction_started',
+      session_id: 'coding_1',
+      compaction_id: 'compact-1',
+      trigger: 'manual',
+      before_tokens: 42000,
+    })
+    expect(current.compactionState.value).toBe('running')
+    expect(current.thinkingPhase.value).toBe('正在压缩上下文...')
+
+    applyCodingEvent(current, {
+      type: 'context_compaction_failed',
+      session_id: 'coding_1',
+      compaction_id: 'compact-1',
+      reason: 'insufficient_history',
+      preserved_original: true,
+      retryable: false,
+    })
+    expect(current.compactionState.value).toBe('failed')
+    expect(current.compactionError.value).toBe('历史内容不足，暂不需要压缩')
+  })
+
   it('appends tool activity on tool_call', () => {
     const current = state()
     current.messages.value = [{ role: 'assistant', content: '', tools: [], isThinking: true }]

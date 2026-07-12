@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from inspect import signature
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket
@@ -11,6 +12,9 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket
 from api.schemas import (
     CodingApprovalRespondRequest,
     CodingApprovalResponse,
+    CodingContextCompactRequest,
+    CodingContextCompactResponse,
+    CodingContextSnapshot,
     CodingFileContentResponse,
     CodingFileEntry,
     CodingFilesResponse,
@@ -37,9 +41,9 @@ from api.schemas import (
     PermissionModeSwitchRequest,
     UserMessage,
 )
+from core.coding.context import ContextBusyError, ModelCapabilityRegistry
 from core.coding.persistence import CodingSessionStore
 from core.coding.runtime import CodingRuntime
-from core.llm import create_llm
 
 router = APIRouter()
 
@@ -57,16 +61,24 @@ async def create_coding_session(
     default_workspace = Path(request.app.state.coding_workspace_root).resolve()
     workspace_root = _resolve_workspace_root(default_workspace, payload.workspace_root)
     storage_root = Path(request.app.state.coding_storage_root)
+    model_id = str(request.app.state.coding_default_model)
+    if model_id not in _catalog_model_ids(request):
+        raise HTTPException(status_code=422, detail="unknown coding model")
+    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
     session_id = str(uuid4())
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=workspace_root,
-        model=model_factory(),
+        model=_build_model(model_factory, model_id),
         storage_root=storage_root,
         model_factory=model_factory,
         approval_policy=payload.approval_policy,
         save_on_init=False,
         permission_mode="default",
+        context_policy=registry.resolve(model_id),
+        model_capabilities=registry,
+        checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
+        model_spec=model_id,
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -97,31 +109,42 @@ async def resume_coding_session(
     if model_factory is None:
         raise RuntimeError("Coding model factory is not configured")
     storage_root = Path(request.app.state.coding_storage_root)
+    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
+    store = CodingSessionStore(storage_root / "sessions")
     try:
-        runtime = CodingRuntime.resume(
+        persisted = store.load(session_id)
+        model_id = str(
+            persisted.get("model_spec") or request.app.state.coding_default_model
+        )
+        if model_id not in _catalog_model_ids(request):
+            raise HTTPException(status_code=422, detail="unknown coding model")
+        default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+        persisted_workspace = _resolve_persisted_workspace_root(
+            default_workspace, persisted.get("workspace_root")
+        )
+        persisted["workspace_root"] = str(persisted_workspace)
+        runtime = CodingRuntime(
             session_id=session_id,
-            model=model_factory(),
+            workspace_root=persisted_workspace,
+            model=_build_model(model_factory, model_id),
             storage_root=storage_root,
             model_factory=model_factory,
             approval_policy="ask",
+            session_state=persisted,
+            save_on_init=False,
+            model_capabilities=registry,
+            checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
+            model_spec=model_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=404, detail=f"Unknown coding session: {session_id}"
         ) from exc
-    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
-    try:
-        runtime.workspace.root.resolve().relative_to(default_workspace)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="persisted workspace_root must be inside the configured coding workspace",
-        ) from exc
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
     return CodingSessionResponse(
         session_id=session_id,
-        workspace_root=str(runtime.workspace.root.resolve()),
+        workspace_root=str(persisted_workspace),
         permission_mode=runtime.permission_mode,
     )
 
@@ -270,6 +293,63 @@ async def coding_git_status(session_id: str, request: Request) -> CodingGitStatu
 
 
 @router.get(
+    "/api/v1/coding/{session_id}/context",
+    response_model=CodingContextSnapshot,
+)
+async def coding_context_snapshot(
+    session_id: str, request: Request
+) -> CodingContextSnapshot:
+    """Return the session's server-owned context budget and checkpoint status."""
+    runtime = _require_runtime(request, session_id)
+    return CodingContextSnapshot(**runtime.context_snapshot())
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/context/compact",
+    response_model=CodingContextCompactResponse,
+)
+async def compact_coding_context(
+    session_id: str,
+    payload: CodingContextCompactRequest,
+    request: Request,
+) -> CodingContextCompactResponse:
+    """Compact context explicitly; the runtime persists terminal evidence first."""
+    runtime = _require_runtime(request, session_id)
+    if runtime.context_controller is None:
+        raise HTTPException(status_code=422, detail="context window is not configured")
+    if runtime.active_run_id is not None or runtime._context_operation_lock.locked():
+        raise HTTPException(status_code=409, detail="context operation is busy")
+    try:
+        result = await runtime.manual_compact(payload.focus)
+    except ContextBusyError as exc:
+        raise HTTPException(status_code=409, detail="context operation is busy") from exc
+    except ValueError as exc:
+        if str(exc) == "context window is not configured":
+            raise HTTPException(
+                status_code=422, detail="context window is not configured"
+            ) from exc
+        raise HTTPException(status_code=500, detail="context compaction failed") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="context compaction failed") from exc
+    try:
+        artifact = runtime.compaction_store.load(session_id, result.compaction_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail="context compaction failed") from exc
+    if artifact is None or artifact.get("status") not in {"completed", "failed"}:
+        raise HTTPException(status_code=500, detail="context compaction failed")
+    return CodingContextCompactResponse(
+        compaction_id=result.compaction_id,
+        applied=result.applied,
+        before_tokens=result.before_tokens,
+        after_tokens=result.after_tokens,
+        archived_items=result.archived_items,
+        reason=result.reason,
+        retryable=result.retryable,
+        context=CodingContextSnapshot(**runtime.context_snapshot()),
+    )
+
+
+@router.get(
     "/api/v1/coding/{session_id}/approval/pending",
     response_model=CodingApprovalResponse | None,
 )
@@ -388,19 +468,35 @@ async def get_coding_run_diff(
         )
     import json
 
-    return json.loads(diff_path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(diff_path.read_text(encoding="utf-8")))
 
 
 @router.get("/api/v1/coding/models", response_model=CodingModelsResponse)
-async def list_coding_models(request: Request) -> CodingModelsResponse:
-    """Return available models (simplified: deepseek v4 flash/pro only)."""
-    models = [
-        CodingModel(
-            id="deepseek:deepseek-v4-flash", label="DeepSeek V4 Flash", provider="deepseek"
-        ),
-        CodingModel(id="deepseek:deepseek-v4-pro", label="DeepSeek V4 Pro", provider="deepseek"),
-    ]
-    return CodingModelsResponse(models=models, current="deepseek:deepseek-v4-flash")
+async def list_coding_models(
+    request: Request, session_id: str | None = None
+) -> CodingModelsResponse:
+    """Return the server whitelist and only explicitly configured capabilities."""
+    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
+    models: list[CodingModel] = []
+    for item in request.app.state.coding_model_catalog:
+        model_id = str(item["id"])
+        policy = registry.resolve(model_id)
+        models.append(
+            CodingModel(
+                id=model_id,
+                label=str(item["label"]),
+                provider=str(item["provider"]),
+                context_configured=policy is not None,
+                context_window_tokens=(policy.context_window_tokens if policy else None),
+                output_reserve_tokens=(policy.output_reserve_tokens if policy else None),
+            )
+        )
+    current = str(request.app.state.coding_default_model)
+    if session_id is not None:
+        current = _require_runtime(request, session_id).model_spec
+    elif len(request.app.state.coding_sessions) == 1:
+        current = next(iter(request.app.state.coding_sessions.values())).model_spec
+    return CodingModelsResponse(models=models, current=current)
 
 
 @router.patch("/api/v1/coding/{session_id}/model")
@@ -411,14 +507,22 @@ async def switch_coding_model(
 ) -> dict[str, Any]:
     """Switch the model used by a coding session."""
     runtime = _require_runtime(request, session_id)
+    allowed = _catalog_model_ids(request)
+    if payload.model_id not in allowed:
+        raise HTTPException(status_code=422, detail="unknown coding model")
+    if runtime.active_run_id is not None or runtime._context_operation_lock.locked():
+        raise HTTPException(status_code=409, detail="context operation is busy")
+    model_factory = request.app.state.coding_model_factory
 
     def factory() -> Any:
-        return create_llm(payload.model_id)
+        return _build_model(model_factory, payload.model_id)
 
     try:
         runtime.switch_model(payload.model_id, factory)
+    except ContextBusyError as exc:
+        raise HTTPException(status_code=409, detail="context operation is busy") from exc
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail="model switch failed") from exc
     return {"ok": True, "model_id": payload.model_id}
 
 
@@ -506,3 +610,32 @@ def _resolve_workspace_root(default_workspace: Path, override: str | None) -> Pa
             detail="workspace_root must be inside the configured coding workspace",
         ) from exc
     return workspace_root
+
+
+def _build_model(factory: Any, model_id: str) -> Any:
+    """Call injected factories with a model id when their signature accepts it."""
+    try:
+        signature(factory).bind(model_id)
+    except (TypeError, ValueError):
+        return factory()
+    return factory(model_id)
+
+
+def _catalog_model_ids(request: Request) -> set[str]:
+    return {str(item["id"]) for item in request.app.state.coding_model_catalog}
+
+
+def _resolve_persisted_workspace_root(
+    default_workspace: Path, raw_workspace: object
+) -> Path:
+    if not isinstance(raw_workspace, str) or not raw_workspace.strip():
+        raise HTTPException(status_code=400, detail="persisted workspace_root is invalid")
+    workspace = Path(raw_workspace).expanduser().resolve()
+    try:
+        workspace.relative_to(default_workspace)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="persisted workspace_root must be inside the configured coding workspace",
+        ) from exc
+    return workspace

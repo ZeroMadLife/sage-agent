@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from copy import deepcopy
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -89,6 +90,7 @@ class CodingRuntime:
         model_capabilities: ModelCapabilityRegistry | None = None,
         checkpoint_anchor_key: bytes | None = None,
         context_controller: ContextController | None = None,
+        model_spec: str = "",
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -161,11 +163,15 @@ class CodingRuntime:
         )
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.memory_manager = MemoryManager(self.storage_root, self.workspace.root)
-        self.model_spec: str = ""
+        self.model_spec = str(self.session.get("model_spec", model_spec))
         self._turn_id = ""
         self._backfill_transcript()
         self.model_capabilities = model_capabilities or ModelCapabilityRegistry()
-        self.context_policy = context_policy or self.model_capabilities.resolve(model)
+        self.context_policy = (
+            context_policy
+            or self.model_capabilities.resolve(self.model_spec)
+            or self.model_capabilities.resolve(model)
+        )
         self.context_controller = context_controller
         if self.context_controller is None and self.context_policy is not None:
             self.context_controller = self._build_context_controller(
@@ -188,6 +194,7 @@ class CodingRuntime:
         context_policy: ContextPolicy | None = None,
         model_capabilities: ModelCapabilityRegistry | None = None,
         checkpoint_anchor_key: bytes | None = None,
+        model_spec: str = "",
     ) -> CodingRuntime:
         """Rehydrate a persisted coding runtime for a new WebSocket connection."""
         storage_path = Path(storage_root)
@@ -208,6 +215,7 @@ class CodingRuntime:
             context_policy=context_policy,
             model_capabilities=model_capabilities,
             checkpoint_anchor_key=checkpoint_anchor_key,
+            model_spec=str(session_state.get("model_spec", model_spec)),
         )
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:
@@ -322,6 +330,68 @@ class CodingRuntime:
         self.context_policy = policy
         self.context_controller = controller
         self._save_session()
+
+    def context_snapshot(self) -> dict[str, Any]:
+        """Return a bounded, read-only context-control status payload."""
+        state = self.session.get("context_state", {})
+        latest = self.compaction_store.load_latest_attempt(self.session_id)
+        latest_attempt: dict[str, Any] | None = None
+        stale_started = False
+        if latest is not None:
+            updated_at = str(latest.get("updated_at", ""))
+            if latest.get("status") == "started":
+                try:
+                    updated = datetime.fromisoformat(updated_at)
+                    if updated.tzinfo is None:
+                        updated = updated.replace(tzinfo=UTC)
+                    stale_started = (datetime.now(UTC) - updated).total_seconds() >= 300
+                except ValueError:
+                    stale_started = True
+            latest_attempt = {
+                "compaction_id": str(latest.get("compaction_id", "")),
+                "status": str(latest.get("status", "")),
+                "trigger": str(latest.get("trigger", "")),
+                "updated_at": updated_at,
+                "stale": stale_started,
+            }
+        common: dict[str, Any] = {
+            "configured": self.context_controller is not None and self.context_policy is not None,
+            "model_id": self.model_spec or None,
+            "active_run_id": self.active_run_id,
+            "context_operation_active": self._context_operation_lock.locked(),
+            "checkpoint_id": str(state.get("checkpoint_id", "")) or None,
+            "resume_status": str(state.get("resume_status", "canonical_fallback")),
+            "checkpoint_resume_enabled": self.compaction_store.checkpoint_resume_enabled,
+            "latest_attempt": latest_attempt,
+            "stale_started": stale_started,
+        }
+        if self.context_controller is None or self.context_policy is None:
+            return {
+                **common,
+                "model_limit_tokens": None,
+                "output_reserve_tokens": None,
+                "effective_limit_tokens": None,
+                "used_tokens": None,
+                "usage_ratio": None,
+                "level": "unconfigured",
+                "estimated": None,
+                "compactable": False,
+            }
+        usage = self.context_controller.before_model_request(
+            deepcopy(self._active_projection), user_message=""
+        ).usage
+        return {
+            **common,
+            "model_limit_tokens": self.context_policy.context_window_tokens,
+            "output_reserve_tokens": self.context_policy.output_reserve_tokens,
+            "effective_limit_tokens": usage.effective_limit_tokens,
+            "used_tokens": usage.used_tokens,
+            "usage_ratio": usage.usage_ratio,
+            "level": usage.level,
+            "estimated": usage.estimated,
+            "compactable": self.active_run_id is None
+            and not self._context_operation_lock.locked(),
+        }
 
     def set_permission_mode(self, mode: PermissionMode) -> None:
         """Switch the active permission mode at runtime."""
@@ -802,7 +872,8 @@ class CodingRuntime:
         Yielding is forbidden inside ``finally`` for an async generator, so the
         cleanup block performs only state mutation (no yield).
         """
-        # Active-run lease: reject if a run is already in progress.
+        # The run and manual compaction share one operation lease. Acquire it
+        # before creating run evidence so a busy rejection has no partial run.
         if self.active_run_id is not None:
             yield event_to_dict(
                 ErrorEvent(
@@ -811,6 +882,15 @@ class CodingRuntime:
                 )
             )
             return
+        if self._context_operation_lock.locked():
+            yield event_to_dict(
+                ErrorEvent(
+                    run_id="",
+                    message="A context operation is already in progress for this session",
+                )
+            )
+            return
+        await self._context_operation_lock.acquire()
 
         self.stop_requested = False
         run_id = f"run_{uuid.uuid4().hex[:12]}"
@@ -832,17 +912,13 @@ class CodingRuntime:
             self.run_store.append_trace(run_id, started)
             self.session_event_bus.emit("turn_started", started)
             if self.context_controller is not None:
-                await self._acquire_context_operation()
-                try:
-                    prepared = await self.context_controller.on_turn_start(
-                        deepcopy(self._active_projection),
-                        user_message,
-                        run_id,
-                        previous_checkpoint=self._active_checkpoint,
-                        transcript_range=self._active_transcript_range(),
-                    )
-                finally:
-                    self._context_operation_lock.release()
+                prepared = await self.context_controller.on_turn_start(
+                    deepcopy(self._active_projection),
+                    user_message,
+                    run_id,
+                    previous_checkpoint=self._active_checkpoint,
+                    transcript_range=self._active_transcript_range(),
+                )
                 if prepared.compaction_result is not None and prepared.compaction_result.applied:
                     self._apply_compaction_result(prepared.compaction_result)
                 prepared_events = [event_to_dict(event) for event in prepared.events]
@@ -861,6 +937,7 @@ class CodingRuntime:
                 )
             self.active_run_id = None
             self.stop_requested = False
+            self._context_operation_lock.release()
             self._save_session()
             raise
         except Exception:
@@ -869,6 +946,7 @@ class CodingRuntime:
             )
             self.active_run_id = None
             self.stop_requested = False
+            self._context_operation_lock.release()
             self._save_session()
             for event in failure_events:
                 yield event
@@ -913,6 +991,7 @@ class CodingRuntime:
             )
             self.active_run_id = None
             self.stop_requested = False
+            self._context_operation_lock.release()
             self._save_session()
             for event in failure_events:
                 yield event
@@ -1057,6 +1136,7 @@ class CodingRuntime:
                 self._persist_run_terminal(run_id, run_start_time)
             self.stop_requested = False
             self.active_run_id = None
+            self._context_operation_lock.release()
             self._save_session()
 
     def request_stop(self, run_id: str | None = None) -> bool:
@@ -1105,6 +1185,7 @@ class CodingRuntime:
         self.session["runtime_mode"] = self.plan_mode.to_dict()
         self.session["activated_tools"] = sorted(self.activated_tools)
         self.session["permission_mode"] = self.permission_mode
+        self.session["model_spec"] = self.model_spec
 
     def _save_session(self) -> None:
         self._sync_session_state()

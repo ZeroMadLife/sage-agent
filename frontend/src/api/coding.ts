@@ -1,6 +1,8 @@
 import type {
   CodingApprovalChoice,
   CodingApprovalResponse,
+  CodingCompactResponse,
+  CodingContextSnapshot,
   CodingFileContentResponse,
   CodingFilesResponse,
   CodingGitStatusResponse,
@@ -105,6 +107,32 @@ export async function fetchCodingModels(): Promise<CodingModelsResponse> {
   const response = await fetch(new URL('/api/v1/coding/models', API_BASE_URL))
   if (!response.ok) throw new Error(`fetch models failed: ${response.status}`)
   return (await response.json()) as CodingModelsResponse
+}
+
+export async function fetchCodingContext(sessionId: string): Promise<CodingContextSnapshot> {
+  const response = await fetch(new URL(`/api/v1/coding/${sessionId}/context`, API_BASE_URL))
+  if (!response.ok) throw new Error(`fetch context failed: ${response.status}`)
+  return (await response.json()) as CodingContextSnapshot
+}
+
+export async function requestCodingCompaction(
+  sessionId: string,
+  focus = '',
+): Promise<CodingCompactResponse> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/${sessionId}/context/compact`, API_BASE_URL),
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ focus }),
+    },
+  )
+  if (!response.ok) {
+    if (response.status === 409) throw new Error('当前运行或压缩任务正在进行中')
+    if (response.status === 422) throw new Error('当前模型未配置上下文窗口')
+    throw new Error(`compact context failed: ${response.status}`)
+  }
+  return (await response.json()) as CodingCompactResponse
 }
 
 export async function switchCodingModel(

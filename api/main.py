@@ -11,6 +11,7 @@ from agents.graph import build_graph
 from agents.itinerary_tool import create_itinerary_tool
 from agents.react_agent import AgentRuntime
 from core.auth import AuthManager
+from core.coding.context import ModelCapabilityRegistry
 from core.config.settings import get_settings
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
@@ -130,6 +131,10 @@ def create_app(
     coding_model_factory: Any | None = None,
     coding_workspace_root: str | Path | None = None,
     coding_storage_root: str | Path | None = None,
+    coding_model_catalog: list[dict[str, Any]] | None = None,
+    coding_model_capabilities: dict[str, object] | ModelCapabilityRegistry | None = None,
+    coding_default_model: str = "deepseek:deepseek-v4-flash",
+    coding_checkpoint_anchor_key: bytes | None = None,
 ) -> FastAPI:
     """Create the Sage API app.
 
@@ -144,8 +149,33 @@ def create_app(
     app.state.session_store = session_store
     repo_root = Path(__file__).resolve().parent.parent
     app.state.coding_model_factory = coding_model_factory or (
-        lambda: create_llm(get_settings().llm_model)
+        lambda model_id=coding_default_model: create_llm(model_id)
     )
+    app.state.coding_model_catalog = (
+        [
+            {
+                "id": "deepseek:deepseek-v4-flash",
+                "label": "DeepSeek V4 Flash",
+                "provider": "deepseek",
+            },
+            {
+                "id": "deepseek:deepseek-v4-pro",
+                "label": "DeepSeek V4 Pro",
+                "provider": "deepseek",
+            },
+        ]
+        if coding_model_catalog is None
+        else coding_model_catalog
+    )
+    app.state.coding_default_model = coding_default_model
+    app.state.coding_model_capabilities = (
+        coding_model_capabilities
+        if isinstance(coding_model_capabilities, ModelCapabilityRegistry)
+        else ModelCapabilityRegistry(coding_model_capabilities)
+        if coding_model_capabilities is not None
+        else ModelCapabilityRegistry.from_env()
+    )
+    app.state.coding_checkpoint_anchor_key = coding_checkpoint_anchor_key
     app.state.coding_workspace_root = Path(coding_workspace_root or repo_root).resolve()
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
     app.state.coding_sessions = {}

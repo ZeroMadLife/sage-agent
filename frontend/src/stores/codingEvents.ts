@@ -4,6 +4,7 @@ import type {
   CodingServerEvent,
   CodingToolCallEvent,
   CodingToolResultEvent,
+  CodingContextSnapshot,
 } from '../types/api'
 import type { Ref } from 'vue'
 
@@ -49,6 +50,9 @@ export type CodingEventState = {
   isThinking: Ref<boolean>
   errorMessage: Ref<string>
   contextChars: Ref<number>
+  contextSnapshot: Ref<CodingContextSnapshot | null>
+  compactionState: Ref<'idle' | 'running' | 'succeeded' | 'failed'>
+  compactionError: Ref<string>
   pendingApproval: Ref<CodingApproval | null>
   thinkingPhase: Ref<string>
   runtimeMode: Ref<string>
@@ -62,6 +66,16 @@ export type CodingEventEffect = {
   approvalRequired?: boolean
   terminal?: boolean
   toolResult?: CodingToolResultEvent
+}
+
+function contextReasonLabel(reason: string): string {
+  const labels: Record<string, string> = {
+    insufficient_history: '历史内容不足，暂不需要压缩',
+    compaction_busy: '已有压缩任务正在进行',
+    context_emergency: '上下文已达到安全上限',
+    invalid_previous_checkpoint: '历史压缩检查点无效',
+  }
+  return labels[reason] || '上下文压缩未完成'
 }
 
 export function applyCodingEvent(
@@ -108,8 +122,62 @@ export function applyCodingEvent(
     }
     return {}
   }
+  if (event.type === 'context_usage_updated') {
+    state.contextChars.value = event.used_tokens
+    const previous = state.contextSnapshot.value
+    state.contextSnapshot.value = {
+      configured: true,
+      model_id: previous?.model_id ?? null,
+      used_tokens: event.used_tokens,
+      model_limit_tokens: event.model_limit_tokens,
+      output_reserve_tokens: event.output_reserve_tokens,
+      effective_limit_tokens: event.effective_limit_tokens,
+      usage_ratio: event.usage_ratio,
+      level: event.level,
+      estimated: event.estimated,
+      compactable: event.compactable,
+      active_run_id: event.run_id ?? previous?.active_run_id ?? null,
+      context_operation_active: previous?.context_operation_active ?? false,
+      checkpoint_id: previous?.checkpoint_id ?? null,
+      resume_status: previous?.resume_status ?? 'active',
+      checkpoint_resume_enabled: previous?.checkpoint_resume_enabled ?? false,
+      latest_attempt: previous?.latest_attempt ?? null,
+      stale_started: previous?.stale_started ?? false,
+    }
+    return {}
+  }
+  if (event.type === 'context_compaction_started') {
+    state.compactionState.value = 'running'
+    state.compactionError.value = ''
+    if (state.contextSnapshot.value) {
+      state.contextSnapshot.value.context_operation_active = true
+    }
+    state.thinkingPhase.value = '正在压缩上下文...'
+    return {}
+  }
+  if (event.type === 'context_compaction_completed') {
+    state.compactionState.value = 'succeeded'
+    if (state.contextSnapshot.value) {
+      state.contextSnapshot.value.context_operation_active = false
+      state.contextSnapshot.value.used_tokens = event.after_tokens
+    }
+    state.contextChars.value = event.after_tokens
+    state.thinkingPhase.value = state.isThinking.value ? '思考中' : ''
+    return {}
+  }
+  if (event.type === 'context_compaction_failed') {
+    state.compactionState.value = 'failed'
+    if (state.contextSnapshot.value) {
+      state.contextSnapshot.value.context_operation_active = false
+    }
+    state.compactionError.value = contextReasonLabel(event.reason)
+    if (!state.isThinking.value) state.thinkingPhase.value = ''
+    return {}
+  }
   if (event.type === 'model_requested') {
-    if (event.prompt_chars) state.contextChars.value = event.prompt_chars
+    if (event.prompt_chars && !state.contextSnapshot.value) {
+      state.contextChars.value = event.prompt_chars
+    }
     state.thinkingPhase.value = '正在请求模型...'
     settleExecutionActivity(state.messages.value, 'retry')
     appendExecutionActivity(state.messages.value, {
