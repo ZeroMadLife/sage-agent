@@ -206,6 +206,24 @@ def test_request_stop_emits_run_id(tmp_path: Path) -> None:
     assert ok is True
 
 
+@pytest.mark.asyncio
+async def test_run_turn_uses_caller_supplied_run_id(tmp_path: Path) -> None:
+    """A coordinator-owned run id remains stable across every runtime event."""
+    runtime = _runtime(tmp_path, FakeModel(["<final>done</final>"]))
+
+    events = [
+        event
+        async for event in runtime.run_turn(
+            "hello",
+            run_id="run-coordinator-owned",
+        )
+    ]
+
+    assert events
+    assert {event["run_id"] for event in events} == {"run-coordinator-owned"}
+    assert runtime.active_run_id is None
+
+
 async def test_run_turn_releases_lease_on_aclose(tmp_path: Path) -> None:
     """Lease is released even when the generator is closed early via aclose().
 

@@ -179,6 +179,14 @@ def create_app(
     app.state.coding_workspace_root = Path(coding_workspace_root or repo_root).resolve()
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
     app.state.coding_sessions = {}
+    from api.coding_runs import CodingRunRegistry
+
+    app.state.coding_run_registry = CodingRunRegistry(app.state.coding_storage_root)
+
+    @app.on_event("shutdown")
+    async def shutdown_coding_runs() -> None:
+        await app.state.coding_run_registry.shutdown()
+
     from api import coding, routes, ws
 
     app.include_router(routes.router)

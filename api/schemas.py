@@ -67,6 +67,35 @@ class CodingSessionMessagesResponse(BaseModel):
     messages: list[CodingSessionMessage]
 
 
+class CodingTimelineEvent(BaseModel):
+    """One durable browser-visible coding event."""
+
+    event_id: str
+    session_id: str
+    run_id: str
+    sequence: int
+    kind: str
+    status: str
+    timestamp: str
+    payload: dict[str, Any]
+
+
+class CodingActiveRun(BaseModel):
+    """The session run currently owned by the server."""
+
+    run_id: str
+    status: Literal["running"] = "running"
+
+
+class CodingTimelineResponse(BaseModel):
+    """Cursor-paginated durable coding timeline."""
+
+    items: list[CodingTimelineEvent]
+    next_cursor: int
+    has_more: bool
+    active_run: CodingActiveRun | None = None
+
+
 class CodingFileEntry(BaseModel):
     """One entry in a coding file tree listing."""
 

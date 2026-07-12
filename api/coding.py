@@ -41,6 +41,8 @@ from api.schemas import (
     CodingSessionResponse,
     CodingSessionsResponse,
     CodingSessionSummary,
+    CodingTimelineEvent,
+    CodingTimelineResponse,
     CodingSkillDetailResponse,
     CodingSkillsResponse,
     CodingSkillSummary,
@@ -95,6 +97,7 @@ async def create_coding_session(
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
+    request.app.state.coding_run_registry.get(session_id)
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(workspace_root.resolve()),
@@ -155,10 +158,62 @@ async def resume_coding_session(
         ) from exc
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
+    await request.app.state.coding_run_registry.hydrate(session_id)
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(persisted_workspace),
         permission_mode=runtime.permission_mode,
+    )
+
+
+@router.get(
+    "/api/v1/coding/session/{session_id}/timeline",
+    response_model=CodingTimelineResponse,
+)
+async def get_coding_session_timeline(
+    session_id: str,
+    request: Request,
+    after: int = 0,
+    limit: int = 100,
+) -> CodingTimelineResponse:
+    """Return browser-visible events after a monotonic session cursor."""
+    if after < 0:
+        raise HTTPException(status_code=422, detail="after must be non-negative")
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
+    if session_id not in sessions:
+        store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
+        try:
+            store.load(session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown coding session: {session_id}"
+            ) from exc
+    coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
+    page = coordinator.journal.replay(after=after, limit=limit)
+    active_run_id = coordinator.journal.active_run_id()
+    return CodingTimelineResponse(
+        items=[
+            CodingTimelineEvent(
+                event_id=item.event_id,
+                session_id=item.session_id,
+                run_id=item.run_id,
+                sequence=item.sequence,
+                kind=item.kind,
+                status=item.status,
+                timestamp=item.timestamp,
+                payload=item.payload,
+            )
+            for item in page.items
+        ],
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
+        active_run=(
+            {"run_id": active_run_id, "status": "running"}
+            if active_run_id is not None
+            else None
+        ),
     )
 
 

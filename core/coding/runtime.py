@@ -856,7 +856,11 @@ class CodingRuntime:
         return [error_event, *terminals]
 
     async def run_turn(
-        self, user_message: str, skill_prompt: str | None = None
+        self,
+        user_message: str,
+        skill_prompt: str | None = None,
+        *,
+        run_id: str | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Run one coding turn, persist events, and stream them to caller.
 
@@ -893,7 +897,7 @@ class CodingRuntime:
         await self._context_operation_lock.acquire()
 
         self.stop_requested = False
-        run_id = f"run_{uuid.uuid4().hex[:12]}"
+        run_id = run_id or f"run_{uuid.uuid4().hex[:12]}"
         self._turn_id = f"turn_{uuid.uuid4().hex[:12]}"
         self.active_run_id = run_id
         run_start_time = time.monotonic()
