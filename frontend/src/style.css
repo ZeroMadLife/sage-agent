@@ -74,14 +74,6 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 button:disabled { cursor: not-allowed; }
 #app { min-height: 100vh; }
 
-/* Legacy itinerary view remains token-compatible while coding workbench owns its own scoped layout. */
-.workbench { display:grid; grid-template-columns:minmax(280px,360px) minmax(0,1fr); min-height:100vh; color:var(--sage-text); }
-.left-rail { display:flex; flex-direction:column; gap:16px; padding:20px; border-right:1px solid var(--sage-border); background:var(--sage-surface); }
-.right-workspace { display:grid; align-content:start; gap:16px; padding:28px; }
-.panel { padding:16px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); background:var(--sage-surface); }
-.error-text { color:var(--sage-danger); }
-@media (max-width:860px) { .workbench { grid-template-columns:1fr; }.left-rail { border-right:0; border-bottom:1px solid var(--sage-border); }.right-workspace { padding:20px; } }
-
 /* Highlight.js code blocks — use sage tokens for theme integration */
 .message-content :deep(.hljs) {
   background: var(--sage-code-bg);
