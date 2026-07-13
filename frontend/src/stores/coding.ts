@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed, ref, toRef } from 'vue'
 import {
   approveCodingPlan,
   approveMemoryProposal,
@@ -18,6 +18,9 @@ import {
   fetchCodingSessionMessages,
   fetchCodingSessions,
   fetchCodingSkills,
+  fetchCodingTimeline,
+  fetchCodingTimelineTail,
+  fetchOlderCodingTimeline,
   rejectCodingPlan,
   rejectMemoryProposal,
   requestCodingCompaction,
@@ -27,9 +30,11 @@ import {
   stopCodingRun,
   switchCodingModel,
   switchPermissionMode,
+  updateCodingSessionMetadata,
 } from '../api/coding'
 import type {
   CodingApproval,
+  CodingActiveRun,
   CodingApprovalChoice,
   CodingDiffLine,
   CodingFileEntry,
@@ -43,6 +48,7 @@ import type {
   CodingSessionSummary,
   CodingSkillSummary,
   CodingToolResultEvent,
+  CodingTimelineEvent,
   CodingContextSnapshot,
   MemoryProposal,
   PermissionMode,
@@ -50,8 +56,141 @@ import type {
 import { applyCodingEvent } from './codingEvents'
 import type { ChatMessage, DiffInfo, PlanReviewState } from './codingEvents'
 import { CodingStream } from './codingStream'
+import {
+  createTimelineProjection,
+  mergeTimelineEvents,
+  type TimelineTurn,
+} from './codingTimeline'
 
 export type { ChatMessage, ToolActivity } from './codingEvents'
+
+export type CodingSessionUiState = {
+  workspaceRoot: string
+  permissionMode: PermissionMode
+  timeline: CodingTimelineEvent[]
+  olderTimeline: CodingTimelineEvent[]
+  turns: TimelineTurn[]
+  timelineCursor: number
+  olderCursor: number | null
+  timelineHasMore: boolean
+  timelineInitialized: boolean
+  timelineLoading: boolean
+  activeRun: CodingActiveRun | null
+  stateSequence: number
+  currentModelId: string
+  contextRequestGeneration: number
+  memoryRequestGeneration: number
+  memoryMutationGeneration: number
+  compactionGeneration: number
+  modelMutationGeneration: number
+  permissionMutationGeneration: number
+  scrollAnchor: { eventId: string; offset: number } | null
+  messages: ChatMessage[]
+  legacyMessages: ChatMessage[]
+  legacyTranscript: ChatMessage[]
+  legacyLoaded: boolean
+  isThinking: boolean
+  errorMessage: string
+  contextChars: number
+  contextSnapshot: CodingContextSnapshot | null
+  compactionState: 'idle' | 'running' | 'succeeded' | 'failed'
+  compactionError: string
+  pendingApproval: CodingApproval | null
+  approvalBusy: boolean
+  thinkingPhase: string
+  runtimeMode: string
+  planTopic: string
+  planPath: string
+  planReview: PlanReviewState | null
+  lastDiffInfo: DiffInfo | null
+  memoryProposals: MemoryProposal[]
+  memoryProposalBusy: Record<string, boolean>
+  memoryProposalError: string
+  memoryProposalRefresh: number
+}
+
+function createSessionUiState(): CodingSessionUiState {
+  return {
+    workspaceRoot: '',
+    permissionMode: 'default',
+    timeline: [],
+    olderTimeline: [],
+    turns: [],
+    timelineCursor: 0,
+    olderCursor: null,
+    timelineHasMore: false,
+    timelineInitialized: false,
+    timelineLoading: false,
+    activeRun: null,
+    stateSequence: 0,
+    currentModelId: '',
+    contextRequestGeneration: 0,
+    memoryRequestGeneration: 0,
+    memoryMutationGeneration: 0,
+    compactionGeneration: 0,
+    modelMutationGeneration: 0,
+    permissionMutationGeneration: 0,
+    scrollAnchor: null,
+    messages: [],
+    legacyMessages: [],
+    legacyTranscript: [],
+    legacyLoaded: false,
+    isThinking: false,
+    errorMessage: '',
+    contextChars: 0,
+    contextSnapshot: null,
+    compactionState: 'idle',
+    compactionError: '',
+    pendingApproval: null,
+    approvalBusy: false,
+    thinkingPhase: '',
+    runtimeMode: 'default',
+    planTopic: '',
+    planPath: '',
+    planReview: null,
+    lastDiffInfo: null,
+    memoryProposals: [],
+    memoryProposalBusy: {},
+    memoryProposalError: '',
+    memoryProposalRefresh: 0,
+  }
+}
+
+function pendingApprovalFromTimeline(
+  timeline: CodingTimelineEvent[],
+  sessionId: string,
+): CodingApproval | null {
+  let pending: (CodingApproval & { run_id?: string }) | null = null
+  for (const event of timeline) {
+    const type = event.payload.type
+    if (event.kind === 'terminal' && pending?.run_id === event.run_id) {
+      pending = null
+      continue
+    }
+    if (type === 'approval_required') {
+      pending = {
+        approval_id: typeof event.payload.approval_id === 'string' ? event.payload.approval_id : '',
+        session_id: sessionId,
+        tool: typeof event.payload.tool === 'string' ? event.payload.tool : '',
+        args: event.payload.args && typeof event.payload.args === 'object'
+          ? event.payload.args as Record<string, unknown> : {},
+        description: typeof event.payload.description === 'string' ? event.payload.description : '',
+        pattern_key: typeof event.payload.pattern_key === 'string' ? event.payload.pattern_key : '',
+        run_id: event.run_id,
+      }
+      continue
+    }
+    if (!pending) continue
+    const eventTool = typeof event.payload.tool === 'string' ? event.payload.tool : ''
+    if (
+      event.run_id === pending.run_id && eventTool === pending.tool &&
+      (type === 'approval_granted' || type === 'tool_result')
+    ) {
+      pending = null
+    }
+  }
+  return pending
+}
 
 // Noise entries hidden from the workspace file tree.
 const FILE_TREE_NOISE_PATTERNS: Array<RegExp | string> = [
@@ -86,33 +225,60 @@ function contextReasonLabel(reason: string): string {
 
 export const useCodingStore = defineStore('coding', () => {
   const sessionId = ref('')
-  const workspaceRoot = ref('')
-  const messages = ref<ChatMessage[]>([])
-  const isThinking = ref(false)
-  const errorMessage = ref('')
-  const currentModelId = ref('')
-  const contextChars = ref(0)
-  const contextSnapshot = ref<CodingContextSnapshot | null>(null)
-  const compactionState = ref<'idle' | 'running' | 'succeeded' | 'failed'>('idle')
-  const compactionError = ref('')
-  const pendingApproval = ref<CodingApproval | null>(null)
-  const approvalBusy = ref(false)
-  const thinkingPhase = ref('')
-  const runtimeMode = ref('default')
-  const permissionMode = ref<PermissionMode>('default')
-  const planTopic = ref('')
-  const planPath = ref('')
-  const planReview = ref<PlanReviewState | null>(null)
-  const lastDiffInfo = ref<DiffInfo | null>(null)
+  const sessionsById = ref<Record<string, CodingSessionUiState>>({})
+  const detachedSession = createSessionUiState()
+  function ensureSession(targetSessionId: string): CodingSessionUiState {
+    if (!targetSessionId) return detachedSession
+    if (!sessionsById.value[targetSessionId]) {
+      sessionsById.value[targetSessionId] = createSessionUiState()
+    }
+    return sessionsById.value[targetSessionId]
+  }
+  function sessionField<K extends keyof CodingSessionUiState>(key: K) {
+    return computed<CodingSessionUiState[K]>({
+      get: () => ensureSession(sessionId.value)[key],
+      set: (value) => { ensureSession(sessionId.value)[key] = value },
+    })
+  }
+  const workspaceRoot = sessionField('workspaceRoot')
+  const messages = sessionField('messages')
+  const legacyMessages = sessionField('legacyMessages')
+  const isThinking = sessionField('isThinking')
+  const errorMessage = sessionField('errorMessage')
+  const currentModelId = sessionField('currentModelId')
+  const contextChars = sessionField('contextChars')
+  const contextSnapshot = sessionField('contextSnapshot')
+  const compactionState = sessionField('compactionState')
+  const compactionError = sessionField('compactionError')
+  const pendingApproval = sessionField('pendingApproval')
+  const approvalBusy = sessionField('approvalBusy')
+  const thinkingPhase = sessionField('thinkingPhase')
+  const runtimeMode = sessionField('runtimeMode')
+  const permissionMode = sessionField('permissionMode')
+  const planTopic = sessionField('planTopic')
+  const planPath = sessionField('planPath')
+  const planReview = sessionField('planReview')
+  const lastDiffInfo = sessionField('lastDiffInfo')
   const diffDrawerVisible = ref(false)
   const currentDiffData = ref<CodingRunDiff | null>(null)
   const codingSessions = ref<CodingSessionSummary[]>([])
   const runs = ref<CodingRunSummary[]>([])
   const selectedRun = ref<CodingRunDetailResponse | null>(null)
-  const memoryProposals = ref<MemoryProposal[]>([])
-  const memoryProposalBusy = ref<Record<string, boolean>>({})
-  const memoryProposalError = ref('')
-  const memoryProposalRefresh = ref(0)
+  const memoryProposals = sessionField('memoryProposals')
+  const memoryProposalBusy = sessionField('memoryProposalBusy')
+  const memoryProposalError = sessionField('memoryProposalError')
+  const memoryProposalRefresh = sessionField('memoryProposalRefresh')
+  const timeline = sessionField('timeline')
+  const olderTimeline = sessionField('olderTimeline')
+  const visibleTimeline = computed(() => mergeTimelineEvents(olderTimeline.value, timeline.value))
+  const turns = sessionField('turns')
+  const timelineCursor = sessionField('timelineCursor')
+  const olderCursor = sessionField('olderCursor')
+  const timelineHasMore = sessionField('timelineHasMore')
+  const timelineInitialized = sessionField('timelineInitialized')
+  const timelineLoading = sessionField('timelineLoading')
+  const activeRun = sessionField('activeRun')
+  const scrollAnchor = sessionField('scrollAnchor')
 
   const skills = ref<CodingSkillSummary[]>([])
   const mcpServers = ref<CodingMcpServer[]>([])
@@ -134,10 +300,22 @@ export const useCodingStore = defineStore('coding', () => {
   let stream: CodingStream | null = null
   let approvalPollTimer: number | null = null
   let fileTreeGeneration = 0
-  let contextRequestGeneration = 0
-  let memoryProposalGeneration = 0
-  let memoryProposalSessionGeneration = 0
+  let runsRequestGeneration = 0
+  let sessionsRequestGeneration = 0
+  let gitRequestGeneration = 0
+  let runDetailGeneration = 0
+  let runDiffGeneration = 0
+  let filePreviewGeneration = 0
+  let selectionGeneration = 0
   const dirCache = new Map<string, CodingFileEntry[]>()
+  const liveRefreshPending = new Set<string>()
+  const memoryRefreshPending = new Set<string>()
+  const terminalRefreshPending = new Set<string>()
+  const scheduledTimeouts = new Set<number>()
+  let approvalPollSessionId = ''
+
+  const MAX_RESIDENT_TIMELINE_EVENTS = 2_000
+  const MAX_RESIDENT_OLDER_EVENTS = 10_000
 
   const contextBudget = computed(() => contextSnapshot.value?.effective_limit_tokens ?? 0)
   const contextConfigured = computed(() => contextSnapshot.value?.configured ?? false)
@@ -153,41 +331,376 @@ export const useCodingStore = defineStore('coding', () => {
     return Math.min(100, Math.round((contextChars.value / limit) * 100))
   })
 
+  function mergeTimelinePage(
+    targetSessionId: string,
+    items: CodingTimelineEvent[],
+    page: {
+      next_cursor: number
+      has_more?: boolean
+      active_run?: CodingActiveRun | null
+      older_cursor?: number | null
+      latest_cursor?: number
+    },
+    source: 'history' | 'older' | 'live' | 'replay' = 'history',
+  ) {
+    const state = ensureSession(targetSessionId)
+    const validItems = items.filter((item) => item.session_id === targetSessionId)
+    const known = new Set([...state.olderTimeline, ...state.timeline].map((item) => item.event_id))
+    const fresh = validItems.filter((item) => !known.has(item.event_id))
+    if (source === 'older') {
+      state.olderTimeline = mergeTimelineEvents(state.olderTimeline, validItems)
+        .slice(-MAX_RESIDENT_OLDER_EVENTS)
+    } else {
+      state.timeline = mergeTimelineEvents(state.timeline, validItems)
+        .slice(-MAX_RESIDENT_TIMELINE_EVENTS)
+    }
+    if (source !== 'older') {
+      state.timelineCursor = Math.max(
+        state.timelineCursor,
+        source === 'history' ? page.latest_cursor ?? 0 : 0,
+        page.next_cursor,
+        ...validItems.map((item) => item.sequence),
+      )
+    }
+    if (Object.prototype.hasOwnProperty.call(page, 'older_cursor')) {
+      state.olderCursor = page.older_cursor ?? null
+      state.timelineHasMore = state.olderCursor !== null
+    } else if (page.has_more !== undefined && source !== 'live') {
+      state.timelineHasMore = page.has_more
+    }
+    if (source === 'older' && state.olderTimeline.length >= MAX_RESIDENT_OLDER_EVENTS) {
+      state.olderCursor = null
+      state.timelineHasMore = false
+    }
+    if (source !== 'older' && Object.prototype.hasOwnProperty.call(page, 'active_run')) {
+      state.activeRun = page.active_run ?? null
+    }
+    for (const item of fresh
+      .filter((item) => source !== 'older' && item.sequence > state.stateSequence)
+      .sort((left, right) => left.sequence - right.sequence)) {
+      const effect = applyTimelineState(targetSessionId, state, item)
+      state.stateSequence = item.sequence
+      if (source === 'live') applyLiveSideEffects(targetSessionId, item, effect)
+    }
+    rebuildTimelineProjection(state)
+    if (state.legacyLoaded && state.legacyTranscript.length > 0) {
+      const projected = state.messages.slice(state.legacyMessages.length)
+      const prefix = legacyPrefix(state.legacyTranscript, projected)
+      if (prefix.length !== state.legacyMessages.length) {
+        state.legacyMessages = prefix
+        rebuildTimelineProjection(state)
+      }
+    }
+  }
+
+  function handleTimelineEvent(targetSessionId: string, event: CodingTimelineEvent) {
+    if (event.session_id !== targetSessionId) return
+    mergeTimelinePage(targetSessionId, [event], {
+      next_cursor: event.sequence,
+      latest_cursor: event.sequence,
+    }, 'live')
+  }
+
+  function applyTimelineState(
+    targetSessionId: string,
+    state: CodingSessionUiState,
+    event: CodingTimelineEvent,
+  ) {
+    const payloadType = typeof event.payload.type === 'string' ? event.payload.type : ''
+    state.errorMessage = ''
+    if (event.payload.event === 'run_started') {
+      state.activeRun = { run_id: event.run_id, status: 'running' }
+      state.isThinking = true
+    }
+    if (event.kind === 'terminal') {
+      if (!state.activeRun || state.activeRun.run_id === event.run_id) {
+        if (state.activeRun?.run_id === event.run_id) state.activeRun = null
+        state.isThinking = false
+        state.thinkingPhase = ''
+      }
+    }
+    if (payloadType) {
+      const effect = applyCodingEvent(
+        {
+          sessionId: ref(targetSessionId),
+          messages: toRef(state, 'messages'),
+          isThinking: toRef(state, 'isThinking'),
+          errorMessage: toRef(state, 'errorMessage'),
+          contextChars: toRef(state, 'contextChars'),
+          contextSnapshot: toRef(state, 'contextSnapshot'),
+          compactionState: toRef(state, 'compactionState'),
+          compactionError: toRef(state, 'compactionError'),
+          pendingApproval: toRef(state, 'pendingApproval'),
+          thinkingPhase: toRef(state, 'thinkingPhase'),
+          runtimeMode: toRef(state, 'runtimeMode'),
+          planTopic: toRef(state, 'planTopic'),
+          planPath: toRef(state, 'planPath'),
+          planReview: toRef(state, 'planReview'),
+          lastDiffInfo: toRef(state, 'lastDiffInfo'),
+          memoryProposals: toRef(state, 'memoryProposals'),
+          memoryProposalRefresh: toRef(state, 'memoryProposalRefresh'),
+        },
+        event.payload as unknown as CodingServerEvent,
+      )
+      if (state.activeRun?.run_id === event.run_id && event.kind !== 'terminal') {
+        state.isThinking = true
+      }
+      return effect
+    }
+    if (state.activeRun?.run_id === event.run_id && event.kind !== 'terminal') {
+      state.isThinking = true
+    }
+    return {}
+  }
+
+  function applyLiveSideEffects(
+    targetSessionId: string,
+    event: CodingTimelineEvent,
+    effect: ReturnType<typeof applyCodingEvent>,
+  ) {
+    const payloadType = typeof event.payload.type === 'string' ? event.payload.type : ''
+    if (effect.approvalRequired && targetSessionId === sessionId.value) {
+      void enrichApprovalPreview(targetSessionId, ensureSession(targetSessionId))
+      startApprovalPolling(targetSessionId)
+    }
+    if (effect.memoryProposalReady) scheduleMemoryRefresh(targetSessionId)
+    if (effect.toolResult && !effect.toolResult.is_error &&
+      ['write_file', 'patch_file', 'run_shell'].includes(effect.toolResult.tool)) {
+      scheduleWorkspaceRefresh(targetSessionId)
+    }
+    if (payloadType === 'turn_finished') scheduleContextRefresh(targetSessionId)
+    if (event.kind === 'terminal') {
+      const pending = pendingApprovalFromTimeline(
+        mergeTimelineEvents(ensureSession(targetSessionId).olderTimeline, ensureSession(targetSessionId).timeline),
+        targetSessionId,
+      ) as (CodingApproval & { run_id?: string }) | null
+      if (!pending || pending.run_id === event.run_id) stopApprovalPolling(targetSessionId)
+      scheduleTerminalRefresh(targetSessionId)
+    }
+  }
+
+  function schedule(callback: () => void) {
+    const timer = window.setTimeout(() => {
+      scheduledTimeouts.delete(timer)
+      callback()
+    }, 0)
+    scheduledTimeouts.add(timer)
+  }
+
+  function scheduleWorkspaceRefresh(targetSessionId: string) {
+    if (liveRefreshPending.has(targetSessionId)) return
+    liveRefreshPending.add(targetSessionId)
+    schedule(() => {
+      liveRefreshPending.delete(targetSessionId)
+      if (targetSessionId === sessionId.value) void refreshWorkspaceView()
+    })
+  }
+
+  function scheduleMemoryRefresh(targetSessionId: string) {
+    if (memoryRefreshPending.has(targetSessionId)) return
+    memoryRefreshPending.add(targetSessionId)
+    schedule(() => {
+      memoryRefreshPending.delete(targetSessionId)
+      void loadMemoryProposals(targetSessionId)
+    })
+  }
+
+  function scheduleContextRefresh(targetSessionId: string) {
+    schedule(() => {
+      void loadContext(targetSessionId)
+    })
+  }
+
+  function scheduleTerminalRefresh(targetSessionId: string) {
+    if (terminalRefreshPending.has(targetSessionId)) return
+    terminalRefreshPending.add(targetSessionId)
+    schedule(() => {
+      terminalRefreshPending.delete(targetSessionId)
+      if (targetSessionId !== sessionId.value) return
+      void loadSessions().catch(() => {})
+      void loadRuns(targetSessionId)
+    })
+  }
+
+  function rebuildTimelineProjection(state: CodingSessionUiState) {
+    const projectedTimeline = mergeTimelineEvents(state.olderTimeline, state.timeline)
+    const projection = createTimelineProjection(projectedTimeline)
+    state.turns = projection.turns
+    const projectedMessages = projection.turns.flatMap((turn): ChatMessage[] => {
+      const result: ChatMessage[] = []
+      if (turn.user) {
+        result.push({
+          id: `${turn.id}:user`,
+          run_id: turn.run_id,
+          role: 'user',
+          content: turn.user.content,
+        })
+      }
+      if (turn.assistant || turn.tools.length > 0 || turn.model.length > 0) {
+        result.push({
+          id: `${turn.id}:assistant`,
+          run_id: turn.run_id,
+          role: 'assistant',
+          content: turn.assistant?.content ?? '',
+          tools: turn.tools.map((tool) => ({
+            tool: tool.tool,
+            args: tool.args,
+            status: tool.status === 'running' || tool.status === 'blocked'
+              ? 'running'
+              : tool.is_error || tool.status === 'error' ? 'error' : 'done',
+            content: tool.result,
+          })),
+          activities: turn.model.map((item) => ({
+            kind: 'model' as const,
+            label: item.type === 'model_requested' ? '请求模型响应' : '处理模型响应',
+            status: item.status === 'running' ? 'running' as const
+              : item.status === 'error' ? 'error' as const : 'done' as const,
+          })),
+          isThinking: state.activeRun?.run_id === turn.run_id && !turn.terminal,
+        })
+      }
+      return result
+    })
+    state.messages = [...state.legacyMessages, ...projectedMessages]
+    const targetSessionId = projectedTimeline[0]?.session_id ?? ''
+    state.pendingApproval = pendingApprovalFromTimeline(projectedTimeline, targetSessionId)
+    state.isThinking = state.activeRun !== null
+  }
+
+  async function loadTimeline(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    if (state.timelineLoading) return
+    state.timelineLoading = true
+    try {
+      if (state.timelineInitialized) {
+        let after = state.timelineCursor
+        while (true) {
+          const response = await fetchCodingTimeline(targetSessionId, after, 100)
+          mergeTimelinePage(targetSessionId, response.items, response, 'replay')
+          if (!response.has_more) break
+          if (response.next_cursor <= after) {
+            throw new Error('timeline replay cursor did not advance')
+          }
+          after = response.next_cursor
+        }
+      } else {
+        const response = await fetchCodingTimelineTail(targetSessionId, 100)
+        mergeTimelinePage(targetSessionId, response.items, response, 'history')
+      }
+      state.timelineInitialized = true
+      state.errorMessage = ''
+      if (!state.legacyLoaded) {
+        const legacy = await loadSessionMessages(targetSessionId)
+        const projected = state.messages.slice(state.legacyMessages.length)
+        state.legacyTranscript = legacy
+        state.legacyMessages = legacyPrefix(legacy, projected)
+        state.legacyLoaded = true
+        rebuildTimelineProjection(state)
+      }
+    } catch (error) {
+      state.errorMessage = error instanceof Error ? error.message : String(error)
+      if (!state.timelineInitialized && state.timeline.length === 0) {
+        state.legacyTranscript = await loadSessionMessages(targetSessionId)
+        state.legacyMessages = state.legacyTranscript
+        state.legacyLoaded = true
+        rebuildTimelineProjection(state)
+      }
+    } finally {
+      state.timelineLoading = false
+    }
+  }
+
+  async function loadOlderTimeline(targetSessionId = sessionId.value) {
+    const state = ensureSession(targetSessionId)
+    if (state.olderCursor === null || state.timelineLoading) return
+    const before = state.olderCursor
+    state.timelineLoading = true
+    try {
+      const response = await fetchOlderCodingTimeline(targetSessionId, before, 100)
+      mergeTimelinePage(targetSessionId, response.items, response, 'older')
+      state.errorMessage = ''
+    } catch (error) {
+      state.errorMessage = error instanceof Error ? error.message : String(error)
+    } finally {
+      state.timelineLoading = false
+    }
+  }
+
+  const loadMoreTimeline = loadOlderTimeline
+
+  function legacyPrefix(legacy: ChatMessage[], projected: ChatMessage[]): ChatMessage[] {
+    const max = Math.min(legacy.length, projected.length)
+    for (let count = max; count > 0; count -= 1) {
+      const left = legacy.slice(-count)
+      const right = projected.slice(0, count)
+      if (left.every((item, index) => sameLegacyMessage(item, right[index]))) {
+        return legacy.slice(0, -count)
+      }
+    }
+    return legacy
+  }
+
+  function sameLegacyMessage(left: ChatMessage, right: ChatMessage): boolean {
+    if (left.role !== right.role) return false
+    if (left.content === right.content) return true
+    return left.role === 'assistant' && Boolean(right.content) && left.content.startsWith(right.content)
+  }
+
+  function setScrollAnchor(eventId: string, offset: number) {
+    scrollAnchor.value = eventId ? { eventId, offset } : null
+  }
+
   async function initialize() {
     if (sessionId.value) return
+    const selection = ++selectionGeneration
     const session = await startCodingSession()
+    if (selection !== selectionGeneration) return
     sessionId.value = session.session_id
+    ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
     permissionMode.value = session.permission_mode
     await Promise.all([
       loadSkills(),
       loadMcpServers(),
       loadModels(),
+      loadTimeline(session.session_id),
       loadContext(),
       loadGitStatus(),
       loadFiles('.'),
-      loadSessions(),
+      loadSessions().catch(() => {}),
       loadRuns(),
     ])
+    if (selection !== selectionGeneration || sessionId.value !== session.session_id) return
     connectSocket()
   }
 
   function connectSocket() {
     if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    const state = ensureSession(targetSessionId)
     void loadMemoryProposals()
     stream?.disconnect()
     stream = new CodingStream({
-      onEvent: handleServerEvent,
+      onEvent: handleTimelineEvent,
       onError: (message) => {
-        errorMessage.value = message
-        isThinking.value = false
-        thinkingPhase.value = ''
+        ensureSession(targetSessionId).errorMessage = message
       },
     })
-    stream.connect(sessionId.value, buildCodingStreamUrl(sessionId.value))
+    stream.connect(
+      targetSessionId,
+      buildCodingStreamUrl(targetSessionId, state.timelineCursor),
+    )
+  }
+
+  function stopSessionTransport() {
+    stopApprovalPolling()
+    stream?.disconnect()
+    stream = null
   }
 
   function handleServerEvent(event: CodingServerEvent) {
+    const targetSessionId = sessionId.value
     const effect = applyCodingEvent(
       {
         sessionId,
@@ -212,7 +725,7 @@ export const useCodingStore = defineStore('coding', () => {
     )
     if (effect.memoryProposalReady) void loadMemoryProposals()
     if (event.type === 'turn_finished') {
-      window.setTimeout(() => void loadContext(), 0)
+      schedule(() => void loadContext(targetSessionId))
     }
     if (effect.approvalRequired) {
       void enrichApprovalPreview()
@@ -226,7 +739,7 @@ export const useCodingStore = defineStore('coding', () => {
     if (effect.terminal) {
       stopApprovalPolling()
       if (event.type !== 'error') {
-        void loadSessions()
+        void loadSessions().catch(() => {})
         void loadRuns()
       }
     }
@@ -244,37 +757,48 @@ export const useCodingStore = defineStore('coding', () => {
     startApprovalPolling()
   }
 
-  async function pollApproval() {
-    if (!sessionId.value || !isThinking.value) return
+  async function pollApproval(targetSessionId: string, state: CodingSessionUiState) {
+    if (!targetSessionId || (!state.pendingApproval && !state.isThinking && !state.activeRun)) return
     try {
-      pendingApproval.value = await fetchCodingApprovalPending(sessionId.value)
+      const approval = await fetchCodingApprovalPending(targetSessionId)
+      if (approvalPollSessionId !== targetSessionId) return
+      state.pendingApproval = approval
     } catch {
       // WebSocket approval_required is primary; polling is a resilience layer.
     }
   }
 
-  function startApprovalPolling() {
-    if (approvalPollTimer !== null) return
+  function startApprovalPolling(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    if (approvalPollTimer !== null && approvalPollSessionId === targetSessionId) return
+    stopApprovalPolling()
+    approvalPollSessionId = targetSessionId
+    const state = ensureSession(targetSessionId)
     approvalPollTimer = window.setInterval(() => {
-      void pollApproval()
+      void pollApproval(targetSessionId, state)
     }, 1500)
   }
 
-  function stopApprovalPolling() {
+  function stopApprovalPolling(targetSessionId?: string) {
+    if (targetSessionId && approvalPollSessionId !== targetSessionId) return
     if (approvalPollTimer === null) return
     window.clearInterval(approvalPollTimer)
     approvalPollTimer = null
+    approvalPollSessionId = ''
   }
 
-  async function enrichApprovalPreview() {
-    const approval = pendingApproval.value
+  async function enrichApprovalPreview(
+    targetSessionId = sessionId.value,
+    state = ensureSession(targetSessionId),
+  ) {
+    const approval = state.pendingApproval
     if (!approval) return
     const path = typeof approval.args.path === 'string' ? approval.args.path : ''
     if (!path) return
     if (approval.tool === 'patch_file') {
       const oldText = typeof approval.args.old_text === 'string' ? approval.args.old_text : ''
       const newText = typeof approval.args.new_text === 'string' ? approval.args.new_text : ''
-      pendingApproval.value = {
+      state.pendingApproval = {
         ...approval,
         diff_preview: buildSimpleDiff(oldText, newText),
       }
@@ -282,38 +806,39 @@ export const useCodingStore = defineStore('coding', () => {
     }
     if (approval.tool !== 'write_file') return
     const content = typeof approval.args.content === 'string' ? approval.args.content : ''
-    const fileExists = await workspaceFileExists(path)
+    const fileExists = await workspaceFileExists(targetSessionId, path)
     if (!fileExists) {
-      if (pendingApproval.value?.approval_id !== approval.approval_id) return
-      pendingApproval.value = {
-        ...pendingApproval.value,
+      if (state.pendingApproval?.approval_id !== approval.approval_id) return
+      state.pendingApproval = {
+        ...state.pendingApproval,
         diff_preview: buildSimpleDiff('', content),
       }
       return
     }
     try {
-      const current = await fetchCodingFile(sessionId.value, path)
-      if (pendingApproval.value?.approval_id !== approval.approval_id) return
-      pendingApproval.value = {
-        ...pendingApproval.value,
+      const current = await fetchCodingFile(targetSessionId, path)
+      if (state.pendingApproval?.approval_id !== approval.approval_id) return
+      state.pendingApproval = {
+        ...state.pendingApproval,
         diff_preview: buildSimpleDiff(current.content, content),
       }
     } catch {
-      pendingApproval.value = {
+      if (state.pendingApproval?.approval_id !== approval.approval_id) return
+      state.pendingApproval = {
         ...approval,
         diff_preview: buildSimpleDiff('', content),
       }
     }
   }
 
-  async function workspaceFileExists(path: string): Promise<boolean> {
-    if (!sessionId.value) return false
+  async function workspaceFileExists(targetSessionId: string, path: string): Promise<boolean> {
+    if (!targetSessionId) return false
     const segments = path.replace(/^\.\//, '').split('/')
     const name = segments.pop()
     if (!name) return false
     const parent = segments.join('/') || '.'
     try {
-      const listing = await fetchCodingFiles(sessionId.value, parent)
+      const listing = await fetchCodingFiles(targetSessionId, parent)
       return listing.entries.some((entry) => entry.name === name && !entry.is_dir)
     } catch {
       // A diff preview is non-critical. Avoid requesting an unknown file and
@@ -342,50 +867,62 @@ export const useCodingStore = defineStore('coding', () => {
   }
 
   async function respondApproval(choice: CodingApprovalChoice) {
-    if (!sessionId.value || !pendingApproval.value || approvalBusy.value) return
-    const approvalId = pendingApproval.value.approval_id
-    approvalBusy.value = true
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    if (!state.pendingApproval || state.approvalBusy) return
+    const approvalId = state.pendingApproval.approval_id
+    state.approvalBusy = true
     try {
-      await respondCodingApproval(sessionId.value, approvalId, choice)
-      pendingApproval.value = null
+      await respondCodingApproval(targetSessionId, approvalId, choice)
+      if (state.pendingApproval?.approval_id === approvalId) state.pendingApproval = null
     } catch (error) {
-      errorMessage.value = error instanceof Error ? error.message : String(error)
+      state.errorMessage = error instanceof Error ? error.message : String(error)
     } finally {
-      approvalBusy.value = false
+      state.approvalBusy = false
     }
   }
 
   async function stopCurrentRun() {
-    if (!sessionId.value || !isThinking.value) return
-    await stopCodingRun(sessionId.value)
-    pendingApproval.value = null
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    if (!state.isThinking && !state.activeRun) return
+    await stopCodingRun(targetSessionId)
+    state.pendingApproval = null
   }
 
   async function approvePlan() {
-    if (!planReview.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    if (!state.planReview) return
     try {
-      const result = await approveCodingPlan(sessionId.value)
+      const result = await approveCodingPlan(targetSessionId)
       // The REST call runs outside run_turn, so runtime_mode_changed is not
       // pushed over WebSocket. Apply the response locally.
       if (result.mode === 'default') {
-        runtimeMode.value = 'default'
-        planTopic.value = ''
-        planPath.value = ''
-        planReview.value = null
+        state.runtimeMode = 'default'
+        state.planTopic = ''
+        state.planPath = ''
+        state.planReview = null
       }
     } catch (e) {
-      errorMessage.value = String(e)
+      state.errorMessage = String(e)
     }
   }
 
   async function rejectPlan() {
-    if (!planReview.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    if (!state.planReview) return
     try {
-      await rejectCodingPlan(sessionId.value)
+      await rejectCodingPlan(targetSessionId)
       // Backend stays in plan mode (no runtime_mode_changed), so clear locally.
-      planReview.value = null
+      state.planReview = null
     } catch (e) {
-      errorMessage.value = String(e)
+      state.errorMessage = String(e)
     }
   }
 
@@ -418,45 +955,46 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
-  async function loadContext() {
-    if (!sessionId.value) return
-    const targetSessionId = sessionId.value
-    const requestGeneration = ++contextRequestGeneration
+  async function loadContext(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    const requestGeneration = ++state.contextRequestGeneration
     try {
       const snapshot = await fetchCodingContext(targetSessionId)
-      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return
-      contextSnapshot.value = snapshot
-      contextChars.value = contextSnapshot.value.used_tokens ?? 0
-      if (snapshot.model_id) currentModelId.value = snapshot.model_id
+      if (requestGeneration !== state.contextRequestGeneration) return
+      state.contextSnapshot = snapshot
+      state.contextChars = snapshot.used_tokens ?? 0
+      if (snapshot.model_id) state.currentModelId = snapshot.model_id
     } catch {
-      if (targetSessionId === sessionId.value && requestGeneration === contextRequestGeneration) {
-        contextSnapshot.value = null
-      }
+      if (requestGeneration === state.contextRequestGeneration) state.contextSnapshot = null
     }
   }
 
-  async function loadRuns() {
-    if (!sessionId.value) return
+  async function loadRuns(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    const generation = ++runsRequestGeneration
     try {
-      const res = await fetchCodingRuns(sessionId.value)
+      const res = await fetchCodingRuns(targetSessionId)
+      if (targetSessionId !== sessionId.value || generation !== runsRequestGeneration) return
       runs.value = res.runs
     } catch {
+      if (targetSessionId !== sessionId.value || generation !== runsRequestGeneration) return
       runs.value = []
     }
   }
 
-  async function loadMemoryProposals() {
-    if (!sessionId.value) return
-    const targetSessionId = sessionId.value
-    const generation = ++memoryProposalGeneration
+  async function loadMemoryProposals(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    const generation = ++state.memoryRequestGeneration
     try {
       const response = await fetchMemoryProposals(targetSessionId)
-      if (targetSessionId !== sessionId.value || generation !== memoryProposalGeneration) return
-      memoryProposals.value = response.proposals.filter((proposal) => proposal.status === 'pending')
-      memoryProposalError.value = ''
+      if (generation !== state.memoryRequestGeneration) return
+      state.memoryProposals = response.proposals.filter((proposal) => proposal.status === 'pending')
+      state.memoryProposalError = ''
     } catch (error) {
-      if (targetSessionId === sessionId.value && generation === memoryProposalGeneration) {
-        memoryProposalError.value = error instanceof Error ? error.message : String(error)
+      if (generation === state.memoryRequestGeneration) {
+        state.memoryProposalError = error instanceof Error ? error.message : String(error)
       }
     }
   }
@@ -466,32 +1004,34 @@ export const useCodingStore = defineStore('coding', () => {
     expectedRevision: number,
     action: 'approve' | 'reject',
   ) {
-    if (!sessionId.value || memoryProposalBusy.value[proposalId]) return
+    if (!sessionId.value) return
     const targetSessionId = sessionId.value
-    const generation = memoryProposalSessionGeneration
-    memoryProposalBusy.value = { ...memoryProposalBusy.value, [proposalId]: true }
-    memoryProposalError.value = ''
+    const state = ensureSession(targetSessionId)
+    if (state.memoryProposalBusy[proposalId]) return
+    const generation = ++state.memoryMutationGeneration
+    state.memoryProposalBusy = { ...state.memoryProposalBusy, [proposalId]: true }
+    state.memoryProposalError = ''
     try {
       if (action === 'approve') {
         await approveMemoryProposal(targetSessionId, proposalId, expectedRevision)
       } else {
         await rejectMemoryProposal(targetSessionId, proposalId, expectedRevision)
       }
-      if (targetSessionId === sessionId.value && generation === memoryProposalSessionGeneration) {
+      if (generation === state.memoryMutationGeneration) {
         // Invalidate any in-flight list response captured before this CAS
         // transition, otherwise it could resurrect the now-terminal proposal.
-        memoryProposalGeneration += 1
-        memoryProposals.value = memoryProposals.value.filter((item) => item.proposal_id !== proposalId)
+        state.memoryRequestGeneration += 1
+        state.memoryProposals = state.memoryProposals.filter((item) => item.proposal_id !== proposalId)
       }
     } catch (error) {
-      if (targetSessionId === sessionId.value && generation === memoryProposalSessionGeneration) {
-        memoryProposalError.value = error instanceof Error ? error.message : String(error)
+      if (generation === state.memoryMutationGeneration) {
+        state.memoryProposalError = error instanceof Error ? error.message : String(error)
       }
     } finally {
-      if (targetSessionId !== sessionId.value || generation !== memoryProposalSessionGeneration) return
-      const next = { ...memoryProposalBusy.value }
+      if (generation !== state.memoryMutationGeneration) return
+      const next = { ...state.memoryProposalBusy }
       delete next[proposalId]
-      memoryProposalBusy.value = next
+      state.memoryProposalBusy = next
     }
   }
 
@@ -504,86 +1044,107 @@ export const useCodingStore = defineStore('coding', () => {
   }
 
   async function loadSessions() {
+    const generation = ++sessionsRequestGeneration
     try {
       const res = await fetchCodingSessions()
+      if (generation !== sessionsRequestGeneration) return
       codingSessions.value = res.sessions
-    } catch {
-      codingSessions.value = []
+    } catch (error) {
+      if (generation !== sessionsRequestGeneration) return
+      throw error
     }
+  }
+
+  async function updateSessionMetadata(
+    targetSessionId: string,
+    metadata: { title?: string; pinned?: boolean; archived?: boolean },
+  ) {
+    const summary = await updateCodingSessionMetadata(targetSessionId, metadata)
+    codingSessions.value = codingSessions.value.map((item) =>
+      item.session_id === targetSessionId ? summary : item,
+    )
+    return summary
+  }
+
+  function renameSession(targetSessionId: string, title: string) {
+    return updateSessionMetadata(targetSessionId, { title })
+  }
+
+  function setSessionPinned(targetSessionId: string, pinned: boolean) {
+    return updateSessionMetadata(targetSessionId, { pinned })
+  }
+
+  function setSessionArchived(targetSessionId: string, archived: boolean) {
+    return updateSessionMetadata(targetSessionId, { archived })
   }
 
   async function selectSession(targetSessionId: string) {
     if (!targetSessionId || targetSessionId === sessionId.value) return
-    stopApprovalPolling()
-    stream?.disconnect()
-    stream = null
-    contextRequestGeneration += 1
-    memoryProposalGeneration += 1
-    memoryProposalSessionGeneration += 1
-    memoryProposals.value = []
-    memoryProposalBusy.value = {}
-    memoryProposalError.value = ''
-    contextSnapshot.value = null
-    contextChars.value = 0
-    compactionState.value = 'idle'
-    compactionError.value = ''
+    const selection = ++selectionGeneration
+    // A resident UI state is not proof that its server-side session still exists.
     const session = await resumeCodingSession(targetSessionId)
+    if (selection !== selectionGeneration) return
+    stopSessionTransport()
     sessionId.value = session.session_id
+    ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
     permissionMode.value = session.permission_mode
-    messages.value = await loadSessionMessages(session.session_id)
-    isThinking.value = false
-    errorMessage.value = ''
-    pendingApproval.value = null
-    thinkingPhase.value = ''
-    planReview.value = null
-    runtimeMode.value = 'default'
-    planTopic.value = ''
-    planPath.value = ''
     runs.value = []
     selectedRun.value = null
-    lastDiffInfo.value = null
     diffDrawerVisible.value = false
     currentDiffData.value = null
     dirCache.clear()
-    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns(), loadContext()])
+    await Promise.all([
+      loadTimeline(targetSessionId),
+      loadGitStatus(),
+      loadFiles('.', true),
+      loadSessions().catch(() => {}),
+      loadRuns(),
+      loadContext(),
+    ])
+    if (selection !== selectionGeneration || sessionId.value !== targetSessionId) return
     connectSocket()
   }
 
   async function startNewSession() {
-    stopApprovalPolling()
-    stream?.disconnect()
-    stream = null
-    contextRequestGeneration += 1
-    memoryProposalGeneration += 1
-    memoryProposalSessionGeneration += 1
-    memoryProposals.value = []
-    memoryProposalBusy.value = {}
-    memoryProposalError.value = ''
-    contextSnapshot.value = null
-    contextChars.value = 0
-    compactionState.value = 'idle'
-    compactionError.value = ''
+    const selection = ++selectionGeneration
     const session = await startCodingSession()
+    if (selection !== selectionGeneration) return
+    stopSessionTransport()
     sessionId.value = session.session_id
+    ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
     permissionMode.value = session.permission_mode
-    messages.value = []
-    isThinking.value = false
-    errorMessage.value = ''
-    pendingApproval.value = null
-    thinkingPhase.value = ''
-    planReview.value = null
-    runtimeMode.value = 'default'
-    planTopic.value = ''
-    planPath.value = ''
     runs.value = []
     selectedRun.value = null
-    lastDiffInfo.value = null
     diffDrawerVisible.value = false
     currentDiffData.value = null
     dirCache.clear()
-    await Promise.all([loadGitStatus(), loadFiles('.', true), loadSessions(), loadRuns(), loadContext()])
+    await Promise.all([
+      loadTimeline(session.session_id),
+      loadGitStatus(),
+      loadFiles('.', true),
+      loadSessions().catch(() => {}),
+      loadRuns(),
+      loadContext(),
+    ])
+    if (selection !== selectionGeneration || sessionId.value !== session.session_id) return
+    connectSocket()
+  }
+
+  async function restoreCurrentSession() {
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const selection = ++selectionGeneration
+    await Promise.all([
+      loadTimeline(targetSessionId),
+      loadGitStatus(),
+      loadFiles('.', true),
+      loadSessions().catch(() => {}),
+      loadRuns(),
+      loadContext(targetSessionId),
+    ])
+    if (selection !== selectionGeneration || sessionId.value !== targetSessionId) return
     connectSocket()
   }
 
@@ -600,20 +1161,30 @@ export const useCodingStore = defineStore('coding', () => {
   }
 
   async function loadRunDetail(runId: string) {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const generation = ++runDetailGeneration
     try {
-      selectedRun.value = await fetchCodingRun(sessionId.value, runId)
+      const detail = await fetchCodingRun(targetSessionId, runId)
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
+      selectedRun.value = detail
     } catch {
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
       selectedRun.value = null
     }
   }
 
   async function loadRunDiff(runId: string) {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const generation = ++runDiffGeneration
     try {
-      currentDiffData.value = await fetchCodingRunDiff(sessionId.value, runId)
+      const diff = await fetchCodingRunDiff(targetSessionId, runId)
+      if (targetSessionId !== sessionId.value || generation !== runDiffGeneration) return
+      currentDiffData.value = diff
       diffDrawerVisible.value = true
     } catch (e) {
+      if (targetSessionId !== sessionId.value || generation !== runDiffGeneration) return
       errorMessage.value = String(e)
     }
   }
@@ -629,33 +1200,40 @@ export const useCodingStore = defineStore('coding', () => {
   }
 
   async function loadGitStatus() {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const generation = ++gitRequestGeneration
     try {
-      gitStatus.value = await fetchCodingGitStatus(sessionId.value)
+      const status = await fetchCodingGitStatus(targetSessionId)
+      if (targetSessionId !== sessionId.value || generation !== gitRequestGeneration) return
+      gitStatus.value = status
     } catch {
+      if (targetSessionId !== sessionId.value || generation !== gitRequestGeneration) return
       gitStatus.value = { is_git: false, branch: '', dirty_count: 0, changed_files: [] }
     }
   }
 
   async function loadFiles(path: string, force = false) {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
     const generation = ++fileTreeGeneration
-    if (!force && dirCache.has(path)) {
+    const cacheKey = `${targetSessionId}:${path}`
+    if (!force && dirCache.has(cacheKey)) {
       fileTreePath.value = path
-      fileTreeEntries.value = filterFileEntries([...(dirCache.get(path) || [])])
+      fileTreeEntries.value = filterFileEntries([...(dirCache.get(cacheKey) || [])])
       expandedDirs.value = new Set([...expandedDirs.value, path])
       return
     }
     try {
-      const res = await fetchCodingFiles(sessionId.value, path)
-      if (generation !== fileTreeGeneration) return
+      const res = await fetchCodingFiles(targetSessionId, path)
+      if (targetSessionId !== sessionId.value || generation !== fileTreeGeneration) return
       const entries = filterFileEntries(res.entries)
-      dirCache.set(path, entries)
+      dirCache.set(cacheKey, entries)
       fileTreePath.value = path
       fileTreeEntries.value = entries
       expandedDirs.value = new Set([...expandedDirs.value, path])
     } catch {
-      if (generation !== fileTreeGeneration) return
+      if (targetSessionId !== sessionId.value || generation !== fileTreeGeneration) return
       fileTreeEntries.value = []
     }
   }
@@ -672,25 +1250,33 @@ export const useCodingStore = defineStore('coding', () => {
   }
 
   async function loadFilePreview(path: string) {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const generation = ++filePreviewGeneration
     try {
-      const res = await fetchCodingFile(sessionId.value, path)
+      const res = await fetchCodingFile(targetSessionId, path)
+      if (targetSessionId !== sessionId.value || generation !== filePreviewGeneration) return
       previewPath.value = path
       previewContent.value = res.content
     } catch {
+      if (targetSessionId !== sessionId.value || generation !== filePreviewGeneration) return
       previewPath.value = path
       previewContent.value = '无法加载文件'
     }
   }
 
   async function changeModel(modelId: string) {
-    if (!sessionId.value) return
+    const targetSessionId = sessionId.value
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    const generation = ++state.modelMutationGeneration
     try {
-      await switchCodingModel(sessionId.value, modelId)
-      currentModelId.value = modelId
-      await loadContext()
+      await switchCodingModel(targetSessionId, modelId)
+      if (generation !== state.modelMutationGeneration) return
+      state.currentModelId = modelId
+      await loadContext(targetSessionId)
     } catch (error) {
-      errorMessage.value = String(error)
+      if (generation === state.modelMutationGeneration) state.errorMessage = String(error)
     }
   }
 
@@ -698,49 +1284,73 @@ export const useCodingStore = defineStore('coding', () => {
     if (!sessionId.value || isThinking.value || contextBusy.value || !contextCompactable.value) {
       return false
     }
-    compactionState.value = 'running'
-    compactionError.value = ''
     const targetSessionId = sessionId.value
-    const requestGeneration = contextRequestGeneration
+    const state = ensureSession(targetSessionId)
+    const requestGeneration = ++state.compactionGeneration
+    state.compactionState = 'running'
+    state.compactionError = ''
     try {
       const response = await requestCodingCompaction(targetSessionId)
-      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
-      contextSnapshot.value = response.context
-      contextChars.value = response.after_tokens
-      compactionState.value = response.applied ? 'succeeded' : 'failed'
-      if (!response.applied) compactionError.value = contextReasonLabel(response.reason)
+      if (requestGeneration !== state.compactionGeneration) return false
+      state.contextSnapshot = response.context
+      state.contextChars = response.after_tokens
+      state.compactionState = response.applied ? 'succeeded' : 'failed'
+      if (!response.applied) state.compactionError = contextReasonLabel(response.reason)
       return response.applied
     } catch (error) {
-      if (targetSessionId !== sessionId.value || requestGeneration !== contextRequestGeneration) return false
-      compactionState.value = 'failed'
-      compactionError.value = String(error)
-      errorMessage.value = compactionError.value
+      if (requestGeneration !== state.compactionGeneration) return false
+      state.compactionState = 'failed'
+      state.compactionError = String(error)
+      state.errorMessage = state.compactionError
       return false
     }
   }
 
   async function changePermissionMode(mode: PermissionMode): Promise<boolean> {
-    if (!sessionId.value || isThinking.value) return false
+    const targetSessionId = sessionId.value
+    if (!targetSessionId || isThinking.value) return false
+    const state = ensureSession(targetSessionId)
+    const generation = ++state.permissionMutationGeneration
     try {
-      const result = await switchPermissionMode(sessionId.value, mode)
-      permissionMode.value = result.mode
+      const result = await switchPermissionMode(targetSessionId, mode)
+      if (generation !== state.permissionMutationGeneration) return false
+      state.permissionMode = result.mode
       return true
     } catch (error) {
-      errorMessage.value = String(error)
+      if (generation === state.permissionMutationGeneration) state.errorMessage = String(error)
       return false
     }
   }
 
   function disconnect() {
+    selectionGeneration += 1
     stream?.disconnect()
     stream = null
     stopApprovalPolling()
+    for (const timer of scheduledTimeouts) window.clearTimeout(timer)
+    scheduledTimeouts.clear()
+    liveRefreshPending.clear()
+    memoryRefreshPending.clear()
+    terminalRefreshPending.clear()
   }
 
   return {
     sessionId,
+    sessionsById,
     workspaceRoot,
     messages,
+    legacyMessages,
+    timeline,
+    olderTimeline,
+    visibleTimeline,
+    turns,
+    timelineCursor,
+    olderCursor,
+    timelineHasMore,
+    timelineInitialized,
+    timelineLoading,
+    activeRun,
+    scrollAnchor,
     isThinking,
     errorMessage,
     currentModelId,
@@ -783,18 +1393,29 @@ export const useCodingStore = defineStore('coding', () => {
     initialize,
     sendMessage,
     handleServerEvent,
+    handleTimelineEvent,
+    mergeTimelinePage,
+    loadTimeline,
+    loadOlderTimeline,
+    loadMoreTimeline,
+    setScrollAnchor,
     respondApproval,
     stopCurrentRun,
     approvePlan,
     rejectPlan,
     selectSession,
     startNewSession,
+    restoreCurrentSession,
     connectSocket,
     loadSkills,
     loadMcpServers,
     loadModels,
     loadContext,
     loadSessions,
+    updateSessionMetadata,
+    renameSession,
+    setSessionPinned,
+    setSessionArchived,
     loadRuns,
     loadMemoryProposals,
     approveMemoryProposal: approveMemoryProposalAction,

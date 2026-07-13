@@ -23,11 +23,11 @@ defineProps<{
   max-width: 760px;
   margin: 0 0 12px;
   padding: 8px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f9fafb;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface-raised);
   font-size: 13px;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
 .thinking-dots {
@@ -41,7 +41,7 @@ defineProps<{
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: var(--sage-text-secondary);
   opacity: 0.4;
   animation: thinking-pulse 1.2s ease-in-out infinite;
 }
@@ -73,11 +73,4 @@ defineProps<{
   white-space: nowrap;
 }
 
-@media (prefers-color-scheme: dark) {
-  .thinking-indicator {
-    border-color: #374151;
-    background: #1f2937;
-    color: #d1d5db;
-  }
-}
 </style>

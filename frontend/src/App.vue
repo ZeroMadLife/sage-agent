@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import CodingView from './views/CodingView.vue'
 </script>
 
 <template>
   <div class="app-shell">
-    <CodingView />
+    <RouterView />
   </div>
 </template>
 
 <style scoped>
 .app-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
 }
 </style>

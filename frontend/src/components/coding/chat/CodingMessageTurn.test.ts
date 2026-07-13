@@ -37,4 +37,39 @@ describe('CodingMessageTurn', () => {
     expect(wrapper.get('[aria-label="用户"]').attributes('aria-label')).toBe('用户')
     expect(wrapper.text()).toContain('你')
   })
+
+  it('exposes stable turn and run ids for timeline list reuse', () => {
+    const wrapper = mount(CodingMessageTurn, {
+      props: {
+        message: {
+          id: 'turn:run-1:assistant',
+          run_id: 'run-1',
+          role: 'assistant',
+          content: '完成',
+        },
+        renderedContent: '<p>完成</p>',
+      },
+    })
+
+    expect(wrapper.get('.message-turn').attributes('data-turn-id')).toBe('turn:run-1:assistant')
+    expect(wrapper.get('.message-turn').attributes('data-run-id')).toBe('run-1')
+  })
+
+  it('hides tool activity when process visibility is disabled', () => {
+    const wrapper = mount(CodingMessageTurn, {
+      props: {
+        message: {
+          id: 'assistant-a',
+          role: 'assistant',
+          content: '完成',
+          tools: [{ tool: 'read_file', args: {}, status: 'done', content: 'README' }],
+        },
+        renderedContent: '<p>完成</p>',
+        showProcess: false,
+      },
+      global: { stubs: { CodingToolActivity: true, CodingExecutionLog: true } },
+    })
+
+    expect(wrapper.findComponent({ name: 'CodingToolActivity' }).exists()).toBe(false)
+  })
 })

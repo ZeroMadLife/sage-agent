@@ -199,12 +199,13 @@ defineExpose({
         v-if="store.isThinking"
         class="stop-btn"
         type="button"
-        title="Stop current run"
+        title="停止当前运行"
+        aria-label="停止当前运行"
         @click="stop"
       >
         <Square :size="13" />
       </button>
-      <button v-else :disabled="!canSend" class="send-btn" @click="send">
+      <button v-else :disabled="!canSend" class="send-btn" type="button" title="发送任务" aria-label="发送任务" @click="send">
         <Send :size="15" />
       </button>
     </div>
@@ -213,9 +214,9 @@ defineExpose({
 
 <style scoped>
 .composer {
-  border-top: 1px solid #e5e7eb;
-  background: #fff;
-  padding: 10px 16px;
+  border-top: 1px solid var(--sage-border);
+  background: var(--sage-surface);
+  padding: 9px max(16px, calc((100% - 880px) / 2));
 }
 
 .composer-controls {
@@ -231,7 +232,7 @@ defineExpose({
 }
 
 .context-error {
-  color: #b91c1c;
+  color: var(--sage-danger);
   font-size: 11px;
   max-width: 260px;
   overflow: hidden;
@@ -249,10 +250,10 @@ defineExpose({
 
 .compact-hint {
   margin-left: auto;
-  border: 1px solid #f59e0b;
-  border-radius: 6px;
-  background: #fffbeb;
-  color: #92400e;
+  border: 1px solid color-mix(in srgb, var(--sage-warning) 55%, var(--sage-border));
+  border-radius: var(--sage-radius);
+  background: var(--sage-warning-bg);
+  color: var(--sage-warning);
   padding: 3px 7px;
   font-size: 11px;
   font-weight: 700;
@@ -266,7 +267,7 @@ defineExpose({
   position: absolute;
   font-size: 9px;
   font-weight: 700;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
 .composer-input {
@@ -283,8 +284,12 @@ defineExpose({
 .composer-input textarea {
   width: 100%;
   resize: vertical;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
+  min-height: 42px;
+  max-height: 180px;
+  border: 1px solid var(--sage-border-strong);
+  border-radius: var(--sage-radius-lg);
+  color: var(--sage-text);
+  background: var(--sage-surface);
   padding: 8px 10px;
   line-height: 1.5;
   font-size: 13px;
@@ -293,7 +298,8 @@ defineExpose({
 
 .composer-input textarea:focus {
   outline: none;
-  border-color: #3b82f6;
+  border-color: var(--sage-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sage-focus) 16%, transparent);
 }
 
 .skill-menu {
@@ -306,10 +312,10 @@ defineExpose({
   list-style: none;
   max-height: 240px;
   overflow-y: auto;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface);
+  box-shadow: var(--sage-shadow-drawer);
   z-index: 10;
 }
 
@@ -323,13 +329,13 @@ defineExpose({
 }
 
 .skill-menu-item.active {
-  background: #eff6ff;
+  background: var(--sage-surface-muted);
 }
 
 .skill-menu-name {
   font-size: 13px;
   font-weight: 700;
-  color: #111827;
+  color: var(--sage-text);
   white-space: nowrap;
 }
 
@@ -338,7 +344,7 @@ defineExpose({
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #6b7280;
+  color: var(--sage-text-muted);
 }
 
 .skill-menu-empty {
@@ -348,12 +354,12 @@ defineExpose({
   bottom: 100%;
   margin: 0 0 4px;
   padding: 6px 10px;
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface);
+  box-shadow: var(--sage-shadow-drawer);
   font-size: 12px;
-  color: #9ca3af;
+  color: var(--sage-text-muted);
   z-index: 10;
 }
 
@@ -365,7 +371,7 @@ defineExpose({
   height: 36px;
   border: 0;
   border-radius: 8px;
-  background: #111827;
+  background: var(--sage-text);
   color: #fff;
   cursor: pointer;
 }
@@ -376,15 +382,15 @@ defineExpose({
   justify-content: center;
   width: 36px;
   height: 36px;
-  border: 1px solid #ef4444;
-  border-radius: 8px;
-  background: #fff;
-  color: #dc2626;
+  border: 1px solid var(--sage-danger);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface);
+  color: var(--sage-danger);
   cursor: pointer;
 }
 
 .send-btn:disabled {
-  background: #d1d5db;
+  background: var(--sage-border-strong);
   cursor: not-allowed;
 }
 </style>

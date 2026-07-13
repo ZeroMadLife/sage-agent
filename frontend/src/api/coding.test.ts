@@ -6,6 +6,9 @@ import {
   fetchCodingRun,
   fetchCodingRuns,
   fetchCodingSessionMessages,
+  fetchCodingTimeline,
+  fetchCodingTimelineTail,
+  fetchOlderCodingTimeline,
   fetchCodingSessions,
   rejectCodingPlan,
   respondCodingApproval,
@@ -68,10 +71,68 @@ describe('coding API client', () => {
   })
 
   it('builds a websocket URL for coding streams', () => {
-    const url = buildCodingStreamUrl('c1')
+    const url = buildCodingStreamUrl('c1', 17)
 
     expect(url).toContain('/api/v1/coding/c1/stream')
+    expect(new URL(url).searchParams.get('after')).toBe('17')
     expect(url.startsWith('ws')).toBe(true)
+  })
+
+  it('fetches a cursor-paginated coding timeline', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [], next_cursor: 9, has_more: false, older_cursor: null,
+        latest_cursor: 9, active_run: null,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const response = await fetchCodingTimeline('c1', 4, 25)
+
+    const url = fetchMock.mock.calls[0][0] as URL
+    expect(url.pathname).toBe('/api/v1/coding/session/c1/timeline')
+    expect(url.searchParams.get('after')).toBe('4')
+    expect(url.searchParams.get('limit')).toBe('25')
+    expect(response.next_cursor).toBe(9)
+  })
+
+  it('rejects malformed or cross-session timeline envelopes', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{
+          event_id: 'event-1', session_id: 'other', run_id: 'run-1', sequence: 1,
+          kind: 'assistant', status: 'completed', timestamp: '2026-07-12T00:00:00Z',
+          payload: { type: 'final', content: 'done' },
+        }],
+        next_cursor: 1, has_more: false, older_cursor: null,
+        latest_cursor: 1, active_run: null,
+      }),
+    }))
+
+    await expect(fetchCodingTimeline('c1')).rejects.toThrow('收到无效的时间线响应')
+  })
+
+  it('fetches bounded tail and older timeline pages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [], next_cursor: 250, has_more: true,
+        older_cursor: 151, latest_cursor: 250, active_run: null,
+      }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await fetchCodingTimelineTail('c1', 100)
+    await fetchOlderCodingTimeline('c1', 151, 100)
+
+    const tailUrl = fetchMock.mock.calls[0][0] as URL
+    const olderUrl = fetchMock.mock.calls[1][0] as URL
+    expect(tailUrl.searchParams.get('tail')).toBe('true')
+    expect(tailUrl.searchParams.get('limit')).toBe('100')
+    expect(olderUrl.searchParams.get('before')).toBe('151')
+    expect(olderUrl.searchParams.get('limit')).toBe('100')
   })
 
   it('fetches pending approval', async () => {

@@ -123,6 +123,8 @@ export type CodingSessionSummary = {
   updated_at: string
   runtime_mode: string
   message_count: number
+  pinned?: boolean
+  archived?: boolean
 }
 
 export type CodingSessionsResponse = {
@@ -139,6 +141,56 @@ export type CodingSessionMessagesResponse = {
   messages: CodingSessionMessage[]
 }
 
+export type CodingTimelineKind =
+  | 'user'
+  | 'assistant'
+  | 'model'
+  | 'tool'
+  | 'approval'
+  | 'context'
+  | 'memory'
+  | 'agent'
+  | 'terminal'
+  | 'system'
+  | 'run'
+
+export type CodingTimelineStatus =
+  | 'pending'
+  | 'queued'
+  | 'running'
+  | 'blocked'
+  | 'done'
+  | 'completed'
+  | 'cancelled'
+  | 'error'
+  | 'interrupted'
+  | 'retryable'
+
+export type CodingTimelineEvent = {
+  event_id: string
+  session_id: string
+  run_id: string
+  sequence: number
+  kind: CodingTimelineKind
+  status: CodingTimelineStatus
+  timestamp: string
+  payload: Record<string, unknown> & { type?: string }
+}
+
+export type CodingActiveRun = {
+  run_id: string
+  status: 'running'
+}
+
+export type CodingTimelineResponse = {
+  items: CodingTimelineEvent[]
+  next_cursor: number
+  has_more: boolean
+  older_cursor: number | null
+  latest_cursor: number
+  active_run: CodingActiveRun | null
+}
+
 export type CodingApproval = {
   approval_id: string
   session_id: string
@@ -146,6 +198,7 @@ export type CodingApproval = {
   args: Record<string, unknown>
   description: string
   pattern_key: string
+  run_id?: string
   diff_preview?: CodingDiffLine[]
 }
 

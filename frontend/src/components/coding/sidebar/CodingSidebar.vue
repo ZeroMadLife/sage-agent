@@ -1,852 +1,222 @@
 <script setup lang="ts">
-import {
-  Brain,
-  CheckCircle2,
-  ChevronDown,
-  ChevronRight,
-  Clock3,
-  MessagesSquare,
-  Plus,
-  Search,
-  Server,
-  XCircle,
-  Zap,
-} from 'lucide-vue-next'
+import { Archive, ArchiveRestore, ChevronDown, ChevronRight, FolderGit2, Pencil, Pin, PinOff, Plus, Search, Settings } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import { useCodingStore } from '../../../stores/coding'
-import type { CodingSkillSummary } from '../../../types/api'
 
 const store = useCodingStore()
-const emit = defineEmits<{ useSkill: [name: string] }>()
+const emit = defineEmits<{
+  navigate: [sessionId: string]
+  newSession: []
+  archiveCurrent: [sessionId: string]
+  close: []
+  settings: []
+}>()
+const SESSION_LIMIT = 18
+const query = ref('')
+const showAll = ref(false)
+const showArchived = ref(false)
+const renamingSessionId = ref<string | null>(null)
+const renameDraft = ref('')
+const sidebarError = ref('')
 
-// Collapsible panels: Sessions expanded by default, others collapsed.
-const collapsedPanels = ref<Set<string>>(new Set(['skills', 'runs', 'mcp', 'memory']))
-
-function togglePanel(panel: string) {
-  const next = new Set(collapsedPanels.value)
-  if (next.has(panel)) next.delete(panel)
-  else next.add(panel)
-  collapsedPanels.value = next
-}
-
-function isPanelCollapsed(panel: string) {
-  return collapsedPanels.value.has(panel)
-}
-
-const SESSION_LIMIT = 10
-const sessionQuery = ref('')
-const showAllSessions = ref(false)
-
-const filteredSessions = computed(() => {
-  const query = sessionQuery.value.trim().toLowerCase()
-  if (!query) return store.codingSessions
-  return store.codingSessions.filter(
-    (session) =>
-      session.session_id.toLowerCase().includes(query) ||
-      session.title.toLowerCase().includes(query),
+const matchingSessions = computed(() => {
+  const normalized = query.value.trim().toLowerCase()
+  if (!normalized) return store.codingSessions
+  return store.codingSessions.filter((session) =>
+    `${session.title} ${session.session_id}`.toLowerCase().includes(normalized),
   )
 })
 
-const visibleSessions = computed(() => {
-  if (showAllSessions.value) return filteredSessions.value
-  return filteredSessions.value.slice(0, SESSION_LIMIT)
-})
+const filteredSessions = computed(() => matchingSessions.value.filter((session) => !session.archived))
+const archivedSessions = computed(() => matchingSessions.value.filter((session) => session.archived))
 
-const hiddenSessionCount = computed(
-  () => Math.max(0, filteredSessions.value.length - SESSION_LIMIT),
-)
+const visibleSessions = computed(() => showAll.value
+  ? filteredSessions.value
+  : filteredSessions.value.slice(0, SESSION_LIMIT))
 
-function showAllSessionsNow() {
-  showAllSessions.value = true
+watch(query, () => { showAll.value = false })
+
+function selectSession(sessionId: string) {
+  sidebarError.value = ''
+  emit('navigate', sessionId)
 }
 
-// Reset "show all" whenever the query changes so the limit reapplies.
-watch(sessionQuery, () => {
-  showAllSessions.value = false
-})
-
-const expandedSkill = ref<string | null>(null)
-const skillQuery = ref('')
-const collapsedSources = ref<Set<string>>(new Set())
-
-const sourceOrder = ['builtin', 'user', 'project']
-const groupedSkills = computed(() => {
-  const query = skillQuery.value.trim().toLowerCase()
-  return sourceOrder
-    .map((source) => ({
-      source,
-      skills: store.skills.filter((skill) => {
-        if (skill.source !== source) return false
-        if (!query) return true
-        return `${skill.name} ${skill.description}`.toLowerCase().includes(query)
-      }),
-    }))
-    .filter((group) => group.skills.length > 0)
-})
-
-function toggleSkill(name: string) {
-  expandedSkill.value = expandedSkill.value === name ? null : name
+function startSession() {
+  sidebarError.value = ''
+  emit('newSession')
 }
 
-function useSkill(skill: CodingSkillSummary) {
-  emit('useSkill', `/${skill.name}`)
-  expandedSkill.value = null
+function beginRename(sessionId: string, title: string) {
+  sidebarError.value = ''
+  renamingSessionId.value = sessionId
+  renameDraft.value = title
 }
 
-function toggleSource(source: string) {
-  const next = new Set(collapsedSources.value)
-  if (next.has(source)) next.delete(source)
-  else next.add(source)
-  collapsedSources.value = next
+async function commitRename(sessionId: string) {
+  const title = renameDraft.value.trim()
+  sidebarError.value = ''
+  if (!title) {
+    renamingSessionId.value = null
+    return
+  }
+  try {
+    await store.renameSession(sessionId, title)
+    renamingSessionId.value = null
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    sidebarError.value = `无法重命名会话：${detail}`
+  }
 }
 
-function runIcon(status: string) {
-  if (status === 'completed') return CheckCircle2
-  if (status === 'error' || status === 'cancelled') return XCircle
-  return Clock3
+async function setPinned(sessionId: string, pinned: boolean) {
+  sidebarError.value = ''
+  try {
+    await store.setSessionPinned(sessionId, pinned)
+    await store.loadSessions()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    sidebarError.value = `无法${pinned ? '置顶' : '取消置顶'}会话：${detail}`
+  }
+}
+
+async function setArchived(sessionId: string, archived: boolean) {
+  sidebarError.value = ''
+  if (archived && store.sessionId === sessionId) {
+    emit('archiveCurrent', sessionId)
+    return
+  }
+  try {
+    await store.setSessionArchived(sessionId, archived)
+    await store.loadSessions()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    sidebarError.value = `无法${archived ? '归档' : '恢复'}会话：${detail}`
+  }
+}
+
+function sessionState(sessionId: string) {
+  const state = store.sessionsById[sessionId]
+  if (state?.activeRun || state?.isThinking) return 'running'
+  if (state?.errorMessage) return 'error'
+  return 'idle'
+}
+
+function modeLabel(mode: string) {
+  return mode === 'plan' ? '计划' : '编码'
 }
 </script>
 
 <template>
-  <aside class="sidebar">
-    <section class="sidebar-section">
-      <div class="section-heading">
-        <button class="panel-toggle" @click="togglePanel('sessions')">
-          <component
-            :is="isPanelCollapsed('sessions') ? ChevronRight : ChevronDown"
-            :size="13"
-          />
-          <h3><MessagesSquare :size="13" /> Sessions</h3>
-        </button>
-        <button
-          class="icon-action"
-          data-testid="new-coding-session"
-          title="New session"
-          @click="store.startNewSession()"
-        >
-          <Plus :size="13" />
-        </button>
+  <aside class="session-sidebar" aria-label="工作区与会话">
+    <header class="workspace-heading">
+      <div class="workspace-mark"><FolderGit2 :size="16" /></div>
+      <div>
+        <strong>Sage 工作区</strong>
+        <span :title="store.workspaceRoot">{{ store.workspaceRoot || '正在连接工作区' }}</span>
       </div>
-      <div v-if="!isPanelCollapsed('sessions')">
-        <label v-if="store.codingSessions.length > 0" class="session-search">
-          <Search :size="12" />
-          <input
-            v-model="sessionQuery"
-            type="search"
-            placeholder="Search sessions"
-            aria-label="Search sessions"
-          />
-        </label>
-        <div v-if="store.codingSessions.length === 0" class="empty">暂无 session</div>
+      <button
+        type="button"
+        class="icon-button"
+        data-testid="new-coding-session"
+        title="新建会话"
+        aria-label="新建会话"
+        @click="startSession"
+      ><Plus :size="15" /></button>
+    </header>
+
+    <label class="session-search">
+      <Search :size="14" />
+      <input v-model="query" type="search" placeholder="搜索会话" aria-label="搜索会话" />
+    </label>
+    <p v-if="sidebarError" class="sidebar-error" role="alert">{{ sidebarError }}</p>
+
+    <div class="session-list" aria-label="会话列表">
+      <p v-if="visibleSessions.length === 0" class="empty">暂无会话</p>
+      <div
+        v-for="session in visibleSessions"
+        :key="session.session_id"
+        class="session-row"
+        :class="{ active: session.session_id === store.sessionId }"
+      >
         <button
-          v-for="session in visibleSessions"
-          :key="session.session_id"
+          v-if="renamingSessionId !== session.session_id"
+          type="button"
           class="session-item"
-          :class="{ active: session.session_id === store.sessionId }"
-          @click="store.selectSession(session.session_id)"
+          :aria-current="session.session_id === store.sessionId ? 'page' : undefined"
+          @click="selectSession(session.session_id)"
         >
-          <div class="session-title">{{ session.title }}</div>
-          <div class="session-meta">
-            {{ session.message_count }} messages · {{ session.runtime_mode }}
-          </div>
+          <span class="session-status" :class="sessionState(session.session_id)"></span>
+          <span class="session-copy">
+            <strong>{{ session.title || '未命名会话' }}</strong>
+            <small>{{ session.message_count }} 条消息 · {{ modeLabel(session.runtime_mode) }}</small>
+          </span>
+          <Pin v-if="session.pinned" class="pinned-mark" :size="12" aria-label="已置顶" />
         </button>
-        <button
-          v-if="!showAllSessions && hiddenSessionCount > 0"
-          class="show-all-sessions"
-          @click="showAllSessionsNow"
-        >
-          显示全部 ({{ filteredSessions.length }})
-        </button>
-      </div>
-    </section>
-
-    <section class="sidebar-section">
-      <div class="section-heading">
-        <button class="panel-toggle" @click="togglePanel('skills')">
-          <component
-            :is="isPanelCollapsed('skills') ? ChevronRight : ChevronDown"
-            :size="13"
+        <div v-else class="session-rename">
+          <input
+            v-model="renameDraft"
+            class="rename-input"
+            aria-label="会话名称"
+            maxlength="120"
+            @keydown.enter.prevent="commitRename(session.session_id)"
+            @keydown.escape.prevent="renamingSessionId = null"
+            @blur="commitRename(session.session_id)"
           />
-          <h3><Zap :size="13" /> Skills</h3>
-        </button>
-      </div>
-
-      <div v-if="!isPanelCollapsed('skills')">
-        <label class="skill-search">
-          <Search :size="12" />
-          <input v-model="skillQuery" type="search" placeholder="Search skills" />
-        </label>
-
-        <div v-if="groupedSkills.length === 0" class="empty">暂无 skill</div>
-        <div v-for="group in groupedSkills" :key="group.source" class="skill-group">
-          <button class="source-header" @click="toggleSource(group.source)">
-            <component
-              :is="collapsedSources.has(group.source) ? ChevronRight : ChevronDown"
-              :size="13"
-            />
-            <span>{{ group.source }}</span>
-            <span>{{ group.skills.length }}</span>
+        </div>
+        <div class="session-actions">
+          <button type="button" :title="session.pinned ? '取消置顶' : '置顶'" :aria-label="session.pinned ? '取消置顶' : '置顶'" @click="setPinned(session.session_id, !session.pinned)">
+            <PinOff v-if="session.pinned" :size="13" /><Pin v-else :size="13" />
           </button>
-
-          <div v-if="!collapsedSources.has(group.source)">
-            <div v-for="skill in group.skills" :key="skill.name" class="skill-item">
-              <button class="skill-header" @click="toggleSkill(skill.name)">
-                <component
-                  :is="expandedSkill === skill.name ? ChevronDown : ChevronRight"
-                  :size="13"
-                />
-                <span class="skill-name">/{{ skill.name }}</span>
-                <span class="skill-source" :class="skill.source">{{ skill.source }}</span>
-              </button>
-              <div v-if="expandedSkill === skill.name" class="skill-detail">
-                <p class="skill-desc">{{ skill.description }}</p>
-                <button class="skill-use" @click="useSkill(skill)">
-                  <Zap :size="12" /> 使用
-                </button>
-              </div>
-            </div>
-          </div>
+          <button type="button" title="重命名" aria-label="重命名" @click="beginRename(session.session_id, session.title)"><Pencil :size="13" /></button>
+          <button type="button" title="归档" aria-label="归档" @click="setArchived(session.session_id, true)"><Archive :size="13" /></button>
         </div>
       </div>
-    </section>
+      <button
+        v-if="!showAll && filteredSessions.length > SESSION_LIMIT"
+        type="button"
+        class="show-all-sessions"
+        @click="showAll = true"
+      >显示全部（{{ filteredSessions.length }}）</button>
 
-    <section class="sidebar-section">
-      <div class="section-heading">
-        <button class="panel-toggle" @click="togglePanel('memory')">
-          <component
-            :is="isPanelCollapsed('memory') ? ChevronRight : ChevronDown"
-            :size="13"
-          />
-          <h3><Brain :size="13" /> 记忆</h3>
+      <section v-if="archivedSessions.length" class="archived-section">
+        <button type="button" class="archive-toggle" @click="showArchived = !showArchived">
+          <component :is="showArchived ? ChevronDown : ChevronRight" :size="13" /> 已归档（{{ archivedSessions.length }}）
         </button>
-      </div>
-      <div v-if="!isPanelCollapsed('memory')">
-        <div v-if="store.memoryProposals.length" class="memory-proposals" aria-live="polite">
-          <p class="memory-count">待审核 {{ store.memoryProposals.length }} 条</p>
-          <article v-for="proposal in store.memoryProposals" :key="proposal.proposal_id" class="memory-proposal">
-            <div class="memory-proposal-meta">
-              <span>{{ proposal.proposal_id }}</span>
-              <span>版本 {{ proposal.revision }}</span>
-            </div>
-            <p v-for="candidate in proposal.candidates" :key="`${proposal.proposal_id}-${candidate.content}`" class="memory-candidate">
-              {{ candidate.content }}
-            </p>
-            <p class="memory-source">
-              来源：{{ proposal.candidates[0]?.source || 'dream' }}
-              <template v-if="proposal.candidates[0]?.source_ref"> · {{ proposal.candidates[0].source_ref }}</template>
-            </p>
-            <div class="memory-actions">
-              <button
-                :data-testid="`memory-approve-${proposal.proposal_id}`"
-                :aria-label="`批准记忆候选 ${proposal.proposal_id}`"
-                :disabled="!!store.memoryProposalBusy[proposal.proposal_id]"
-                type="button"
-                @click="store.approveMemoryProposal(proposal.proposal_id, proposal.revision)"
-              >批准</button>
-              <button
-                :data-testid="`memory-reject-${proposal.proposal_id}`"
-                :aria-label="`拒绝记忆候选 ${proposal.proposal_id}`"
-                :disabled="!!store.memoryProposalBusy[proposal.proposal_id]"
-                type="button"
-                @click="store.rejectMemoryProposal(proposal.proposal_id, proposal.revision)"
-              >拒绝</button>
-            </div>
-          </article>
+        <div v-if="showArchived">
+          <div v-for="session in archivedSessions" :key="session.session_id" class="archived-row">
+            <span>{{ session.title || '未命名会话' }}</span>
+            <button type="button" title="恢复会话" aria-label="恢复会话" @click="setArchived(session.session_id, false)"><ArchiveRestore :size="13" /></button>
+          </div>
         </div>
-        <p v-else class="memory-hint">
-          <code>/remember</code> 记住项目约定<br />
-          <code>/dream</code> 整理记忆
-        </p>
-        <p v-if="store.memoryProposalError" class="memory-error" role="alert">{{ store.memoryProposalError }}</p>
-      </div>
-    </section>
+      </section>
+    </div>
 
-    <section class="sidebar-section">
-      <div class="section-heading">
-        <button class="panel-toggle" @click="togglePanel('runs')">
-          <component
-            :is="isPanelCollapsed('runs') ? ChevronRight : ChevronDown"
-            :size="13"
-          />
-          <h3><Clock3 :size="13" /> Runs</h3>
-        </button>
-      </div>
-      <div v-if="!isPanelCollapsed('runs')">
-        <div v-if="store.runs.length === 0" class="empty">暂无 run</div>
-        <div v-for="run in store.runs" :key="run.run_id" class="run-item">
-          <button class="run-header" @click="store.loadRunDetail(run.run_id)">
-            <component :is="runIcon(run.status)" :size="13" />
-            <span class="run-id">{{ run.run_id.replace('run_', '') }}</span>
-            <span class="run-status" :class="run.status">{{ run.status }}</span>
-          </button>
-          <div class="run-meta">
-            {{ run.tool_count }} tools · {{ run.event_count }} events · {{ run.last_event_type }}
-            <span v-if="run.changed_files && run.changed_files.length > 0">
-              · {{ run.changed_files.length }} files changed
-            </span>
-          </div>
-        </div>
-        <div v-if="store.selectedRun" class="run-detail">
-          <div class="run-detail-title">
-            {{ store.selectedRun.run_id }}
-            <span>{{ store.selectedRun.timeline?.length || store.selectedRun.events.length }} steps</span>
-          </div>
-          <div
-            v-for="(entry, index) in store.selectedRun.timeline?.slice(-8) || []"
-            :key="index"
-            class="run-timeline-entry"
-            :class="entry.status"
-          >
-            <span class="run-timeline-dot"></span>
-            <span class="run-timeline-body">
-              <span class="run-timeline-title">{{ entry.title }}</span>
-              <span v-if="entry.detail" class="run-timeline-detail">{{ entry.detail }}</span>
-            </span>
-          </div>
-          <div
-            v-if="!store.selectedRun.timeline?.length"
-            v-for="(event, index) in store.selectedRun.events.slice(-8)"
-            :key="`event-${index}`"
-            class="run-event"
-          >
-            {{ event.type }}
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="sidebar-section">
-      <div class="section-heading">
-        <button class="panel-toggle" @click="togglePanel('mcp')">
-          <component
-            :is="isPanelCollapsed('mcp') ? ChevronRight : ChevronDown"
-            :size="13"
-          />
-          <h3><Server :size="13" /> MCP</h3>
-        </button>
-      </div>
-      <div v-if="!isPanelCollapsed('mcp')">
-        <div v-if="store.mcpServers.length === 0" class="empty">暂无 MCP server</div>
-        <div v-for="server in store.mcpServers" :key="server.name" class="mcp-item">
-          <span class="mcp-dot" :class="server.status"></span>
-          <span class="mcp-name">{{ server.name }}</span>
-          <span class="mcp-transport">{{ server.transport }}</span>
-        </div>
-      </div>
-    </section>
+    <footer class="sidebar-footer">
+      <button type="button" class="settings-link" aria-label="打开设置" @click="emit('settings')"><Settings :size="14" /> 设置</button>
+      <span class="connection-state"><span class="connection-dot" :class="store.sessionId ? 'connected' : ''"></span>{{ store.sessionId ? '已连接' : '连接中' }}</span>
+    </footer>
   </aside>
 </template>
 
 <style scoped>
-.sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  height: 100%;
-  overflow-y: auto;
-  background: #fafbfc;
-  border-right: 1px solid #e5e7eb;
-}
-
-.sidebar-section {
-  padding: 12px 14px;
-  border-bottom: 1px solid #f0f1f3;
-}
-
-.section-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 0 0 8px;
-}
-
-.panel-toggle {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  cursor: pointer;
-  color: inherit;
-}
-
-.panel-toggle :deep(h3) {
-  margin: 0;
-}
-
-.sidebar-section h3 {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin: 0;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: #6b7280;
-  letter-spacing: 0.04em;
-}
-
-.sidebar-section > h3 {
-  margin-bottom: 8px;
-}
-
-.icon-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  color: #374151;
-  background: #ffffff;
-  cursor: pointer;
-}
-
-.icon-action:hover {
-  background: #f3f4f6;
-}
-
-.empty {
-  color: #9ca3af;
-  font-size: 12px;
-}
-
-.memory-hint {
-  font-size: 12px;
-  color: #6b7280;
-  line-height: 1.6;
-  padding: 4px 0;
-}
-
-.memory-hint code {
-  background: #f3f4f6;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-size: 11px;
-}
-
-.memory-count {
-  margin: 4px 0 6px;
-  color: #92400e;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.memory-proposal {
-  margin: 0 0 8px;
-  padding: 7px;
-  border: 1px solid #fde68a;
-  border-radius: 6px;
-  background: #fffbeb;
-}
-
-.memory-proposal-meta,
-.memory-actions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  font-size: 10px;
-  color: #92400e;
-}
-
-.memory-candidate {
-  margin: 6px 0 4px;
-  color: #374151;
-  font-size: 12px;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.memory-source {
-  margin: 0 0 6px;
-  color: #78716c;
-  font-size: 10px;
-}
-
-.memory-actions {
-  justify-content: flex-end;
-}
-
-.memory-actions button {
-  padding: 3px 8px;
-  border: 1px solid #d6d3d1;
-  border-radius: 4px;
-  background: #fff;
-  color: #44403c;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.memory-actions button:first-child {
-  border-color: #15803d;
-  color: #166534;
-}
-
-.memory-actions button:disabled {
-  cursor: wait;
-  opacity: 0.55;
-}
-
-.memory-error {
-  margin: 4px 0 0;
-  color: #b91c1c;
-  font-size: 11px;
-}
-
-.session-item {
-  display: block;
-  width: 100%;
-  padding: 5px 7px;
-  border: 0;
-  border-radius: 6px;
-  margin-bottom: 4px;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-}
-
-.session-item.active {
-  background: #eef6ff;
-}
-
-.session-item:hover {
-  background: #f3f4f6;
-}
-
-.session-title {
-  overflow: hidden;
-  color: #111827;
-  font-size: 12px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.session-meta {
-  margin-top: 2px;
-  color: #6b7280;
-  font-size: 11px;
-}
-
-.skill-search {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 8px;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-  color: #6b7280;
-}
-
-.session-search {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  margin-bottom: 8px;
-  padding: 4px 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-  color: #6b7280;
-}
-
-.session-search input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  outline: 0;
-  font-size: 12px;
-}
-
-.show-all-sessions {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: #2563eb;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  text-align: center;
-}
-
-.show-all-sessions:hover {
-  background: #eff6ff;
-}
-
-.skill-search input {
-  min-width: 0;
-  flex: 1;
-  border: 0;
-  outline: 0;
-  font-size: 12px;
-}
-
-.source-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  margin: 4px 0 2px;
-  border: 0;
-  background: transparent;
-  padding: 3px 0;
-  color: #6b7280;
-  cursor: pointer;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.source-header span:nth-child(2) {
-  flex: 1;
-  text-align: left;
-}
-
-.skill-item {
-  margin-bottom: 2px;
-}
-
-.skill-header {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  padding: 4px 0;
-  cursor: pointer;
-  text-align: left;
-}
-
-.skill-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: #111827;
-  flex: 1;
-}
-
-.skill-source {
-  font-size: 10px;
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: #e5e7eb;
-  color: #4b5563;
-}
-
-.skill-source.builtin {
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.skill-source.project {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.skill-source.user {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.skill-detail {
-  padding: 4px 0 6px 18px;
-}
-
-.skill-desc {
-  margin: 0 0 6px;
-  font-size: 12px;
-  color: #4b5563;
-}
-
-.skill-use {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  border: 1px solid #d1d5db;
-  border-radius: 4px;
-  background: #fff;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-}
-
-.skill-use:hover {
-  background: #f3f4f6;
-}
-
-.run-item {
-  margin-bottom: 6px;
-}
-
-.run-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  padding: 3px 0;
-  cursor: pointer;
-  text-align: left;
-}
-
-.run-id {
-  flex: 1;
-  overflow: hidden;
-  color: #111827;
-  font-size: 12px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-status {
-  padding: 1px 5px;
-  border-radius: 3px;
-  background: #e5e7eb;
-  color: #4b5563;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.run-status.completed {
-  background: #d1fae5;
-  color: #065f46;
-}
-
-.run-status.cancelled,
-.run-status.error {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.run-meta {
-  padding-left: 18px;
-  color: #6b7280;
-  font-size: 11px;
-}
-
-.run-detail {
-  margin-top: 8px;
-  padding: 6px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
-}
-
-.run-detail-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 4px;
-  color: #374151;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.run-detail-title span {
-  color: #9ca3af;
-  font-weight: 600;
-}
-
-.run-timeline-entry {
-  display: grid;
-  grid-template-columns: 8px 1fr;
-  gap: 6px;
-  padding: 5px 0;
-}
-
-.run-timeline-dot {
-  width: 7px;
-  height: 7px;
-  margin-top: 4px;
-  border-radius: 50%;
-  background: #9ca3af;
-}
-
-.run-timeline-entry.done .run-timeline-dot {
-  background: #10b981;
-}
-
-.run-timeline-entry.running .run-timeline-dot {
-  background: #3b82f6;
-}
-
-.run-timeline-entry.blocked .run-timeline-dot {
-  background: #f59e0b;
-}
-
-.run-timeline-entry.error .run-timeline-dot {
-  background: #ef4444;
-}
-
-.run-timeline-body {
-  min-width: 0;
-}
-
-.run-timeline-title {
-  display: block;
-  overflow: hidden;
-  color: #374151;
-  font-size: 11px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.run-timeline-detail {
-  display: -webkit-box;
-  overflow: hidden;
-  color: #6b7280;
-  font-size: 11px;
-  line-height: 1.35;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.run-event {
-  color: #6b7280;
-  font-family: 'SF Mono', monospace;
-  font-size: 11px;
-}
-
-.mcp-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
-  font-size: 12px;
-}
-
-.mcp-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #10b981;
-}
-
-.mcp-dot.configured {
-  background: #6b7280;
-}
-
-.mcp-name {
-  flex: 1;
-  font-weight: 500;
-  color: #374151;
-}
-
-.mcp-transport {
-  font-size: 10px;
-  color: #9ca3af;
-}
+.session-sidebar { display:flex; flex-direction:column; height:100%; min-width:0; color:#29313d; background:#f6f7f8; border-right:1px solid #dfe3e8; }
+.workspace-heading { display:grid; grid-template-columns:30px minmax(0,1fr) 28px; align-items:center; gap:8px; min-height:54px; padding:8px 10px; border-bottom:1px solid #e1e5e9; }
+.workspace-mark { display:grid; place-items:center; width:30px; height:30px; border:1px solid #d5dbe2; border-radius:6px; color:#1d4ed8; background:#fff; }
+.workspace-heading > div:nth-child(2) { min-width:0; display:grid; gap:2px; }.workspace-heading strong { font-size:12px; }.workspace-heading span { overflow:hidden; color:#7a8491; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+.icon-button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:1px solid #d5dbe2; border-radius:6px; color:#374151; background:#fff; }.icon-button:hover { color:#1d4ed8; background:#f3f6fb; }
+.session-search { display:flex; align-items:center; gap:7px; margin:10px; min-height:32px; padding:0 9px; border:1px solid #d8dde4; border-radius:6px; color:#8a939e; background:#fff; }
+.session-search:focus-within { border-color:#93b4e8; box-shadow:0 0 0 2px #e8f0fc; }.session-search input { min-width:0; width:100%; border:0; outline:0; color:#29313d; background:transparent; font-size:12px; }
+.sidebar-error { margin:0 10px 8px; color:#b42318; font-size:11px; line-height:1.4; }
+.session-list { flex:1; min-height:0; overflow:auto; padding:0 6px 8px; }
+.session-row { position:relative; display:flex; align-items:stretch; margin:1px 0; border-radius:6px; }.session-row:hover,.session-row:focus-within { background:#eceff3; }.session-row.active { background:#e5edf9; color:#173f7a; }
+.session-item { display:grid; grid-template-columns:8px minmax(0,1fr) auto; align-items:start; gap:8px; flex:1; min-width:0; min-height:48px; padding:8px; border:0; border-radius:6px; color:inherit; background:transparent; text-align:left; }.session-rename { display:flex; align-items:center; flex:1; min-width:0; min-height:48px; padding:8px; }
+.session-status { width:7px; height:7px; margin-top:5px; border-radius:50%; background:#a6afb9; }.session-status.running { background:#16a34a; box-shadow:0 0 0 3px #dcfce7; }.session-status.error { background:#dc2626; }
+.session-copy { min-width:0; display:grid; gap:3px; }.session-copy strong { overflow:hidden; font-size:12px; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }.session-copy small { color:#7b8490; font-size:10px; }.pinned-mark { margin-top:3px; color:#2563eb; }.rename-input { min-width:0; width:100%; height:22px; border:1px solid #8eb0e3; border-radius:4px; padding:0 5px; color:#29313d; background:#fff; font-size:12px; outline:0; }
+.session-actions { display:flex; align-items:center; padding-right:5px; opacity:0; }.session-row:hover .session-actions,.session-row:focus-within .session-actions,.session-row.active .session-actions { opacity:1; }.session-actions button,.archived-row button { display:grid; place-items:center; width:25px; height:25px; padding:0; border:0; border-radius:4px; color:#657181; background:transparent; }.session-actions button:hover,.archived-row button:hover { color:#1d4ed8; background:#fff; }.session-item:focus-visible,.rename-input:focus-visible,.session-actions button:focus-visible,.archived-row button:focus-visible,.icon-button:focus-visible { outline:2px solid #2563eb; outline-offset:1px; }
+.show-all-sessions { width:100%; min-height:32px; border:0; border-radius:5px; color:#2563eb; background:transparent; font-size:11px; }.show-all-sessions:hover { background:#eaf0f9; }
+.archived-section { margin:8px 3px 0; border-top:1px solid #dfe3e8; padding-top:6px; }.archive-toggle { display:flex; align-items:center; gap:4px; width:100%; min-height:28px; border:0; color:#707b88; background:transparent; font-size:11px; text-align:left; }.archived-row { display:flex; align-items:center; gap:6px; min-height:30px; padding:0 4px 0 20px; color:#7b8490; font-size:11px; }.archived-row span { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.empty { margin:16px 10px; color:#8a939e; font-size:12px; }
+.sidebar-footer { display:flex; align-items:center; justify-content:space-between; gap:7px; min-height:40px; padding:0 10px; border-top:1px solid #e1e5e9; color:#7b8490; font-size:10px; }.settings-link,.connection-state { display:inline-flex; align-items:center; gap:6px; }.settings-link { min-height:28px; border:0; border-radius:5px; padding:0 6px; color:#657181; background:transparent; }.settings-link:hover { color:#1d4ed8; background:#eaf0f9; }.connection-dot { width:7px; height:7px; border-radius:50%; background:#a6afb9; }.connection-dot.connected { background:#16a34a; }
+
+.session-sidebar { color:var(--sage-text); background:var(--sage-surface-raised); border-color:var(--sage-border); }.workspace-heading { border-color:var(--sage-border); }.workspace-mark,.icon-button,.session-search { border-color:var(--sage-border); color:var(--sage-text-secondary); background:var(--sage-surface); }.workspace-mark { color:var(--sage-text-secondary); }.workspace-heading span,.session-copy small { color:var(--sage-text-muted); }.icon-button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.session-search:focus-within { border-color:var(--sage-border-strong); box-shadow:0 0 0 2px color-mix(in srgb,var(--sage-focus) 14%,transparent); }.session-search input,.rename-input { color:var(--sage-text); }.session-row:hover,.session-row:focus-within,.session-row.active { background:var(--sage-surface-muted); color:var(--sage-text); }.session-status { background:var(--sage-border-strong); }.session-status.running { background:var(--sage-success); box-shadow:0 0 0 3px var(--sage-success-bg); }.session-status.error,.sidebar-error { color:var(--sage-danger); }.pinned-mark { color:var(--sage-text-secondary); }.rename-input { border-color:var(--sage-border-strong); background:var(--sage-surface); }.session-actions button,.archived-row button,.archive-toggle,.settings-link { color:var(--sage-text-secondary); }.session-actions button:hover,.archived-row button:hover,.archive-toggle:hover,.settings-link:hover { color:var(--sage-text); background:var(--sage-surface); }.show-all-sessions { color:var(--sage-text-secondary); background:transparent; }.show-all-sessions:hover { background:var(--sage-surface-muted); }.archived-section { border-color:var(--sage-border); }.archived-row,.empty,.sidebar-footer { color:var(--sage-text-muted); }.sidebar-footer { border-color:var(--sage-border); }.connection-dot { background:var(--sage-border-strong); }.connection-dot.connected { background:var(--sage-success); }
 </style>

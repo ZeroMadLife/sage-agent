@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ChevronDown, ChevronRight, X } from 'lucide-vue-next'
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { CodingFileDiff, CodingRunDiff } from '../../../types/api'
 
 const props = defineProps<{
@@ -13,17 +13,57 @@ const emit = defineEmits<{
 }>()
 
 const expandedFile = ref<string | null>(null)
+const diffView = ref<'unified' | 'split'>('unified')
+
+type DiffLine = {
+  content: string
+  kind: 'add' | 'remove' | 'context' | 'meta'
+  oldNumber: number | null
+  newNumber: number | null
+}
 
 // Reset expanded state whenever the drawer is hidden so reopening starts fresh.
 watch(
   () => props.visible,
   (visible) => {
-    if (!visible) expandedFile.value = null
+    if (!visible) {
+      expandedFile.value = null
+      diffView.value = 'unified'
+    }
   },
 )
 
 function toggleFile(path: string) {
   expandedFile.value = expandedFile.value === path ? null : path
+}
+
+function parseDiff(content: string): DiffLine[] {
+  let oldNumber = 1
+  let newNumber = 1
+  return content.split('\n').map((line) => {
+    const hunk = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (hunk) {
+      oldNumber = Number(hunk[1])
+      newNumber = Number(hunk[2])
+      return { content: line, kind: 'meta', oldNumber: null, newNumber: null }
+    }
+    if (line.startsWith('---') || line.startsWith('+++')) {
+      return { content: line, kind: 'meta', oldNumber: null, newNumber: null }
+    }
+    if (line.startsWith('+')) return { content: line.slice(1), kind: 'add', oldNumber: null, newNumber: newNumber++ }
+    if (line.startsWith('-')) return { content: line.slice(1), kind: 'remove', oldNumber: oldNumber++, newNumber: null }
+    if (line.startsWith(' ')) return { content: line.slice(1), kind: 'context', oldNumber: oldNumber++, newNumber: newNumber++ }
+    return { content: line, kind: 'context', oldNumber: oldNumber++, newNumber: newNumber++ }
+  })
+}
+
+const expandedDiffLines = computed(() => {
+  const file = props.diff?.changed_files.find((item) => item.path === expandedFile.value)
+  return file?.diff ? parseDiff(file.diff) : []
+})
+
+function lineClass(line: DiffLine) {
+  return `diff-line ${line.kind}`
 }
 
 function statusLabel(status: CodingFileDiff['status']) {
@@ -96,7 +136,24 @@ function fileTitle(file: CodingFileDiff): string {
               </span>
             </button>
             <div v-if="expandedFile === file.path" class="file-diff">
-              <pre v-if="file.diff" class="diff-content">{{ file.diff }}</pre>
+              <template v-if="file.diff">
+                <div class="diff-view-toolbar" role="group" aria-label="Diff 视图">
+                  <span>Diff 视图</span>
+                  <button type="button" :class="{ active: diffView === 'unified' }" aria-label="切换为统一 Diff" :aria-pressed="diffView === 'unified'" @click="diffView = 'unified'">统一</button>
+                  <button type="button" :class="{ active: diffView === 'split' }" aria-label="切换为并排 Diff" :aria-pressed="diffView === 'split'" @click="diffView = 'split'">并排</button>
+                </div>
+                <div v-if="diffView === 'unified'" class="diff-content" aria-label="统一 Diff">
+                  <div v-for="(line, index) in expandedDiffLines" :key="index" :class="lineClass(line)">
+                    <span class="diff-line-number">{{ line.oldNumber ?? '' }}</span><span class="diff-line-number">{{ line.newNumber ?? '' }}</span><code>{{ line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' ' }}{{ line.content }}</code>
+                  </div>
+                </div>
+                <div v-else class="side-by-side-diff" aria-label="并排 Diff">
+                  <div v-for="(line, index) in expandedDiffLines" :key="index" class="split-line">
+                    <div :class="['split-cell', line.kind === 'remove' ? 'remove' : line.kind === 'context' ? 'context' : 'empty']"><span class="diff-line-number">{{ line.oldNumber ?? '' }}</span><code>{{ line.kind === 'remove' || line.kind === 'context' ? line.content : '' }}</code></div>
+                    <div :class="['split-cell', line.kind === 'add' ? 'add' : line.kind === 'context' ? 'context' : 'empty']"><span class="diff-line-number">{{ line.newNumber ?? '' }}</span><code>{{ line.kind === 'add' || line.kind === 'context' ? line.content : '' }}</code></div>
+                  </div>
+                </div>
+              </template>
               <p v-else class="diff-placeholder">无 diff 内容</p>
             </div>
           </li>
@@ -113,7 +170,7 @@ function fileTitle(file: CodingFileDiff): string {
   z-index: 30;
   display: flex;
   justify-content: flex-end;
-  background: rgba(17, 24, 39, 0.32);
+  background: rgb(17 18 20 / 42%);
 }
 
 .diff-drawer {
@@ -121,9 +178,9 @@ function fileTitle(file: CodingFileDiff): string {
   grid-template-rows: auto 1fr;
   width: min(560px, 100%);
   height: 100%;
-  border-left: 1px solid #d1d5db;
-  background: #fff;
-  box-shadow: -16px 0 48px rgba(15, 23, 42, 0.18);
+  border-left: 1px solid var(--sage-border);
+  background: var(--sage-surface);
+  box-shadow: var(--sage-shadow-drawer);
 }
 
 .diff-drawer-header {
@@ -132,12 +189,12 @@ function fileTitle(file: CodingFileDiff): string {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 14px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--sage-border);
 }
 
 .diff-drawer-title .eyebrow {
   margin: 0 0 3px;
-  color: #6b7280;
+  color: var(--sage-text-muted);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -145,7 +202,7 @@ function fileTitle(file: CodingFileDiff): string {
 
 .diff-drawer-title h3 {
   margin: 0;
-  color: #111827;
+  color: var(--sage-text);
   font-size: 14px;
 }
 
@@ -156,35 +213,35 @@ function fileTitle(file: CodingFileDiff): string {
   width: 30px;
   min-height: 30px;
   padding: 0;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #fff;
-  color: #374151;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface);
+  color: var(--sage-text-secondary);
   cursor: pointer;
 }
 
 .close-btn:hover {
-  background: #f3f4f6;
+  background: var(--sage-surface-muted);
 }
 
 .diff-drawer-body {
   overflow: auto;
   padding: 12px 14px;
-  background: #fff;
+  background: var(--sage-surface);
 }
 
 .diff-truncated-note {
   margin: 0 0 10px;
   padding: 6px 10px;
-  border-radius: 6px;
-  background: #fef3c7;
-  color: #92400e;
+  border-radius: var(--sage-radius);
+  background: var(--sage-warning-bg);
+  color: var(--sage-warning);
   font-size: 12px;
 }
 
 .diff-empty {
   margin: 0;
-  color: #9ca3af;
+  color: var(--sage-text-muted);
   font-size: 13px;
 }
 
@@ -196,9 +253,9 @@ function fileTitle(file: CodingFileDiff): string {
 
 .file-item {
   margin-bottom: 2px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface);
 }
 
 .file-header {
@@ -215,20 +272,20 @@ function fileTitle(file: CodingFileDiff): string {
 
 .file-header:disabled {
   cursor: default;
-  color: #9ca3af;
+  color: var(--sage-text-muted);
 }
 
 .file-header:hover:not(:disabled) {
-  background: #f9fafb;
-  border-radius: 6px;
+  background: var(--sage-surface-muted);
+  border-radius: var(--sage-radius);
 }
 
 .file-path {
   flex: 1;
   overflow: hidden;
-  color: #111827;
+  color: var(--sage-text);
   font-size: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--sage-font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -238,49 +295,37 @@ function fileTitle(file: CodingFileDiff): string {
   border-radius: 3px;
   font-size: 10px;
   font-weight: 700;
-  background: #e5e7eb;
-  color: #4b5563;
+  background: var(--sage-surface-muted);
+  color: var(--sage-text-secondary);
 }
 
 .file-status.status-added {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--sage-success-bg);
+  color: var(--sage-success);
 }
 
 .file-status.status-modified {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--sage-warning-bg);
+  color: var(--sage-warning);
 }
 
 .file-status.status-deleted {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--sage-danger-bg);
+  color: var(--sage-danger);
 }
 
 .file-diff {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--sage-border);
   padding: 8px 10px;
-  background: #f9fafb;
+  background: var(--sage-surface-raised);
 }
 
-.diff-content {
-  margin: 0;
-  max-height: 420px;
-  overflow: auto;
-  padding: 8px 10px;
-  border-radius: 4px;
-  background: #111827;
-  color: #e5e7eb;
-  font-family: 'SF Mono', 'Fira Code', monospace;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
+.diff-view-toolbar { display:flex; align-items:center; gap:4px; margin:0 0 8px; color:var(--sage-text-muted); font-size:11px; }.diff-view-toolbar > span { margin-right:auto; }.diff-view-toolbar button { min-height:25px; border:1px solid var(--sage-border); border-radius:4px; padding:0 7px; color:var(--sage-text-muted); background:var(--sage-surface); font-size:11px; }.diff-view-toolbar button.active { border-color:var(--sage-text); color:var(--sage-text); background:var(--sage-surface-muted); }
+.diff-content,.side-by-side-diff { max-height:420px; overflow:auto; border:1px solid var(--sage-border); background:var(--sage-code-bg); color:var(--sage-code-text); font:11px/1.55 var(--sage-font-mono); white-space:pre; }.diff-line { display:grid; grid-template-columns:42px 42px minmax(max-content,1fr); min-width:max-content; }.diff-line-number { display:block; min-width:0; padding:0 7px; border-right:1px solid color-mix(in srgb,var(--sage-border) 70%,transparent); color:var(--sage-code-muted); text-align:right; user-select:none; }.diff-line code,.split-cell code { padding:0 10px; color:inherit; font:inherit; }.diff-line.add,.split-cell.add { background:var(--sage-diff-add-bg); color:var(--sage-diff-add-text); }.diff-line.remove,.split-cell.remove { background:var(--sage-diff-remove-bg); color:var(--sage-diff-remove-text); }.diff-line.meta { color:var(--sage-code-muted); background:var(--sage-surface-muted); }.side-by-side-diff { min-width:max-content; }.split-line { display:grid; grid-template-columns:minmax(280px,1fr) minmax(280px,1fr); min-width:560px; }.split-cell { display:grid; grid-template-columns:42px minmax(max-content,1fr); min-height:18px; border-right:1px solid var(--sage-border); }.split-cell.context { color:var(--sage-code-text); }.split-cell.empty { color:transparent; background:var(--sage-surface-muted); }
 
 .diff-placeholder {
   margin: 0;
-  color: #9ca3af;
+  color: var(--sage-text-muted);
   font-size: 12px;
 }
 </style>

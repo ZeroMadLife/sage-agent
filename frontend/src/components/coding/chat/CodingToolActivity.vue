@@ -156,9 +156,9 @@ function toolSummary(tool: ToolActivity) {
 <style scoped>
 .tool-activity {
   margin: 4px 0 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #f9fafb;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface-raised);
   overflow: hidden;
 }
 
@@ -177,11 +177,11 @@ function toolSummary(tool: ToolActivity) {
   cursor: pointer;
   text-align: left;
   font-size: 12px;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
 .activity-header:hover {
-  background: #f3f4f6;
+  background: var(--sage-surface-muted);
 }
 
 .activity-label {
@@ -197,22 +197,22 @@ function toolSummary(tool: ToolActivity) {
 }
 
 .activity-badge.running {
-  background: #dbeafe;
-  color: #1e40af;
+  background: var(--sage-surface-muted);
+  color: var(--sage-text-secondary);
 }
 
 .activity-badge.done {
-  background: #d1fae5;
-  color: #065f46;
+  background: var(--sage-success-bg);
+  color: var(--sage-success);
 }
 
 .activity-badge.error {
-  background: #fee2e2;
-  color: #991b1b;
+  background: var(--sage-danger-bg);
+  color: var(--sage-danger);
 }
 
 .tool-list {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--sage-border);
   padding: 4px 0;
 }
 
@@ -221,7 +221,7 @@ function toolSummary(tool: ToolActivity) {
 }
 
 .tool-item:not(:last-child) {
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--sage-border);
 }
 
 .tool-row {
@@ -233,7 +233,7 @@ function toolSummary(tool: ToolActivity) {
 
 .tool-name {
   font-weight: 600;
-  color: #374151;
+  color: var(--sage-text-secondary);
 }
 
 .tool-args {
@@ -262,9 +262,9 @@ function toolSummary(tool: ToolActivity) {
 .tool-result {
   margin-top: 3px;
   padding: 4px 8px;
-  background: #fff;
-  border-radius: 3px;
-  border: 1px solid #f0f1f3;
+  background: var(--sage-surface);
+  border-radius: var(--sage-radius-sm);
+  border: 1px solid var(--sage-border);
 }
 
 .tool-result pre {
@@ -274,24 +274,24 @@ function toolSummary(tool: ToolActivity) {
   font-family: 'SF Mono', monospace;
   white-space: pre-wrap;
   word-break: break-word;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
 .diff-add {
-  color: #047857;
-  background: #ecfdf5;
+  color: var(--sage-diff-add-text);
+  background: var(--sage-diff-add-bg);
 }
 
 .diff-remove {
-  color: #b91c1c;
-  background: #fef2f2;
+  color: var(--sage-diff-remove-text);
+  background: var(--sage-diff-remove-bg);
 }
 
 .show-more {
   margin-top: 4px;
   border: 0;
   background: transparent;
-  color: #2563eb;
+  color: var(--sage-text-secondary);
   cursor: pointer;
   font-size: 11px;
   font-weight: 600;

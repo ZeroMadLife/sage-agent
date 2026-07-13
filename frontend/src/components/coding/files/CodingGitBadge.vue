@@ -24,14 +24,14 @@ const label = computed(() => {
   align-items: center;
   gap: 5px;
   padding: 3px 10px;
-  border-radius: 999px;
-  background: #f3f4f6;
-  color: #374151;
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface-muted);
+  color: var(--sage-text-secondary);
   font-size: 12px;
   font-weight: 600;
 }
 
 .git-badge.disabled {
-  color: #9ca3af;
+  color: var(--sage-text-muted);
 }
 </style>

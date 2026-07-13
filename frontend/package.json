@@ -13,7 +13,8 @@
     "lucide-vue-next": "^1.0.0",
     "markdown-it": "^14.3.0",
     "pinia": "^3.0.4",
-    "vue": "^3.5.39"
+    "vue": "^3.5.39",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.1.2",

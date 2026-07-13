@@ -15,13 +15,59 @@ import type {
   CodingRunsResponse,
   CodingSessionMessagesResponse,
   CodingSessionResponse,
+  CodingSessionSummary,
   CodingSessionsResponse,
+  CodingTimelineResponse,
   CodingSkillDetailResponse,
   CodingSkillsResponse,
   PermissionMode,
 } from '../types/api'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
+const TIMELINE_KINDS = new Set(['user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory', 'agent', 'terminal', 'system', 'run'])
+const TIMELINE_STATUSES = new Set(['pending', 'queued', 'running', 'blocked', 'done', 'completed', 'cancelled', 'error', 'interrupted', 'retryable'])
+
+function parseTimelineResponse(value: unknown, sessionId: string): CodingTimelineResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('收到无效的时间线响应')
+  const response = value as Record<string, unknown>
+  if (!Array.isArray(response.items) || !Number.isSafeInteger(response.next_cursor) || Number(response.next_cursor) < 0 ||
+    typeof response.has_more !== 'boolean' ||
+    !(response.older_cursor === null || Number.isSafeInteger(response.older_cursor)) ||
+    !Number.isSafeInteger(response.latest_cursor) || Number(response.latest_cursor) < 0 ||
+    (response.older_cursor !== null && Number(response.older_cursor) < 0) ||
+    Number(response.next_cursor) > Number(response.latest_cursor) ||
+    (response.older_cursor !== null && Number(response.older_cursor) > Number(response.latest_cursor)) ||
+    !(response.active_run === null || isActiveRun(response.active_run))) {
+    throw new Error('收到无效的时间线响应')
+  }
+  let previous = 0
+  for (const candidate of response.items) {
+    if (!isTimelineEvent(candidate, sessionId) || candidate.sequence <= previous) {
+      throw new Error('收到无效的时间线响应')
+    }
+    previous = candidate.sequence
+  }
+  if (previous > Number(response.latest_cursor)) throw new Error('收到无效的时间线响应')
+  return value as CodingTimelineResponse
+}
+
+function isActiveRun(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const run = value as Record<string, unknown>
+  return typeof run.run_id === 'string' && run.run_id.length > 0 && run.status === 'running'
+}
+
+function isTimelineEvent(value: unknown, sessionId: string): value is CodingTimelineResponse['items'][number] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const event = value as Record<string, unknown>
+  return typeof event.event_id === 'string' && event.event_id.length > 0 &&
+    event.session_id === sessionId && typeof event.run_id === 'string' && event.run_id.length > 0 &&
+    Number.isSafeInteger(event.sequence) && Number(event.sequence) > 0 &&
+    typeof event.kind === 'string' && TIMELINE_KINDS.has(event.kind) &&
+    typeof event.status === 'string' && TIMELINE_STATUSES.has(event.status) &&
+    typeof event.timestamp === 'string' && event.timestamp.length > 0 &&
+    Boolean(event.payload) && typeof event.payload === 'object' && !Array.isArray(event.payload)
+}
 
 export async function startCodingSession(
   workspaceRoot?: string,
@@ -40,18 +86,75 @@ export async function startCodingSession(
   return (await response.json()) as CodingSessionResponse
 }
 
-export function buildCodingStreamUrl(sessionId: string): string {
+export function buildCodingStreamUrl(sessionId: string, after = 0): string {
   const base = new URL(API_BASE_URL, window.location.origin)
   base.protocol = base.protocol === 'https:' ? 'wss:' : 'ws:'
   base.pathname = `/api/v1/coding/${sessionId}/stream`
   base.search = ''
+  base.searchParams.set('after', String(after))
   return base.toString()
 }
 
+export async function fetchCodingTimeline(
+  sessionId: string,
+  after = 0,
+  limit = 100,
+): Promise<CodingTimelineResponse> {
+  const url = new URL(`/api/v1/coding/session/${sessionId}/timeline`, API_BASE_URL)
+  url.searchParams.set('after', String(after))
+  url.searchParams.set('limit', String(limit))
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`fetch timeline failed: ${response.status}`)
+  return parseTimelineResponse(await response.json(), sessionId)
+}
+
+export async function fetchCodingTimelineTail(
+  sessionId: string,
+  limit = 100,
+): Promise<CodingTimelineResponse> {
+  const url = new URL(`/api/v1/coding/session/${sessionId}/timeline`, API_BASE_URL)
+  url.searchParams.set('tail', 'true')
+  url.searchParams.set('limit', String(limit))
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`fetch timeline tail failed: ${response.status}`)
+  return parseTimelineResponse(await response.json(), sessionId)
+}
+
+export async function fetchOlderCodingTimeline(
+  sessionId: string,
+  before: number,
+  limit = 100,
+): Promise<CodingTimelineResponse> {
+  const url = new URL(`/api/v1/coding/session/${sessionId}/timeline`, API_BASE_URL)
+  url.searchParams.set('before', String(before))
+  url.searchParams.set('limit', String(limit))
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`fetch older timeline failed: ${response.status}`)
+  return parseTimelineResponse(await response.json(), sessionId)
+}
+
 export async function fetchCodingSessions(): Promise<CodingSessionsResponse> {
-  const response = await fetch(new URL('/api/v1/coding/sessions', API_BASE_URL))
+  const url = new URL('/api/v1/coding/sessions', API_BASE_URL)
+  url.searchParams.set('include_archived', 'true')
+  const response = await fetch(url)
   if (!response.ok) throw new Error(`fetch sessions failed: ${response.status}`)
   return (await response.json()) as CodingSessionsResponse
+}
+
+export async function updateCodingSessionMetadata(
+  sessionId: string,
+  metadata: { title?: string; pinned?: boolean; archived?: boolean },
+): Promise<CodingSessionSummary> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/session/${sessionId}/metadata`, API_BASE_URL),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    },
+  )
+  if (!response.ok) throw new Error(`update session metadata failed: ${response.status}`)
+  return (await response.json()) as CodingSessionSummary
 }
 
 export async function resumeCodingSession(sessionId: string): Promise<CodingSessionResponse> {

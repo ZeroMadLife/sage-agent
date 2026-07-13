@@ -4,14 +4,19 @@ import type { ChatMessage } from '../../../stores/codingEvents'
 import CodingExecutionLog from './CodingExecutionLog.vue'
 import CodingToolActivity from './CodingToolActivity.vue'
 
-defineProps<{
+withDefaults(defineProps<{
   message: ChatMessage
   renderedContent: string
-}>()
+  showProcess?: boolean
+}>(), { showProcess: true })
 </script>
 
 <template>
-  <section :class="['message-turn', message.role]">
+  <section
+    :class="['message-turn', message.role]"
+    :data-turn-id="message.id"
+    :data-run-id="message.run_id"
+  >
     <div
       class="message-avatar"
       :class="message.role"
@@ -24,11 +29,11 @@ defineProps<{
     <div class="message-body">
       <div class="message-author">{{ message.role === 'assistant' ? 'Sage' : '你' }}</div>
       <CodingExecutionLog
-        v-if="message.activities && message.activities.length > 0"
+        v-if="showProcess && message.activities && message.activities.length > 0"
         :activities="message.activities"
         :is-thinking="!!message.isThinking"
       />
-      <div v-if="message.tools && message.tools.length > 0" class="activity-row">
+      <div v-if="showProcess && message.tools && message.tools.length > 0" class="activity-row">
         <CodingToolActivity :tools="message.tools" :is-thinking="!!message.isThinking" />
       </div>
       <article v-if="message.content" class="message-content-shell">
@@ -68,15 +73,15 @@ defineProps<{
   place-items: center;
   width: 30px;
   height: 30px;
-  border: 1px solid #dbe3ec;
-  border-radius: 6px;
-  color: #0f766e;
-  background: #ecfdf5;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  color: var(--sage-success);
+  background: var(--sage-success-bg);
 }
 
 .message-avatar.user {
-  color: #475569;
-  background: #f1f5f9;
+  color: var(--sage-text-secondary);
+  background: var(--sage-surface-muted);
 }
 
 .message-body {
@@ -87,7 +92,7 @@ defineProps<{
 
 .message-author {
   margin: 0 0 5px;
-  color: #64748b;
+  color: var(--sage-text-muted);
   font-size: 11px;
   font-weight: 700;
 }
@@ -100,7 +105,7 @@ defineProps<{
 .message-content-shell {
   min-width: 0;
   max-width: 100%;
-  color: #1f2937;
+  color: var(--sage-text);
   font-size: 14px;
   line-height: 1.65;
   overflow-wrap: anywhere;
@@ -109,9 +114,9 @@ defineProps<{
 
 .message-turn.user .message-content-shell {
   padding: 9px 12px;
-  border: 1px solid #dbe7f3;
-  border-radius: 8px;
-  background: #f5f9fd;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface-muted);
 }
 
 .message-content :deep(p:first-child) {
@@ -124,8 +129,10 @@ defineProps<{
 
 .message-content :deep(pre) {
   padding: 8px 12px;
-  border-radius: 6px;
-  background: #f3f4f6;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  background: var(--sage-code-bg);
+  color: var(--sage-code-text);
   overflow-x: auto;
   font-size: 13px;
 }

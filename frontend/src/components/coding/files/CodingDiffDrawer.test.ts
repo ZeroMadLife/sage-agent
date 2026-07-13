@@ -73,6 +73,20 @@ it('expands the diff content when a file is clicked', async () => {
   expect(wrapper.find('.diff-content').exists()).toBe(false)
 })
 
+it('switches an expanded textual diff between unified and side-by-side views', async () => {
+  const wrapper = mount(CodingDiffDrawer, {
+    props: { diff: sampleDiff, visible: true },
+  })
+
+  await wrapper.find('.file-header').trigger('click')
+  expect(wrapper.get('[aria-label="Diff 视图"]').text()).toContain('统一')
+
+  await wrapper.get('button[aria-label="切换为并排 Diff"]').trigger('click')
+  expect(wrapper.find('.side-by-side-diff').exists()).toBe(true)
+  expect(wrapper.text()).toContain('并排')
+  expect(wrapper.findAll('.diff-line-number').length).toBeGreaterThan(0)
+})
+
 it('shows a truncated note when the diff is truncated', () => {
   const wrapper = mount(CodingDiffDrawer, {
     props: { diff: { ...sampleDiff, truncated: true }, visible: true },

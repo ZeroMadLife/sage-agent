@@ -1,7 +1,32 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCodingStore } from './coding'
-import type { MemoryProposal } from '../types/api'
+import type { CodingTimelineEvent, MemoryProposal } from '../types/api'
+
+function timelineEvent(
+  sessionId: string,
+  sequence: number,
+  kind: CodingTimelineEvent['kind'],
+  payload: Record<string, unknown>,
+  runId = 'run-1',
+): CodingTimelineEvent {
+  return {
+    event_id: `${sessionId}-event-${sequence}`,
+    session_id: sessionId,
+    run_id: runId,
+    sequence,
+    kind,
+    status: kind === 'terminal' ? 'completed' : 'running',
+    timestamp: '2026-07-12T00:00:00Z',
+    payload,
+  }
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
 
 function memoryProposal(proposalId: string, revision: number): MemoryProposal {
   return {
@@ -27,6 +52,591 @@ describe('coding store', () => {
     expect(store.isThinking).toBe(false)
     expect(store.skills).toEqual([])
     expect(store.contextBudget).toBe(0)
+    expect(store.sessionsById).toEqual({})
+  })
+
+  it('keeps A and B timelines isolated when an A event arrives late', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 1, 'user', { type: 'user', content: 'A 的问题' },
+    ))
+    store.sessionId = 'session-b'
+    store.handleTimelineEvent('session-b', timelineEvent(
+      'session-b', 1, 'user', { type: 'user', content: 'B 的问题' },
+    ))
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 2, 'assistant', { type: 'final', content: 'A 的回答' },
+    ))
+
+    expect(store.messages.map((message) => message.content)).toEqual(['B 的问题'])
+    expect(store.sessionsById['session-a'].messages.map((message) => message.content)).toEqual([
+      'A 的问题',
+      'A 的回答',
+    ])
+    store.sessionId = 'session-a'
+    expect(store.messages.map((message) => message.content)).toEqual(['A 的问题', 'A 的回答'])
+  })
+
+  it('deduplicates the same event from history and realtime ingestion', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const event = timelineEvent(
+      'session-a', 1, 'assistant', { type: 'text_delta', delta: '一次' },
+    )
+
+    store.mergeTimelinePage('session-a', [event], { next_cursor: 1, has_more: false })
+    store.handleTimelineEvent('session-a', event)
+
+    expect(store.sessionsById['session-a'].timeline).toHaveLength(1)
+    expect(store.messages[0].content).toBe('一次')
+  })
+
+  it('marks a run active from the persisted system run_started envelope', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 1, 'system', { event: 'run_started' }, 'run-new',
+    ))
+
+    expect(store.activeRun).toEqual({ run_id: 'run-new', status: 'running' })
+    expect(store.isThinking).toBe(true)
+  })
+
+  it('does not erase REST pagination state when a realtime event arrives', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.mergeTimelinePage('session-a', [], { next_cursor: 0, has_more: true })
+
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 1, 'user', { type: 'user', content: '实时消息' },
+    ))
+
+    expect(store.timelineHasMore).toBe(true)
+  })
+
+  it('merges paginated history in sequence order even when older data arrives later', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.mergeTimelinePage(
+      'session-a',
+      [timelineEvent('session-a', 3, 'assistant', { type: 'final', content: '完成' })],
+      { next_cursor: 3, has_more: false },
+    )
+    store.mergeTimelinePage(
+      'session-a',
+      [
+        timelineEvent('session-a', 1, 'user', { type: 'user', content: '问题' }),
+        timelineEvent('session-a', 2, 'assistant', { type: 'text_delta', delta: '过程' }),
+      ],
+      { next_cursor: 3, has_more: false },
+    )
+
+    expect(store.sessionsById['session-a'].timeline.map((event) => event.sequence)).toEqual([1, 2, 3])
+    expect(store.messages.map((message) => message.content)).toEqual(['问题', '完成'])
+  })
+
+  it('loads timeline state and preserves a server-owned active run', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [timelineEvent('session-a', 1, 'user', { type: 'user', content: '运行中' })],
+        next_cursor: 1,
+        has_more: false,
+        older_cursor: null,
+        latest_cursor: 1,
+        active_run: { run_id: 'run-1', status: 'running' },
+      }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    await store.loadTimeline('session-a')
+
+    expect(store.activeRun).toEqual({ run_id: 'run-1', status: 'running' })
+    expect(store.isThinking).toBe(true)
+    expect(store.timelineCursor).toBe(1)
+  })
+
+  it('replays every missed timeline page from the initialized cursor before reconnecting', async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => timelineEvent(
+      'session-a', index + 2, 'tool', { type: 'tool_result', tool: 'read_file', args: {}, content: String(index) }, 'run-a',
+    ))
+    const terminal = timelineEvent(
+      'session-a', 102, 'terminal', { event: 'run_completed' }, 'run-a',
+    )
+    const fetchMock = vi.fn((input: URL | string) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (url.pathname.endsWith('/timeline')) {
+        const after = url.searchParams.get('after')
+        if (after === '1') return Promise.resolve({ ok: true, json: async () => ({
+          items: firstPage, next_cursor: 101, has_more: true,
+          older_cursor: null, latest_cursor: 102, active_run: { run_id: 'run-a', status: 'running' },
+        }) })
+        if (after === '101') return Promise.resolve({ ok: true, json: async () => ({
+          items: [terminal], next_cursor: 102, has_more: false,
+          older_cursor: null, latest_cursor: 102, active_run: null,
+        }) })
+      }
+      if (url.pathname.endsWith('/messages')) {
+        return Promise.resolve({ ok: true, json: async () => ({ messages: [] }) })
+      }
+      if (url.pathname.endsWith('/sessions')) {
+        return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) })
+      }
+      if (url.pathname.endsWith('/runs')) {
+        return Promise.resolve({ ok: true, json: async () => ({ runs: [] }) })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.mergeTimelinePage('session-a', [timelineEvent(
+      'session-a', 1, 'user', { type: 'user', content: '继续运行' }, 'run-a',
+    )], { next_cursor: 1, latest_cursor: 1, has_more: false })
+    store.sessionsById['session-a'].timelineInitialized = true
+
+    await store.loadTimeline('session-a')
+    store.handleTimelineEvent('session-a', terminal)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchMock.mock.calls.slice(0, 2).map(([input]) => {
+      const url = input as URL
+      return { after: url.searchParams.get('after'), tail: url.searchParams.get('tail') }
+    })).toEqual([
+      { after: '1', tail: null },
+      { after: '101', tail: null },
+    ])
+    expect(store.timeline.map((event) => event.sequence)).toEqual(
+      Array.from({ length: 102 }, (_, index) => index + 1),
+    )
+    expect(store.timeline.filter((event) => event.event_id === terminal.event_id)).toHaveLength(1)
+    expect(store.timelineCursor).toBe(102)
+  })
+
+  it('loads the latest bounded page and prepends older history', async () => {
+    const tail = Array.from({ length: 100 }, (_, index) => timelineEvent(
+      'session-a', index + 151, 'system', { type: 'model_requested' }, `run-${index + 151}`,
+    ))
+    const older = Array.from({ length: 100 }, (_, index) => timelineEvent(
+      'session-a', index + 51, 'system', { type: 'model_requested' }, `run-${index + 51}`,
+    ))
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        items: tail, next_cursor: 250, has_more: true,
+        older_cursor: 151, latest_cursor: 250, active_run: null,
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        items: older, next_cursor: 250, has_more: true,
+        older_cursor: 51, latest_cursor: 260, active_run: null,
+      }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    await store.loadTimeline('session-a')
+    await store.loadOlderTimeline('session-a')
+
+    expect(store.timeline).toHaveLength(100)
+    expect(store.timeline[0].sequence).toBe(151)
+    expect(store.olderTimeline).toHaveLength(100)
+    expect(store.visibleTimeline).toHaveLength(200)
+    expect(store.visibleTimeline[0].sequence).toBe(51)
+    expect(store.visibleTimeline.at(-1)?.sequence).toBe(250)
+    expect(store.olderCursor).toBe(51)
+    expect(store.timelineCursor).toBe(250)
+    const firstUrl = fetchMock.mock.calls[0][0] as URL
+    const secondUrl = fetchMock.mock.calls[2][0] as URL
+    expect(firstUrl.searchParams.get('tail')).toBe('true')
+    expect(secondUrl.searchParams.get('before')).toBe('151')
+  })
+
+  it('keeps the automatically resident timeline window bounded', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const events = Array.from({ length: 2_100 }, (_, index) => timelineEvent(
+      'session-a', index + 1, 'system', { type: 'model_requested' }, `run-${index + 1}`,
+    ))
+
+    store.mergeTimelinePage('session-a', events, {
+      next_cursor: 2_100,
+      latest_cursor: 2_100,
+      has_more: false,
+    }, 'history')
+
+    expect(store.timeline).toHaveLength(2_000)
+    expect(store.timeline[0].sequence).toBe(101)
+    expect(store.timeline.at(-1)?.sequence).toBe(2_100)
+  })
+
+  it('keeps more than twenty older pages contiguous and separately bounded', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const recent = Array.from({ length: 100 }, (_, index) => timelineEvent(
+      'session-a', index + 2_101, 'system', { type: 'model_requested' }, `run-${index + 2_101}`,
+    ))
+    const older = Array.from({ length: 2_100 }, (_, index) => timelineEvent(
+      'session-a', index + 1, 'system', { type: 'model_requested' }, `run-${index + 1}`,
+    ))
+    store.mergeTimelinePage('session-a', recent, {
+      next_cursor: 2_200, latest_cursor: 2_200, older_cursor: 2_101,
+    })
+    store.mergeTimelinePage('session-a', older, {
+      next_cursor: 2_200, latest_cursor: 2_200, older_cursor: 1,
+    }, 'older')
+
+    expect(store.olderTimeline).toHaveLength(2_100)
+    expect(store.visibleTimeline.map((item) => item.sequence)).toEqual(
+      Array.from({ length: 2_200 }, (_, index) => index + 1),
+    )
+    expect(store.timelineCursor).toBe(2_200)
+  })
+
+  it('loads legacy messages for an empty timeline and keeps them with new events', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        items: [], next_cursor: 0, has_more: false,
+        older_cursor: null, latest_cursor: 0, active_run: null,
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        messages: [{ role: 'assistant', content: '旧回答', created_at: '' }],
+      }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    await store.loadTimeline('session-a')
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 1, 'user', { type: 'user', content: '新问题' }, 'run-new',
+    ))
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 2, 'assistant', { type: 'final', content: '新回答' }, 'run-new',
+    ))
+
+    expect(store.messages.map((message) => message.content)).toEqual(['旧回答', '新问题', '新回答'])
+    expect(store.sessionsById['session-a'].legacyMessages).toHaveLength(1)
+  })
+
+  it('keeps only the legacy prefix when transcript already includes timeline messages', async () => {
+    const events = [
+      timelineEvent('session-a', 1, 'user', { type: 'user', content: '新问题' }, 'run-new'),
+      timelineEvent('session-a', 2, 'assistant', { type: 'final', content: '新回答' }, 'run-new'),
+    ]
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        items: events, next_cursor: 2, has_more: false,
+        older_cursor: null, latest_cursor: 2, active_run: null,
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [
+        { role: 'assistant', content: '旧回答', created_at: '' },
+        { role: 'user', content: '新问题', created_at: '' },
+        { role: 'assistant', content: '新回答', created_at: '' },
+      ] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    await store.loadTimeline('session-a')
+
+    expect(store.messages.map((message) => message.content)).toEqual(['旧回答', '新问题', '新回答'])
+    expect(store.sessionsById['session-a'].legacyMessages.map((message) => message.content)).toEqual(['旧回答'])
+  })
+
+  it('deduplicates a partial assistant projection against completed transcript text', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({
+        items: [timelineEvent('session-a', 1, 'user', { type: 'user', content: '新问题' }),
+          timelineEvent('session-a', 2, 'assistant', { type: 'text_delta', delta: '完成的一部' })],
+        next_cursor: 2, has_more: false, older_cursor: null, latest_cursor: 2, active_run: null,
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [
+        { role: 'assistant', content: '旧回答', created_at: '' },
+        { role: 'user', content: '新问题', created_at: '' },
+        { role: 'assistant', content: '完成的一部分', created_at: '' },
+      ] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    await store.loadTimeline('session-a')
+
+    expect(store.messages.map((message) => message.content)).toEqual(['旧回答', '新问题', '完成的一部'])
+  })
+
+  it('does not execute live network side effects while replaying history', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.mergeTimelinePage('session-a', [
+      timelineEvent('session-a', 1, 'tool', {
+        type: 'tool_result', tool: 'write_file', args: { path: 'a.txt' },
+        content: 'ok', is_error: false,
+      }),
+      timelineEvent('session-a', 2, 'memory', {
+        type: 'memory_proposal_ready', proposal_id: 'proposal-1', session_id: 'session-a',
+        run_id: 'run-1', reflection_id: 'reflection-1', candidate_count: 1, base_revision: 0,
+      }),
+      timelineEvent('session-a', 3, 'run', { type: 'turn_finished' }),
+    ], { next_cursor: 3, has_more: false }, 'history')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('performs terminal live cleanup once and clears pending approval', async () => {
+    const fetchMock = vi.fn().mockImplementation((input: URL | string) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (url.pathname.endsWith('/sessions')) {
+        return Promise.resolve({ ok: true, json: async () => ({ sessions: [] }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ runs: [] }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'approval', {
+      type: 'approval_required', approval_id: 'approval-1', tool: 'write_file',
+      args: { path: 'a.txt' }, description: '确认', pattern_key: 'tool:write_file',
+    }))
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 2, 'terminal', { event: 'run_cancelled' },
+    ))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(store.pendingApproval).toBeNull()
+    expect(fetchMock.mock.calls.filter(([input]) => (input as URL).pathname.endsWith('/sessions'))).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([input]) => (input as URL).pathname.endsWith('/runs'))).toHaveLength(1)
+  })
+
+  it('enriches a live approval without doing so during history replay', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ entries: [], content: '' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'approval', {
+      type: 'approval_required', approval_id: 'approval-1', tool: 'write_file',
+      args: { path: 'new.txt', content: 'new' }, description: '确认', pattern_key: 'tool:write_file',
+    }))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(store.pendingApproval?.diff_preview).toEqual([{ type: 'add', text: 'new' }])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    store.disconnect()
+  })
+
+  it('writes a delayed approval preview back to its source session only', async () => {
+    const listing = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(listing.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'approval', {
+      type: 'approval_required', approval_id: 'approval-a', tool: 'write_file',
+      args: { path: 'a.txt', content: 'A' }, description: '确认', pattern_key: 'tool:write_file',
+    }, 'run-a'))
+    store.sessionId = 'session-b'
+    store.pendingApproval = {
+      approval_id: 'approval-b', session_id: 'session-b', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    listing.resolve({ ok: true, json: async () => ({ entries: [] }) })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(store.sessionsById['session-a'].pendingApproval?.diff_preview).toEqual([
+      { type: 'add', text: 'A' },
+    ])
+    expect(store.pendingApproval?.diff_preview).toBeUndefined()
+    store.disconnect()
+  })
+
+  it('writes a delayed approval poll back to its source session only', async () => {
+    vi.useFakeTimers()
+    const polling = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(polling.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'approval', {
+      type: 'approval_required', approval_id: 'approval-a', tool: 'write_file',
+      args: {}, description: '确认', pattern_key: 'tool:write_file',
+    }, 'run-a'))
+    vi.advanceTimersByTime(1_500)
+    store.sessionId = 'session-b'
+    store.pendingApproval = {
+      approval_id: 'approval-b', session_id: 'session-b', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    polling.resolve({ ok: true, json: async () => null })
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(store.sessionsById['session-a'].pendingApproval).toBeNull()
+    expect(store.pendingApproval?.approval_id).toBe('approval-b')
+    store.disconnect()
+    vi.useRealTimers()
+  })
+
+  it('does not clear another run approval or polling on a rejected-run terminal', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => null })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'approval', {
+      type: 'approval_required', approval_id: 'approval-a', tool: 'write_file',
+      args: {}, description: '确认', pattern_key: 'tool:write_file',
+    }, 'run-a'))
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 2, 'terminal', { event: 'input_rejected' }, 'run-rejected',
+    ))
+    vi.advanceTimersByTime(1_500)
+    await Promise.resolve()
+
+    expect(store.pendingApproval?.approval_id).toBe('approval-a')
+    expect(fetchMock).toHaveBeenCalled()
+    store.disconnect()
+    vi.useRealTimers()
+  })
+
+  it('does not let older pages roll back live context, runtime or errors', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 100, 'context', {
+      type: 'context_usage_updated', session_id: 'session-a', used_tokens: 100,
+      model_limit_tokens: 1_000, output_reserve_tokens: 100, effective_limit_tokens: 900,
+      usage_ratio: 0.11, level: 'normal', estimated: false, compactable: true,
+    }))
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 101, 'system', {
+      type: 'runtime_mode_changed', mode: 'plan', topic: '最新计划', plan_path: 'new.md',
+    }))
+    store.errorMessage = '最新错误'
+
+    store.mergeTimelinePage('session-a', [
+      timelineEvent('session-a', 1, 'context', {
+        type: 'context_usage_updated', session_id: 'session-a', used_tokens: 10,
+        model_limit_tokens: 1_000, output_reserve_tokens: 100, effective_limit_tokens: 900,
+        usage_ratio: 0.01, level: 'normal', estimated: false, compactable: true,
+      }),
+      timelineEvent('session-a', 2, 'system', {
+        type: 'runtime_mode_changed', mode: 'default', topic: '旧计划', plan_path: 'old.md',
+      }),
+    ], { next_cursor: 101, older_cursor: null, latest_cursor: 101 }, 'older')
+
+    expect(store.contextChars).toBe(100)
+    expect(store.runtimeMode).toBe('plan')
+    expect(store.planTopic).toBe('最新计划')
+    expect(store.errorMessage).toBe('最新错误')
+  })
+
+  it('keeps approval completion scoped to the session that initiated it', async () => {
+    const response = deferred<{ ok: boolean }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.pendingApproval = {
+      approval_id: 'approval-a', session_id: 'session-a', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    const approval = store.respondApproval('once')
+    store.sessionId = 'session-b'
+    store.pendingApproval = {
+      approval_id: 'approval-b', session_id: 'session-b', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    response.resolve({ ok: true })
+    await approval
+
+    expect(store.sessionsById['session-a'].pendingApproval).toBeNull()
+    expect(store.sessionsById['session-a'].approvalBusy).toBe(false)
+    expect(store.pendingApproval?.approval_id).toBe('approval-b')
+    expect(store.approvalBusy).toBe(false)
+  })
+
+  it('keeps stop completion scoped to the session that initiated it', async () => {
+    const response = deferred<{ ok: boolean }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.activeRun = { run_id: 'run-a', status: 'running' }
+    store.isThinking = true
+    store.pendingApproval = {
+      approval_id: 'approval-a', session_id: 'session-a', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    const stopping = store.stopCurrentRun()
+    store.sessionId = 'session-b'
+    store.pendingApproval = {
+      approval_id: 'approval-b', session_id: 'session-b', tool: 'write_file',
+      args: {}, description: '', pattern_key: 'tool:write_file',
+    }
+    response.resolve({ ok: true })
+    await stopping
+
+    expect(store.sessionsById['session-a'].pendingApproval).toBeNull()
+    expect(store.pendingApproval?.approval_id).toBe('approval-b')
+  })
+
+  it('switches back to a known active session without replacing its server runtime', async () => {
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const fetchMock = vi.fn().mockImplementation((input: URL | string) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (url.pathname.includes('/resume')) {
+        return Promise.resolve({ ok: true, json: async () => ({ session_id: 'session-a', workspace_root: '/workspace/a', permission_mode: 'accept_edits' }) })
+      }
+      if (url.pathname.endsWith('/timeline')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ items: [], next_cursor: 2, has_more: false, active_run: { run_id: 'run-a', status: 'running' } }),
+        })
+      }
+      if (url.pathname.endsWith('/context')) {
+        return Promise.resolve({ ok: true, json: async () => ({ configured: false, used_tokens: 0 }) })
+      }
+      if (url.pathname.endsWith('/files')) {
+        return Promise.resolve({ ok: true, json: async () => ({ path: '.', entries: [] }) })
+      }
+      if (url.pathname.endsWith('/git/status')) {
+        return Promise.resolve({ ok: true, json: async () => ({ is_git: false, branch: '', dirty_count: 0, changed_files: [] }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ sessions: [], runs: [], proposals: [] }) })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.workspaceRoot = '/workspace/a'
+    store.permissionMode = 'accept_edits'
+    store.handleTimelineEvent('session-a', timelineEvent('session-a', 1, 'user', { type: 'user', content: 'A' }, 'run-a'))
+    store.activeRun = { run_id: 'run-a', status: 'running' }
+    store.sessionsById['session-a'].timelineInitialized = true
+    store.sessionId = 'session-b'
+    store.workspaceRoot = '/workspace/b'
+
+    await store.selectSession('session-a')
+
+    expect(store.workspaceRoot).toBe('/workspace/a')
+    expect(store.permissionMode).toBe('accept_edits')
+    expect(store.activeRun?.run_id).toBe('run-a')
+    expect(fetchMock.mock.calls.some(([input, init]) => {
+      const url = input as URL
+      return init?.method === 'POST' && url.pathname.includes('/session-a/resume')
+    })).toBe(true)
+    store.disconnect()
   })
 
   it('loads pending memory proposals and ignores an older generation', async () => {
@@ -80,6 +690,23 @@ describe('coding store', () => {
     await approval
     expect(store.memoryProposalBusy).toEqual({})
     expect(store.memoryProposals).toEqual([])
+  })
+
+  it('finishes a memory transition in its source session after switching away', async () => {
+    const response = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.memoryProposals = [memoryProposal('proposal-a', 2)]
+    const transition = store.approveMemoryProposal('proposal-a', 2)
+    store.sessionId = 'session-b'
+    store.memoryProposals = [memoryProposal('proposal-b', 1)]
+    response.resolve({ ok: true, json: async () => memoryProposal('proposal-a', 3) })
+    await transition
+
+    expect(store.sessionsById['session-a'].memoryProposals).toEqual([])
+    expect(store.sessionsById['session-a'].memoryProposalBusy).toEqual({})
+    expect(store.memoryProposals[0].proposal_id).toBe('proposal-b')
   })
 
   it('does not let an older pending list resurrect an approved proposal', async () => {
@@ -474,6 +1101,53 @@ describe('coding store', () => {
     expect(url.pathname).toBe('/api/v1/coding/c1/context/compact')
   })
 
+  it('applies delayed compaction to its source session after switching away', async () => {
+    const response = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.contextSnapshot = {
+      model_id: 'model-a', configured: true, used_tokens: 500, model_limit_tokens: 1_000,
+      effective_limit_tokens: 900, output_reserve_tokens: 100, usage_ratio: 0.55,
+      level: 'compact', estimated: false, compactable: true, active_run_id: null,
+      context_operation_active: false, checkpoint_id: '', resume_status: '',
+      checkpoint_resume_enabled: true, latest_attempt: null, stale_started: false,
+    }
+    const compacting = store.compactContext()
+    store.sessionId = 'session-b'
+    response.resolve({ ok: true, json: async () => ({
+      applied: true, before_tokens: 500, after_tokens: 100, archived_items: 2,
+      reason: '', retryable: false, compaction_id: 'compact-a',
+      context: { ...store.sessionsById['session-a'].contextSnapshot, used_tokens: 100 },
+    }) })
+    await compacting
+
+    expect(store.sessionsById['session-a'].compactionState).toBe('succeeded')
+    expect(store.sessionsById['session-a'].contextChars).toBe(100)
+    expect(store.compactionState).toBe('idle')
+  })
+
+  it('applies delayed model and permission changes to their source session', async () => {
+    const modelResponse = deferred<{ ok: boolean }>()
+    const permissionResponse = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(modelResponse.promise)
+      .mockReturnValueOnce(permissionResponse.promise)
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const changingModel = store.changeModel('model-a')
+    const changingPermission = store.changePermissionMode('accept_edits')
+    store.sessionId = 'session-b'
+    modelResponse.resolve({ ok: true })
+    permissionResponse.resolve({ ok: true, json: async () => ({ ok: true, mode: 'accept_edits' }) })
+    await Promise.all([changingModel, changingPermission])
+
+    expect(store.sessionsById['session-a'].currentModelId).toBe('model-a')
+    expect(store.sessionsById['session-a'].permissionMode).toBe('accept_edits')
+    expect(store.permissionMode).toBe('default')
+  })
+
   it('ignores a context response from a previously selected session', async () => {
     let resolveResponse: ((value: unknown) => void) | undefined
     vi.stubGlobal(
@@ -499,7 +1173,7 @@ describe('coding store', () => {
     expect(store.contextChars).toBe(0)
   })
 
-  it('resets thinking state and phase when the websocket errors', () => {
+  it('keeps an active run observable when the websocket errors', () => {
     const sockets: Array<FakeSocket> = []
     class FakeSocket {
       readyState = 1
@@ -516,13 +1190,14 @@ describe('coding store', () => {
     const store = useCodingStore()
     store.sessionId = 'c1'
     store.isThinking = true
+    store.activeRun = { run_id: 'run-1', status: 'running' }
     store.thinkingPhase = '正在请求模型...'
 
     store.connectSocket()
     sockets[0].onerror?.()
 
-    expect(store.isThinking).toBe(false)
-    expect(store.thinkingPhase).toBe('')
+    expect(store.isThinking).toBe(true)
+    expect(store.activeRun?.run_id).toBe('run-1')
     expect(store.errorMessage).toBe('连接中断')
     store.disconnect()
   })
@@ -625,6 +1300,18 @@ describe('coding store', () => {
     expect(store.codingSessions[0].title).toBe('读 README')
   })
 
+  it('keeps existing session history and reports a failed session-list request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
+    const store = useCodingStore()
+    store.codingSessions = [{
+      session_id: 'existing', title: '保留会话', workspace_root: '/tmp', created_at: '', updated_at: '', runtime_mode: 'default', message_count: 1,
+    }]
+
+    await expect(store.loadSessions()).rejects.toThrow('fetch sessions failed')
+
+    expect(store.codingSessions.map((session) => session.session_id)).toEqual(['existing'])
+  })
+
   it('selects and resumes a coding session', async () => {
     const socketInstances: Array<{ close: ReturnType<typeof vi.fn> }> = []
     class FakeSocket {
@@ -645,18 +1332,15 @@ describe('coding store', () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          messages: [
-            {
-              role: 'user',
-              content: '读 README',
-              created_at: '2026-07-08T10:00:00',
-            },
-            {
-              role: 'assistant',
-              content: 'README 里是 Sage。',
-              created_at: '2026-07-08T10:00:01',
-            },
+          items: [
+            timelineEvent('s2', 1, 'user', { type: 'user', content: '读 README' }),
+            timelineEvent('s2', 2, 'assistant', { type: 'final', content: 'README 里是 Sage。' }),
           ],
+          next_cursor: 2,
+          has_more: false,
+          older_cursor: null,
+          latest_cursor: 2,
+          active_run: null,
         }),
       })
       .mockResolvedValue({
@@ -673,12 +1357,224 @@ describe('coding store', () => {
 
     expect(store.sessionId).toBe('s2')
     expect(store.workspaceRoot).toBe('/tmp/repo')
-    expect(store.messages).toEqual([
+    expect(store.messages.map(({ role, content }) => ({ role, content }))).toEqual([
       { role: 'user', content: '读 README' },
       { role: 'assistant', content: 'README 里是 Sage。' },
     ])
     expect(socketInstances).toHaveLength(1)
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), { method: 'POST' })
+  })
+
+  it('keeps the active session stream connected when resuming another session fails', async () => {
+    const sockets: Array<{ close: ReturnType<typeof vi.fn> }> = []
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      close = vi.fn()
+      constructor(_url: string) { sockets.push(this) }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }))
+    const store = useCodingStore()
+    store.sessionId = 's-old'
+    store.activeRun = { run_id: 'run-old', status: 'running' }
+    store.connectSocket()
+
+    await expect(store.selectSession('missing')).rejects.toThrow('resume session failed')
+
+    expect(store.sessionId).toBe('s-old')
+    expect(store.activeRun?.run_id).toBe('run-old')
+    expect(sockets).toHaveLength(1)
+    expect(sockets[0].close).not.toHaveBeenCalled()
+    store.disconnect()
+  })
+
+  it('keeps the active session stream connected when creating a session fails', async () => {
+    const sockets: Array<{ close: ReturnType<typeof vi.fn> }> = []
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      close = vi.fn()
+      constructor(_url: string) { sockets.push(this) }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
+    const store = useCodingStore()
+    store.sessionId = 's-old'
+    store.activeRun = { run_id: 'run-old', status: 'running' }
+    store.connectSocket()
+
+    await expect(store.startNewSession()).rejects.toThrow('Coding session request failed')
+
+    expect(store.sessionId).toBe('s-old')
+    expect(store.activeRun?.run_id).toBe('run-old')
+    expect(sockets).toHaveLength(1)
+    expect(sockets[0].close).not.toHaveBeenCalled()
+    store.disconnect()
+  })
+
+  it('replays and reconnects the current session after its stream is disconnected', async () => {
+    const sockets: Array<{ close: ReturnType<typeof vi.fn> }> = []
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      close = vi.fn()
+      constructor(_url: string) { sockets.push(this) }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: 0, has_more: false, older_cursor: null, latest_cursor: 0, active_run: null, entries: [], runs: [], sessions: [], configured: false, used_tokens: 0 }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 's-current'
+    store.connectSocket()
+    store.disconnect()
+
+    await store.restoreCurrentSession()
+
+    expect(store.sessionId).toBe('s-current')
+    expect(sockets).toHaveLength(2)
+    expect(sockets[0].close).toHaveBeenCalled()
+    store.disconnect()
+  })
+
+  it('does not reconnect after a disconnected view finishes restoring its session', async () => {
+    const timeline = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const sockets: unknown[] = []
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      close = vi.fn()
+      constructor(_url: string) { sockets.push(this) }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('fetch', vi.fn((input: URL | string) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (url.pathname.endsWith('/timeline')) return timeline.promise
+      if (url.pathname.endsWith('/messages')) return Promise.resolve({ ok: true, json: async () => ({ messages: [] }) })
+      if (url.pathname.endsWith('/files')) return Promise.resolve({ ok: true, json: async () => ({ entries: [] }) })
+      if (url.pathname.endsWith('/git/status')) return Promise.resolve({ ok: true, json: async () => ({ is_git: false, branch: '', dirty_count: 0, changed_files: [] }) })
+      if (url.pathname.endsWith('/context')) return Promise.resolve({ ok: true, json: async () => ({ configured: false, used_tokens: 0 }) })
+      return Promise.resolve({ ok: true, json: async () => ({ sessions: [], runs: [] }) })
+    }))
+    const store = useCodingStore()
+    store.sessionId = 's-current'
+
+    const restoring = store.restoreCurrentSession()
+    store.disconnect()
+    timeline.resolve({
+      ok: true,
+      json: async () => ({ items: [], next_cursor: 0, has_more: false, older_cursor: null, latest_cursor: 0, active_run: null }),
+    })
+    await restoring
+
+    expect(sockets).toHaveLength(0)
+  })
+
+  it('does not connect an initialized session after the owning view disconnects', async () => {
+    const session = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const sockets: unknown[] = []
+    class FakeSocket {
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      close = vi.fn()
+      constructor(_url: string) { sockets.push(this) }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    vi.stubGlobal('fetch', vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) return session.promise
+      return Promise.resolve({ ok: true, json: async () => ({ items: [], next_cursor: 0, has_more: false, older_cursor: null, latest_cursor: 0, active_run: null, sessions: [], runs: [], entries: [], configured: false, used_tokens: 0 }) })
+    }))
+    const store = useCodingStore()
+
+    const initializing = store.initialize()
+    store.disconnect()
+    session.resolve({ ok: true, json: async () => ({ session_id: 'abandoned', workspace_root: '/tmp', permission_mode: 'default' }) })
+    await initializing
+
+    expect(store.sessionId).toBe('')
+    expect(sockets).toHaveLength(0)
+  })
+
+  it('uses latest-wins semantics for concurrent session selection', async () => {
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const resumeA = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const resumeB = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.includes('session-a/resume')) return resumeA.promise
+      if (init?.method === 'POST' && url.pathname.includes('session-b/resume')) return resumeB.promise
+      if (url.pathname.endsWith('/timeline')) return Promise.resolve({ ok: true, json: async () => ({
+        items: [], next_cursor: 0, has_more: false, older_cursor: null, latest_cursor: 0, active_run: null,
+      }) })
+      if (url.pathname.endsWith('/messages')) return Promise.resolve({ ok: true, json: async () => ({ messages: [] }) })
+      if (url.pathname.endsWith('/files')) return Promise.resolve({ ok: true, json: async () => ({ entries: [] }) })
+      if (url.pathname.endsWith('/git/status')) return Promise.resolve({ ok: true, json: async () => ({ is_git: false, branch: '', dirty_count: 0, changed_files: [] }) })
+      if (url.pathname.endsWith('/context')) return Promise.resolve({ ok: true, json: async () => ({ configured: false, used_tokens: 0 }) })
+      return Promise.resolve({ ok: true, json: async () => ({ sessions: [], runs: [], proposals: [] }) })
+    }))
+    const store = useCodingStore()
+    const selectingA = store.selectSession('session-a')
+    const selectingB = store.selectSession('session-b')
+    resumeB.resolve({ ok: true, json: async () => ({
+      session_id: 'session-b', workspace_root: '/b', permission_mode: 'default',
+    }) })
+    await selectingB
+    resumeA.resolve({ ok: true, json: async () => ({
+      session_id: 'session-a', workspace_root: '/a', permission_mode: 'default',
+    }) })
+    await selectingA
+
+    expect(store.sessionId).toBe('session-b')
+    expect(store.workspaceRoot).toBe('/b')
+    store.disconnect()
+  })
+
+  it('ignores stale runs, git and files responses from session A', async () => {
+    const runsA = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const gitA = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const filesA = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(runsA.promise)
+      .mockReturnValueOnce(gitA.promise)
+      .mockReturnValueOnce(filesA.promise)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ runs: [{ run_id: 'run-b' }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ is_git: true, branch: 'b', dirty_count: 0, changed_files: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ entries: [{ name: 'b.ts', is_dir: false }] }) })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const oldRuns = store.loadRuns()
+    const oldGit = store.loadGitStatus()
+    const oldFiles = store.loadFiles('.', true)
+    store.sessionId = 'session-b'
+    await Promise.all([store.loadRuns(), store.loadGitStatus(), store.loadFiles('.', true)])
+    runsA.resolve({ ok: true, json: async () => ({ runs: [{ run_id: 'run-a' }] }) })
+    gitA.resolve({ ok: true, json: async () => ({ is_git: true, branch: 'a', dirty_count: 0, changed_files: [] }) })
+    filesA.resolve({ ok: true, json: async () => ({ entries: [{ name: 'a.ts', is_dir: false }] }) })
+    await Promise.all([oldRuns, oldGit, oldFiles])
+
+    expect(store.runs[0].run_id).toBe('run-b')
+    expect(store.gitStatus.branch).toBe('b')
+    expect(store.fileTreeEntries).toEqual([{ name: 'b.ts', is_dir: false }])
   })
 
   it('starts a new coding session from the workbench', async () => {
@@ -753,6 +1649,22 @@ describe('coding store', () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL))
+  })
+
+  it('does not let a stale terminal hide a newer active run', () => {
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.activeRun = { run_id: 'run-new', status: 'running' }
+    store.isThinking = true
+    store.thinkingPhase = '正在运行'
+
+    store.handleTimelineEvent('c1', timelineEvent(
+      'c1', 1, 'terminal', { type: 'run_finished', status: 'cancelled' }, 'run-old',
+    ))
+
+    expect(store.activeRun?.run_id).toBe('run-new')
+    expect(store.isThinking).toBe(true)
+    expect(store.thinkingPhase).toBe('正在运行')
   })
 
   it('stores plan review from plan_ready_for_review event', () => {

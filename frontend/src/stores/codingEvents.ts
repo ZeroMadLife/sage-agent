@@ -25,6 +25,8 @@ export type ExecutionActivity = {
 }
 
 export type ChatMessage = {
+  id?: string
+  run_id?: string
   role: 'user' | 'assistant'
   content: string
   tools?: ToolActivity[]

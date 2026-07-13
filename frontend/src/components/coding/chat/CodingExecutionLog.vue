@@ -50,9 +50,9 @@ function toggle() {
 .execution-log {
   max-width: 760px;
   margin: 0 0 5px;
-  border: 1px solid #e5e7eb;
-  border-radius: 6px;
-  background: #fafafa;
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface-raised);
   overflow: hidden;
 }
 
@@ -64,14 +64,14 @@ function toggle() {
   padding: 7px 10px;
   border: 0;
   background: transparent;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
   cursor: pointer;
   font-size: 12px;
   text-align: left;
 }
 
 .execution-log-header:hover {
-  background: #f3f4f6;
+  background: var(--sage-surface-muted);
 }
 
 .execution-log-title {
@@ -83,15 +83,15 @@ function toggle() {
   font-size: 11px;
 }
 
-.execution-status.running { color: #2563eb; }
-.execution-status.done { color: #047857; }
-.execution-status.error { color: #b91c1c; }
+.execution-status.running { color: var(--sage-warning); }
+.execution-status.done { color: var(--sage-success); }
+.execution-status.error { color: var(--sage-danger); }
 
 .execution-log-list {
   display: grid;
   gap: 6px;
   padding: 8px 10px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--sage-border);
 }
 
 .execution-log-item {
@@ -99,13 +99,13 @@ function toggle() {
   grid-template-columns: auto minmax(0, 1fr);
   gap: 5px 7px;
   align-items: center;
-  color: #475569;
+  color: var(--sage-text-secondary);
   font-size: 12px;
 }
 
-.execution-log-item .running { color: #2563eb; }
-.execution-log-item .done { color: #059669; }
-.execution-log-item .error { color: #dc2626; }
+.execution-log-item .running { color: var(--sage-warning); }
+.execution-log-item .done { color: var(--sage-success); }
+.execution-log-item .error { color: var(--sage-danger); }
 
 .execution-log-label {
   overflow: hidden;
@@ -116,8 +116,8 @@ function toggle() {
 .execution-log-detail {
   grid-column: 2;
   overflow: hidden;
-  color: #94a3b8;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--sage-text-muted);
+  font-family: var(--sage-font-mono);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
