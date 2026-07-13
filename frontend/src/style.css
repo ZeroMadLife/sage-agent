@@ -81,3 +81,38 @@ button:disabled { cursor: not-allowed; }
 .panel { padding:16px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); background:var(--sage-surface); }
 .error-text { color:var(--sage-danger); }
 @media (max-width:860px) { .workbench { grid-template-columns:1fr; }.left-rail { border-right:0; border-bottom:1px solid var(--sage-border); }.right-workspace { padding:20px; } }
+
+/* Highlight.js code blocks — use sage tokens for theme integration */
+.message-content :deep(.hljs) {
+  background: var(--sage-code-bg);
+  color: var(--sage-code-text);
+  padding: 10px 14px;
+  border-radius: var(--sage-radius);
+  overflow-x: auto;
+  font-family: var(--sage-font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.message-content :deep(.hljs .hljs-keyword),
+.message-content :deep(.hljs .hljs-selector-tag),
+.message-content :deep(.hljs .hljs-built_in),
+.message-content :deep(.hljs .hljs-name),
+.message-content :deep(.hljs .hljs-tag) { color: #c678dd; }
+.message-content :deep(.hljs .hljs-string),
+.message-content :deep(.hljs .hljs-title),
+.message-content :deep(.hljs .hljs-section),
+.message-content :deep(.hljs .hljs-attribute),
+.message-content :deep(.hljs .hljs-literal),
+.message-content :deep(.hljs .hljs-template-tag),
+.message-content :deep(.hljs .hljs-template-variable),
+.message-content :deep(.hljs .hljs-type),
+.message-content :deep(.hljs .hljs-addition) { color: #98c379; }
+.message-content :deep(.hljs .hljs-comment),
+.message-content :deep(.hljs .hljs-quote),
+.message-content :deep(.hljs .hljs-deletion) { color: var(--sage-code-muted); font-style: italic; }
+.message-content :deep(.hljs .hljs-number),
+.message-content :deep(.hljs .hljs-variable),
+.message-content :deep(.hljs .hljs-meta) { color: #d19a66; }
+.message-content :deep(.hljs .hljs-attr),
+.message-content :deep(.hljs .hljs-attribute),
+.message-content :deep(.hljs .hljs-property) { color: #61afef; }
