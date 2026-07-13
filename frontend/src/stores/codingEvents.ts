@@ -356,7 +356,7 @@ function updateToolActivity(messages: ChatMessage[], event: CodingToolResultEven
   const target = findRunningTool(messages, event.tool, event.args)
   if (target) {
     target.status = event.is_error ? 'error' : 'done'
-    target.content = event.content.slice(0, 2000)
+    target.content = event.content
     return
   }
   appendSettledToolActivity(messages, event)
@@ -379,7 +379,7 @@ function appendSettledToolActivity(messages: ChatMessage[], event: CodingToolRes
     tool: event.tool,
     args: event.args,
     status: event.is_error ? 'error' : 'done',
-    content: event.content.slice(0, 2000),
+    content: event.content,
   })
 }
 

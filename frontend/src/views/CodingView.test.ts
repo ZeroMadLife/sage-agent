@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { nextTick } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import CodingView from './CodingView.vue'
 import { useCodingStore } from '../stores/coding'
@@ -284,6 +285,71 @@ describe('CodingView chat route lifecycle', () => {
     messageArea.element.scrollTop = 24
     await messageArea.trigger('scroll')
     expect(store.scrollAnchor).toEqual({ eventId: 'turn:run-a', offset: 24 })
+    root.unmount()
+  })
+
+  it('keeps the reader position and offers a return-to-bottom control for unseen messages', async () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const { root, wrapper } = await mountChat('/coding/session/session-a')
+    const messageArea = wrapper().find<HTMLElement>('.message-area')
+    Object.defineProperties(messageArea.element, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 120 },
+    })
+    await messageArea.trigger('scroll')
+
+    store.messages.push({ role: 'assistant', content: '新的后台结果' })
+    await nextTick()
+
+    const returnToBottom = wrapper().get('button[aria-label="回到底部，1 条新消息"]')
+    expect(messageArea.element.scrollTop).toBe(120)
+    await returnToBottom.trigger('click')
+    expect(messageArea.element.scrollTop).toBe(1_000)
+    expect(wrapper().find('button[aria-label*="回到底部"]').exists()).toBe(false)
+    root.unmount()
+  })
+
+  it('follows new messages when the reader is already at the bottom', async () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    const { root, wrapper } = await mountChat('/coding/session/session-a')
+    const messageArea = wrapper().find<HTMLElement>('.message-area')
+    Object.defineProperties(messageArea.element, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 600 },
+    })
+    await messageArea.trigger('scroll')
+
+    store.messages.push({ role: 'assistant', content: '自动跟随结果' })
+    await nextTick()
+    await nextTick()
+
+    expect(messageArea.element.scrollTop).toBe(1_000)
+    expect(wrapper().find('button[aria-label*="回到底部"]').exists()).toBe(false)
+    root.unmount()
+  })
+
+  it('continues following streamed content changes while the reader is at the bottom', async () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.messages.push({ role: 'assistant', content: '正在输出' })
+    const { root, wrapper } = await mountChat('/coding/session/session-a')
+    const messageArea = wrapper().find<HTMLElement>('.message-area')
+    Object.defineProperties(messageArea.element, {
+      scrollHeight: { configurable: true, value: 1_000 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: { configurable: true, writable: true, value: 600 },
+    })
+    await messageArea.trigger('scroll')
+
+    store.messages[0].content = '正在输出更多内容'
+    await nextTick()
+    await nextTick()
+
+    expect(messageArea.element.scrollTop).toBe(1_000)
     root.unmount()
   })
 })

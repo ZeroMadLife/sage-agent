@@ -33,7 +33,7 @@ it('truncates long tool results and can expand them', async () => {
   expect(wrapper.find('.diff-remove').exists()).toBe(true)
 })
 
-it('renders human readable tool action summaries instead of raw JSON args', async () => {
+it('renders human readable tool action summaries with collapsed raw arguments', async () => {
   const wrapper = mount(CodingToolActivity, {
     props: {
       isThinking: true,
@@ -67,5 +67,47 @@ it('renders human readable tool action summaries instead of raw JSON args', asyn
   expect(wrapper.text()).toContain('Read README.md')
   expect(wrapper.text()).toContain('Run pytest -q')
   expect(wrapper.text()).toContain('Patch src/app.py')
-  expect(wrapper.text()).not.toContain('"old_text"')
+  expect(wrapper.findAll('.tool-args-details')).toHaveLength(3)
+  expect((wrapper.findAll('.tool-args-details')[2].element as HTMLDetailsElement).open).toBe(false)
+})
+
+it('keeps full tool arguments available in a collapsed detail disclosure', async () => {
+  const wrapper = mount(CodingToolActivity, {
+    props: {
+      isThinking: false,
+      tools: [{
+        tool: 'patch_file',
+        args: { path: 'src/app.py', old_text: 'before', new_text: 'after' },
+        status: 'done',
+        content: '',
+      }],
+    },
+  })
+
+  await wrapper.find('.activity-header').trigger('click')
+
+  const details = wrapper.get('.tool-args-details')
+  expect((details.element as HTMLDetailsElement).open).toBe(false)
+  expect(details.text()).toContain('"old_text": "before"')
+  expect(details.text()).toContain('"new_text": "after"')
+})
+
+it('uses semantic theme tokens for running, completed, and failed tool states', async () => {
+  const wrapper = mount(CodingToolActivity, {
+    props: {
+      isThinking: true,
+      tools: [
+        { tool: 'read_file', args: {}, status: 'running', content: '' },
+        { tool: 'read_file', args: {}, status: 'done', content: '' },
+        { tool: 'read_file', args: {}, status: 'error', content: '' },
+      ],
+    },
+  })
+
+  await wrapper.find('.activity-header').trigger('click')
+
+  expect(wrapper.html()).toContain('var(--sage-warning)')
+  expect(wrapper.html()).toContain('var(--sage-success)')
+  expect(wrapper.html()).toContain('var(--sage-danger)')
+  expect(wrapper.find('.tool-spinner').attributes('style')).toContain('--sage-warning')
 })

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Eye, EyeOff, FileText, GitCompareArrows, Menu, ScrollText, Settings, X } from 'lucide-vue-next'
+import { ArrowDown, Eye, EyeOff, FileText, GitCompareArrows, Menu, ScrollText, Settings, X } from 'lucide-vue-next'
 import {
   CodingApprovalCard,
   CodingComposer,
@@ -26,6 +26,8 @@ const messagesRef = ref<HTMLElement | null>(null)
 const showPlanPreview = ref(false)
 const filesDrawerVisible = ref(false)
 const isNearBottom = ref(true)
+const unseenMessageCount = ref(0)
+const observedMessageCount = ref(0)
 const leftOpen = ref(false)
 const isCompact = ref(window.innerWidth < 1180)
 const deepLinkError = ref('')
@@ -45,9 +47,7 @@ const routeSessionId = computed(() => {
   return typeof value === 'string' && value.trim() ? value : ''
 })
 const showThinkingIndicator = computed(() => {
-  if (!store.isThinking || !store.thinkingPhase) return false
-  const last = store.messages[store.messages.length - 1]
-  return !(last?.tools?.length)
+  return Boolean(store.isThinking && store.thinkingPhase)
 })
 const currentSession = computed(() => store.codingSessions.find((session) => session.session_id === store.sessionId))
 const currentSessionTitle = computed(() => currentSession.value?.title || '未命名会话')
@@ -65,9 +65,12 @@ function clearDeepLinkError() {
   deepLinkError.value = ''
 }
 
-function scrollToBottom() {
+function scrollToBottom(clearUnseen = true) {
   nextTick(() => {
-    if (messagesRef.value) messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    if (!messagesRef.value) return
+    messagesRef.value.scrollTop = messagesRef.value.scrollHeight
+    isNearBottom.value = true
+    if (clearUnseen) unseenMessageCount.value = 0
   })
 }
 
@@ -92,6 +95,7 @@ function handleMessageScroll() {
   if (!element) return
   const { scrollHeight, scrollTop, clientHeight } = element
   isNearBottom.value = scrollHeight - scrollTop - clientHeight < 80
+  if (isNearBottom.value) unseenMessageCount.value = 0
   const containerTop = element.getBoundingClientRect().top
   const firstTurn = [...element.querySelectorAll<HTMLElement>('[data-timeline-turn-id]')]
     .find((item) => item.getBoundingClientRect().bottom >= containerTop)
@@ -317,7 +321,21 @@ function updateBreakpoint() {
   if (!isCompact.value) leftOpen.value = false
 }
 
-watch(() => store.messages, () => { if (isNearBottom.value) scrollToBottom() }, { deep: true, flush: 'post' })
+watch(
+  () => store.messages,
+  () => {
+    const nextCount = store.messages.length
+    if (isNearBottom.value) scrollToBottom()
+    else if (nextCount > observedMessageCount.value) unseenMessageCount.value += nextCount - observedMessageCount.value
+    observedMessageCount.value = nextCount
+  },
+  { deep: true, flush: 'post' },
+)
+watch(() => store.sessionId, () => {
+  unseenMessageCount.value = 0
+  isNearBottom.value = true
+  observedMessageCount.value = store.messages.length
+})
 watch(() => [store.sessionId, store.turns.map((turn) => turn.id).join('|')], restoreScrollAnchor, { flush: 'post' })
 watch(() => route.fullPath, () => { void synchronizeRoute() })
 
@@ -411,6 +429,17 @@ onBeforeUnmount(() => {
           <button v-if="store.lastDiffInfo?.file_count" class="diff-btn" type="button" @click="store.openDiffDrawer"><GitCompareArrows :size="15" /> 查看变更（{{ store.lastDiffInfo.file_count }} 个文件）</button>
           <CodingPlanApproval v-if="store.planReview" />
           <p v-if="store.errorMessage || deepLinkError" class="error-text" role="alert">{{ store.errorMessage || deepLinkError }}</p>
+          <button
+            v-if="unseenMessageCount"
+            class="return-to-bottom"
+            type="button"
+            :aria-label="`回到底部，${unseenMessageCount} 条新消息`"
+            @click="scrollToBottom()"
+          >
+            <ArrowDown :size="15" />
+            {{ unseenMessageCount }} 条新消息
+          </button>
+          <span v-if="unseenMessageCount" class="sr-only" aria-live="polite">有 {{ unseenMessageCount }} 条新消息</span>
         </section>
         <CodingComposer />
       </main>
@@ -423,7 +452,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.sage-view { --header-height:46px; display:grid; grid-template-rows:auto auto minmax(0,1fr); height:100dvh; color:#202936; background:#fff; overflow:hidden; }
+.sage-view { --header-height:46px; display:grid; grid-template-rows:auto auto minmax(0,1fr); height:100dvh; color:var(--sage-text); background:var(--sage-surface); overflow:hidden; }
 .workbench-header { display:flex; align-items:center; gap:9px; min-height:var(--header-height); padding:0 10px; border-bottom:1px solid #dfe3e8; background:#fff; }
 .is-inert { pointer-events:none; }
 .brand-block { display:flex; align-items:baseline; gap:7px; min-width:0; }.brand-block strong { color:#172033; font-size:16px; }.brand-block span { color:#7b8490; font-size:10px; white-space:nowrap; }
@@ -436,6 +465,7 @@ onBeforeUnmount(() => {
 .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; min-height:48vh; color:#8a939e; text-align:center; }.empty-state strong { color:#4b5563; font-size:14px; }.empty-state span { font-size:12px; }
 .process-details { margin:-9px 0 16px 40px; color:#687585; font-size:11px; }.process-details summary { cursor:pointer; font-weight:600; }.process-details ul { margin:7px 0 0; padding-left:18px; line-height:1.7; }
 .diff-btn { display:flex; align-items:center; justify-content:center; gap:6px; min-height:32px; margin-bottom:14px; border:1px solid #b9cbe6; border-radius:6px; color:#1d4ed8; background:#f5f8fd; font-size:11px; }.diff-btn:hover { background:#eaf1fb; }.error-text,.drawer-error { color:#b42318; font-size:12px; }.drawer-error { margin:48px 12px 0; }
+.return-to-bottom { position:sticky; bottom:4px; display:flex; align-items:center; gap:6px; min-height:32px; margin-top:16px; padding:0 11px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius); color:var(--sage-text); background:var(--sage-surface-raised); box-shadow:var(--sage-shadow); font-size:12px; font-weight:600; }.return-to-bottom:hover { background:var(--sage-surface-muted); }.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
 .sheet-close,.session-backdrop { display:none; }
 @media (max-width:1179px) { .left-toggle { display:grid; }.chat-shell { display:block; }.pane-center { height:100%; }.pane-left { position:fixed; z-index:32; top:var(--header-height); bottom:0; left:0; width:min(320px,100vw); border-right:1px solid #dfe3e8; box-shadow:12px 0 36px rgba(30,41,59,.16); transform:translateX(-101%); transition:transform .18s ease; }.pane-left.open { transform:translateX(0); }.session-backdrop { position:fixed; z-index:31; inset:var(--header-height) 0 0; display:block; background:rgba(20,28,38,.3); opacity:0; pointer-events:none; }.session-backdrop.visible { opacity:1; pointer-events:auto; }.sheet-close { position:absolute; z-index:5; top:9px; right:9px; display:grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid #d5dbe2; border-radius:6px; color:#52606f; background:#fff; } }
 @media (max-width:767px) { .brand-block span,.connection-state { display:none; }.message-area { padding:14px 12px 22px; }.pane-left { top:0; width:100%; }.session-backdrop { inset:0; }.session-titlebar { padding:0 14px; }.process-details { margin-left:34px; } }

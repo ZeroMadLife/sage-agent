@@ -21,7 +21,7 @@ defineProps<{
   align-items: center;
   gap: 8px;
   max-width: 760px;
-  margin: 0 0 12px;
+  margin: 0 auto 12px;
   padding: 8px 14px;
   border: 1px solid var(--sage-border);
   border-radius: var(--sage-radius-lg);

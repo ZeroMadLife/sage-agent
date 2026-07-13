@@ -1202,6 +1202,27 @@ describe('coding store', () => {
     store.disconnect()
   })
 
+  it('shows the preparation phase as soon as a message is accepted by the stream', () => {
+    class FakeSocket {
+      readyState = 1
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.connectSocket()
+
+    store.sendMessage('检查这个模块')
+
+    expect(store.isThinking).toBe(true)
+    expect(store.thinkingPhase).toBe('准备执行')
+    store.disconnect()
+  })
+
   it('handles cancelled event as a stopped assistant message', () => {
     const store = useCodingStore()
     store.messages = [{ role: 'assistant', content: '', tools: [], isThinking: true }]

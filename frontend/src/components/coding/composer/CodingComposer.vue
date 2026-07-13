@@ -12,23 +12,22 @@ const canSend = computed(
   () => Boolean(input.value.trim()) && Boolean(store.sessionId) && !store.isThinking,
 )
 
-const contextColor = computed(() => {
-  const pct = store.contextPercent
-  if (pct > 80) return '#ef4444'
-  if (pct > 60) return '#f59e0b'
-  return '#10b981'
-})
-
-const circumference = 2 * Math.PI * 14
-const dashOffset = computed(
-  () => circumference - (store.contextPercent / 100) * circumference,
-)
 const contextTooltip = computed(
   () =>
     store.contextConfigured
       ? `上下文 ${store.contextChars.toLocaleString()} / ${store.contextBudget.toLocaleString()} tokens (${store.contextPercent}%)`
       : '当前模型未配置上下文窗口',
 )
+const contextStatus = computed(() => {
+  if (!store.contextConfigured) return { label: '模型未配置', tone: 'muted' }
+  if (store.contextBusy) return { label: '正在压缩', tone: 'running' }
+  if (store.compactionError) return { label: '压缩失败', tone: 'danger' }
+  if (store.contextSnapshot?.level === 'emergency') return { label: '接近上限', tone: 'danger' }
+  if (store.contextSnapshot?.level === 'high' || store.contextSnapshot?.level === 'compact') {
+    return { label: '即将压缩', tone: 'warning' }
+  }
+  return { label: '正常', tone: 'success' }
+})
 
 // --- Skill menu (triggered when input starts with "/") ---
 const skillMenuDismissed = ref(false)
@@ -155,7 +154,7 @@ defineExpose({
       <CodingPermissionModeDrawer />
 
       <div
-        class="context-ring"
+        class="context-budget"
         :title="contextTooltip"
         role="progressbar"
         :aria-label="contextTooltip"
@@ -163,22 +162,13 @@ defineExpose({
         aria-valuemin="0"
         aria-valuemax="100"
       >
-        <svg width="32" height="32" viewBox="0 0 32 32">
-          <circle cx="16" cy="16" r="14" fill="none" stroke="#e5e7eb" stroke-width="3" />
-          <circle
-            cx="16"
-            cy="16"
-            r="14"
-            fill="none"
-            :stroke="contextColor"
-            stroke-width="3"
-            :stroke-dasharray="circumference"
-            :stroke-dashoffset="dashOffset"
-            transform="rotate(-90 16 16)"
-            stroke-linecap="round"
-          />
-        </svg>
-        <span class="context-pct">{{ store.contextPercent }}%</span>
+        <div class="context-budget-copy">
+          <span class="context-budget-label">上下文</span>
+          <strong v-if="store.contextConfigured">{{ store.contextChars.toLocaleString() }} / {{ store.contextBudget.toLocaleString() }}</strong>
+          <strong v-else>--</strong>
+        </div>
+        <span class="context-budget-status" :class="contextStatus.tone">{{ contextStatus.label }}</span>
+        <span class="context-budget-meter" aria-hidden="true"><span :class="contextStatus.tone" :style="{ width: `${store.contextPercent}%` }"></span></span>
       </div>
       <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">
         {{ store.compactionError }}
@@ -275,13 +265,31 @@ defineExpose({
   white-space: nowrap;
 }
 
-.context-ring {
-  position: relative;
-  display: flex;
+.context-budget {
+  display: grid;
+  grid-template-columns: auto auto;
   align-items: center;
-  justify-content: center;
-  margin-left: auto;
+  column-gap: 7px;
+  min-width: 170px;
+  padding: 3px 0;
+  color: var(--sage-text-secondary);
 }
+
+.context-budget-copy {
+  display: flex;
+  margin-left: auto;
+  align-items: baseline;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.context-budget-label { color: var(--sage-text-muted); }
+.context-budget-copy strong { color: var(--sage-text-secondary); font-size: 11px; font-weight: 650; }
+
+.context-budget-status { justify-self: end; font-size: 10px; font-weight: 700; }
+.context-budget-status.success { color: var(--sage-success); }.context-budget-status.warning { color: var(--sage-warning); }.context-budget-status.danger { color: var(--sage-danger); }.context-budget-status.running,.context-budget-status.muted { color: var(--sage-text-muted); }
+
+.context-budget-meter { grid-column: 1 / -1; display:block; width:100%; height:3px; margin-top:4px; overflow:hidden; border-radius:999px; background:var(--sage-surface-muted); }.context-budget-meter span { display:block; height:100%; border-radius:inherit; background:var(--sage-success); transition:width .2s ease; }.context-budget-meter span.warning { background:var(--sage-warning); }.context-budget-meter span.danger { background:var(--sage-danger); }.context-budget-meter span.running,.context-budget-meter span.muted { background:var(--sage-text-muted); }
 
 .compact-hint {
   margin-left: auto;
@@ -294,15 +302,8 @@ defineExpose({
   font-weight: 700;
 }
 
-.compact-hint + .context-ring {
+.compact-hint + .context-budget {
   margin-left: 0;
-}
-
-.context-pct {
-  position: absolute;
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--sage-text-secondary);
 }
 
 .composer-input {

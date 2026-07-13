@@ -52,9 +52,9 @@ function iconFor(tool: ToolActivity) {
 }
 
 function colorFor(tool: ToolActivity) {
-  if (tool.status === 'running') return '#3b82f6'
-  if (tool.status === 'error') return '#ef4444'
-  return '#10b981'
+  if (tool.status === 'running') return 'var(--sage-warning)'
+  if (tool.status === 'error') return 'var(--sage-danger)'
+  return 'var(--sage-success)'
 }
 
 function resultPreview(content: string, expandedResult: boolean) {
@@ -105,6 +105,10 @@ function toolSummary(tool: ToolActivity) {
   if (tool.tool === 'agent') return `Start agent ${stringArg(tool.args, 'task')}`
   return tool.tool.replaceAll('_', ' ')
 }
+
+function formatArgs(args: Record<string, unknown>) {
+  return JSON.stringify(args, null, 2)
+}
 </script>
 
 <template>
@@ -132,8 +136,16 @@ function toolSummary(tool: ToolActivity) {
           <component :is="iconFor(tool)" :size="13" :color="colorFor(tool)" />
           <Terminal v-if="tool.tool === 'run_shell'" :size="12" />
           <span class="tool-name">{{ toolSummary(tool) }}</span>
-          <span v-if="tool.status === 'running'" class="tool-spinner"></span>
+          <span
+            v-if="tool.status === 'running'"
+            class="tool-spinner"
+            style="--tool-spinner-color: var(--sage-warning)"
+          ></span>
         </div>
+        <details class="tool-args-details">
+          <summary>参数</summary>
+          <pre>{{ formatArgs(tool.args) }}</pre>
+        </details>
         <div v-if="tool.content" class="tool-result">
           <pre><span
             v-for="(line, lineIndex) in resultPreview(tool.content, expandedResults.has(i)).split('\n')"
@@ -236,19 +248,13 @@ function toolSummary(tool: ToolActivity) {
   color: var(--sage-text-secondary);
 }
 
-.tool-args {
-  color: #9ca3af;
-  font-family: 'SF Mono', monospace;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+.tool-args-details { margin-top:4px; color:var(--sage-text-muted); font-size:11px; }.tool-args-details summary { width:max-content; cursor:pointer; }.tool-args-details pre { max-height:180px; margin:4px 0 0; padding:5px 7px; overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text-secondary); font-family:var(--sage-font-mono); font-size:11px; line-height:1.4; white-space:pre-wrap; word-break:break-word; }
 
 .tool-spinner {
   width: 11px;
   height: 11px;
-  border: 2px solid #dbeafe;
-  border-top-color: #3b82f6;
+  border: 2px solid var(--sage-surface-muted);
+  border-top-color: var(--tool-spinner-color, var(--sage-warning));
   border-radius: 50%;
   animation: spin 0.6s linear infinite;
 }
@@ -271,7 +277,7 @@ function toolSummary(tool: ToolActivity) {
   margin: 0;
   font-size: 11px;
   line-height: 1.4;
-  font-family: 'SF Mono', monospace;
+  font-family: var(--sage-font-mono);
   white-space: pre-wrap;
   word-break: break-word;
   color: var(--sage-text-secondary);

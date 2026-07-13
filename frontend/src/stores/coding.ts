@@ -765,7 +765,7 @@ export const useCodingStore = defineStore('coding', () => {
     isThinking.value = true
     errorMessage.value = ''
     pendingApproval.value = null
-    thinkingPhase.value = ''
+    thinkingPhase.value = '准备执行'
     startApprovalPolling()
   }
 
