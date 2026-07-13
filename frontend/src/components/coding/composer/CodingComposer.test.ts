@@ -128,100 +128,11 @@ it('closes the menu and clears input on escape', async () => {
   expect(wrapper.find('.skill-menu').exists()).toBe(true)
 })
 
-it('shows an accessible token budget and triggers manual compaction', async () => {
-  const { wrapper, store } = mountComposer()
-  store.contextSnapshot = {
-    configured: true,
-    model_id: 'model-a',
-    used_tokens: 40000,
-    model_limit_tokens: 100000,
-    effective_limit_tokens: 80000,
-    output_reserve_tokens: 20000,
-    usage_ratio: 0.5,
-    level: 'compact',
-    estimated: false,
-    compactable: true,
-    active_run_id: null,
-    context_operation_active: false,
-    checkpoint_id: null,
-    resume_status: 'canonical_fallback',
-    checkpoint_resume_enabled: true,
-    latest_attempt: null,
-    stale_started: false,
-  }
-  store.contextChars = 40000
-  store.compactContext = vi.fn().mockResolvedValue(true)
-  await nextTick()
+it('does not render the retired context placeholder inside the composer', () => {
+  const { wrapper } = mountComposer()
 
-  const progress = wrapper.find('[role="progressbar"]')
-  expect(progress.attributes('aria-valuenow')).toBe('50')
-  expect(progress.attributes('aria-label')).toContain('40,000 / 80,000 tokens')
-
-  await wrapper.find('.compact-hint').trigger('click')
-  expect(store.compactContext).toHaveBeenCalledOnce()
-})
-
-it.each([
-  ['normal', 20, '正常'],
-  ['compact', 50, '即将压缩'],
-  ['high', 75, '即将压缩'],
-  ['emergency', 92, '接近上限'],
-])('projects the %s context budget state in Chinese', async (level, usedTokens, expectedStatus) => {
-  const { wrapper, store } = mountComposer()
-  store.contextSnapshot = {
-    configured: true,
-    model_id: 'model-a',
-    used_tokens: usedTokens,
-    model_limit_tokens: 100,
-    effective_limit_tokens: 100,
-    output_reserve_tokens: 0,
-    usage_ratio: usedTokens / 100,
-    level: level as 'normal' | 'compact' | 'high' | 'emergency',
-    estimated: false,
-    compactable: true,
-    active_run_id: null,
-    context_operation_active: false,
-    checkpoint_id: null,
-    resume_status: 'canonical_fallback',
-    checkpoint_resume_enabled: true,
-    latest_attempt: null,
-    stale_started: false,
-  }
-  store.contextChars = usedTokens
-  await nextTick()
-
-  expect(wrapper.get('.context-budget-status').text()).toContain(expectedStatus)
-  expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe(String(usedTokens))
-})
-
-it('prioritizes compaction activity and failures over the context level', async () => {
-  const { wrapper, store } = mountComposer()
-  store.contextSnapshot = {
-    configured: true,
-    model_id: 'model-a',
-    used_tokens: 95,
-    model_limit_tokens: 100,
-    effective_limit_tokens: 100,
-    output_reserve_tokens: 0,
-    usage_ratio: 0.95,
-    level: 'emergency',
-    estimated: false,
-    compactable: true,
-    active_run_id: null,
-    context_operation_active: true,
-    checkpoint_id: null,
-    resume_status: 'canonical_fallback',
-    checkpoint_resume_enabled: true,
-    latest_attempt: null,
-    stale_started: false,
-  }
-  await nextTick()
-  expect(wrapper.get('.context-budget-status').text()).toContain('正在压缩')
-
-  store.contextSnapshot.context_operation_active = false
-  store.compactionError = '服务暂时不可用'
-  await nextTick()
-  expect(wrapper.get('.context-budget-status').text()).toContain('压缩失败')
+  expect(wrapper.find('[role="progressbar"]').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('模型未配置')
 })
 
 it('sends the message on enter after a skill has been selected', async () => {

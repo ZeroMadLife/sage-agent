@@ -1,6 +1,7 @@
 """FastAPI app factory with two-tier Agent."""
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib import import_module
@@ -13,7 +14,7 @@ from agents.graph import build_graph
 from agents.itinerary_tool import create_itinerary_tool
 from agents.react_agent import AgentRuntime
 from core.auth import AuthManager
-from core.coding.context import ModelCapabilityRegistry
+from core.coding.context import CodingModelManifest, ModelCapabilityRegistry
 from core.config.settings import get_settings
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
@@ -26,6 +27,19 @@ from mcp_servers.weather.client import WeatherClient
 
 logger = logging.getLogger(__name__)
 DEFAULT_PLANNING_MODEL = "doubao:Doubao-Seed-2.0-pro"
+DEFAULT_CODING_MODEL = "deepseek:deepseek-v4-flash"
+DEFAULT_CODING_MODEL_CATALOG = [
+    {
+        "id": "deepseek:deepseek-v4-flash",
+        "label": "DeepSeek V4 Flash",
+        "provider": "deepseek",
+    },
+    {
+        "id": "deepseek:deepseek-v4-pro",
+        "label": "DeepSeek V4 Pro",
+        "provider": "deepseek",
+    },
+]
 
 
 def _planning_model_spec(configured_model: str) -> str:
@@ -135,7 +149,7 @@ def create_app(
     coding_storage_root: str | Path | None = None,
     coding_model_catalog: list[dict[str, Any]] | None = None,
     coding_model_capabilities: dict[str, object] | ModelCapabilityRegistry | None = None,
-    coding_default_model: str = "deepseek:deepseek-v4-flash",
+    coding_default_model: str | None = None,
     coding_checkpoint_anchor_key: bytes | None = None,
 ) -> FastAPI:
     """Create the Sage API app.
@@ -155,33 +169,34 @@ def create_app(
     app.state.auth = auth
     app.state.session_store = session_store
     repo_root = Path(__file__).resolve().parent.parent
+    if coding_model_catalog is None and coding_model_capabilities is None:
+        manifest_path = os.getenv(
+            "SAGE_CODING_MODELS_FILE", str(repo_root / "config" / "coding_models.toml")
+        )
+        manifest = CodingModelManifest.from_file(manifest_path)
+        resolved_catalog = manifest.catalog
+        resolved_capabilities = manifest.registry
+        resolved_default_model = coding_default_model or manifest.default_model
+    else:
+        resolved_catalog = (
+            DEFAULT_CODING_MODEL_CATALOG
+            if coding_model_catalog is None
+            else coding_model_catalog
+        )
+        resolved_capabilities = (
+            coding_model_capabilities
+            if isinstance(coding_model_capabilities, ModelCapabilityRegistry)
+            else ModelCapabilityRegistry(coding_model_capabilities)
+            if coding_model_capabilities is not None
+            else ModelCapabilityRegistry.from_env()
+        )
+        resolved_default_model = coding_default_model or DEFAULT_CODING_MODEL
     app.state.coding_model_factory = coding_model_factory or (
-        lambda model_id=coding_default_model: create_llm(model_id)
+        lambda model_id=resolved_default_model: create_llm(model_id)
     )
-    app.state.coding_model_catalog = (
-        [
-            {
-                "id": "deepseek:deepseek-v4-flash",
-                "label": "DeepSeek V4 Flash",
-                "provider": "deepseek",
-            },
-            {
-                "id": "deepseek:deepseek-v4-pro",
-                "label": "DeepSeek V4 Pro",
-                "provider": "deepseek",
-            },
-        ]
-        if coding_model_catalog is None
-        else coding_model_catalog
-    )
-    app.state.coding_default_model = coding_default_model
-    app.state.coding_model_capabilities = (
-        coding_model_capabilities
-        if isinstance(coding_model_capabilities, ModelCapabilityRegistry)
-        else ModelCapabilityRegistry(coding_model_capabilities)
-        if coding_model_capabilities is not None
-        else ModelCapabilityRegistry.from_env()
-    )
+    app.state.coding_model_catalog = resolved_catalog
+    app.state.coding_default_model = resolved_default_model
+    app.state.coding_model_capabilities = resolved_capabilities
     app.state.coding_checkpoint_anchor_key = coding_checkpoint_anchor_key
     app.state.coding_workspace_root = Path(coding_workspace_root or repo_root).resolve()
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()

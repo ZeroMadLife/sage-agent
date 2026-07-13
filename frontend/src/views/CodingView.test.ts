@@ -32,6 +32,12 @@ function createTestRouter(initialPath = '/coding') {
   return router.push(initialPath).then(() => router)
 }
 
+async function flushScrollFrame() {
+  await nextTick()
+  await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))
+  await nextTick()
+}
+
 describe('CodingView chat route lifecycle', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -306,6 +312,7 @@ describe('CodingView chat route lifecycle', () => {
     const returnToBottom = wrapper().get('button[aria-label="回到底部，1 条新消息"]')
     expect(messageArea.element.scrollTop).toBe(120)
     await returnToBottom.trigger('click')
+    await flushScrollFrame()
     expect(messageArea.element.scrollTop).toBe(1_000)
     expect(wrapper().find('button[aria-label*="回到底部"]').exists()).toBe(false)
     root.unmount()
@@ -324,8 +331,7 @@ describe('CodingView chat route lifecycle', () => {
     await messageArea.trigger('scroll')
 
     store.messages.push({ role: 'assistant', content: '自动跟随结果' })
-    await nextTick()
-    await nextTick()
+    await flushScrollFrame()
 
     expect(messageArea.element.scrollTop).toBe(1_000)
     expect(wrapper().find('button[aria-label*="回到底部"]').exists()).toBe(false)
@@ -346,8 +352,7 @@ describe('CodingView chat route lifecycle', () => {
     await messageArea.trigger('scroll')
 
     store.messages[0].content = '正在输出更多内容'
-    await nextTick()
-    await nextTick()
+    await flushScrollFrame()
 
     expect(messageArea.element.scrollTop).toBe(1_000)
     root.unmount()

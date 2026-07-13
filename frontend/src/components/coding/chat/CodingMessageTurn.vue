@@ -58,7 +58,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div class="message-body">
-      <div class="message-author">{{ message.role === 'assistant' ? 'Sage' : '你' }}</div>
+      <div v-if="message.role === 'user' || message.content" class="message-author">{{ message.role === 'assistant' ? 'Sage' : '你' }}</div>
       <CodingExecutionLog
         v-if="showProcess && message.activities && message.activities.length > 0"
         :activities="message.activities"

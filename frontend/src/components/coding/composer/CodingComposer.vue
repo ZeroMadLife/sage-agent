@@ -12,23 +12,6 @@ const canSend = computed(
   () => Boolean(input.value.trim()) && Boolean(store.sessionId) && !store.isThinking,
 )
 
-const contextTooltip = computed(
-  () =>
-    store.contextConfigured
-      ? `上下文 ${store.contextChars.toLocaleString()} / ${store.contextBudget.toLocaleString()} tokens (${store.contextPercent}%)`
-      : '当前模型未配置上下文窗口',
-)
-const contextStatus = computed(() => {
-  if (!store.contextConfigured) return { label: '模型未配置', tone: 'muted' }
-  if (store.contextBusy) return { label: '正在压缩', tone: 'running' }
-  if (store.compactionError) return { label: '压缩失败', tone: 'danger' }
-  if (store.contextSnapshot?.level === 'emergency') return { label: '接近上限', tone: 'danger' }
-  if (store.contextSnapshot?.level === 'high' || store.contextSnapshot?.level === 'compact') {
-    return { label: '即将压缩', tone: 'warning' }
-  }
-  return { label: '正常', tone: 'success' }
-})
-
 // --- Skill menu (triggered when input starts with "/") ---
 const skillMenuDismissed = ref(false)
 const showSkillMenu = computed(
@@ -140,37 +123,7 @@ defineExpose({
         </option>
       </select>
 
-      <button
-        v-if="store.contextConfigured"
-        class="compact-hint"
-        type="button"
-        :title="contextTooltip"
-        :disabled="store.isThinking || store.contextBusy || !store.contextCompactable"
-        :aria-busy="store.contextBusy"
-        @click="store.compactContext()"
-      >
-        {{ store.contextBusy ? '压缩中…' : '压缩' }}
-      </button>
-
       <CodingPermissionModeDrawer />
-
-      <div
-        class="context-budget"
-        :title="contextTooltip"
-        role="progressbar"
-        :aria-label="contextTooltip"
-        :aria-valuenow="store.contextPercent"
-        aria-valuemin="0"
-        aria-valuemax="100"
-      >
-        <div class="context-budget-copy">
-          <span class="context-budget-label">上下文</span>
-          <strong v-if="store.contextConfigured">{{ store.contextChars.toLocaleString() }} / {{ store.contextBudget.toLocaleString() }}</strong>
-          <strong v-else>--</strong>
-        </div>
-        <span class="context-budget-status" :class="contextStatus.tone">{{ contextStatus.label }}</span>
-        <span class="context-budget-meter" aria-hidden="true"><span :class="contextStatus.tone" :style="{ width: `${store.contextPercent}%` }"></span></span>
-      </div>
       <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">
         {{ store.compactionError }}
       </span>
@@ -227,7 +180,7 @@ defineExpose({
 .composer {
   position: relative;
   background: var(--sage-surface);
-  padding: 0 max(18px, calc((100% - 880px) / 2)) 14px;
+  padding: 0 clamp(18px, 4vw, 56px) max(12px, env(safe-area-inset-bottom));
 }
 
 .composer::before { position:absolute; inset:0 0 auto; height:24px; background:linear-gradient(to bottom,transparent,var(--sage-surface)); transform:translateY(-100%); pointer-events:none; content:''; }
@@ -240,6 +193,9 @@ defineExpose({
   border-radius: var(--sage-radius-lg);
   background: var(--sage-surface);
   overflow: visible;
+  width: 100%;
+  max-width: var(--chat-content-max, 1120px);
+  margin: 0 auto;
 }
 
 .composer-frame:focus-within {
@@ -274,11 +230,6 @@ defineExpose({
   border-color: var(--sage-focus);
 }
 
-.compact-hint:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
 .context-error {
   color: var(--sage-danger);
   font-size: 11px;
@@ -286,47 +237,6 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.context-budget {
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: center;
-  column-gap: 7px;
-  min-width: 154px;
-  padding: 3px 0;
-  color: var(--sage-text-secondary);
-}
-
-.context-budget-copy {
-  display: flex;
-  margin-left: auto;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 11px;
-}
-
-.context-budget-label { color: var(--sage-text-muted); }
-.context-budget-copy strong { color: var(--sage-text-secondary); font-size: 11px; font-weight: 650; }
-
-.context-budget-status { justify-self: end; font-size: 10px; font-weight: 700; }
-.context-budget-status.success { color: var(--sage-success); }.context-budget-status.warning { color: var(--sage-warning); }.context-budget-status.danger { color: var(--sage-danger); }.context-budget-status.running,.context-budget-status.muted { color: var(--sage-text-muted); }
-
-.context-budget-meter { grid-column: 1 / -1; display:block; width:100%; height:3px; margin-top:4px; overflow:hidden; border-radius:999px; background:var(--sage-surface-muted); }.context-budget-meter span { display:block; height:100%; border-radius:inherit; background:var(--sage-success); transition:width .2s ease; }.context-budget-meter span.warning { background:var(--sage-warning); }.context-budget-meter span.danger { background:var(--sage-danger); }.context-budget-meter span.running,.context-budget-meter span.muted { background:var(--sage-text-muted); }
-
-.compact-hint {
-  margin-left: auto;
-  border: 0;
-  border-radius: var(--sage-radius);
-  background: var(--sage-warning-bg);
-  color: var(--sage-warning);
-  padding: 3px 7px;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.compact-hint + .context-budget {
-  margin-left: 0;
 }
 
 .composer-input {
@@ -467,6 +377,5 @@ defineExpose({
 @media (max-width: 720px) {
   .composer { padding-right:12px; padding-left:12px; }
   .composer-controls { overflow-x:auto; }
-  .context-budget { min-width:138px; }
 }
 </style>

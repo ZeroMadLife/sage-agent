@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from core.coding.context import WorkspaceContext
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool, ToolResult
@@ -191,3 +193,47 @@ def test_policy_rejects_shell_search_at_command_start_but_allows_pipe_tail(
     assert grep_decision.allowed is False
     assert "use search" in grep_decision.message
     assert pipe_decision.allowed is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "ls -la",
+        "find . -name '*.py'",
+        "cat app.py",
+        "rg alpha src | head -5",
+        "grep -R alpha . && ls -la",
+    ],
+)
+def test_policy_rejects_commands_whose_only_purpose_is_workspace_read(
+    tmp_path: Path, command: str
+) -> None:
+    workspace, tools = _tools(tmp_path)
+
+    decision = ToolPolicyChecker(workspace).check(
+        tools["run_shell"], {"command": command}
+    )
+
+    assert decision.allowed is False
+    assert decision.reason == "shell_search_should_use_tool"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pytest -q | tail -5",
+        "python3 --version; pwd; ls -la",
+        "echo 'Hello'; pwd; ls -la",
+        "npm run build && ls -la",
+    ],
+)
+def test_policy_allows_compound_shell_validation_commands(
+    tmp_path: Path, command: str
+) -> None:
+    workspace, tools = _tools(tmp_path)
+
+    decision = ToolPolicyChecker(workspace).check(
+        tools["run_shell"], {"command": command}
+    )
+
+    assert decision.allowed is True

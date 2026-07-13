@@ -86,6 +86,7 @@ export type CodingSessionUiState = {
   permissionMutationGeneration: number
   scrollAnchor: { eventId: string; offset: number } | null
   messages: ChatMessage[]
+  optimisticMessage: ChatMessage | null
   legacyMessages: ChatMessage[]
   legacyTranscript: ChatMessage[]
   legacyLoaded: boolean
@@ -132,6 +133,7 @@ function createSessionUiState(): CodingSessionUiState {
     permissionMutationGeneration: 0,
     scrollAnchor: null,
     messages: [],
+    optimisticMessage: null,
     legacyMessages: [],
     legacyTranscript: [],
     legacyLoaded: false,
@@ -242,6 +244,7 @@ export const useCodingStore = defineStore('coding', () => {
   }
   const workspaceRoot = sessionField('workspaceRoot')
   const messages = sessionField('messages')
+  const optimisticMessage = sessionField('optimisticMessage')
   const legacyMessages = sessionField('legacyMessages')
   const isThinking = sessionField('isThinking')
   const errorMessage = sessionField('errorMessage')
@@ -347,6 +350,13 @@ export const useCodingStore = defineStore('coding', () => {
     const validItems = items.filter((item) => item.session_id === targetSessionId)
     const known = new Set([...state.olderTimeline, ...state.timeline].map((item) => item.event_id))
     const fresh = validItems.filter((item) => !known.has(item.event_id))
+    if (state.optimisticMessage && (source === 'live' || source === 'replay') && fresh.some((item) => {
+      const content = typeof item.payload.content === 'string' ? item.payload.content : ''
+      return (item.kind === 'user' || item.payload.type === 'user') &&
+        content === state.optimisticMessage?.content
+    })) {
+      state.optimisticMessage = null
+    }
     if (source === 'older') {
       state.olderTimeline = mergeTimelineEvents(state.olderTimeline, validItems)
         .slice(-MAX_RESIDENT_OLDER_EVENTS)
@@ -761,11 +771,17 @@ export const useCodingStore = defineStore('coding', () => {
     if (!content.trim() || !stream) return
     const sent = stream.send(content)
     if (!sent) return
-    messages.value.push({ role: 'user', content })
+    const optimistic = {
+      id: `optimistic:${sessionId.value}:${Date.now()}`,
+      role: 'user' as const,
+      content,
+    }
+    optimisticMessage.value = optimistic
+    messages.value.push(optimistic)
     isThinking.value = true
     errorMessage.value = ''
     pendingApproval.value = null
-    thinkingPhase.value = '准备执行'
+    thinkingPhase.value = '正在理解任务'
     startApprovalPolling()
   }
 
@@ -1351,6 +1367,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionsById,
     workspaceRoot,
     messages,
+    optimisticMessage,
     legacyMessages,
     timeline,
     olderTimeline,

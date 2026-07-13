@@ -1219,8 +1219,45 @@ describe('coding store', () => {
     store.sendMessage('检查这个模块')
 
     expect(store.isThinking).toBe(true)
-    expect(store.thinkingPhase).toBe('准备执行')
+    expect(store.thinkingPhase).toBe('正在理解任务')
+    expect(store.optimisticMessage?.content).toBe('检查这个模块')
+    expect(store.messages[0]).toMatchObject({ role: 'user', content: '检查这个模块' })
     store.disconnect()
+  })
+
+  it('keeps the optimistic user message until the matching timeline user event arrives', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.optimisticMessage = {
+      id: 'optimistic:session-a:1', role: 'user', content: '检查这个模块',
+    }
+    store.messages = [store.optimisticMessage]
+
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 1, 'system', { event: 'run_started' }, 'run-new',
+    ))
+    expect(store.optimisticMessage?.content).toBe('检查这个模块')
+    expect(store.messages.some((message) => message.content === '检查这个模块')).toBe(true)
+
+    store.handleTimelineEvent('session-a', timelineEvent(
+      'session-a', 2, 'user', { type: 'user', content: '检查这个模块' }, 'run-new',
+    ))
+    expect(store.optimisticMessage).toBeNull()
+    expect(store.messages.filter((message) => message.content === '检查这个模块')).toHaveLength(1)
+  })
+
+  it('does not clear the current optimistic message while loading identical older history', () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.optimisticMessage = {
+      id: 'optimistic:session-a:2', role: 'user', content: '重复问题',
+    }
+
+    store.mergeTimelinePage('session-a', [timelineEvent(
+      'session-a', 1, 'user', { type: 'user', content: '重复问题' }, 'old-run',
+    )], { next_cursor: 5, older_cursor: null }, 'older')
+
+    expect(store.optimisticMessage?.content).toBe('重复问题')
   })
 
   it('handles cancelled event as a stopped assistant message', () => {

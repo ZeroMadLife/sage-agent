@@ -148,6 +148,7 @@ class CodingModel(BaseModel):
     context_configured: bool = False
     context_window_tokens: int | None = None
     output_reserve_tokens: int | None = None
+    reasoning_modes: list[str] = Field(default_factory=list)
 
 
 class CodingModelsResponse(BaseModel):

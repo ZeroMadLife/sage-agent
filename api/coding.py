@@ -882,6 +882,7 @@ async def list_coding_models(
                 context_configured=policy is not None,
                 context_window_tokens=(policy.context_window_tokens if policy else None),
                 output_reserve_tokens=(policy.output_reserve_tokens if policy else None),
+                reasoning_modes=[str(mode) for mode in item.get("reasoning_modes", [])],
             )
         )
     current = str(request.app.state.coding_default_model)

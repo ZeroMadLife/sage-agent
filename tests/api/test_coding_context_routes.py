@@ -244,6 +244,7 @@ def test_model_catalog_exposes_capabilities_and_enforces_switch_whitelist(
             "context_configured": True,
             "context_window_tokens": 100_000,
             "output_reserve_tokens": 10_000,
+            "reasoning_modes": [],
         },
         {
             "id": "model-b",
@@ -252,6 +253,7 @@ def test_model_catalog_exposes_capabilities_and_enforces_switch_whitelist(
             "context_configured": False,
             "context_window_tokens": None,
             "output_reserve_tokens": None,
+            "reasoning_modes": [],
         },
     ]
     unknown = client.patch(

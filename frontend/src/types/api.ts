@@ -420,6 +420,7 @@ export type CodingModel = {
   context_window_tokens: number | null
   output_reserve_tokens: number | null
   context_configured: boolean
+  reasoning_modes: Array<'low' | 'medium' | 'high'>
 }
 
 export type CodingModelsResponse = {

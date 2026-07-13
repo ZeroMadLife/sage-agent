@@ -23,6 +23,7 @@ from core.coding.context.manager import (
     tail_clip,
 )
 from core.coding.context.model_capabilities import ModelCapabilityRegistry
+from core.coding.context.model_manifest import CodingModelDefinition, CodingModelManifest
 from core.coding.context.projection import ContextLevel, ContextProjector
 from core.coding.context.summarizer import StructuredSummarizer
 from core.coding.context.summary import (
@@ -52,6 +53,8 @@ __all__ = [
     "MAX_FILE_SIZE",
     "SYSTEM_PROMPT_DYNAMIC_BOUNDARY",
     "CheckpointVerifier",
+    "CodingModelDefinition",
+    "CodingModelManifest",
     "CompactManager",
     "CompactionBusyError",
     "CompactionCheckpoint",

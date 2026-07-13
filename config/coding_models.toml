@@ -1,0 +1,18 @@
+version = 1
+default_model = "deepseek:deepseek-v4-flash"
+
+[[models]]
+id = "deepseek:deepseek-v4-flash"
+label = "DeepSeek V4 Flash"
+provider = "deepseek"
+context_window_tokens = 1000000
+output_reserve_tokens = 64000
+reasoning_modes = []
+
+[[models]]
+id = "deepseek:deepseek-v4-pro"
+label = "DeepSeek V4 Pro"
+provider = "deepseek"
+context_window_tokens = 1000000
+output_reserve_tokens = 64000
+reasoning_modes = []
