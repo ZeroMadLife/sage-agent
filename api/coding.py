@@ -286,7 +286,6 @@ async def resume_coding_session(
         raise HTTPException(
             status_code=404, detail=f"Unknown coding session: {session_id}"
         ) from exc
-
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     active_runtime = sessions.get(session_id)
     coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
