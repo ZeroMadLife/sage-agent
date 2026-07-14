@@ -129,6 +129,7 @@ class Settings(BaseSettings):
     github_oauth_scope: str = "read:user user:email"
     github_oauth_transaction_secret: str = ""
     github_token_encryption_secret: str = ""
+    model_provider_encryption_secret: str = ""
 
     langsmith_api_key: str = ""
     langsmith_project: str = "tourswarm"
@@ -166,6 +167,7 @@ class Settings(BaseSettings):
             ("GITHUB_OAUTH_CLIENT_SECRET", self.github_oauth_client_secret),
             ("GITHUB_OAUTH_TRANSACTION_SECRET", self.github_oauth_transaction_secret),
             ("GITHUB_TOKEN_ENCRYPTION_SECRET", self.github_token_encryption_secret),
+            ("MODEL_PROVIDER_ENCRYPTION_SECRET", self.model_provider_encryption_secret),
         ):
             if not value or (len(value) < 32 and "CLIENT_ID" not in name):
                 missing.append(name)

@@ -91,10 +91,25 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         revisions = (
             await connection.execute(text("SELECT revision FROM schema_migrations"))
         ).scalars().all()
+        tables = set(
+            (
+                await connection.execute(
+                    text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     await engine.dispose()
 
     assert revisions == [
         "20260713_v7_cloud_control_plane",
         "20260713_v7_github_oauth",
+        "20260714_v7_model_providers",
     ]
+    assert {
+        "cloud_model_providers",
+        "cloud_models",
+        "cloud_model_preferences",
+    } <= tables

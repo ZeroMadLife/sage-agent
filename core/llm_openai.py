@@ -65,6 +65,8 @@ def create_openai_llm(
     temperature: float = 0.0,
     *,
     provider_config: ProviderConfig | None = None,
+    api_key: str | None = None,
+    base_url: str | None = None,
     **kwargs: Any,
 ) -> ChatOpenAI:
     """Create a ChatOpenAI instance from a provider:model spec.
@@ -96,23 +98,27 @@ def create_openai_llm(
         supported = ", ".join(sorted(_PROVIDERS))
         raise ValueError(f"未知 LLM provider: {provider}（支持: {supported}）")
 
-    api_key = os.environ.get(config.api_key_env, "").strip()
-    if not api_key:
+    resolved_api_key = api_key.strip() if api_key is not None else os.environ.get(config.api_key_env, "").strip()
+    if not resolved_api_key:
         raise ValueError(
             f"LLM provider '{provider}' 的 API key 未配置" f"（环境变量: {config.api_key_env}）"
         )
 
-    base_url = (
-        os.environ.get(config.base_url_env, config.default_base_url)
-        if config.base_url_env
-        else config.default_base_url
-    ).strip()
+    resolved_base_url = (
+        base_url.strip()
+        if base_url is not None
+        else (
+            os.environ.get(config.base_url_env, config.default_base_url)
+            if config.base_url_env
+            else config.default_base_url
+        ).strip()
+    )
     resolved_model = model.strip() or config.default_model
     kwargs.setdefault("stream_usage", True)
 
     return ChatOpenAI(
-        api_key=SecretStr(api_key),
-        base_url=base_url,
+        api_key=SecretStr(resolved_api_key),
+        base_url=resolved_base_url,
         model=resolved_model,
         temperature=temperature,
         **kwargs,

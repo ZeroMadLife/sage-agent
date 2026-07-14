@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
 from inspect import signature
 from pathlib import Path
@@ -15,6 +15,13 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Query, Request, Response, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
+from api.cloud_model_context import (
+    combined_capabilities,
+    combined_catalog,
+    combined_model_factory,
+    combined_reasoning_modes,
+    load_account_model_context,
+)
 from api.schemas import (
     CodingActiveRun,
     CodingApprovalRespondRequest,
@@ -63,7 +70,7 @@ from api.schemas import (
     PermissionModeSwitchRequest,
     UserMessage,
 )
-from core.coding.context import ContextBusyError, ModelCapabilityRegistry
+from core.coding.context import ContextBusyError
 from core.coding.persistence import (
     CodingSessionStore,
     MemoryConflictError,
@@ -202,10 +209,18 @@ async def create_coding_session(
     default_workspace = Path(request.app.state.coding_workspace_root).resolve()
     workspace_root = _resolve_workspace_root(default_workspace, payload.workspace_root)
     storage_root = Path(request.app.state.coding_storage_root)
-    model_id = str(request.app.state.coding_default_model)
-    if model_id not in _catalog_model_ids(request):
+    account = await load_account_model_context(request, include_credentials=True)
+    catalog = combined_catalog(request, account)
+    model_factory = combined_model_factory(request, account)
+    model_id = (
+        account.default_model
+        if account is not None and account.default_model
+        else str(request.app.state.coding_default_model)
+    )
+    if model_id not in _catalog_model_ids(catalog):
         raise HTTPException(status_code=422, detail="unknown coding model")
-    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
+    registry = combined_capabilities(request, account)
+    reasoning_modes = combined_reasoning_modes(request, account)
     session_id = str(uuid4())
     runtime = CodingRuntime(
         session_id=session_id,
@@ -221,7 +236,7 @@ async def create_coding_session(
         checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
         model_spec=model_id,
         reasoning_mode="off",
-        model_reasoning_modes=request.app.state.coding_model_reasoning_modes,
+        model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
@@ -311,9 +326,13 @@ async def resume_coding_session(
             workspace_root=str(active_runtime.workspace.root.resolve()),
             permission_mode=active_runtime.permission_mode,
         )
-    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
+    account = await load_account_model_context(request, include_credentials=True)
+    catalog = combined_catalog(request, account)
+    model_factory = combined_model_factory(request, account)
+    registry = combined_capabilities(request, account)
+    reasoning_modes = combined_reasoning_modes(request, account)
     model_id = str(persisted.get("model_spec") or request.app.state.coding_default_model)
-    if model_id not in _catalog_model_ids(request):
+    if model_id not in _catalog_model_ids(catalog):
         raise HTTPException(status_code=422, detail="unknown coding model")
     default_workspace = Path(request.app.state.coding_workspace_root).resolve()
     persisted_workspace = _resolve_persisted_workspace_root(
@@ -321,7 +340,9 @@ async def resume_coding_session(
     )
     persisted["workspace_root"] = str(persisted_workspace)
     reasoning_mode = _resolved_reasoning_mode(
-        request, model_id, str(persisted.get("reasoning_mode", "off"))
+        model_id,
+        str(persisted.get("reasoning_mode", "off")),
+        reasoning_modes,
     )
     runtime = CodingRuntime(
         session_id=session_id,
@@ -336,7 +357,7 @@ async def resume_coding_session(
         checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
         model_spec=model_id,
         reasoning_mode=reasoning_mode,
-        model_reasoning_modes=request.app.state.coding_model_reasoning_modes,
+        model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
     )
     sessions[session_id] = runtime
@@ -885,9 +906,11 @@ async def list_coding_models(
     request: Request, session_id: str | None = None
 ) -> CodingModelsResponse:
     """Return the server whitelist and only explicitly configured capabilities."""
-    registry: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
+    account = await load_account_model_context(request)
+    catalog = combined_catalog(request, account)
+    registry = combined_capabilities(request, account)
     models: list[CodingModel] = []
-    for item in request.app.state.coding_model_catalog:
+    for item in catalog:
         model_id = str(item["id"])
         policy = registry.resolve(model_id)
         models.append(
@@ -901,7 +924,11 @@ async def list_coding_models(
                 reasoning_modes=[str(mode) for mode in item.get("reasoning_modes", [])],
             )
         )
-    current = str(request.app.state.coding_default_model)
+    current = (
+        account.default_model
+        if account is not None and account.default_model
+        else str(request.app.state.coding_default_model)
+    )
     reasoning_mode = "off"
     if session_id is not None:
         runtime = _require_runtime(request, session_id)
@@ -926,12 +953,16 @@ async def switch_coding_model(
 ) -> dict[str, Any]:
     """Switch the model used by a coding session."""
     runtime = _require_runtime(request, session_id)
-    allowed = _catalog_model_ids(request)
+    account = await load_account_model_context(request, include_credentials=True)
+    catalog = combined_catalog(request, account)
+    allowed = _catalog_model_ids(catalog)
     if payload.model_id not in allowed:
         raise HTTPException(status_code=422, detail="unknown coding model")
     if _coding_operation_busy(request, session_id, runtime):
         raise HTTPException(status_code=409, detail="context operation is busy")
-    model_factory = request.app.state.coding_model_factory
+    model_factory = combined_model_factory(request, account)
+    runtime.model_capabilities = combined_capabilities(request, account)
+    runtime.model_reasoning_modes = combined_reasoning_modes(request, account)
 
     def factory(
         model_id: str = payload.model_id, *, reasoning_mode: str = "off"
@@ -1216,14 +1247,18 @@ def _build_model(factory: Any, model_id: str, reasoning_mode: str = "off") -> An
     return factory()
 
 
-def _catalog_model_ids(request: Request) -> set[str]:
-    return {str(item["id"]) for item in request.app.state.coding_model_catalog}
+def _catalog_model_ids(catalog: list[dict[str, Any]]) -> set[str]:
+    return {str(item["id"]) for item in catalog}
 
 
-def _resolved_reasoning_mode(request: Request, model_id: str, mode: str) -> str:
+def _resolved_reasoning_mode(
+    model_id: str,
+    mode: str,
+    reasoning_modes: Mapping[str, tuple[str, ...] | list[str]],
+) -> str:
     if mode == "off":
         return "off"
-    available = request.app.state.coding_model_reasoning_modes.get(model_id, ())
+    available = reasoning_modes.get(model_id, ())
     return mode if mode in available else "off"
 
 

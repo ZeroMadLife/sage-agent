@@ -606,6 +606,104 @@ class CloudGitHubOAuthStartResponse(BaseModel):
     authorization_url: str
 
 
+class CloudModelInput(BaseModel):
+    """One manually configured or discovered model under a Provider."""
+
+    model_id: str = Field(min_length=1, max_length=255)
+    display_name: str = Field(default="", max_length=255)
+    context_window_tokens: int | None = Field(default=None, ge=1024, le=2_000_000)
+    output_reserve_tokens: int | None = Field(default=None, ge=1, le=500_000)
+    reasoning_supported: bool = False
+
+    @field_validator("model_id", "display_name")
+    @classmethod
+    def strip_model_values(cls, value: str) -> str:
+        return value.strip()
+
+
+class CloudModelProviderCreateRequest(BaseModel):
+    """Create an account-scoped Provider with a write-only API key."""
+
+    name: str = Field(min_length=1, max_length=120)
+    api_mode: Literal[
+        "openai_chat_completions", "openai_responses", "anthropic_messages"
+    ]
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(min_length=1, max_length=10_000)
+    models: list[CloudModelInput] = Field(min_length=1, max_length=256)
+    default_model_id: str | None = Field(default=None, max_length=255)
+
+    @field_validator("name", "base_url", "api_key", "default_model_id")
+    @classmethod
+    def strip_provider_create_values(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class CloudModelProviderUpdateRequest(BaseModel):
+    """Update Provider metadata; absent API key preserves the encrypted value."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    api_mode: Literal[
+        "openai_chat_completions", "openai_responses", "anthropic_messages"
+    ] | None = None
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, min_length=1, max_length=10_000)
+    models: list[CloudModelInput] | None = Field(default=None, min_length=1, max_length=256)
+
+    @field_validator("name", "base_url", "api_key")
+    @classmethod
+    def strip_provider_update_values(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class CloudModelResponse(BaseModel):
+    id: str
+    runtime_id: str
+    model_id: str
+    display_name: str
+    context_window_tokens: int | None = None
+    output_reserve_tokens: int | None = None
+    reasoning_supported: bool = False
+
+
+class CloudModelProviderResponse(BaseModel):
+    id: str
+    name: str
+    api_mode: str
+    base_url: str
+    key_configured: bool = True
+    key_hint: str
+    status: str
+    last_tested_at: str | None = None
+    models: list[CloudModelResponse]
+
+
+class CloudModelProvidersResponse(BaseModel):
+    providers: list[CloudModelProviderResponse]
+    default_model: str | None = None
+
+
+class CloudModelDefaultRequest(BaseModel):
+    provider_id: str = Field(min_length=1, max_length=36)
+    model_id: str = Field(min_length=1, max_length=255)
+
+
+class CloudModelDefaultResponse(BaseModel):
+    provider_id: str
+    model_id: str
+    runtime_model_id: str
+
+
+class CloudModelProviderTestResponse(BaseModel):
+    ok: bool
+    status: str
+    tested_at: str
+
+
+class CloudModelDiscoveryResponse(BaseModel):
+    models: list[str]
+
+
 class CloudProjectCreateRequest(BaseModel):
     """Metadata required to create a user-owned cloud project."""
 

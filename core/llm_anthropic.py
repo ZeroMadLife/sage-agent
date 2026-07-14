@@ -12,6 +12,7 @@ def create_anthropic_llm(
     temperature: float = 0.0,
     *,
     api_key_env: str | None = None,
+    api_key: str | None = None,
     base_url: str | None = None,
     **kwargs: Any,
 ) -> ChatAnthropic:
@@ -19,18 +20,23 @@ def create_anthropic_llm(
     provider = provider.strip()
     if not separator:
         raise ValueError("LLM model spec must use 'provider:model' format")
-    if api_key_env is not None:
-        api_key = os.environ.get(api_key_env, "").strip()
-        if not api_key:
+    if api_key is not None or api_key_env is not None:
+        resolved_api_key = (
+            api_key.strip()
+            if api_key is not None
+            else os.environ.get(api_key_env or "", "").strip()
+        )
+        if not resolved_api_key:
             raise ValueError(
-                f"LLM provider '{provider}' 的 API key 未配置（环境变量: {api_key_env}）"
+                f"LLM provider '{provider}' 的 API key 未配置"
+                + (f"（环境变量: {api_key_env}）" if api_key_env else "")
             )
         resolved_model = model.strip()
         if not resolved_model:
             raise ValueError(f"LLM provider '{provider}' 缺少模型名称")
         kwargs.setdefault("stream_usage", True)
         return ChatAnthropic(
-            api_key=SecretStr(api_key),
+            api_key=SecretStr(resolved_api_key),
             base_url=base_url,
             model_name=resolved_model,
             temperature=temperature,

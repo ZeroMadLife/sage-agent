@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -151,6 +151,73 @@ class CloudProviderCredentialRecord(Base):
     scopes: Mapped[str] = mapped_column(Text, default="")
     provider_login: Mapped[str] = mapped_column(String(255), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CloudModelProviderRecord(Base):
+    """Owner-scoped encrypted LLM Provider configuration."""
+
+    __tablename__ = "cloud_model_providers"
+    __table_args__ = (
+        UniqueConstraint("owner_user_id", "name", name="cloud_model_provider_owner_name_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_users.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(120))
+    api_mode: Mapped[str] = mapped_column(String(40))
+    base_url: Mapped[str] = mapped_column(String(500))
+    encrypted_api_key: Mapped[str] = mapped_column(Text)
+    key_hint: Mapped[str] = mapped_column(String(24), default="")
+    status: Mapped[str] = mapped_column(String(24), default="untested")
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CloudModelRecord(Base):
+    """One model exposed by an owner-scoped LLM Provider."""
+
+    __tablename__ = "cloud_models"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "model_id", name="cloud_model_provider_model_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_model_providers.id", ondelete="CASCADE"), index=True
+    )
+    model_id: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[str] = mapped_column(String(255))
+    context_window_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_reserve_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasoning_supported: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class CloudModelPreferenceRecord(Base):
+    """Account default Provider/model selection."""
+
+    __tablename__ = "cloud_model_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_users.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_model_providers.id", ondelete="CASCADE"), index=True
+    )
+    model_record_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_models.id", ondelete="CASCADE"), index=True
+    )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )

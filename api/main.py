@@ -1,5 +1,6 @@
 """FastAPI app factory with two-tier Agent."""
 
+import hashlib
 import logging
 import os
 from collections.abc import AsyncIterator
@@ -16,6 +17,7 @@ from agents.react_agent import AgentRuntime
 from core.auth import AuthManager
 from core.cloud.auth.repository import CloudRepository
 from core.cloud.github import GitHubOAuthConfig, GitHubOAuthService
+from core.cloud.model_providers import ModelProviderRepository, ProviderProbe
 from core.coding.context import ModelCapabilityRegistry
 from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.usage_store import UsageStore
@@ -63,7 +65,7 @@ def create_runtime_agent() -> Any | None:
         repo_root = Path(__file__).resolve().parent.parent
 
         # 主 Agent 用 DeepSeek
-        chat_llm = create_llm("deepseek:deepseek-v4-flash")
+        chat_llm: Any = create_llm("deepseek:deepseek-v4-flash")
 
         # 规划 Agent 用豆包
         model_spec = _planning_model_spec(settings.llm_model)
@@ -161,6 +163,8 @@ def create_app(
     cloud_app_env: str | None = None,
     cloud_github_oauth_service: GitHubOAuthService | None = None,
     cloud_frontend_url: str | None = None,
+    cloud_model_provider_repository: ModelProviderRepository | None = None,
+    cloud_model_provider_probe: ProviderProbe | None = None,
 ) -> FastAPI:
     """Create the Sage API app.
 
@@ -197,6 +201,21 @@ def create_app(
         else cloud_secure_cookies
     )
     app.state.cloud_frontend_url = cloud_frontend_url or settings.cloud_frontend_url
+    provider_secret = settings.model_provider_encryption_secret
+    if not provider_secret:
+        provider_secret = hashlib.sha256(
+            f"{settings.app_secret_key}:development-model-providers".encode()
+        ).hexdigest()
+    app.state.cloud_model_provider_repository = (
+        cloud_model_provider_repository
+        or ModelProviderRepository(
+            AsyncSessionFactory,
+            encryption_secret=provider_secret,
+        )
+    )
+    app.state.cloud_model_provider_probe = cloud_model_provider_probe or ProviderProbe(
+        app_env=app_env
+    )
     app.state.cloud_github_oauth_service = cloud_github_oauth_service
     if app.state.cloud_github_oauth_service is None and all(
         (
@@ -293,12 +312,13 @@ def create_app(
 
     app.state.coding_run_registry = CodingRunRegistry(app.state.coding_storage_root)
 
-    from api import cloud_auth, cloud_workspaces, coding, routes, ws
+    from api import cloud_auth, cloud_model_providers, cloud_workspaces, coding, routes, ws
 
     app.include_router(routes.router)
     app.include_router(ws.router)
     app.include_router(coding.router)
     app.include_router(cloud_auth.router)
+    app.include_router(cloud_model_providers.router)
     app.include_router(cloud_workspaces.router)
     return app
 
