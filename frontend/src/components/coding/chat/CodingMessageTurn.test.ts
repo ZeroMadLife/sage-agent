@@ -72,4 +72,19 @@ describe('CodingMessageTurn', () => {
 
     expect(wrapper.findComponent({ name: 'CodingToolActivity' }).exists()).toBe(false)
   })
+
+  it('keeps execution metadata inside the assistant message body', () => {
+    const wrapper = mount(CodingMessageTurn, {
+      props: {
+        message: {
+          role: 'assistant',
+          content: '',
+          activities: [{ kind: 'model', label: '请求模型响应', status: 'running' }],
+        },
+        renderedContent: '',
+      },
+    })
+
+    expect(wrapper.get('.message-body').findComponent({ name: 'CodingExecutionLog' }).exists()).toBe(true)
+  })
 })

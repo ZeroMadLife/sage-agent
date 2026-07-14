@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from models.itinerary import Itinerary
 
@@ -148,6 +148,7 @@ class CodingModel(BaseModel):
     context_configured: bool = False
     context_window_tokens: int | None = None
     output_reserve_tokens: int | None = None
+    reasoning_modes: list[str] = Field(default_factory=list)
 
 
 class CodingModelsResponse(BaseModel):
@@ -155,12 +156,135 @@ class CodingModelsResponse(BaseModel):
 
     models: list[CodingModel]
     current: str | None = None
+    reasoning_mode: Literal["off", "low", "medium", "high"] = "off"
 
 
 class CodingModelSwitchRequest(BaseModel):
     """Request body for switching a session's model."""
 
     model_id: str = Field(min_length=1)
+
+
+class CodingReasoningSwitchRequest(BaseModel):
+    """Select a server-declared reasoning mode for a coding session."""
+
+    mode: Literal["off", "low", "medium", "high"] = "off"
+
+
+class CodingProviderReasoningInput(BaseModel):
+    """Non-secret model reasoning descriptor submitted by the settings editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal[
+        "unsupported", "openai_reasoning_effort", "anthropic_thinking_budget"
+    ]
+    modes: list[Literal["low", "medium", "high"]] | None = None
+    budgets: dict[Literal["low", "medium", "high"], int] | None = None
+
+
+class CodingProviderModelInput(BaseModel):
+    """One declared model in a non-secret provider settings document."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=192)
+    label: str = Field(min_length=1, max_length=512)
+    context_window_tokens: int | None = Field(default=None, gt=0)
+    output_reserve_tokens: int | None = Field(default=None, gt=0)
+    reasoning: CodingProviderReasoningInput | None = None
+
+
+class CodingProviderInput(BaseModel):
+    """One non-secret provider declaration submitted by the settings editor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=64)
+    label: str = Field(min_length=1, max_length=512)
+    api_mode: Literal["openai_chat_completions", "anthropic_messages"]
+    base_url: str = Field(min_length=1, max_length=512)
+    api_key_env: str = Field(min_length=1, max_length=128)
+    models: list[CodingProviderModelInput] = Field(min_length=1, max_length=256)
+
+
+class CodingProviderSettingsUpdate(BaseModel):
+    """Strict body accepted by the project-local provider settings API."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[1]
+    default_model: str = Field(min_length=1, max_length=192)
+    providers: list[CodingProviderInput] = Field(min_length=1, max_length=32)
+
+
+class CodingProviderModelResponse(BaseModel):
+    """A sanitized provider model entry returned to the browser."""
+
+    id: str
+    label: str
+    context_window_tokens: int | None = None
+    output_reserve_tokens: int | None = None
+    reasoning: dict[str, Any]
+
+
+class CodingProviderResponse(BaseModel):
+    """A sanitized provider entry with only key-availability state."""
+
+    id: str
+    label: str
+    api_mode: Literal["openai_chat_completions", "anthropic_messages"]
+    base_url: str
+    api_key_env: str
+    api_key_configured: bool
+    models: list[CodingProviderModelResponse]
+
+
+class CodingProviderSettingsResponse(BaseModel):
+    """Project-local provider settings safe for browser consumption."""
+
+    version: Literal[1]
+    default_model: str
+    source: Literal["legacy_toml", "project_json", "deployment_json"]
+    editable: bool
+    providers: list[CodingProviderResponse]
+
+
+class CodingUsageModelAggregate(BaseModel):
+    """Token totals grouped by concrete model id."""
+
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+class CodingUsageDailyAggregate(BaseModel):
+    """Token totals grouped by UTC date."""
+
+    date: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+class CodingUsageSummary(BaseModel):
+    """Provider-reported token totals without prompt or response content."""
+
+    range_days: int
+    request_count: int
+    session_count: int
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_creation_tokens: int | None = None
+    cache_hit_ratio: float | None = None
+    cost: float | None = None
+    models: list[CodingUsageModelAggregate]
+    daily: list[CodingUsageDailyAggregate]
 
 
 class CodingContextCompactRequest(BaseModel):

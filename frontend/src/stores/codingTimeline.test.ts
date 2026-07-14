@@ -50,6 +50,22 @@ describe('coding timeline projection', () => {
     })
   })
 
+  it('settles each requested model activity when its response is parsed', () => {
+    const projection = createTimelineProjection([
+      event(1, 'model', { type: 'model_requested' }, { status: 'running' }),
+      event(2, 'model', { type: 'model_parsed', kind: 'tool' }),
+      event(3, 'model', { type: 'model_requested' }, { status: 'running' }),
+      event(4, 'model', { type: 'model_parsed', kind: 'retry' }),
+    ])
+
+    expect(projection.turns[0].model).toEqual([
+      expect.objectContaining({ type: 'model_requested', status: 'completed' }),
+      expect.objectContaining({ type: 'model_parsed', status: 'completed' }),
+      expect.objectContaining({ type: 'model_requested', status: 'error' }),
+      expect.objectContaining({ type: 'model_parsed', status: 'completed' }),
+    ])
+  })
+
   it('retains tool arguments, results, errors and approval ownership', () => {
     const projection = createTimelineProjection([
       event(1, 'user', { type: 'user', content: '改文件' }),
@@ -149,6 +165,7 @@ describe('coding timeline projection', () => {
     'settles open tool and approval rows when a run is %s',
     (terminalStatus) => {
       const projection = createTimelineProjection([
+        event(0, 'model', { type: 'model_requested' }, { status: 'running' }),
         event(1, 'tool', { type: 'tool_call', tool: 'write_file', args: { path: 'a.txt' } }, { status: 'running' }),
         event(2, 'approval', {
           type: 'approval_required', approval_id: 'approval-1', tool: 'write_file',
@@ -157,6 +174,7 @@ describe('coding timeline projection', () => {
         event(3, 'terminal', { event: `run_${terminalStatus}` }, { status: terminalStatus }),
       ])
 
+      expect(projection.turns[0].model[0].status).toBe(terminalStatus)
       expect(projection.turns[0].tools[0].status).toBe(terminalStatus)
       expect(projection.turns[0].approvals[0].status).toBe(terminalStatus)
     },

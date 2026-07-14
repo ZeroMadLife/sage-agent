@@ -420,11 +420,94 @@ export type CodingModel = {
   context_window_tokens: number | null
   output_reserve_tokens: number | null
   context_configured: boolean
+  reasoning_modes: Array<'low' | 'medium' | 'high'>
 }
 
 export type CodingModelsResponse = {
   models: CodingModel[]
   current: string | null
+  reasoning_mode: 'off' | 'low' | 'medium' | 'high'
+}
+
+export type CodingProviderReasoning =
+  | { kind: 'unsupported' }
+  | { kind: 'openai_reasoning_effort'; modes: Array<'low' | 'medium' | 'high'> }
+  | { kind: 'anthropic_thinking_budget'; budgets: Partial<Record<'low' | 'medium' | 'high', number>> }
+
+export type CodingProviderModel = {
+  id: string
+  label: string
+  context_window_tokens: number | null
+  output_reserve_tokens: number | null
+  reasoning: CodingProviderReasoning
+}
+
+export type CodingProvider = {
+  id: string
+  label: string
+  api_mode: 'openai_chat_completions' | 'anthropic_messages'
+  base_url: string
+  api_key_env: string
+  api_key_configured: boolean
+  models: CodingProviderModel[]
+}
+
+export type CodingProviderSettings = {
+  version: 1
+  default_model: string
+  source: 'legacy_toml' | 'project_json' | 'deployment_json'
+  editable: boolean
+  providers: CodingProvider[]
+}
+
+export type CodingProviderSettingsUpdate = {
+  version: 1
+  default_model: string
+  providers: Array<{
+    id: string
+    label: string
+    api_mode: 'openai_chat_completions' | 'anthropic_messages'
+    base_url: string
+    api_key_env: string
+    models: Array<{
+      id: string
+      label: string
+      context_window_tokens?: number
+      output_reserve_tokens?: number
+      reasoning?: CodingProviderReasoning
+    }>
+  }>
+}
+
+export type CodingUsageModelAggregate = {
+  model: string
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  total_tokens: number | null
+}
+
+export type CodingUsageDailyAggregate = {
+  date: string
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  total_tokens: number | null
+}
+
+export type CodingUsageSummary = {
+  range_days: number
+  request_count: number
+  session_count: number
+  input_tokens: number | null
+  output_tokens: number | null
+  total_tokens: number | null
+  cache_read_tokens: number | null
+  cache_creation_tokens: number | null
+  cache_hit_ratio: number | null
+  cost: number | null
+  models: CodingUsageModelAggregate[]
+  daily: CodingUsageDailyAggregate[]
 }
 
 export type CodingContextSnapshot = {

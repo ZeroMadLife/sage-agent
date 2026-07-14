@@ -8,7 +8,7 @@ const KEYS = {
 } as const
 
 let systemThemeListenerInstalled = false
-let requestedThemeMode: ThemeMode = 'light'
+let requestedThemeMode: ThemeMode = 'dark'
 
 function resolvedTheme(mode: ThemeMode): 'light' | 'dark' {
   if (mode !== 'system') return mode
@@ -38,7 +38,10 @@ function booleanPreference(key: string, fallback: boolean): Ref<boolean> {
 
 function themePreference() {
   const stored = localStorage.getItem(KEYS.themeMode)
-  const value = ref<ThemeMode>(stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'light')
+  // A new tab has no stored preference yet. Start from the coding workbench's
+  // dark appearance while retaining a user's explicit choice across tabs.
+  const value = ref<ThemeMode>(stored === 'light' || stored === 'dark' || stored === 'system' ? stored : 'dark')
+  if (stored === null) localStorage.setItem(KEYS.themeMode, value.value)
   applyThemeMode(value.value)
   watch(value, (next) => {
     localStorage.setItem(KEYS.themeMode, next)

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -33,7 +34,14 @@ from core.coding.tool_executor.executor import ToolExecutor
 from core.coding.tool_executor.permissions import PermissionChecker
 from core.coding.tool_executor.policy import ToolPolicyChecker
 from core.coding.tools.base import RegisteredTool
-from core.coding.tools.registry import get_active_tools
+from core.coding.tools.registry import (
+    ToolArgumentValidationError,
+    get_active_tools,
+    validate_tool_preflight,
+)
+from core.coding.usage_store import UsageSample, normalize_usage
+
+logger = logging.getLogger(__name__)
 
 
 class ApiClient(Protocol):
@@ -64,6 +72,7 @@ class Engine:
     """Turn control loop: model -> parse -> tool -> final."""
 
     MAX_PROTOCOL_RETRIES = 2
+    MAX_TOOL_ARGUMENT_RETRIES = 2
 
     def __init__(
         self,
@@ -89,6 +98,7 @@ class Engine:
             [list[dict[str, Any]]], PreparedContextLike
         ]
         | None = None,
+        model_usage_sink: Callable[[int, UsageSample], None] | None = None,
     ) -> None:
         self.model = model
         self.workspace = workspace
@@ -109,6 +119,7 @@ class Engine:
         self.current_message_id = current_message_id
         self.append_history = append_history
         self.before_model_request = before_model_request
+        self.model_usage_sink = model_usage_sink
 
     async def run_turn(
         self, user_message: str, skill_prompt: str | None = None, memory_block: str | None = None
@@ -127,6 +138,7 @@ class Engine:
         tool_steps = 0
         attempts = 0
         protocol_retries = 0
+        tool_argument_retries = 0
         protocol_correction = ""
 
         last_tool_signature: tuple[str, str] = ("", "")
@@ -189,15 +201,14 @@ class Engine:
             astream = getattr(self.model, "astream", None)
             if callable(astream):
                 messages = self._build_ainvoke_messages(prompt)
+                latest_usage: UsageSample | None = None
                 async for chunk in astream(messages):
-                    delta = getattr(chunk, "content", "")
-                    if isinstance(delta, list):
-                        delta = "".join(
-                            block.get("text", "") if isinstance(block, dict) else str(block)
-                            for block in delta
-                        )
+                    sample = normalize_usage(chunk)
+                    if sample is not None:
+                        latest_usage = sample
+                    delta = self._text_content(getattr(chunk, "content", ""))
                     if delta:
-                        raw += str(delta)
+                        raw += delta
                         visible_delta, streamed_final_chars = self._visible_final_delta(
                             raw, streamed_final_chars
                         )
@@ -205,8 +216,10 @@ class Engine:
                             yield event_to_dict(
                                 TextDeltaEvent(run_id=self.run_id, delta=visible_delta)
                             )
+                if latest_usage is not None:
+                    self._record_usage(attempts, latest_usage)
             else:
-                raw = await self._call_model(prompt)
+                raw = await self._call_model(prompt, attempts)
             if self.should_stop():
                 yield self._cancelled_event()
                 return
@@ -215,6 +228,30 @@ class Engine:
 
             if kind in {"tool", "tools"}:
                 tool_payloads = [payload] if kind == "tool" else list(payload)
+                tool_correction = ""
+                try:
+                    for tool_payload in tool_payloads:
+                        self._validate_tool_payload(tool_payload)
+                except ToolArgumentValidationError as exc:
+                    if tool_argument_retries >= self.MAX_TOOL_ARGUMENT_RETRIES:
+                        content = (
+                            f"工具 {exc.tool_name} 多次缺少或使用了无效参数，"
+                            "已停止本次运行。请补充明确的工作区相对路径后重试。"
+                        )
+                        self._append_history(
+                            {"role": "assistant", "content": content, "created_at": now()}
+                        )
+                        yield event_to_dict(FinalEvent(run_id=self.run_id, content=content))
+                        return
+                    tool_argument_retries += 1
+                    tool_correction = self._tool_argument_correction(exc)
+                    yield event_to_dict(RetryEvent(run_id=self.run_id, content=tool_correction))
+
+                if tool_correction:
+                    protocol_correction = tool_correction
+                    continue
+
+                recovered_tool_arguments = tool_argument_retries > 0
                 for tool_payload in tool_payloads:
                     # Detect only repeated *identical* calls. A coding task can
                     # legitimately refine the same file across several writes, so
@@ -250,6 +287,14 @@ class Engine:
                         if event["type"] == "cancelled":
                             return
                     tool_steps += 1
+                protocol_correction = (
+                    "This is the same turn, and the malformed tool step has already been "
+                    "corrected and executed successfully. Continue from the latest tool "
+                    "result without restarting earlier steps. If that result answers the "
+                    "request, return <final> now; never repeat an intentionally malformed call."
+                    if recovered_tool_arguments
+                    else ""
+                )
                 continue
 
             if kind == "retry":
@@ -292,6 +337,26 @@ class Engine:
             if isinstance(event, CancelledEvent):
                 self._append_cancelled_history(event.content)
             yield event_to_dict(event)
+
+    def _validate_tool_payload(self, payload: Any) -> None:
+        """Reject malformed tool arguments before any call or approval is emitted."""
+        if not isinstance(payload, dict):
+            return
+        name = str(payload.get("name", ""))
+        args = payload.get("args", {})
+        if name not in self.tools or not isinstance(args, dict):
+            return
+        validate_tool_preflight(self.workspace, name, args)
+
+    @staticmethod
+    def _tool_argument_correction(error: ToolArgumentValidationError) -> str:
+        schema = json.dumps(error.schema, ensure_ascii=False, sort_keys=True)
+        return (
+            f"Tool {error.tool_name} arguments were not executed because {error}. "
+            f"Its required schema is {schema}. Return one corrected <tool> call with "
+            "workspace-relative paths only; never invent a path, use an absolute path, "
+            "or use '..' traversal."
+        )
 
     def _cancelled_event(self) -> dict[str, Any]:
         content = "已停止当前运行。"
@@ -376,7 +441,7 @@ class Engine:
         history.insert(insert_at, current_item)
         return history
 
-    async def _call_model(self, prompt: str) -> str:
+    async def _call_model(self, prompt: str, attempt: int) -> str:
         complete = getattr(self.model, "complete", None)
         if callable(complete):
             result = complete(prompt)
@@ -384,15 +449,57 @@ class Engine:
                 value = await result
             else:
                 value = result
-            return str(value)
+            sample = normalize_usage(value)
+            if sample is not None:
+                self._record_usage(attempt, sample)
+            return self._text_content(getattr(value, "content", value))
 
         ainvoke = getattr(self.model, "ainvoke", None)
         if callable(ainvoke):
             messages = self._build_ainvoke_messages(prompt)
             response = await ainvoke(messages)
-            content = getattr(response, "content", response)
-            return content if isinstance(content, str) else str(content)
+            sample = normalize_usage(response)
+            if sample is not None:
+                self._record_usage(attempt, sample)
+            return self._text_content(getattr(response, "content", response))
         raise TypeError("model must provide complete(prompt) or ainvoke(messages)")
+
+    def _record_usage(self, attempt: int, usage: UsageSample) -> None:
+        if self.model_usage_sink is None:
+            return
+        try:
+            self.model_usage_sink(attempt, usage)
+        except Exception:
+            logger.warning("Unable to persist coding model usage", exc_info=True)
+
+    @staticmethod
+    def _text_content(content: object) -> str:
+        """Return public text blocks while excluding Provider thinking blocks."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, Mapping):
+            return Engine._text_block(content)
+        if not isinstance(content, list):
+            return str(content) if content is not None else ""
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if not isinstance(block, Mapping):
+                continue
+            text = Engine._text_block(block)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _text_block(block: Mapping[object, object]) -> str:
+        block_type = str(block.get("type", "text"))
+        text = block.get("text")
+        if block_type in {"text", "text_delta", "output_text"} and isinstance(text, str):
+            return text
+        return ""
 
     @staticmethod
     def _build_ainvoke_messages(prompt: str) -> list[dict[str, str]]:

@@ -1,6 +1,8 @@
 import { mount } from '@vue/test-utils'
-import { expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import CodingThinkingIndicator from './CodingThinkingIndicator.vue'
+
+afterEach(() => vi.useRealTimers())
 
 it('renders the thinking phase text', () => {
   const wrapper = mount(CodingThinkingIndicator, {
@@ -9,7 +11,9 @@ it('renders the thinking phase text', () => {
 
   expect(wrapper.text()).toContain('正在请求模型...')
   expect(wrapper.find('.thinking-phase').text()).toBe('正在请求模型...')
-  expect(wrapper.findAll('.thinking-dots .dot')).toHaveLength(3)
+  expect(wrapper.text()).toContain('正在思考')
+  expect(wrapper.find('.sage-avatar').exists()).toBe(true)
+  expect(wrapper.find('.thinking-time').text()).toBe('0s')
   expect(wrapper.attributes('role')).toBe('status')
 })
 
@@ -19,4 +23,15 @@ it('renders an arbitrary phase', () => {
   })
 
   expect(wrapper.text()).toContain('思考中')
+})
+
+it('shows public elapsed time without rendering internal reasoning text', async () => {
+  vi.useFakeTimers()
+  const wrapper = mount(CodingThinkingIndicator, { props: { phase: '正在执行工具' } })
+
+  await vi.advanceTimersByTimeAsync(2_000)
+
+  expect(wrapper.find('.thinking-time').text()).toBe('2s')
+  expect(wrapper.text()).not.toContain('chain-of-thought')
+  wrapper.unmount()
 })

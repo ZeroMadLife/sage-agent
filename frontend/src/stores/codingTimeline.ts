@@ -136,6 +136,9 @@ function projectEvent(turn: TimelineTurn, event: CodingTimelineEvent): void {
   if (event.kind === 'terminal') {
     if (!turn.terminal) turn.terminal = event
     if (turn.assistant) turn.assistant.streaming = false
+    for (const model of turn.model) {
+      if (isOpenStatus(model.status)) model.status = event.status
+    }
     for (const tool of turn.tools) {
       if (isOpenStatus(tool.status)) {
         tool.status = event.status
@@ -148,7 +151,17 @@ function projectEvent(turn: TimelineTurn, event: CodingTimelineEvent): void {
     return
   }
   const detail = detailFrom(event, type)
-  if (event.kind === 'model') turn.model.push(detail)
+  if (event.kind === 'model') {
+    if (type === 'model_parsed') {
+      const requested = [...turn.model].reverse().find(
+        (item) => item.type === 'model_requested' && isOpenStatus(item.status),
+      )
+      if (requested) {
+        requested.status = event.payload.kind === 'retry' ? 'error' : event.status
+      }
+    }
+    turn.model.push(detail)
+  }
   else if (event.kind === 'context') turn.context.push(detail)
   else if (event.kind === 'memory') turn.memory.push(detail)
   else if (event.kind === 'agent') turn.agents.push(detail)

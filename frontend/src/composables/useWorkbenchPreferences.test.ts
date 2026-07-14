@@ -19,6 +19,13 @@ it('persists the requested theme mode', () => {
   expect(localStorage.getItem('sage.ui.theme')).toBe('dark')
 })
 
+it('uses dark mode when a browser profile has no saved preference', () => {
+  const preferences = useWorkbenchPreferences()
+
+  expect(preferences.themeMode.value).toBe('dark')
+  expect(document.documentElement.dataset.theme).toBe('dark')
+})
+
 it('applies the resolved theme to the application root', () => {
   applyThemeMode('dark')
   expect(document.documentElement.dataset.theme).toBe('dark')

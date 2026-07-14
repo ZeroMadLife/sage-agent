@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
+from inspect import signature
 from pathlib import Path
 from typing import Any, cast
 
@@ -70,6 +72,9 @@ from core.coding.tool_executor import (
 )
 from core.coding.tools.base import ToolContext
 from core.coding.tools.registry import build_tool_registry
+from core.coding.usage_store import UsageSample, UsageStore
+
+logger = logging.getLogger(__name__)
 
 
 class CodingRuntime:
@@ -81,7 +86,7 @@ class CodingRuntime:
         workspace_root: Path | str,
         model: Any,
         storage_root: Path | str,
-        model_factory: Callable[[], Any] | None = None,
+        model_factory: Callable[..., Any] | None = None,
         approval_policy: str = "auto",
         session_state: dict[str, Any] | None = None,
         save_on_init: bool = True,
@@ -91,6 +96,9 @@ class CodingRuntime:
         checkpoint_anchor_key: bytes | None = None,
         context_controller: ContextController | None = None,
         model_spec: str = "",
+        reasoning_mode: str = "off",
+        model_reasoning_modes: Mapping[str, tuple[str, ...] | list[str]] | None = None,
+        usage_store: UsageStore | None = None,
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -130,10 +138,19 @@ class CodingRuntime:
         self.activated_tools = {
             str(name) for name in self.session.get("activated_tools", []) if str(name).strip()
         }
+        self.model_spec = str(self.session.get("model_spec", model_spec))
+        self.model_reasoning_modes = {
+            str(model_id): tuple(str(mode) for mode in modes)
+            for model_id, modes in (model_reasoning_modes or {}).items()
+        }
+        persisted_reasoning_mode = str(self.session.get("reasoning_mode", reasoning_mode))
+        self.reasoning_mode = self._resolve_reasoning_mode(
+            self.model_spec, persisted_reasoning_mode
+        )
+        self.usage_store = usage_store
         self.todo_ledger = TodoLedger(self.session["todos"])
         self.plan_mode = PlanModeManager(self.workspace.root)
         self._restore_plan_mode(self.session["runtime_mode"])
-        self.worker_manager = WorkerManager(self.workspace, self.model_factory)
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
         persisted_permission_mode = str(self.session.get("permission_mode", permission_mode))
@@ -151,6 +168,7 @@ class CodingRuntime:
         self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
         self.policy_checker = ToolPolicyChecker(self.workspace)
+        self.worker_manager = WorkerManager(self.workspace, self._current_model_factory)
         self.tool_context = ToolContext(
             runtime=self,
             todo_ledger=self.todo_ledger,
@@ -163,7 +181,6 @@ class CodingRuntime:
         )
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.memory_manager = MemoryManager(self.storage_root, self.workspace.root)
-        self.model_spec = str(self.session.get("model_spec", model_spec))
         self._turn_id = ""
         self._backfill_transcript()
         self.model_capabilities = model_capabilities or ModelCapabilityRegistry()
@@ -189,12 +206,15 @@ class CodingRuntime:
         session_id: str,
         model: Any,
         storage_root: Path | str,
-        model_factory: Callable[[], Any] | None = None,
+        model_factory: Callable[..., Any] | None = None,
         approval_policy: str = "auto",
         context_policy: ContextPolicy | None = None,
         model_capabilities: ModelCapabilityRegistry | None = None,
         checkpoint_anchor_key: bytes | None = None,
         model_spec: str = "",
+        reasoning_mode: str = "off",
+        model_reasoning_modes: Mapping[str, tuple[str, ...] | list[str]] | None = None,
+        usage_store: UsageStore | None = None,
     ) -> CodingRuntime:
         """Rehydrate a persisted coding runtime for a new WebSocket connection."""
         storage_path = Path(storage_root)
@@ -216,6 +236,9 @@ class CodingRuntime:
             model_capabilities=model_capabilities,
             checkpoint_anchor_key=checkpoint_anchor_key,
             model_spec=str(session_state.get("model_spec", model_spec)),
+            reasoning_mode=str(session_state.get("reasoning_mode", reasoning_mode)),
+            model_reasoning_modes=model_reasoning_modes,
+            usage_store=usage_store,
         )
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:
@@ -312,11 +335,12 @@ class CodingRuntime:
             return "", command, arguments
         return skill.render(arguments), command, arguments
 
-    def switch_model(self, model_spec: str, model_factory: Callable[[], Any]) -> None:
+    def switch_model(self, model_spec: str, model_factory: Callable[..., Any]) -> None:
         """Replace the active model client."""
         if self.active_run_id is not None or self._context_operation_lock.locked():
             raise ContextBusyError("context operation is active")
-        replacement = model_factory()
+        reasoning_mode = self._resolve_reasoning_mode(model_spec, self.reasoning_mode)
+        replacement = _build_model(model_factory, model_spec, reasoning_mode)
         policy = self.model_capabilities.resolve(model_spec)
         if policy is None:
             policy = self.model_capabilities.resolve(replacement)
@@ -326,9 +350,23 @@ class CodingRuntime:
             else None
         )
         self.model = replacement
+        self.model_factory = model_factory
         self.model_spec = model_spec
+        self.reasoning_mode = reasoning_mode
         self.context_policy = policy
         self.context_controller = controller
+        self._save_session()
+
+    def switch_reasoning(self, mode: str) -> None:
+        """Replace the active client with one using a declared reasoning mode."""
+        if self.active_run_id is not None or self._context_operation_lock.locked():
+            raise ContextBusyError("context operation is active")
+        if mode != "off" and mode not in self._reasoning_modes_for(self.model_spec):
+            raise ValueError(f"unsupported reasoning mode: {mode}")
+        if mode == self.reasoning_mode:
+            return
+        self.model = self._current_model_factory(reasoning_mode=mode)
+        self.reasoning_mode = mode
         self._save_session()
 
     def context_snapshot(self) -> dict[str, Any]:
@@ -985,6 +1023,7 @@ class CodingRuntime:
                 current_message_id=current_message_id,
                 append_history=self._append_canonical_item,
                 before_model_request=(before_model_request if self.context_controller else None),
+                model_usage_sink=self._record_model_usage,
             )
             engine_stream = engine.run_turn(
                 user_message, skill_prompt=skill_prompt, memory_block=memory_block
@@ -1173,7 +1212,7 @@ class CodingRuntime:
 
     def _workspace_reminders(self) -> list[str]:
         reminders: list[str] = []
-        for name in ("SAGE.md", "AGENTS.md"):
+        for name in (".sage/SAGE.md", "SAGE.md", "AGENTS.md"):
             path = self.workspace.root / name
             if not path.is_file():
                 continue
@@ -1190,6 +1229,38 @@ class CodingRuntime:
         self.session["activated_tools"] = sorted(self.activated_tools)
         self.session["permission_mode"] = self.permission_mode
         self.session["model_spec"] = self.model_spec
+        self.session["reasoning_mode"] = self.reasoning_mode
+
+    def _reasoning_modes_for(self, model_spec: str) -> tuple[str, ...]:
+        return self.model_reasoning_modes.get(model_spec, ())
+
+    def _resolve_reasoning_mode(self, model_spec: str, mode: str) -> str:
+        if mode == "off":
+            return "off"
+        return mode if mode in self._reasoning_modes_for(model_spec) else "off"
+
+    def _current_model_factory(self, *, reasoning_mode: str | None = None) -> Any:
+        return _build_model(
+            self.model_factory,
+            self.model_spec,
+            self.reasoning_mode if reasoning_mode is None else reasoning_mode,
+        )
+
+    def _record_model_usage(self, attempt: int, usage: UsageSample) -> None:
+        if self.usage_store is None:
+            return
+        provider, _, _ = self.model_spec.partition(":")
+        try:
+            self.usage_store.record(
+                request_id=f"{self.active_run_id or 'run'}:{attempt}",
+                session_id=self.session_id,
+                run_id=self.active_run_id or "run",
+                provider=provider or "unknown",
+                model=self.model_spec or "unknown",
+                usage=usage,
+            )
+        except Exception:
+            logger.warning("Unable to persist coding model usage", exc_info=True)
 
     def _save_session(self) -> None:
         self._sync_session_state()
@@ -1204,3 +1275,22 @@ class CodingRuntime:
         self.plan_mode.mode = "plan"
         self.plan_mode.topic = str(runtime_mode.get("topic", ""))
         self.plan_mode.plan_path = str(runtime_mode.get("plan_path", ""))
+
+
+def _build_model(factory: Callable[..., Any], model_spec: str, reasoning_mode: str) -> Any:
+    """Call legacy and descriptor-aware model factories without hiding their errors."""
+    try:
+        factory_signature = signature(factory)
+    except (TypeError, ValueError):
+        return factory(model_spec, reasoning_mode=reasoning_mode)
+    for args, kwargs in (
+        ((model_spec,), {"reasoning_mode": reasoning_mode}),
+        ((model_spec,), {}),
+        ((), {}),
+    ):
+        try:
+            factory_signature.bind(*args, **kwargs)
+        except TypeError:
+            continue
+        return factory(*args, **kwargs)
+    return factory()

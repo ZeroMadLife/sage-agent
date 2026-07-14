@@ -20,7 +20,7 @@ it('keeps completed execution details collapsed by default', async () => {
   expect(wrapper.text()).toContain('读取 README.md')
 })
 
-it('opens the execution log while a run is active', () => {
+it('hides internal model request stages behind the unified thinking status', () => {
   const wrapper = mount(CodingExecutionLog, {
     props: {
       isThinking: true,
@@ -30,6 +30,6 @@ it('opens the execution log while a run is active', () => {
     },
   })
 
-  expect(wrapper.find('.execution-log-list').exists()).toBe(true)
-  expect(wrapper.text()).toContain('进行中')
+  expect(wrapper.find('.execution-log').exists()).toBe(false)
+  expect(wrapper.text()).not.toContain('请求模型响应')
 })

@@ -17,6 +17,17 @@ def _receive_runtime_event(websocket):
             return payload
 
 
+def _receive_until(websocket, event_type: str, *, limit: int = 20):
+    """Read a bounded runtime sequence through the requested terminal event."""
+    events = []
+    for _ in range(limit):
+        event = _receive_runtime_event(websocket)
+        events.append(event)
+        if event["type"] == event_type:
+            return events
+    raise AssertionError(f"runtime did not emit {event_type} within {limit} events")
+
+
 class FakeModel:
     """Deterministic model for coding route tests."""
 
@@ -351,9 +362,11 @@ def test_coding_websocket_streams_engine_events(tmp_path: Path) -> None:
 
     with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
         websocket.send_json({"content": "读 README.md"})
-        events = [_receive_runtime_event(websocket) for _ in range(7)]
+        events = _receive_until(websocket, "final")
 
-    assert [event["type"] for event in events] == [
+    assert any(event["type"] == "context_usage_updated" for event in events)
+    business_events = [event for event in events if event["type"] != "context_usage_updated"]
+    assert [event["type"] for event in business_events] == [
         "model_requested",
         "model_parsed",
         "tool_call",
@@ -362,9 +375,9 @@ def test_coding_websocket_streams_engine_events(tmp_path: Path) -> None:
         "model_parsed",
         "final",
     ]
-    assert events[2]["tool"] == "read_file"
-    assert "TourSwarm API coding" in events[3]["content"]
-    assert events[-1]["content"] == "README 里能看到项目内容。"
+    assert business_events[2]["tool"] == "read_file"
+    assert "TourSwarm API coding" in business_events[3]["content"]
+    assert business_events[-1]["content"] == "README 里能看到项目内容。"
 
 
 def test_coding_approval_pending_and_respond_endpoints(tmp_path: Path) -> None:
@@ -414,22 +427,28 @@ def test_coding_websocket_waits_for_approval_then_continues(tmp_path: Path) -> N
 
     with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
         websocket.send_json({"content": "写一个 note"})
-        first_events = [_receive_runtime_event(websocket) for _ in range(3)]
+        first_events = _receive_until(websocket, "approval_required")
         approval = first_events[-1]
         response = client.post(
             f"/api/v1/coding/{session_id}/approval/respond",
             json={"approval_id": approval["approval_id"], "choice": "once"},
         )
-        remaining_events = [_receive_runtime_event(websocket) for _ in range(6)]
+        remaining_events = _receive_until(websocket, "final")
 
-    assert [event["type"] for event in first_events] == [
+    first_business_events = [
+        event for event in first_events if event["type"] != "context_usage_updated"
+    ]
+    remaining_business_events = [
+        event for event in remaining_events if event["type"] != "context_usage_updated"
+    ]
+    assert [event["type"] for event in first_business_events] == [
         "model_requested",
         "model_parsed",
         "approval_required",
     ]
     assert approval["tool"] == "write_file"
     assert response.status_code == 200
-    assert [event["type"] for event in remaining_events] == [
+    assert [event["type"] for event in remaining_business_events] == [
         "approval_granted",
         "tool_call",
         "tool_result",
@@ -839,6 +858,9 @@ def test_list_coding_models_returns_providers(tmp_path: Path) -> None:
     ids = {m["id"] for m in models}
     assert ids == {"deepseek:deepseek-v4-flash", "deepseek:deepseek-v4-pro"}
     assert all("id" in m and "provider" in m for m in models)
+    assert all(m["context_configured"] is True for m in models)
+    assert all(m["context_window_tokens"] == 1_000_000 for m in models)
+    assert all(m["reasoning_modes"] == [] for m in models)
     assert data["current"] == "deepseek:deepseek-v4-flash"
 
 

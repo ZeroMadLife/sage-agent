@@ -1,33 +1,24 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Send, Square } from 'lucide-vue-next'
+import { BrainCircuit, Send, Settings, Square } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 import { useCodingStore } from '../../../stores/coding'
 import type { CodingSkillSummary } from '../../../types/api'
+import CodingContextBudget from '../chat/CodingContextBudget.vue'
 import CodingPermissionModeDrawer from './CodingPermissionModeDrawer.vue'
 
 const store = useCodingStore()
+const router = useRouter()
 const input = ref('')
+const currentModel = computed(() => store.models.find((model) => model.id === store.currentModelId))
+const reasoningModes = computed(() => currentModel.value?.reasoning_modes ?? [])
+const reasoningOptions = computed<Array<'off' | 'low' | 'medium' | 'high'>>(
+  () => ['off', ...reasoningModes.value],
+)
 
 const canSend = computed(
   () => Boolean(input.value.trim()) && Boolean(store.sessionId) && !store.isThinking,
 )
-
-const contextTooltip = computed(
-  () =>
-    store.contextConfigured
-      ? `上下文 ${store.contextChars.toLocaleString()} / ${store.contextBudget.toLocaleString()} tokens (${store.contextPercent}%)`
-      : '当前模型未配置上下文窗口',
-)
-const contextStatus = computed(() => {
-  if (!store.contextConfigured) return { label: '模型未配置', tone: 'muted' }
-  if (store.contextBusy) return { label: '正在压缩', tone: 'running' }
-  if (store.compactionError) return { label: '压缩失败', tone: 'danger' }
-  if (store.contextSnapshot?.level === 'emergency') return { label: '接近上限', tone: 'danger' }
-  if (store.contextSnapshot?.level === 'high' || store.contextSnapshot?.level === 'compact') {
-    return { label: '即将压缩', tone: 'warning' }
-  }
-  return { label: '正常', tone: 'success' }
-})
 
 // --- Skill menu (triggered when input starts with "/") ---
 const skillMenuDismissed = ref(false)
@@ -80,6 +71,14 @@ async function onModelChange(modelId: string) {
   await store.changeModel(modelId)
 }
 
+function openSettings() {
+  void router.push('/settings/providers')
+}
+
+async function onReasoningChange(mode: 'off' | 'low' | 'medium' | 'high') {
+  await store.changeReasoning(mode)
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) return
   if (showSkillMenu.value && filteredSkills.value.length > 0) {
@@ -125,135 +124,144 @@ defineExpose({
 
 <template>
   <div class="composer">
-    <div class="composer-controls">
-      <select
-        v-if="store.models.length > 0"
-        :value="store.currentModelId"
-        class="model-select"
-        title="切换模型"
-        :disabled="store.isThinking"
-        @change="onModelChange(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="model in store.models" :key="model.id" :value="model.id">
-          {{ model.label }}
-        </option>
-      </select>
-
-      <button
-        v-if="store.contextConfigured"
-        class="compact-hint"
-        type="button"
-        :title="contextTooltip"
-        :disabled="store.isThinking || store.contextBusy || !store.contextCompactable"
-        :aria-busy="store.contextBusy"
-        @click="store.compactContext()"
-      >
-        {{ store.contextBusy ? '压缩中…' : '压缩' }}
-      </button>
-
-      <CodingPermissionModeDrawer />
-
-      <div
-        class="context-budget"
-        :title="contextTooltip"
-        role="progressbar"
-        :aria-label="contextTooltip"
-        :aria-valuenow="store.contextPercent"
-        aria-valuemin="0"
-        aria-valuemax="100"
-      >
-        <div class="context-budget-copy">
-          <span class="context-budget-label">上下文</span>
-          <strong v-if="store.contextConfigured">{{ store.contextChars.toLocaleString() }} / {{ store.contextBudget.toLocaleString() }}</strong>
-          <strong v-else>--</strong>
+    <div class="composer-frame">
+      <div class="composer-input">
+        <div class="composer-textarea-wrap">
+          <div class="composer-meta"><CodingContextBudget /></div>
+          <textarea
+            v-model="input"
+            rows="2"
+            :disabled="!store.sessionId || store.isThinking"
+            placeholder="输入任务，或 /review 调用 skill"
+            @keydown="onKeydown"
+            @input="onInput"
+          />
+          <ul v-if="showSkillMenu && filteredSkills.length > 0" class="skill-menu" role="listbox">
+            <li
+              v-for="(skill, index) in filteredSkills"
+              :key="skill.name"
+              class="skill-menu-item"
+              :class="{ active: index === selectedIndex }"
+              role="option"
+              :aria-selected="index === selectedIndex"
+              @mouseenter="selectedIndex = index"
+              @click="selectSkill(skill)"
+            >
+              <span class="skill-menu-name">/{{ skill.name }}</span>
+              <span class="skill-menu-desc">{{ skill.description }}</span>
+            </li>
+          </ul>
+          <p v-else-if="showSkillMenu && filteredSkills.length === 0" class="skill-menu-empty">
+            无匹配 skill
+          </p>
         </div>
-        <span class="context-budget-status" :class="contextStatus.tone">{{ contextStatus.label }}</span>
-        <span class="context-budget-meter" aria-hidden="true"><span :class="contextStatus.tone" :style="{ width: `${store.contextPercent}%` }"></span></span>
       </div>
-      <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">
-        {{ store.compactionError }}
-      </span>
-    </div>
-
-    <div class="composer-input">
-      <div class="composer-textarea-wrap">
-        <textarea
-          v-model="input"
-          rows="2"
-          :disabled="!store.sessionId || store.isThinking"
-          placeholder="输入任务，或 /review 调用 skill"
-          @keydown="onKeydown"
-          @input="onInput"
-        />
-        <ul v-if="showSkillMenu && filteredSkills.length > 0" class="skill-menu" role="listbox">
-          <li
-            v-for="(skill, index) in filteredSkills"
-            :key="skill.name"
-            class="skill-menu-item"
-            :class="{ active: index === selectedIndex }"
-            role="option"
-            :aria-selected="index === selectedIndex"
-            @mouseenter="selectedIndex = index"
-            @click="selectSkill(skill)"
-          >
-            <span class="skill-menu-name">/{{ skill.name }}</span>
-            <span class="skill-menu-desc">{{ skill.description }}</span>
-          </li>
-        </ul>
-        <p v-else-if="showSkillMenu && filteredSkills.length === 0" class="skill-menu-empty">
-          无匹配 skill
-        </p>
+      <div class="composer-controls">
+        <button class="rail-icon" type="button" title="打开 Provider 设置" aria-label="打开 Provider 设置" @click="openSettings"><Settings :size="14" /></button>
+        <CodingPermissionModeDrawer />
+        <select
+          v-if="store.models.length > 0"
+          :value="store.currentModelId"
+          class="model-select"
+          title="切换模型"
+          :disabled="store.isThinking"
+          @change="onModelChange(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="model in store.models" :key="model.id" :value="model.id">
+            {{ model.label }}
+          </option>
+        </select>
+        <div v-if="reasoningModes.length" class="reasoning-control" aria-label="推理强度">
+          <BrainCircuit :size="13" aria-hidden="true" />
+          <button
+            v-for="mode in reasoningOptions"
+            :key="mode"
+            type="button"
+            :class="{ active: store.reasoningMode === mode }"
+            :aria-pressed="store.reasoningMode === mode"
+            :disabled="store.isThinking"
+            @click="onReasoningChange(mode)"
+          >{{ mode === 'off' ? '关' : mode }}</button>
+        </div>
+        <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">{{ store.compactionError }}</span>
+        <button v-if="store.isThinking" class="stop-btn" type="button" title="停止当前运行" aria-label="停止当前运行" @click="stop"><Square :size="13" /></button>
+        <button v-else :disabled="!canSend" class="send-btn" type="button" title="发送任务" aria-label="发送任务" @click="send"><Send :size="15" /></button>
       </div>
-      <button
-        v-if="store.isThinking"
-        class="stop-btn"
-        type="button"
-        title="停止当前运行"
-        aria-label="停止当前运行"
-        @click="stop"
-      >
-        <Square :size="13" />
-      </button>
-      <button v-else :disabled="!canSend" class="send-btn" type="button" title="发送任务" aria-label="发送任务" @click="send">
-        <Send :size="15" />
-      </button>
     </div>
   </div>
 </template>
 
 <style scoped>
 .composer {
-  border-top: 1px solid var(--sage-border);
+  position: relative;
   background: var(--sage-surface);
-  padding: 9px max(16px, calc((100% - 880px) / 2));
+  padding: 0 clamp(18px, 4vw, 56px) max(12px, env(safe-area-inset-bottom));
+}
+
+.composer::before { position:absolute; inset:0 0 auto; height:24px; background:linear-gradient(to bottom,transparent,var(--sage-surface)); transform:translateY(-100%); pointer-events:none; content:''; }
+
+.composer-frame {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--sage-border-strong);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface);
+  overflow: visible;
+  width: 100%;
+  max-width: var(--chat-content-max, 1120px);
+  margin: 0 auto;
+}
+
+.composer-frame:focus-within {
+  border-color: var(--sage-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sage-focus) 14%, transparent);
 }
 
 .composer-controls {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
+  gap: 8px;
+  order: 2;
+  z-index: 2;
+  min-height: 38px;
+  margin: 0;
+  padding: 0 8px 8px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--sage-border) 78%, transparent);
 }
 
 .model-select {
-  border: 1px solid var(--sage-border);
+  border: 0;
   border-radius: var(--sage-radius);
   padding: 3px 8px;
   font-size: 12px;
-  background: var(--sage-surface);
+  background: transparent;
   color: var(--sage-text-secondary);
   cursor: pointer;
   max-width: 160px;
 }
 
+.rail-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--sage-radius);
+  color: var(--sage-text-muted);
+  background: transparent;
+}
+
+.rail-icon:hover { border-color: var(--sage-border); color: var(--sage-text); background: var(--sage-surface-muted); }
+
+.reasoning-control { display:flex; align-items:center; gap:2px; min-height:28px; padding:2px 3px 2px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); }
+.reasoning-control button { min-width:28px; height:22px; padding:0 5px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:10px; }
+.reasoning-control button.active { color:var(--sage-text); background:var(--sage-surface-muted); font-weight:700; }
+
 .model-select:focus {
   outline: none;
   border-color: var(--sage-focus);
-}
-
-.compact-hint:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
 }
 
 .context-error {
@@ -265,52 +273,15 @@ defineExpose({
   white-space: nowrap;
 }
 
-.context-budget {
-  display: grid;
-  grid-template-columns: auto auto;
-  align-items: center;
-  column-gap: 7px;
-  min-width: 170px;
-  padding: 3px 0;
-  color: var(--sage-text-secondary);
-}
-
-.context-budget-copy {
-  display: flex;
-  margin-left: auto;
-  align-items: baseline;
-  gap: 4px;
-  font-size: 11px;
-}
-
-.context-budget-label { color: var(--sage-text-muted); }
-.context-budget-copy strong { color: var(--sage-text-secondary); font-size: 11px; font-weight: 650; }
-
-.context-budget-status { justify-self: end; font-size: 10px; font-weight: 700; }
-.context-budget-status.success { color: var(--sage-success); }.context-budget-status.warning { color: var(--sage-warning); }.context-budget-status.danger { color: var(--sage-danger); }.context-budget-status.running,.context-budget-status.muted { color: var(--sage-text-muted); }
-
-.context-budget-meter { grid-column: 1 / -1; display:block; width:100%; height:3px; margin-top:4px; overflow:hidden; border-radius:999px; background:var(--sage-surface-muted); }.context-budget-meter span { display:block; height:100%; border-radius:inherit; background:var(--sage-success); transition:width .2s ease; }.context-budget-meter span.warning { background:var(--sage-warning); }.context-budget-meter span.danger { background:var(--sage-danger); }.context-budget-meter span.running,.context-budget-meter span.muted { background:var(--sage-text-muted); }
-
-.compact-hint {
-  margin-left: auto;
-  border: 1px solid color-mix(in srgb, var(--sage-warning) 55%, var(--sage-border));
-  border-radius: var(--sage-radius);
-  background: var(--sage-warning-bg);
-  color: var(--sage-warning);
-  padding: 3px 7px;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.compact-hint + .context-budget {
-  margin-left: 0;
-}
-
 .composer-input {
+  position: static;
+  order: 1;
   display: flex;
   gap: 8px;
   align-items: flex-end;
 }
+
+.composer-meta { position:absolute; z-index:2; top:10px; right:12px; max-width:min(54%, 330px); }
 
 .composer-textarea-wrap {
   position: relative;
@@ -320,13 +291,13 @@ defineExpose({
 .composer-input textarea {
   width: 100%;
   resize: vertical;
-  min-height: 42px;
-  max-height: 180px;
-  border: 1px solid var(--sage-border-strong);
-  border-radius: var(--sage-radius-lg);
+  min-height: 74px;
+  max-height: 240px;
+  border: 0;
+  border-radius: var(--sage-radius-lg) var(--sage-radius-lg) 0 0;
   color: var(--sage-text);
   background: var(--sage-surface);
-  padding: 8px 10px;
+  padding: 14px min(42%, 330px) 9px 14px;
   line-height: 1.5;
   font-size: 13px;
   font-family: inherit;
@@ -334,8 +305,7 @@ defineExpose({
 
 .composer-input textarea:focus {
   outline: none;
-  border-color: var(--sage-focus);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--sage-focus) 16%, transparent);
+  box-shadow: none;
 }
 
 .skill-menu {
@@ -403,30 +373,45 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--sage-text);
-  color: #fff;
+  position: static;
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--sage-border-strong);
+  border-radius: 50%;
+  background: var(--sage-text-secondary);
+  color: var(--sage-surface);
   cursor: pointer;
+  z-index: 3;
 }
 
 .stop-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  position: static;
+  margin-left: auto;
+  width: 32px;
+  height: 32px;
   border: 1px solid var(--sage-danger);
-  border-radius: var(--sage-radius-lg);
+  border-radius: 50%;
   background: var(--sage-surface);
   color: var(--sage-danger);
   cursor: pointer;
+  z-index: 3;
 }
 
 .send-btn:disabled {
-  background: var(--sage-border-strong);
+  border-color: var(--sage-border);
+  background: var(--sage-surface-muted);
+  color: var(--sage-text-muted);
   cursor: not-allowed;
+}
+
+@media (max-width: 720px) {
+  .composer { padding-right:12px; padding-left:12px; }
+  .composer-controls { overflow-x:auto; scrollbar-width:none; }
+  .composer-input textarea { padding-right:128px; }
+  .reasoning-control svg { display:none; }
 }
 </style>

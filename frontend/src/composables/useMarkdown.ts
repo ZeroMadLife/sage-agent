@@ -6,17 +6,27 @@ const md = new MarkdownIt({
   linkify: true,
   typographer: true,
   breaks: true,
-  highlight(code: string, lang: string): string {
-    if (lang && hljs.getLanguage(lang)) {
-      try {
-        return `<pre class="hljs"><code>${hljs.highlight(code, { language: lang }).value}</code></pre>`
-      } catch {
-        // fall through to default
-      }
-    }
-    return `<pre class="hljs"><code>${md.utils.escapeHtml(code)}</code></pre>`
-  },
 })
+
+md.renderer.rules.fence = function (tokens, idx) {
+  const token = tokens[idx]
+  const requestedLanguage = token.info.trim().split(/\s+/)[0]
+  const language = requestedLanguage && hljs.getLanguage(requestedLanguage) ? requestedLanguage : 'text'
+  const escapedLanguage = md.utils.escapeHtml(language)
+  let highlighted = md.utils.escapeHtml(token.content)
+  if (language !== 'text') {
+    try {
+      highlighted = hljs.highlight(token.content, { language }).value
+    } catch {
+      highlighted = md.utils.escapeHtml(token.content)
+    }
+  }
+  return `<div class="sage-code-block" data-language="${escapedLanguage}"><div class="code-block-header"><span>${escapedLanguage}</span><button type="button" class="code-copy-button" data-copy-code aria-label="复制代码">复制</button></div><pre class="hljs"><code>${highlighted}</code></pre></div>\n`
+}
+
+// Keep protocol URLs linkable without treating repository names such as
+// README.md as public domains.
+md.linkify.set({ fuzzyLink: false })
 
 // 外部链接加 target=_blank 和 rel=noopener
 const defaultRender =

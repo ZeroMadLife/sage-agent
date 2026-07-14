@@ -9,7 +9,8 @@ from typing import Any, Literal
 from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool
 
-SHELL_SEARCH_RE = re.compile(r"(?:^|;|&&|\|\|)\s*(?:cat|less|head|grep|rg|find|ls)(?:\s|$)")
+SHELL_LIST_OPERATOR_RE = re.compile(r"(?:;|&&|\|\||\n)+")
+SHELL_READ_COMMAND_RE = re.compile(r"^\s*(?:cat|less|head|grep|rg|find|ls)(?:\s|$)")
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class ToolPolicyChecker:
                 return self._prior_read_required(tool.name, str(args.get("path", "")))
         if tool.name == "run_shell":
             command = str(args.get("command", "")).strip()
-            if SHELL_SEARCH_RE.search(command):
+            if _is_ordinary_shell_read(command):
                 return ToolPolicyDecision.deny(
                     "shell_search_should_use_tool",
                     "error: run_shell is not for ordinary workspace search/read; "
@@ -75,3 +76,10 @@ class ToolPolicyChecker:
             "prior_read_required",
             f"error: {tool_name} requires a fresh read_file of {path} before modifying it",
         )
+
+
+def _is_ordinary_shell_read(command: str) -> bool:
+    """Return true only when every shell-list segment is a workspace read."""
+    segments = [segment.strip() for segment in SHELL_LIST_OPERATOR_RE.split(command)]
+    meaningful = [segment for segment in segments if segment]
+    return bool(meaningful) and all(SHELL_READ_COMMAND_RE.match(segment) for segment in meaningful)

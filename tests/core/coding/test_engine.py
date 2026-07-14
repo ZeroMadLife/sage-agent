@@ -8,6 +8,7 @@ from core.coding.context import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager, 
 from core.coding.engine import Engine
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.registry import build_tool_registry
+from core.coding.usage_store import UsageSample
 
 
 class FakeModel:
@@ -32,6 +33,38 @@ class FakeAinvokeModel:
     async def ainvoke(self, messages: list[dict[str, str]]) -> object:
         self.calls.append([dict(msg) for msg in messages])
         return self.responses.pop(0)
+
+
+class ThinkingUsageStreamModel:
+    """Stream a private thinking block plus public final text and usage."""
+
+    async def astream(self, messages: list[dict[str, str]]):
+        _ = messages
+        yield type(
+            "Chunk",
+            (),
+            {
+                "content": [
+                    {"type": "thinking", "thinking": "private chain of thought"},
+                    {"type": "text", "text": "<final>public answer"},
+                ],
+                "usage_metadata": None,
+                "response_metadata": {},
+            },
+        )()
+        yield type(
+            "Chunk",
+            (),
+            {
+                "content": [{"type": "text", "text": "</final>"}],
+                "usage_metadata": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "total_tokens": 120,
+                },
+                "response_metadata": {},
+            },
+        )()
 
 
 def _engine(tmp_path: Path, responses: list[str], max_steps: int = 5) -> Engine:
@@ -99,6 +132,111 @@ async def test_engine_denies_policy_violation_as_tool_result(tmp_path: Path) -> 
     ]
     assert policy_errors
     assert "fresh read_file" in policy_errors[0]["content"]
+
+
+async def test_engine_recovers_missing_required_tool_argument_before_execution(tmp_path: Path) -> None:
+    """A malformed tool call receives a bounded model correction, not execution."""
+    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    engine = _engine(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            '<final>README 已读取。</final>',
+        ],
+    )
+
+    events = [event async for event in engine.run_turn("读取 README")]
+
+    assert [event["type"] for event in events] == [
+        "model_requested", "model_parsed", "retry", "model_requested", "model_parsed",
+        "tool_call", "tool_result", "model_requested", "model_parsed", "final",
+    ]
+    assert "read_file" in events[2]["content"]
+    assert "path" in events[2]["content"]
+    assert not any(
+        event["type"] == "tool_call" and event.get("args") == {} for event in events
+    )
+    assert engine.model.prompts[1].count("workspace-relative") == 1
+    assert engine.model.prompts[2].count("executed successfully") == 1
+
+
+async def test_engine_stops_after_two_invalid_tool_argument_retries(tmp_path: Path) -> None:
+    """Tool schema recovery is bounded even when a model ignores the correction."""
+    engine = _engine(
+        tmp_path,
+        ['<tool>{"name":"read_file","args":{}}</tool>'] * 3,
+    )
+
+    events = [event async for event in engine.run_turn("读取文件")]
+
+    assert [event["type"] for event in events].count("retry") == 2
+    assert events[-1]["type"] == "final"
+    assert "多次缺少" in events[-1]["content"]
+    assert not any(event["type"] == "tool_call" for event in events)
+
+
+async def test_engine_keeps_argument_retry_budget_across_valid_tool_calls(tmp_path: Path) -> None:
+    """Alternating valid calls cannot create an unbounded correction loop."""
+    (tmp_path / "README.md").write_text("Sage\n", encoding="utf-8")
+    engine = _engine(
+        tmp_path,
+        [
+            '<tool>{"name":"read_file","args":{}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            '<tool>{"name":"read_file","args":{}}</tool>',
+            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+            '<tool>{"name":"read_file","args":{}}</tool>',
+        ],
+    )
+
+    events = [event async for event in engine.run_turn("读取 README")]
+
+    assert [event["type"] for event in events].count("retry") == 2
+    assert [event["type"] for event in events].count("tool_call") == 2
+    assert events[-1]["type"] == "final"
+    assert "多次缺少" in events[-1]["content"]
+
+
+async def test_engine_preflights_all_tool_arguments_before_batch_execution(tmp_path: Path) -> None:
+    """A later malformed call prevents every call in the model's batch from executing."""
+    (tmp_path / "README.md").write_text("Sage\n", encoding="utf-8")
+    engine = _engine(
+        tmp_path,
+        [
+            (
+                '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'
+                '<tool>{"name":"search","args":{}}</tool>'
+            ),
+            '<final>停止批量调用。</final>',
+        ],
+    )
+
+    events = [event async for event in engine.run_turn("检查项目")]
+
+    assert any(event["type"] == "retry" for event in events)
+    assert not any(event["type"] == "tool_call" for event in events)
+
+
+async def test_engine_preflights_workspace_boundaries_before_batch_execution(tmp_path: Path) -> None:
+    """A later escaping path prevents earlier side effects in the same batch."""
+    engine = _engine(
+        tmp_path,
+        [
+            (
+                '<tool>{"name":"write_file","args":{"path":"created.txt","content":"x"}}</tool>'
+                '<tool>{"name":"write_file","args":{"path":"../outside.txt","content":"x"}}</tool>'
+            ),
+            '<final>已拒绝越界路径。</final>',
+        ],
+    )
+
+    events = [event async for event in engine.run_turn("写入文件")]
+
+    assert any(event["type"] == "retry" for event in events)
+    assert not any(event["type"] == "tool_call" for event in events)
+    assert not (tmp_path / "created.txt").exists()
+    assert not (tmp_path.parent / "outside.txt").exists()
 
 
 async def test_engine_emits_step_limit_when_model_never_finishes(tmp_path: Path) -> None:
@@ -285,6 +423,34 @@ async def test_engine_ainvoke_fallback_emits_no_text_delta(tmp_path: Path) -> No
 
     assert not any(event["type"] == "text_delta" for event in events)
     assert events[-1]["type"] == "final"
+
+
+async def test_engine_filters_thinking_blocks_and_reports_stream_usage(tmp_path: Path) -> None:
+    workspace = WorkspaceContext(root=tmp_path)
+    observed: list[tuple[int, UsageSample]] = []
+    engine = Engine(
+        model=ThinkingUsageStreamModel(),
+        workspace=workspace,
+        tools=build_tool_registry(workspace),
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(permission_mode="auto", approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        model_usage_sink=lambda attempt, usage: observed.append((attempt, usage)),
+    )
+
+    events = [event async for event in engine.run_turn("answer safely")]
+
+    rendered = "".join(event.get("delta", "") for event in events)
+    assert "private chain of thought" not in rendered
+    assert events[-1]["content"] == "public answer"
+    assert observed == [
+        (
+            1,
+            UsageSample(input_tokens=100, output_tokens=20, total_tokens=120),
+        )
+    ]
+    assert Engine._text_content({"type": "thinking", "thinking": "private"}) == ""
+    assert Engine._text_content({"type": "text", "text": "public"}) == "public"
 
 
 async def test_engine_detects_repeated_tool_calls(tmp_path: Path) -> None:

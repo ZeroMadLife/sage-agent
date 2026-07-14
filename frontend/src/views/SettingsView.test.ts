@@ -64,3 +64,58 @@ it('uses a full-screen section list on mobile', async () => {
   expect(view().get('[role="dialog"][aria-label="设置分类"]').text()).toContain('运行与任务')
   root.unmount()
 })
+
+it('shows sanitized provider status and real usage empty state', async () => {
+  const store = useCodingStore()
+  store.providerSettings = {
+    version: 1,
+    default_model: 'openai:gpt-test',
+    source: 'project_json',
+    editable: true,
+    providers: [{
+      id: 'openai', label: 'OpenAI', api_mode: 'openai_chat_completions',
+      base_url: 'https://api.openai.com/v1', api_key_env: 'OPENAI_API_KEY',
+      api_key_configured: true,
+      models: [{
+        id: 'openai:gpt-test', label: 'GPT Test', context_window_tokens: 128_000,
+        output_reserve_tokens: 16_000,
+        reasoning: { kind: 'openai_reasoning_effort', modes: ['low', 'high'] },
+      }],
+    }],
+  }
+  store.usageSummary = {
+    range_days: 30, request_count: 0, session_count: 0,
+    input_tokens: null, output_tokens: null, total_tokens: null,
+    cache_read_tokens: null, cache_creation_tokens: null,
+    cache_hit_ratio: null, cost: null, models: [], daily: [],
+  }
+  store.loadProviderSettings = vi.fn().mockResolvedValue(undefined)
+  store.loadUsage = vi.fn().mockResolvedValue(undefined)
+  const { router, root, view } = await mountSettings('/settings/providers')
+
+  expect(view().text()).toContain('环境变量已配置')
+  expect(view().text()).toContain('OPENAI_API_KEY')
+  expect(view().find('input[type="password"]').exists()).toBe(false)
+
+  await router.push('/settings/usage')
+  expect(view().text()).toContain('当前范围内暂无 Provider 用量数据')
+  expect(view().text()).toContain('费用')
+  root.unmount()
+})
+
+it('keeps Provider and usage failures isolated', async () => {
+  const store = useCodingStore()
+  store.providerSettingsError = 'Provider 加载失败'
+  store.usageError = '用量加载失败'
+  store.loadProviderSettings = vi.fn().mockResolvedValue(undefined)
+  store.loadUsage = vi.fn().mockResolvedValue(undefined)
+  const { router, root, view } = await mountSettings('/settings/providers')
+
+  expect(view().text()).toContain('Provider 加载失败')
+  expect(view().text()).not.toContain('用量加载失败')
+
+  await router.push('/settings/usage')
+  expect(view().text()).toContain('用量加载失败')
+  expect(view().text()).not.toContain('Provider 加载失败')
+  root.unmount()
+})

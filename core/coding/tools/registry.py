@@ -15,6 +15,16 @@ from core.coding.tools.base import RegisteredTool, ToolContext, ToolResult
 from core.coding.tools.schemas import ToolSearchArgs, first_error_message
 
 ToolHandler = Callable[[WorkspaceContext, dict[str, Any], ToolContext | None], ToolResult | str]
+_WORKSPACE_PATH_TOOLS = {"list_files", "read_file", "search", "write_file", "patch_file"}
+
+
+class ToolArgumentValidationError(ValueError):
+    """A recoverable schema error in model-provided tool arguments."""
+
+    def __init__(self, tool_name: str, message: str, schema: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.tool_name = tool_name
+        self.schema = schema
 
 TOOL_MODULES = (
     "core.coding.tools.file_tools",
@@ -149,16 +159,7 @@ def validate_tool(
     args: dict[str, Any],
 ) -> dict[str, Any]:
     """Validate pydantic schema and workspace-aware constraints."""
-    _ensure_default_modules_loaded()
-    definition = _TOOL_DEFINITIONS.get(name)
-    if definition is None and name == "tool_search":
-        definition = _tool_search_definition(set())
-    if definition is None:
-        raise ValueError(f"unknown tool: {name}")
-    try:
-        validated = definition.schema_model.model_validate(args).model_dump()
-    except ValidationError as exc:
-        raise ValueError(first_error_message(exc)) from exc
+    validated = validate_tool_preflight(workspace, name, args)
 
     if name == "list_files":
         path = workspace.path(str(validated["path"]))
@@ -183,6 +184,43 @@ def validate_tool(
         count = text.count(old_text)
         if count != 1:
             raise ValueError(f"old_text must occur exactly once, found {count}")
+    return validated
+
+
+def validate_tool_preflight(
+    workspace: WorkspaceContext,
+    name: str,
+    args: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate schema and path boundaries without depending on workspace state."""
+    validated = validate_tool_arguments(name, args)
+    if name not in _WORKSPACE_PATH_TOOLS:
+        return validated
+    try:
+        workspace.path(str(validated["path"]))
+    except ValueError as exc:
+        definition = _TOOL_DEFINITIONS[name]
+        raise ToolArgumentValidationError(name, str(exc), dict(definition.schema)) from exc
+    return validated
+
+
+def validate_tool_arguments(name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Validate only declared arguments without reading or resolving workspace paths."""
+    _ensure_default_modules_loaded()
+    definition = _TOOL_DEFINITIONS.get(name)
+    if definition is None and name == "tool_search":
+        definition = _tool_search_definition(set())
+    if definition is None:
+        raise ValueError(f"unknown tool: {name}")
+    try:
+        validated = definition.schema_model.model_validate(args).model_dump()
+    except ValidationError as exc:
+        raise ToolArgumentValidationError(
+            name,
+            first_error_message(exc),
+            dict(definition.schema),
+        ) from exc
+
     return validated
 
 
