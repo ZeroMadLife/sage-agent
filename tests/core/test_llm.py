@@ -6,7 +6,46 @@ import pytest
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 
+from core.coding.provider_settings import SageProviderSettings
 from core.llm import create_llm
+
+
+def _provider_settings(*, anthropic: bool = False) -> SageProviderSettings:
+    provider = "anthropic" if anthropic else "openai"
+    api_mode = "anthropic_messages" if anthropic else "openai_chat_completions"
+    reasoning = (
+        {
+            "kind": "anthropic_thinking_budget",
+            "budgets": {"low": 1024, "medium": 4096, "high": 8192},
+        }
+        if anthropic
+        else {
+            "kind": "openai_reasoning_effort",
+            "modes": ["low", "medium", "high"],
+        }
+    )
+    return SageProviderSettings.from_mapping(
+        {
+            "version": 1,
+            "default_model": f"{provider}:test-model",
+            "providers": [
+                {
+                    "id": provider,
+                    "label": provider.title(),
+                    "api_mode": api_mode,
+                    "base_url": f"https://api.{provider}.com/v1",
+                    "api_key_env": f"{provider.upper()}_API_KEY",
+                    "models": [
+                        {
+                            "id": f"{provider}:test-model",
+                            "label": "Test Model",
+                            "reasoning": reasoning,
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def test_create_llm_doubao() -> None:
@@ -107,3 +146,43 @@ def test_create_llm_deepseek_anthropic_missing_key_raises() -> None:
         pytest.raises(ValueError, match="DEEPSEEK_API_KEY"),
     ):
         create_llm("deepseek_anthropic:deepseek-v4-flash")
+
+
+def test_create_llm_applies_configured_openai_reasoning() -> None:
+    settings = _provider_settings()
+    with patch.dict("os.environ", {"OPENAI_API_KEY": "test-openai"}, clear=True):
+        llm = create_llm(
+            "openai:test-model",
+            provider_settings=settings,
+            reasoning_mode="medium",
+        )
+
+    assert isinstance(llm, ChatOpenAI)
+    assert llm.reasoning_effort == "medium"
+    assert llm.stream_usage is True
+
+
+def test_create_llm_applies_configured_anthropic_thinking() -> None:
+    settings = _provider_settings(anthropic=True)
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-anthropic"}, clear=True):
+        llm = create_llm(
+            "anthropic:test-model",
+            provider_settings=settings,
+            reasoning_mode="high",
+        )
+
+    assert isinstance(llm, ChatAnthropic)
+    assert llm.thinking == {"type": "enabled", "budget_tokens": 8192}
+
+
+def test_configured_llm_rejects_reasoning_not_declared_by_model() -> None:
+    settings = _provider_settings()
+    with (
+        patch.dict("os.environ", {"OPENAI_API_KEY": "test-openai"}, clear=True),
+        pytest.raises(ValueError, match="unsupported reasoning mode"),
+    ):
+        create_llm(
+            "openai:test-model",
+            provider_settings=settings,
+            reasoning_mode="max",
+        )

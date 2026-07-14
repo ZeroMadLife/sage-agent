@@ -8,6 +8,7 @@ from core.coding.context import SYSTEM_PROMPT_DYNAMIC_BOUNDARY, ContextManager, 
 from core.coding.engine import Engine
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
 from core.coding.tools.registry import build_tool_registry
+from core.coding.usage_store import UsageSample
 
 
 class FakeModel:
@@ -32,6 +33,38 @@ class FakeAinvokeModel:
     async def ainvoke(self, messages: list[dict[str, str]]) -> object:
         self.calls.append([dict(msg) for msg in messages])
         return self.responses.pop(0)
+
+
+class ThinkingUsageStreamModel:
+    """Stream a private thinking block plus public final text and usage."""
+
+    async def astream(self, messages: list[dict[str, str]]):
+        _ = messages
+        yield type(
+            "Chunk",
+            (),
+            {
+                "content": [
+                    {"type": "thinking", "thinking": "private chain of thought"},
+                    {"type": "text", "text": "<final>public answer"},
+                ],
+                "usage_metadata": None,
+                "response_metadata": {},
+            },
+        )()
+        yield type(
+            "Chunk",
+            (),
+            {
+                "content": [{"type": "text", "text": "</final>"}],
+                "usage_metadata": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "total_tokens": 120,
+                },
+                "response_metadata": {},
+            },
+        )()
 
 
 def _engine(tmp_path: Path, responses: list[str], max_steps: int = 5) -> Engine:
@@ -390,6 +423,34 @@ async def test_engine_ainvoke_fallback_emits_no_text_delta(tmp_path: Path) -> No
 
     assert not any(event["type"] == "text_delta" for event in events)
     assert events[-1]["type"] == "final"
+
+
+async def test_engine_filters_thinking_blocks_and_reports_stream_usage(tmp_path: Path) -> None:
+    workspace = WorkspaceContext(root=tmp_path)
+    observed: list[tuple[int, UsageSample]] = []
+    engine = Engine(
+        model=ThinkingUsageStreamModel(),
+        workspace=workspace,
+        tools=build_tool_registry(workspace),
+        context_manager=ContextManager(),
+        permission_checker=PermissionChecker(permission_mode="auto", approval_policy="auto"),
+        policy_checker=ToolPolicyChecker(workspace),
+        model_usage_sink=lambda attempt, usage: observed.append((attempt, usage)),
+    )
+
+    events = [event async for event in engine.run_turn("answer safely")]
+
+    rendered = "".join(event.get("delta", "") for event in events)
+    assert "private chain of thought" not in rendered
+    assert events[-1]["content"] == "public answer"
+    assert observed == [
+        (
+            1,
+            UsageSample(input_tokens=100, output_tokens=20, total_tokens=120),
+        )
+    ]
+    assert Engine._text_content({"type": "thinking", "thinking": "private"}) == ""
+    assert Engine._text_content({"type": "text", "text": "public"}) == "public"
 
 
 async def test_engine_detects_repeated_tool_calls(tmp_path: Path) -> None:

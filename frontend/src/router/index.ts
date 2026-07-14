@@ -30,7 +30,7 @@ const router = createRouter({
 })
 
 const settingsSections = new Set([
-  'appearance', 'models', 'skills', 'mcp', 'memory', 'context', 'sessions', 'workspace', 'runs',
+  'appearance', 'providers', 'models', 'usage', 'skills', 'mcp', 'memory', 'context', 'sessions', 'workspace', 'runs',
 ])
 
 router.beforeEach((to) => {

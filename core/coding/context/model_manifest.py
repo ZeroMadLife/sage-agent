@@ -5,7 +5,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from core.coding.context.model_capabilities import ModelCapabilityRegistry
 
@@ -156,4 +156,4 @@ def _non_empty_string(value: object, field: str) -> str:
 def _positive_integer(value: object, field: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{field} must be a positive integer")
-    return cast(int, value)
+    return value

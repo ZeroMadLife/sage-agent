@@ -1,12 +1,20 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Send, Square } from 'lucide-vue-next'
+import { BrainCircuit, Send, Settings, Square } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 import { useCodingStore } from '../../../stores/coding'
 import type { CodingSkillSummary } from '../../../types/api'
+import CodingContextBudget from '../chat/CodingContextBudget.vue'
 import CodingPermissionModeDrawer from './CodingPermissionModeDrawer.vue'
 
 const store = useCodingStore()
+const router = useRouter()
 const input = ref('')
+const currentModel = computed(() => store.models.find((model) => model.id === store.currentModelId))
+const reasoningModes = computed(() => currentModel.value?.reasoning_modes ?? [])
+const reasoningOptions = computed<Array<'off' | 'low' | 'medium' | 'high'>>(
+  () => ['off', ...reasoningModes.value],
+)
 
 const canSend = computed(
   () => Boolean(input.value.trim()) && Boolean(store.sessionId) && !store.isThinking,
@@ -63,6 +71,14 @@ async function onModelChange(modelId: string) {
   await store.changeModel(modelId)
 }
 
+function openSettings() {
+  void router.push('/settings/providers')
+}
+
+async function onReasoningChange(mode: 'off' | 'low' | 'medium' | 'high') {
+  await store.changeReasoning(mode)
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) return
   if (showSkillMenu.value && filteredSkills.value.length > 0) {
@@ -109,69 +125,68 @@ defineExpose({
 <template>
   <div class="composer">
     <div class="composer-frame">
-    <div class="composer-controls">
-      <select
-        v-if="store.models.length > 0"
-        :value="store.currentModelId"
-        class="model-select"
-        title="切换模型"
-        :disabled="store.isThinking"
-        @change="onModelChange(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-for="model in store.models" :key="model.id" :value="model.id">
-          {{ model.label }}
-        </option>
-      </select>
-
-      <CodingPermissionModeDrawer />
-      <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">
-        {{ store.compactionError }}
-      </span>
-    </div>
-
-    <div class="composer-input">
-      <div class="composer-textarea-wrap">
-        <textarea
-          v-model="input"
-          rows="2"
-          :disabled="!store.sessionId || store.isThinking"
-          placeholder="输入任务，或 /review 调用 skill"
-          @keydown="onKeydown"
-          @input="onInput"
-        />
-        <ul v-if="showSkillMenu && filteredSkills.length > 0" class="skill-menu" role="listbox">
-          <li
-            v-for="(skill, index) in filteredSkills"
-            :key="skill.name"
-            class="skill-menu-item"
-            :class="{ active: index === selectedIndex }"
-            role="option"
-            :aria-selected="index === selectedIndex"
-            @mouseenter="selectedIndex = index"
-            @click="selectSkill(skill)"
-          >
-            <span class="skill-menu-name">/{{ skill.name }}</span>
-            <span class="skill-menu-desc">{{ skill.description }}</span>
-          </li>
-        </ul>
-        <p v-else-if="showSkillMenu && filteredSkills.length === 0" class="skill-menu-empty">
-          无匹配 skill
-        </p>
+      <div class="composer-input">
+        <div class="composer-textarea-wrap">
+          <div class="composer-meta"><CodingContextBudget /></div>
+          <textarea
+            v-model="input"
+            rows="2"
+            :disabled="!store.sessionId || store.isThinking"
+            placeholder="输入任务，或 /review 调用 skill"
+            @keydown="onKeydown"
+            @input="onInput"
+          />
+          <ul v-if="showSkillMenu && filteredSkills.length > 0" class="skill-menu" role="listbox">
+            <li
+              v-for="(skill, index) in filteredSkills"
+              :key="skill.name"
+              class="skill-menu-item"
+              :class="{ active: index === selectedIndex }"
+              role="option"
+              :aria-selected="index === selectedIndex"
+              @mouseenter="selectedIndex = index"
+              @click="selectSkill(skill)"
+            >
+              <span class="skill-menu-name">/{{ skill.name }}</span>
+              <span class="skill-menu-desc">{{ skill.description }}</span>
+            </li>
+          </ul>
+          <p v-else-if="showSkillMenu && filteredSkills.length === 0" class="skill-menu-empty">
+            无匹配 skill
+          </p>
+        </div>
       </div>
-      <button
-        v-if="store.isThinking"
-        class="stop-btn"
-        type="button"
-        title="停止当前运行"
-        aria-label="停止当前运行"
-        @click="stop"
-      >
-        <Square :size="13" />
-      </button>
-      <button v-else :disabled="!canSend" class="send-btn" type="button" title="发送任务" aria-label="发送任务" @click="send">
-        <Send :size="15" />
-      </button>
-    </div>
+      <div class="composer-controls">
+        <button class="rail-icon" type="button" title="打开 Provider 设置" aria-label="打开 Provider 设置" @click="openSettings"><Settings :size="14" /></button>
+        <CodingPermissionModeDrawer />
+        <select
+          v-if="store.models.length > 0"
+          :value="store.currentModelId"
+          class="model-select"
+          title="切换模型"
+          :disabled="store.isThinking"
+          @change="onModelChange(($event.target as HTMLSelectElement).value)"
+        >
+          <option v-for="model in store.models" :key="model.id" :value="model.id">
+            {{ model.label }}
+          </option>
+        </select>
+        <div v-if="reasoningModes.length" class="reasoning-control" aria-label="推理强度">
+          <BrainCircuit :size="13" aria-hidden="true" />
+          <button
+            v-for="mode in reasoningOptions"
+            :key="mode"
+            type="button"
+            :class="{ active: store.reasoningMode === mode }"
+            :aria-pressed="store.reasoningMode === mode"
+            :disabled="store.isThinking"
+            @click="onReasoningChange(mode)"
+          >{{ mode === 'off' ? '关' : mode }}</button>
+        </div>
+        <span v-if="store.compactionError" class="context-error" role="alert" aria-live="polite">{{ store.compactionError }}</span>
+        <button v-if="store.isThinking" class="stop-btn" type="button" title="停止当前运行" aria-label="停止当前运行" @click="stop"><Square :size="13" /></button>
+        <button v-else :disabled="!canSend" class="send-btn" type="button" title="发送任务" aria-label="发送任务" @click="send"><Send :size="15" /></button>
+      </div>
     </div>
   </div>
 </template>
@@ -211,7 +226,8 @@ defineExpose({
   z-index: 2;
   min-height: 38px;
   margin: 0;
-  padding: 0 48px 8px 10px;
+  padding: 0 8px 8px 8px;
+  border-top: 1px solid color-mix(in srgb, var(--sage-border) 78%, transparent);
 }
 
 .model-select {
@@ -224,6 +240,24 @@ defineExpose({
   cursor: pointer;
   max-width: 160px;
 }
+
+.rail-icon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--sage-radius);
+  color: var(--sage-text-muted);
+  background: transparent;
+}
+
+.rail-icon:hover { border-color: var(--sage-border); color: var(--sage-text); background: var(--sage-surface-muted); }
+
+.reasoning-control { display:flex; align-items:center; gap:2px; min-height:28px; padding:2px 3px 2px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); }
+.reasoning-control button { min-width:28px; height:22px; padding:0 5px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:10px; }
+.reasoning-control button.active { color:var(--sage-text); background:var(--sage-surface-muted); font-weight:700; }
 
 .model-select:focus {
   outline: none;
@@ -247,6 +281,8 @@ defineExpose({
   align-items: flex-end;
 }
 
+.composer-meta { position:absolute; z-index:2; top:10px; right:12px; max-width:min(54%, 330px); }
+
 .composer-textarea-wrap {
   position: relative;
   flex: 1;
@@ -261,7 +297,7 @@ defineExpose({
   border-radius: var(--sage-radius-lg) var(--sage-radius-lg) 0 0;
   color: var(--sage-text);
   background: var(--sage-surface);
-  padding: 14px 14px 8px;
+  padding: 14px min(42%, 330px) 9px 14px;
   line-height: 1.5;
   font-size: 13px;
   font-family: inherit;
@@ -337,9 +373,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  position: absolute;
-  right: 9px;
-  bottom: 8px;
+  position: static;
+  margin-left: auto;
   width: 32px;
   height: 32px;
   border: 1px solid var(--sage-border-strong);
@@ -354,9 +389,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: center;
-  position: absolute;
-  right: 9px;
-  bottom: 8px;
+  position: static;
+  margin-left: auto;
   width: 32px;
   height: 32px;
   border: 1px solid var(--sage-danger);
@@ -376,6 +410,8 @@ defineExpose({
 
 @media (max-width: 720px) {
   .composer { padding-right:12px; padding-left:12px; }
-  .composer-controls { overflow-x:auto; }
+  .composer-controls { overflow-x:auto; scrollbar-width:none; }
+  .composer-input textarea { padding-right:128px; }
+  .reasoning-control svg { display:none; }
 }
 </style>

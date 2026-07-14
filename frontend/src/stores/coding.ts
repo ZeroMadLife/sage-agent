@@ -11,6 +11,8 @@ import {
   fetchCodingGitStatus,
   fetchCodingMcpServers,
   fetchCodingModels,
+  fetchCodingProviderSettings,
+  fetchCodingUsage,
   fetchMemoryProposals,
   fetchCodingRun,
   fetchCodingRunDiff,
@@ -29,8 +31,10 @@ import {
   startCodingSession,
   stopCodingRun,
   switchCodingModel,
+  switchCodingReasoning,
   switchPermissionMode,
   updateCodingSessionMetadata,
+  updateCodingProviderSettings as saveCodingProviderSettings,
 } from '../api/coding'
 import type {
   CodingApproval,
@@ -41,6 +45,8 @@ import type {
   CodingGitStatusResponse,
   CodingMcpServer,
   CodingModel,
+  CodingProviderSettings,
+  CodingProviderSettingsUpdate,
   CodingRunDetailResponse,
   CodingRunDiff,
   CodingRunSummary,
@@ -50,6 +56,7 @@ import type {
   CodingToolResultEvent,
   CodingTimelineEvent,
   CodingContextSnapshot,
+  CodingUsageSummary,
   MemoryProposal,
   PermissionMode,
 } from '../types/api'
@@ -78,6 +85,7 @@ export type CodingSessionUiState = {
   activeRun: CodingActiveRun | null
   stateSequence: number
   currentModelId: string
+  reasoningMode: 'off' | 'low' | 'medium' | 'high'
   contextRequestGeneration: number
   memoryRequestGeneration: number
   memoryMutationGeneration: number
@@ -125,6 +133,7 @@ function createSessionUiState(): CodingSessionUiState {
     activeRun: null,
     stateSequence: 0,
     currentModelId: '',
+    reasoningMode: 'off',
     contextRequestGeneration: 0,
     memoryRequestGeneration: 0,
     memoryMutationGeneration: 0,
@@ -249,6 +258,7 @@ export const useCodingStore = defineStore('coding', () => {
   const isThinking = sessionField('isThinking')
   const errorMessage = sessionField('errorMessage')
   const currentModelId = sessionField('currentModelId')
+  const reasoningMode = sessionField('reasoningMode')
   const contextChars = sessionField('contextChars')
   const contextSnapshot = sessionField('contextSnapshot')
   const compactionState = sessionField('compactionState')
@@ -286,6 +296,12 @@ export const useCodingStore = defineStore('coding', () => {
   const skills = ref<CodingSkillSummary[]>([])
   const mcpServers = ref<CodingMcpServer[]>([])
   const models = ref<CodingModel[]>([])
+  const providerSettings = ref<CodingProviderSettings | null>(null)
+  const usageSummary = ref<CodingUsageSummary | null>(null)
+  const usageRange = ref<'7d' | '30d' | '90d' | '365d'>('30d')
+  const providerSettingsError = ref('')
+  const usageError = ref('')
+  let usageRequestGeneration = 0
   const gitStatus = ref<CodingGitStatusResponse>({
     is_git: false,
     branch: '',
@@ -974,12 +990,52 @@ export const useCodingStore = defineStore('coding', () => {
 
   async function loadModels() {
     try {
-      const res = await fetchCodingModels()
+      const res = await fetchCodingModels(sessionId.value || undefined)
       models.value = res.models
       if (res.current) currentModelId.value = res.current
       else if (res.models.length > 0) currentModelId.value = res.models[0].id
+      reasoningMode.value = res.reasoning_mode || 'off'
     } catch {
       models.value = []
+    }
+  }
+
+  async function loadProviderSettings() {
+    try {
+      providerSettings.value = await fetchCodingProviderSettings()
+      providerSettingsError.value = ''
+    } catch (error) {
+      providerSettings.value = null
+      providerSettingsError.value = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  async function loadUsage(range: '7d' | '30d' | '90d' | '365d' = usageRange.value) {
+    const generation = ++usageRequestGeneration
+    usageRange.value = range
+    usageSummary.value = null
+    usageError.value = ''
+    try {
+      const summary = await fetchCodingUsage(range)
+      if (generation !== usageRequestGeneration) return
+      usageSummary.value = summary
+      usageError.value = ''
+    } catch (error) {
+      if (generation !== usageRequestGeneration) return
+      usageSummary.value = null
+      usageError.value = error instanceof Error ? error.message : String(error)
+    }
+  }
+
+  async function saveProviderSettings(settings: CodingProviderSettingsUpdate) {
+    try {
+      providerSettings.value = await saveCodingProviderSettings(settings)
+      providerSettingsError.value = ''
+      await loadModels()
+      return true
+    } catch (error) {
+      providerSettingsError.value = error instanceof Error ? error.message : String(error)
+      return false
     }
   }
 
@@ -1299,12 +1355,29 @@ export const useCodingStore = defineStore('coding', () => {
     const state = ensureSession(targetSessionId)
     const generation = ++state.modelMutationGeneration
     try {
-      await switchCodingModel(targetSessionId, modelId)
+      const result = await switchCodingModel(targetSessionId, modelId)
       if (generation !== state.modelMutationGeneration) return
       state.currentModelId = modelId
+      state.reasoningMode = result.reasoning_mode
       await loadContext(targetSessionId)
     } catch (error) {
       if (generation === state.modelMutationGeneration) state.errorMessage = String(error)
+    }
+  }
+
+  async function changeReasoning(mode: 'off' | 'low' | 'medium' | 'high') {
+    const targetSessionId = sessionId.value
+    if (!targetSessionId || isThinking.value) return false
+    const state = ensureSession(targetSessionId)
+    const generation = ++state.modelMutationGeneration
+    try {
+      const result = await switchCodingReasoning(targetSessionId, mode)
+      if (generation !== state.modelMutationGeneration) return false
+      state.reasoningMode = result.reasoning_mode
+      return true
+    } catch (error) {
+      if (generation === state.modelMutationGeneration) state.errorMessage = String(error)
+      return false
     }
   }
 
@@ -1383,6 +1456,7 @@ export const useCodingStore = defineStore('coding', () => {
     isThinking,
     errorMessage,
     currentModelId,
+    reasoningMode,
     contextChars,
     contextSnapshot,
     contextBudget,
@@ -1412,6 +1486,11 @@ export const useCodingStore = defineStore('coding', () => {
     skills,
     mcpServers,
     models,
+    providerSettings,
+    usageSummary,
+    usageRange,
+    providerSettingsError,
+    usageError,
     gitStatus,
     fileTreePath,
     fileTreeEntries,
@@ -1439,6 +1518,9 @@ export const useCodingStore = defineStore('coding', () => {
     loadSkills,
     loadMcpServers,
     loadModels,
+    loadProviderSettings,
+    loadUsage,
+    saveProviderSettings,
     loadContext,
     loadSessions,
     updateSessionMetadata,
@@ -1458,6 +1540,7 @@ export const useCodingStore = defineStore('coding', () => {
     refreshWorkspaceView,
     loadFilePreview,
     changeModel,
+    changeReasoning,
     compactContext,
     changePermissionMode,
     disconnect,

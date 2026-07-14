@@ -55,6 +55,37 @@ describe('coding store', () => {
     expect(store.sessionsById).toEqual({})
   })
 
+  it('keeps the latest usage range when responses finish out of order', async () => {
+    const sevenDays = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    const thirtyDays = deferred<{ ok: boolean; json: () => Promise<unknown> }>()
+    vi.stubGlobal('fetch', vi.fn((input: URL | string) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      return url.searchParams.get('range') === '7d' ? sevenDays.promise : thirtyDays.promise
+    }))
+    const store = useCodingStore()
+
+    const olderRequest = store.loadUsage('7d')
+    const latestRequest = store.loadUsage('30d')
+    thirtyDays.resolve({ ok: true, json: async () => ({
+      range_days: 30, request_count: 2, session_count: 1,
+      input_tokens: 10, output_tokens: 4, total_tokens: 14,
+      cache_read_tokens: null, cache_creation_tokens: null,
+      cache_hit_ratio: null, cost: null, models: [], daily: [],
+    }) })
+    await latestRequest
+    sevenDays.resolve({ ok: true, json: async () => ({
+      range_days: 7, request_count: 1, session_count: 1,
+      input_tokens: 3, output_tokens: 1, total_tokens: 4,
+      cache_read_tokens: null, cache_creation_tokens: null,
+      cache_hit_ratio: null, cost: null, models: [], daily: [],
+    }) })
+    await olderRequest
+
+    expect(store.usageRange).toBe('30d')
+    expect(store.usageSummary?.range_days).toBe(30)
+    expect(store.usageSummary?.request_count).toBe(2)
+  })
+
   it('keeps A and B timelines isolated when an A event arrives late', () => {
     const store = useCodingStore()
     store.sessionId = 'session-a'

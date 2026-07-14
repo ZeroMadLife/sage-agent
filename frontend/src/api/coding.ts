@@ -8,6 +8,9 @@ import type {
   CodingGitStatusResponse,
   CodingMcpServersResponse,
   CodingModelsResponse,
+  CodingProviderSettings,
+  CodingProviderSettingsUpdate,
+  CodingUsageSummary,
   MemoryProposal,
   MemoryProposalsResponse,
   CodingRunDetailResponse,
@@ -208,10 +211,56 @@ export async function fetchCodingGitStatus(
   return (await response.json()) as CodingGitStatusResponse
 }
 
-export async function fetchCodingModels(): Promise<CodingModelsResponse> {
-  const response = await fetch(new URL('/api/v1/coding/models', API_BASE_URL))
+export async function fetchCodingModels(sessionId?: string): Promise<CodingModelsResponse> {
+  const url = new URL('/api/v1/coding/models', API_BASE_URL)
+  if (sessionId) url.searchParams.set('session_id', sessionId)
+  const response = await fetch(url)
   if (!response.ok) throw new Error(`fetch models failed: ${response.status}`)
   return (await response.json()) as CodingModelsResponse
+}
+
+export async function switchCodingReasoning(
+  sessionId: string,
+  mode: 'off' | 'low' | 'medium' | 'high',
+): Promise<{ ok: boolean; model_id: string; reasoning_mode: 'off' | 'low' | 'medium' | 'high' }> {
+  const response = await fetch(
+    new URL(`/api/v1/coding/${sessionId}/reasoning`, API_BASE_URL),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    },
+  )
+  if (!response.ok) throw new Error(`switch reasoning failed: ${response.status}`)
+  return (await response.json()) as { ok: boolean; model_id: string; reasoning_mode: 'off' | 'low' | 'medium' | 'high' }
+}
+
+export async function fetchCodingProviderSettings(): Promise<CodingProviderSettings> {
+  const response = await fetch(new URL('/api/v1/coding/providers', API_BASE_URL))
+  if (!response.ok) throw new Error(`fetch provider settings failed: ${response.status}`)
+  return (await response.json()) as CodingProviderSettings
+}
+
+export async function updateCodingProviderSettings(
+  settings: CodingProviderSettingsUpdate,
+): Promise<CodingProviderSettings> {
+  const response = await fetch(new URL('/api/v1/coding/providers', API_BASE_URL), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings),
+  })
+  if (!response.ok) throw new Error(`update provider settings failed: ${response.status}`)
+  return (await response.json()) as CodingProviderSettings
+}
+
+export async function fetchCodingUsage(
+  range: '7d' | '30d' | '90d' | '365d' = '30d',
+): Promise<CodingUsageSummary> {
+  const url = new URL('/api/v1/coding/usage', API_BASE_URL)
+  url.searchParams.set('range', range)
+  const response = await fetch(url)
+  if (!response.ok) throw new Error(`fetch usage failed: ${response.status}`)
+  return (await response.json()) as CodingUsageSummary
 }
 
 export async function fetchCodingContext(sessionId: string): Promise<CodingContextSnapshot> {
@@ -243,7 +292,7 @@ export async function requestCodingCompaction(
 export async function switchCodingModel(
   sessionId: string,
   modelId: string,
-): Promise<void> {
+): Promise<{ ok: boolean; model_id: string; reasoning_mode: 'off' | 'low' | 'medium' | 'high' }> {
   const response = await fetch(
     new URL(`/api/v1/coding/${sessionId}/model`, API_BASE_URL),
     {
@@ -253,6 +302,10 @@ export async function switchCodingModel(
     },
   )
   if (!response.ok) throw new Error(`switch model failed: ${response.status}`)
+  if (typeof response.json !== 'function') {
+    return { ok: true, model_id: modelId, reasoning_mode: 'off' }
+  }
+  return (await response.json()) as { ok: boolean; model_id: string; reasoning_mode: 'off' | 'low' | 'medium' | 'high' }
 }
 
 export async function switchPermissionMode(

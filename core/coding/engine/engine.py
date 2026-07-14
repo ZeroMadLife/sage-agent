@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Callable
+import logging
+from collections.abc import AsyncIterator, Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
@@ -38,6 +39,9 @@ from core.coding.tools.registry import (
     get_active_tools,
     validate_tool_preflight,
 )
+from core.coding.usage_store import UsageSample, normalize_usage
+
+logger = logging.getLogger(__name__)
 
 
 class ApiClient(Protocol):
@@ -94,6 +98,7 @@ class Engine:
             [list[dict[str, Any]]], PreparedContextLike
         ]
         | None = None,
+        model_usage_sink: Callable[[int, UsageSample], None] | None = None,
     ) -> None:
         self.model = model
         self.workspace = workspace
@@ -114,6 +119,7 @@ class Engine:
         self.current_message_id = current_message_id
         self.append_history = append_history
         self.before_model_request = before_model_request
+        self.model_usage_sink = model_usage_sink
 
     async def run_turn(
         self, user_message: str, skill_prompt: str | None = None, memory_block: str | None = None
@@ -195,15 +201,14 @@ class Engine:
             astream = getattr(self.model, "astream", None)
             if callable(astream):
                 messages = self._build_ainvoke_messages(prompt)
+                latest_usage: UsageSample | None = None
                 async for chunk in astream(messages):
-                    delta = getattr(chunk, "content", "")
-                    if isinstance(delta, list):
-                        delta = "".join(
-                            block.get("text", "") if isinstance(block, dict) else str(block)
-                            for block in delta
-                        )
+                    sample = normalize_usage(chunk)
+                    if sample is not None:
+                        latest_usage = sample
+                    delta = self._text_content(getattr(chunk, "content", ""))
                     if delta:
-                        raw += str(delta)
+                        raw += delta
                         visible_delta, streamed_final_chars = self._visible_final_delta(
                             raw, streamed_final_chars
                         )
@@ -211,8 +216,10 @@ class Engine:
                             yield event_to_dict(
                                 TextDeltaEvent(run_id=self.run_id, delta=visible_delta)
                             )
+                if latest_usage is not None:
+                    self._record_usage(attempts, latest_usage)
             else:
-                raw = await self._call_model(prompt)
+                raw = await self._call_model(prompt, attempts)
             if self.should_stop():
                 yield self._cancelled_event()
                 return
@@ -434,7 +441,7 @@ class Engine:
         history.insert(insert_at, current_item)
         return history
 
-    async def _call_model(self, prompt: str) -> str:
+    async def _call_model(self, prompt: str, attempt: int) -> str:
         complete = getattr(self.model, "complete", None)
         if callable(complete):
             result = complete(prompt)
@@ -442,15 +449,57 @@ class Engine:
                 value = await result
             else:
                 value = result
-            return str(value)
+            sample = normalize_usage(value)
+            if sample is not None:
+                self._record_usage(attempt, sample)
+            return self._text_content(getattr(value, "content", value))
 
         ainvoke = getattr(self.model, "ainvoke", None)
         if callable(ainvoke):
             messages = self._build_ainvoke_messages(prompt)
             response = await ainvoke(messages)
-            content = getattr(response, "content", response)
-            return content if isinstance(content, str) else str(content)
+            sample = normalize_usage(response)
+            if sample is not None:
+                self._record_usage(attempt, sample)
+            return self._text_content(getattr(response, "content", response))
         raise TypeError("model must provide complete(prompt) or ainvoke(messages)")
+
+    def _record_usage(self, attempt: int, usage: UsageSample) -> None:
+        if self.model_usage_sink is None:
+            return
+        try:
+            self.model_usage_sink(attempt, usage)
+        except Exception:
+            logger.warning("Unable to persist coding model usage", exc_info=True)
+
+    @staticmethod
+    def _text_content(content: object) -> str:
+        """Return public text blocks while excluding Provider thinking blocks."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, Mapping):
+            return Engine._text_block(content)
+        if not isinstance(content, list):
+            return str(content) if content is not None else ""
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+                continue
+            if not isinstance(block, Mapping):
+                continue
+            text = Engine._text_block(block)
+            if text:
+                parts.append(text)
+        return "".join(parts)
+
+    @staticmethod
+    def _text_block(block: Mapping[object, object]) -> str:
+        block_type = str(block.get("type", "text"))
+        text = block.get("text")
+        if block_type in {"text", "text_delta", "output_text"} and isinstance(text, str):
+            return text
+        return ""
 
     @staticmethod
     def _build_ainvoke_messages(prompt: str) -> list[dict[str, str]]:

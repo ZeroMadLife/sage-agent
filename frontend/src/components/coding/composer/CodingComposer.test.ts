@@ -135,6 +135,35 @@ it('does not render the retired context placeholder inside the composer', () => 
   expect(wrapper.text()).not.toContain('模型未配置')
 })
 
+it('shows configured context at the top-right and real reasoning controls in the rail', async () => {
+  const { wrapper, store } = mountComposer()
+  store.models = [{
+    id: 'openai:gpt-test', label: 'GPT Test', provider: 'openai',
+    context_window_tokens: 128_000, output_reserve_tokens: 16_000,
+    context_configured: true, reasoning_modes: ['low', 'high'],
+  }]
+  store.currentModelId = 'openai:gpt-test'
+  store.contextSnapshot = {
+    model_id: 'openai:gpt-test', configured: true, used_tokens: 12_000,
+    model_limit_tokens: 128_000, effective_limit_tokens: 112_000,
+    output_reserve_tokens: 16_000, usage_ratio: 0.1, level: 'normal',
+    estimated: false, compactable: true, active_run_id: null,
+    context_operation_active: false, checkpoint_id: null,
+    resume_status: 'canonical', checkpoint_resume_enabled: true,
+    latest_attempt: null, stale_started: false,
+  }
+  store.changeReasoning = vi.fn().mockResolvedValue(true)
+  await nextTick()
+
+  expect(wrapper.find('.composer-meta [role="progressbar"]').exists()).toBe(true)
+  expect(wrapper.find('.composer-controls .reasoning-control').exists()).toBe(true)
+  expect(wrapper.text()).toContain('12.0k / 128.0k')
+
+  const high = wrapper.findAll('.reasoning-control button').find((button) => button.text() === 'high')
+  await high?.trigger('click')
+  expect(store.changeReasoning).toHaveBeenCalledWith('high')
+})
+
 it('sends the message on enter after a skill has been selected', async () => {
   const { wrapper, store } = mountComposer()
   store.sendMessage = vi.fn()

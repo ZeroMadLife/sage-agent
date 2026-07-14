@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
+from fastapi import APIRouter, HTTPException, Query, Request, Response, WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from api.schemas import (
@@ -37,6 +38,10 @@ from api.schemas import (
     CodingModel,
     CodingModelsResponse,
     CodingModelSwitchRequest,
+    CodingProviderModelResponse,
+    CodingProviderResponse,
+    CodingProviderSettingsResponse,
+    CodingReasoningSwitchRequest,
     CodingRunDetailResponse,
     CodingRunsResponse,
     CodingRunStopRequest,
@@ -53,6 +58,7 @@ from api.schemas import (
     CodingSkillSummary,
     CodingTimelineEvent,
     CodingTimelineResponse,
+    CodingUsageSummary,
     ErrorEvent,
     PermissionModeSwitchRequest,
     UserMessage,
@@ -66,6 +72,7 @@ from core.coding.persistence import (
     MemoryStoreError,
 )
 from core.coding.persistence.session_event_journal import SessionEvent
+from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 
@@ -203,7 +210,7 @@ async def create_coding_session(
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=workspace_root,
-        model=_build_model(model_factory, model_id),
+        model=_build_model(model_factory, model_id, "off"),
         storage_root=storage_root,
         model_factory=model_factory,
         approval_policy=payload.approval_policy,
@@ -213,6 +220,9 @@ async def create_coding_session(
         model_capabilities=registry,
         checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
         model_spec=model_id,
+        reasoning_mode="off",
+        model_reasoning_modes=request.app.state.coding_model_reasoning_modes,
+        usage_store=request.app.state.coding_usage_store,
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -310,10 +320,13 @@ async def resume_coding_session(
         default_workspace, persisted.get("workspace_root")
     )
     persisted["workspace_root"] = str(persisted_workspace)
+    reasoning_mode = _resolved_reasoning_mode(
+        request, model_id, str(persisted.get("reasoning_mode", "off"))
+    )
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=persisted_workspace,
-        model=_build_model(model_factory, model_id),
+        model=_build_model(model_factory, model_id, reasoning_mode),
         storage_root=storage_root,
         model_factory=model_factory,
         approval_policy="ask",
@@ -322,6 +335,9 @@ async def resume_coding_session(
         model_capabilities=registry,
         checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
         model_spec=model_id,
+        reasoning_mode=reasoning_mode,
+        model_reasoning_modes=request.app.state.coding_model_reasoning_modes,
+        usage_store=request.app.state.coding_usage_store,
     )
     sessions[session_id] = runtime
     return CodingSessionResponse(
@@ -886,11 +902,20 @@ async def list_coding_models(
             )
         )
     current = str(request.app.state.coding_default_model)
+    reasoning_mode = "off"
     if session_id is not None:
-        current = _require_runtime(request, session_id).model_spec
+        runtime = _require_runtime(request, session_id)
+        current = runtime.model_spec
+        reasoning_mode = runtime.reasoning_mode
     elif len(request.app.state.coding_sessions) == 1:
-        current = next(iter(request.app.state.coding_sessions.values())).model_spec
-    return CodingModelsResponse(models=models, current=current)
+        runtime = next(iter(request.app.state.coding_sessions.values()))
+        current = runtime.model_spec
+        reasoning_mode = runtime.reasoning_mode
+    return CodingModelsResponse(
+        models=models,
+        current=current,
+        reasoning_mode=cast(Literal["off", "low", "medium", "high"], reasoning_mode),
+    )
 
 
 @router.patch("/api/v1/coding/{session_id}/model")
@@ -908,8 +933,10 @@ async def switch_coding_model(
         raise HTTPException(status_code=409, detail="context operation is busy")
     model_factory = request.app.state.coding_model_factory
 
-    def factory() -> Any:
-        return _build_model(model_factory, payload.model_id)
+    def factory(
+        model_id: str = payload.model_id, *, reasoning_mode: str = "off"
+    ) -> Any:
+        return _build_model(model_factory, model_id, reasoning_mode)
 
     try:
         runtime.switch_model(payload.model_id, factory)
@@ -917,7 +944,84 @@ async def switch_coding_model(
         raise HTTPException(status_code=409, detail="context operation is busy") from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail="model switch failed") from exc
-    return {"ok": True, "model_id": payload.model_id}
+    return {
+        "ok": True,
+        "model_id": payload.model_id,
+        "reasoning_mode": runtime.reasoning_mode,
+    }
+
+
+@router.patch("/api/v1/coding/{session_id}/reasoning")
+async def switch_coding_reasoning(
+    session_id: str,
+    payload: CodingReasoningSwitchRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Select a reasoning mode only when the active model declares it."""
+    runtime = _require_runtime(request, session_id)
+    if _coding_operation_busy(request, session_id, runtime):
+        raise HTTPException(status_code=409, detail="context operation is busy")
+    try:
+        runtime.switch_reasoning(payload.mode)
+    except ContextBusyError as exc:
+        raise HTTPException(status_code=409, detail="context operation is busy") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "model_id": runtime.model_spec, "reasoning_mode": runtime.reasoning_mode}
+
+
+@router.get(
+    "/api/v1/coding/providers",
+    response_model=CodingProviderSettingsResponse,
+)
+async def get_coding_provider_settings(request: Request) -> CodingProviderSettingsResponse:
+    """Return only non-secret, project-local provider configuration."""
+    settings = _provider_settings(request)
+    store = cast(SageProviderSettingsStore, request.app.state.coding_provider_settings_store)
+    return _provider_settings_response(settings, source=store.source, editable=store.editable)
+
+
+@router.put(
+    "/api/v1/coding/providers",
+    response_model=CodingProviderSettingsResponse,
+)
+async def update_coding_provider_settings(
+    payload: dict[str, Any],
+    request: Request,
+) -> CodingProviderSettingsResponse:
+    """Atomically replace the non-secret settings document for this workspace."""
+    _provider_settings(request)
+    store = cast(SageProviderSettingsStore, request.app.state.coding_provider_settings_store)
+    try:
+        # The core parser owns strict validation so FastAPI never reflects an
+        # unknown field's submitted value (which could be an accidental key).
+        settings = store.save(payload)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="provider settings are deployment managed") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    request.app.state.coding_provider_settings = settings
+    request.app.state.coding_default_model = settings.default_model
+    request.app.state.coding_model_catalog = settings.catalog
+    request.app.state.coding_model_capabilities = settings.registry
+    request.app.state.coding_model_reasoning_modes = settings.reasoning_modes
+    for runtime in request.app.state.coding_sessions.values():
+        if runtime.active_run_id is not None or runtime._context_operation_lock.locked():
+            continue
+        runtime.model_capabilities = settings.registry
+        runtime.model_reasoning_modes = request.app.state.coding_model_reasoning_modes
+    return _provider_settings_response(settings, source=store.source, editable=store.editable)
+
+
+@router.get("/api/v1/coding/usage", response_model=CodingUsageSummary)
+async def get_coding_usage(
+    request: Request,
+    range: Literal["7d", "30d", "90d", "365d"] = Query(default="30d"),
+) -> CodingUsageSummary:
+    """Aggregate Provider-reported token metadata from the local ledger."""
+    days = {"7d": 7, "30d": 30, "90d": 90, "365d": 365}[range]
+    return CodingUsageSummary(**request.app.state.coding_usage_store.summary(days=days))
 
 
 @router.patch("/api/v1/coding/{session_id}/permission-mode")
@@ -1093,17 +1197,77 @@ def _resolve_workspace_root(default_workspace: Path, override: str | None) -> Pa
     return workspace_root
 
 
-def _build_model(factory: Any, model_id: str) -> Any:
-    """Call injected factories with a model id when their signature accepts it."""
+def _build_model(factory: Any, model_id: str, reasoning_mode: str = "off") -> Any:
+    """Call legacy and reasoning-aware factories without swallowing their failures."""
     try:
-        signature(factory).bind(model_id)
+        factory_signature = signature(factory)
     except (TypeError, ValueError):
-        return factory()
-    return factory(model_id)
+        return factory(model_id, reasoning_mode=reasoning_mode)
+    for args, kwargs in (
+        ((model_id,), {"reasoning_mode": reasoning_mode}),
+        ((model_id,), {}),
+        ((), {}),
+    ):
+        try:
+            factory_signature.bind(*args, **kwargs)
+        except TypeError:
+            continue
+        return factory(*args, **kwargs)
+    return factory()
 
 
 def _catalog_model_ids(request: Request) -> set[str]:
     return {str(item["id"]) for item in request.app.state.coding_model_catalog}
+
+
+def _resolved_reasoning_mode(request: Request, model_id: str, mode: str) -> str:
+    if mode == "off":
+        return "off"
+    available = request.app.state.coding_model_reasoning_modes.get(model_id, ())
+    return mode if mode in available else "off"
+
+
+def _provider_settings(request: Request) -> SageProviderSettings:
+    settings = getattr(request.app.state, "coding_provider_settings", None)
+    if not isinstance(settings, SageProviderSettings):
+        raise HTTPException(status_code=503, detail="provider settings are unavailable")
+    return settings
+
+
+def _provider_settings_response(
+    settings: SageProviderSettings,
+    *,
+    source: str,
+    editable: bool,
+) -> CodingProviderSettingsResponse:
+    providers = [
+        CodingProviderResponse(
+            id=provider.id,
+            label=provider.label,
+            api_mode=provider.api_mode,
+            base_url=provider.base_url,
+            api_key_env=provider.api_key_env,
+            api_key_configured=bool(os.environ.get(provider.api_key_env, "").strip()),
+            models=[
+                CodingProviderModelResponse(
+                    id=model.id,
+                    label=model.label,
+                    context_window_tokens=model.context_window_tokens,
+                    output_reserve_tokens=model.output_reserve_tokens,
+                    reasoning=model.reasoning.to_mapping(),
+                )
+                for model in provider.models
+            ],
+        )
+        for provider in settings.providers
+    ]
+    return CodingProviderSettingsResponse(
+        version=1,
+        default_model=settings.default_model,
+        source=cast(Literal["legacy_toml", "project_json", "deployment_json"], source),
+        editable=editable,
+        providers=providers,
+    )
 
 
 def _resolve_persisted_workspace_root(

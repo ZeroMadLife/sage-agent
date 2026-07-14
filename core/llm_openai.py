@@ -60,7 +60,13 @@ _PROVIDERS: dict[str, ProviderConfig] = {
 _ANTHROPIC_PROVIDERS = {"anthropic", "deepseek_anthropic"}
 
 
-def create_openai_llm(model_spec: str, temperature: float = 0.0, **kwargs: Any) -> ChatOpenAI:
+def create_openai_llm(
+    model_spec: str,
+    temperature: float = 0.0,
+    *,
+    provider_config: ProviderConfig | None = None,
+    **kwargs: Any,
+) -> ChatOpenAI:
     """Create a ChatOpenAI instance from a provider:model spec.
 
     Args:
@@ -85,7 +91,7 @@ def create_openai_llm(model_spec: str, temperature: float = 0.0, **kwargs: Any) 
             f"请使用 create_anthropic_llm / create_llm 路由"
         )
 
-    config = _PROVIDERS.get(provider)
+    config = provider_config or _PROVIDERS.get(provider)
     if config is None:
         supported = ", ".join(sorted(_PROVIDERS))
         raise ValueError(f"未知 LLM provider: {provider}（支持: {supported}）")
@@ -96,8 +102,13 @@ def create_openai_llm(model_spec: str, temperature: float = 0.0, **kwargs: Any) 
             f"LLM provider '{provider}' 的 API key 未配置" f"（环境变量: {config.api_key_env}）"
         )
 
-    base_url = os.environ.get(config.base_url_env, config.default_base_url).strip()
+    base_url = (
+        os.environ.get(config.base_url_env, config.default_base_url)
+        if config.base_url_env
+        else config.default_base_url
+    ).strip()
     resolved_model = model.strip() or config.default_model
+    kwargs.setdefault("stream_usage", True)
 
     return ChatOpenAI(
         api_key=SecretStr(api_key),

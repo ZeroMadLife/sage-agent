@@ -5,7 +5,6 @@ import { ArrowDown, Eye, EyeOff, FileText, GitCompareArrows, Menu, ScrollText, S
 import {
   CodingApprovalCard,
   CodingComposer,
-  CodingContextBudget,
   CodingDiffDrawer,
   CodingFilesDrawer,
   CodingGitBadge,
@@ -458,7 +457,7 @@ onBeforeUnmount(() => {
       <main class="pane-center" :class="{ 'is-inert': mainInert }" :inert="mainInert || undefined" :aria-hidden="mainInert ? 'true' : undefined">
         <header class="session-titlebar">
           <div class="session-title-copy"><strong :title="currentSessionTitle">{{ currentSessionTitle }}</strong><span :class="{ running: store.activeRun || store.isThinking }">{{ currentRunStatus }}</span></div>
-          <div class="titlebar-actions"><CodingContextBudget /><button class="files-toggle" type="button" aria-label="打开文件" title="打开文件" @click="openFilesDrawer"><FileText :size="16" /></button><CodingGitBadge /></div>
+          <div class="titlebar-actions"><button class="files-toggle" type="button" aria-label="打开文件" title="打开文件" @click="openFilesDrawer"><FileText :size="16" /></button><CodingGitBadge /></div>
         </header>
         <section ref="messagesRef" class="message-area" aria-label="会话时间线" @scroll="handleMessageScroll">
           <button v-if="store.timelineHasMore" type="button" class="load-older-btn" :disabled="store.timelineLoading" @click="loadOlder">

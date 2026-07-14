@@ -65,6 +65,9 @@ docker-compose.override.yml
 graphify-out/
 graphify-out-*/
 .coding/
+.sage/usage.sqlite3
+.sage/usage.sqlite3-wal
+.sage/usage.sqlite3-shm
 .superpowers/
 
 # Benchmark 报告产物（informational，不提交）

@@ -14,7 +14,9 @@ from agents.graph import build_graph
 from agents.itinerary_tool import create_itinerary_tool
 from agents.react_agent import AgentRuntime
 from core.auth import AuthManager
-from core.coding.context import CodingModelManifest, ModelCapabilityRegistry
+from core.coding.context import ModelCapabilityRegistry
+from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
+from core.coding.usage_store import UsageStore
 from core.config.settings import get_settings
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
@@ -28,7 +30,7 @@ from mcp_servers.weather.client import WeatherClient
 logger = logging.getLogger(__name__)
 DEFAULT_PLANNING_MODEL = "doubao:Doubao-Seed-2.0-pro"
 DEFAULT_CODING_MODEL = "deepseek:deepseek-v4-flash"
-DEFAULT_CODING_MODEL_CATALOG = [
+DEFAULT_CODING_MODEL_CATALOG: list[dict[str, Any]] = [
     {
         "id": "deepseek:deepseek-v4-flash",
         "label": "DeepSeek V4 Flash",
@@ -169,14 +171,22 @@ def create_app(
     app.state.auth = auth
     app.state.session_store = session_store
     repo_root = Path(__file__).resolve().parent.parent
+    resolved_workspace_root = Path(coding_workspace_root or repo_root).resolve()
+    legacy_manifest_path = os.getenv(
+        "SAGE_CODING_MODELS_FILE", str(repo_root / "config" / "coding_models.toml")
+    )
+    managed_settings_path = os.getenv("SAGE_CODING_SETTINGS_FILE") or None
+    provider_settings_store = SageProviderSettingsStore(
+        resolved_workspace_root,
+        external_path=managed_settings_path,
+        legacy_manifest_path=legacy_manifest_path,
+    )
+    resolved_settings: SageProviderSettings | None = None
     if coding_model_catalog is None and coding_model_capabilities is None:
-        manifest_path = os.getenv(
-            "SAGE_CODING_MODELS_FILE", str(repo_root / "config" / "coding_models.toml")
-        )
-        manifest = CodingModelManifest.from_file(manifest_path)
-        resolved_catalog = manifest.catalog
-        resolved_capabilities = manifest.registry
-        resolved_default_model = coding_default_model or manifest.default_model
+        resolved_settings = provider_settings_store.load()
+        resolved_catalog = resolved_settings.catalog
+        resolved_capabilities = resolved_settings.registry
+        resolved_default_model = coding_default_model or resolved_settings.default_model
     else:
         resolved_catalog = (
             DEFAULT_CODING_MODEL_CATALOG
@@ -191,15 +201,46 @@ def create_app(
             else ModelCapabilityRegistry.from_env()
         )
         resolved_default_model = coding_default_model or DEFAULT_CODING_MODEL
-    app.state.coding_model_factory = coding_model_factory or (
-        lambda model_id=resolved_default_model: create_llm(model_id)
-    )
+    app.state.coding_provider_settings_store = provider_settings_store
+    app.state.coding_provider_settings = resolved_settings
+    app.state.coding_provider_settings_available = resolved_settings is not None
     app.state.coding_model_catalog = resolved_catalog
     app.state.coding_default_model = resolved_default_model
     app.state.coding_model_capabilities = resolved_capabilities
+    app.state.coding_model_reasoning_modes = (
+        resolved_settings.reasoning_modes
+        if resolved_settings is not None
+        else {
+            str(item["id"]): tuple(
+                str(mode) for mode in item.get("reasoning_modes", [])
+            )
+            for item in resolved_catalog
+        }
+    )
+    if coding_model_factory is None:
+        def default_coding_model_factory(
+            model_id: str = resolved_default_model,
+            *,
+            reasoning_mode: str = "off",
+        ) -> Any:
+            settings = app.state.coding_provider_settings
+            if settings is None:
+                return create_llm(model_id, reasoning_mode=reasoning_mode)
+            return create_llm(
+                model_id,
+                provider_settings=settings,
+                reasoning_mode=reasoning_mode,
+            )
+
+        app.state.coding_model_factory = default_coding_model_factory
+    else:
+        app.state.coding_model_factory = coding_model_factory
     app.state.coding_checkpoint_anchor_key = coding_checkpoint_anchor_key
-    app.state.coding_workspace_root = Path(coding_workspace_root or repo_root).resolve()
+    app.state.coding_workspace_root = resolved_workspace_root
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
+    app.state.coding_usage_store = UsageStore(
+        resolved_workspace_root / ".sage" / "usage.sqlite3"
+    )
     app.state.coding_sessions = {}
     from api.coding_runs import CodingRunRegistry
 
