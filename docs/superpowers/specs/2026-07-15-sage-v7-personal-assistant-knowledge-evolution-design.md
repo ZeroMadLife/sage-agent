@@ -3,7 +3,7 @@
 > 日期：2026-07-15  
 > 分支：`dev/sage-v7`  
 > 基线：`4de761b`  
-> 状态：已完成产品决策，待书面规格复核后进入实施计划
+> 状态：书面规格已确认，进入 V7-P1 实施
 
 ## 1. 背景与结论
 
@@ -105,7 +105,7 @@ Coding Runtime 不删除，定位为个人助手中的 **Practice Engine**。它
 
 本设计借鉴 [Karpathy LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) 的公开方法：原始来源、Wiki、Schema 三层，`Ingest / Query / Lint` 三种操作，`index.md`、`log.md`、YAML frontmatter 与 `[[wikilink]]`。
 
-[nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 是 GPLv3 项目。Sage 不复制其源码、UI、资源或实现细节，只独立实现经过产品需求确认的数据契约。
+[nashsu/llm_wiki](https://github.com/nashsu/llm_wiki) 是 GPLv3 项目，其当前形态是 TypeScript 桌面应用与 Rust 后端 Agent 的组合。Sage 只参考其公开呈现的产品行为，例如两阶段摄取、持久队列、来源追溯和 Wiki 维护流程，不复制其源码、UI、资源或实现细节；所有数据契约与代码均按 Sage 需求独立实现。
 
 ### 4.2 每个 KnowledgeWorkspace 的逻辑结构
 
@@ -244,7 +244,7 @@ sequenceDiagram
 
 ## 7. 飞书双通道设计
 
-### 7.1 开发机器人
+### 7.1 开发机器人（外部集成边界）
 
 第一阶段复用 [cc-connect 飞书长连接](https://github.com/chenhg5/cc-connect/blob/main/docs/feishu.md)：
 
@@ -267,7 +267,7 @@ sequenceDiagram
 - 禁止直接修改 `main`；
 - 飞书对话不自动进入个人知识库。
 
-这里的“Codex”是由 cc-connect 启动的 Codex CLI 会话，不是自动接管当前 Codex Desktop 任务。两者通过 Git、设计文档和持久任务状态交接。
+这里的“Codex”是由 cc-connect 启动的 Codex CLI 会话，不是自动接管当前 Codex Desktop 任务。两者通过 Git、设计文档和持久任务状态交接。cc-connect 的安装、飞书应用配置与联调由用户独立完成，不作为 Sage V7-P1 至 P3 的代码交付物；Sage 只在后续需要产品审批或公开 API 时提供稳定接口。
 
 ### 7.2 Sage 产品机器人
 
@@ -360,11 +360,11 @@ Caddy / Nginx
 - Golden Queries、Recall@K、MRR、NDCG@K、citation correctness；
 - Web Search 保存为来源。
 
-### V7-P4：受控进化与飞书
+### V7-P4：受控进化与飞书产品通道
 
 - Query Note、Wiki Proposal、Memory Proposal 统一审核体验；
 - 飞书产品机器人卡片审批；
-- cc-connect 开发机器人本地执行节点；
+- 为外部 cc-connect 开发机器人保留文档化接入边界，不在 Sage 仓库内重写连接器；
 - worktree、权限和审计门禁。
 
 ### V7-P5：HR 公开 Agent 与一键部署
@@ -460,10 +460,12 @@ API 不返回原始密钥、完整 Memory、私有文件内容或未经权限过
 - 飞书开发权限采用受控模式；
 - V6 结束，创建 `dev/sage-v7` 长期集成分支；
 - 用户准备服务器后再执行一键部署阶段。
+- `llm_wiki` 作为 clean-room 行为参考，Karpathy gist 作为核心知识维护方法论；
+- cc-connect 由用户独立配置和调试，不阻塞 Sage 产品开发。
 
-进入代码实现前需要完成：
+实施状态：
 
-1. 用户复核本书面规格；
+1. 书面规格已由用户确认；
 2. 生成 V7-P1 详细实施计划；
 3. 在 `dev/sage-v7` 上创建短期 `codex/feat-v7-assistant-home` worktree；
 4. 按路由/API/真实数据/三视口完成一个可独立验收的垂直切片。
