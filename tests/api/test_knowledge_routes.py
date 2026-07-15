@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -142,6 +143,63 @@ def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None
     assert rollback.json()["status"] == "pending"
     assert rollback.json()["policy_decision"]["risk_level"] == "high"
     assert rollback.json()["policy_decision"]["action"] == "require_review"
+
+
+def test_pending_migration_preview_apply_and_conflict_contract(tmp_path: Path) -> None:
+    app, vault, knowledge = _app(tmp_path)
+    source = vault / "legacy.md"
+    source.write_text("# Legacy\n\n自动整理历史知识。\n", encoding="utf-8")
+    store = app.state.knowledge_store
+    proposal = store.ingest("sage-learning", "legacy.md")
+    legacy_id = "legacy_" + proposal.proposal_id.removeprefix("kprop_")
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "DELETE FROM knowledge_source_understandings WHERE artifact_id=?",
+            (proposal.parse_artifact_id,),
+        )
+        connection.execute(
+            "DELETE FROM knowledge_parse_artifacts WHERE artifact_id=?",
+            (proposal.parse_artifact_id,),
+        )
+        connection.execute(
+            "UPDATE knowledge_proposals SET proposal_id=?, parse_artifact_id=NULL "
+            "WHERE proposal_id=?",
+            (legacy_id, proposal.proposal_id),
+        )
+        connection.commit()
+    client = TestClient(app)
+
+    preview = client.get("/api/v1/knowledge/migrations/pending")
+
+    assert preview.status_code == 200
+    plan = preview.json()
+    assert plan["total"] == 1
+    assert plan["auto_apply_count"] == 1
+    assert plan["review_count"] == 0
+    assert plan["items"][0]["proposal_id"] == legacy_id
+    assert plan["items"][0]["disposition"] == "auto_apply"
+    assert str(vault) not in preview.text
+
+    source.write_text("# Legacy\n\n计划后变化。\n", encoding="utf-8")
+    stale = client.post(
+        "/api/v1/knowledge/migrations/pending/apply",
+        json={"expected_plan_id": plan["plan_id"]},
+    )
+    assert stale.status_code == 409
+    assert stale.json() == {"detail": "knowledge migration plan changed"}
+
+    current = client.get("/api/v1/knowledge/migrations/pending").json()
+    applied = client.post(
+        "/api/v1/knowledge/migrations/pending/apply",
+        json={"expected_plan_id": current["plan_id"]},
+    )
+    assert applied.status_code == 200
+    result = applied.json()
+    assert result["status"] == "completed"
+    assert result["retired_count"] == 1
+    assert result["error_count"] == 0
+    assert client.get("/api/v1/knowledge/migrations/pending").json()["total"] == 0
+    assert not list((knowledge / "wiki" / "sources").glob("*.md"))
 
 
 def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) -> None:

@@ -184,6 +184,48 @@ class KnowledgeBatchIngestRequest(BaseModel):
     relative_directory: str = Field(default=".", max_length=1024)
 
 
+class KnowledgeMigrationPlanItemResponse(BaseModel):
+    proposal_id: str
+    source_root_id: str
+    source_relative_path: str
+    disposition: Literal["auto_apply", "retire", "review", "block"]
+    reason_codes: list[str]
+    parser_id: str | None = None
+
+
+class KnowledgeMigrationPlanResponse(BaseModel):
+    plan_id: str
+    total: int = Field(ge=0)
+    auto_apply_count: int = Field(ge=0)
+    retire_count: int = Field(ge=0)
+    review_count: int = Field(ge=0)
+    block_count: int = Field(ge=0)
+    items: list[KnowledgeMigrationPlanItemResponse]
+
+
+class KnowledgeMigrationApplyRequest(BaseModel):
+    expected_plan_id: str = Field(min_length=1, max_length=128)
+
+
+class KnowledgeMigrationResultItemResponse(BaseModel):
+    proposal_id: str
+    status: Literal["auto_applied", "retired", "review", "blocked", "error"]
+    replacement_proposal_id: str | None = None
+    reason_code: str | None = None
+
+
+class KnowledgeMigrationResultResponse(BaseModel):
+    plan_id: str
+    status: Literal["completed", "completed_with_errors"]
+    total: int = Field(ge=0)
+    auto_applied_count: int = Field(ge=0)
+    retired_count: int = Field(ge=0)
+    review_count: int = Field(ge=0)
+    blocked_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    items: list[KnowledgeMigrationResultItemResponse]
+
+
 class KnowledgeJobItemResponse(BaseModel):
     item_id: str
     job_id: str

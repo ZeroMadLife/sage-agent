@@ -9,6 +9,10 @@ POLICY_VERSION = "1.0.0"
 _TRUSTED_LOCAL_PARSERS = frozenset({"sage.markdown", "sage.html", "sage.pdf.text"})
 
 
+def is_trusted_local_parser(parser_id: str) -> bool:
+    return parser_id in _TRUSTED_LOCAL_PARSERS
+
+
 @dataclass(frozen=True, slots=True)
 class KnowledgePolicyInput:
     change_kind: str
@@ -38,7 +42,7 @@ def evaluate_knowledge_policy(value: KnowledgePolicyInput) -> KnowledgePolicyOut
             return KnowledgePolicyOutcome("blocked", "block", ("target_outside_source_wiki",))
         if value.parser_id is None:
             return KnowledgePolicyOutcome("blocked", "block", ("missing_parse_evidence",))
-        if value.parser_id in _TRUSTED_LOCAL_PARSERS:
+        if is_trusted_local_parser(value.parser_id):
             return KnowledgePolicyOutcome(
                 "low",
                 "auto_apply",

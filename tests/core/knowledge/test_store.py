@@ -41,6 +41,27 @@ def _store(tmp_path: Path) -> tuple[KnowledgeStore, Path, Path]:
     return store, vault, repository
 
 
+def _legacy_pending(store: KnowledgeStore, relative_path: str) -> str:
+    proposal = store.ingest("sage-learning", relative_path)
+    legacy_id = "legacy_" + proposal.proposal_id.removeprefix("kprop_")
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "DELETE FROM knowledge_source_understandings WHERE artifact_id=?",
+            (proposal.parse_artifact_id,),
+        )
+        connection.execute(
+            "DELETE FROM knowledge_parse_artifacts WHERE artifact_id=?",
+            (proposal.parse_artifact_id,),
+        )
+        connection.execute(
+            "UPDATE knowledge_proposals SET proposal_id=?, parse_artifact_id=NULL "
+            "WHERE proposal_id=?",
+            (legacy_id, proposal.proposal_id),
+        )
+        connection.commit()
+    return legacy_id
+
+
 def test_ingest_is_content_addressed_idempotent_and_does_not_write_wiki(
     tmp_path: Path,
 ) -> None:
@@ -186,6 +207,84 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_source_understandings"
         ).fetchone()[0] == 1
+
+
+def test_pending_migration_reparses_and_auto_applies_legacy_markdown(tmp_path: Path) -> None:
+    store, vault, repository = _store(tmp_path)
+    (vault / "legacy.md").write_text(
+        "# Legacy\n\n这条历史记录应自动沉淀。\n",
+        encoding="utf-8",
+    )
+    legacy_id = _legacy_pending(store, "legacy.md")
+
+    first_plan = store.plan_pending_migration()
+    repeated_plan = store.plan_pending_migration()
+
+    assert repeated_plan == first_plan
+    assert first_plan.total == 1
+    assert first_plan.count("auto_apply") == 1
+    assert first_plan.items[0].proposal_id == legacy_id
+    assert first_plan.items[0].reason_codes == ("trusted_local_reparse",)
+
+    result = store.execute_pending_migration(first_plan.plan_id)
+
+    assert result.status == "completed"
+    assert result.count("auto_applied") == 1
+    replacement_id = result.items[0].replacement_proposal_id
+    assert replacement_id is not None and replacement_id != legacy_id
+    replacement = store.get_proposal(replacement_id)
+    assert replacement.status == "approved"
+    assert replacement.projection_status == "complete"
+    assert replacement.parse_artifact_id is not None
+    assert (repository / replacement.target_path).is_file()
+    retired = store.get_proposal(legacy_id)
+    assert retired.status == "rejected"
+    assert retired.error == "migration:superseded_by_reparse"
+    assert store.list_events(legacy_id)[-1].detail["replacement_proposal_id"] == replacement_id
+    assert store.plan_pending_migration().total == 0
+
+
+@pytest.mark.parametrize(
+    ("change_source", "reason_code"),
+    [
+        ("delete", "source_missing"),
+        ("replace", "source_revision_superseded"),
+    ],
+)
+def test_pending_migration_retires_missing_or_superseded_sources(
+    tmp_path: Path,
+    change_source: str,
+    reason_code: str,
+) -> None:
+    store, vault, _ = _store(tmp_path)
+    source = vault / "legacy.md"
+    source.write_text("# Legacy\n\n旧版本。\n", encoding="utf-8")
+    legacy_id = _legacy_pending(store, "legacy.md")
+    if change_source == "delete":
+        source.unlink()
+    else:
+        source.write_text("# Legacy\n\n新版本。\n", encoding="utf-8")
+
+    plan = store.plan_pending_migration()
+
+    assert plan.total == 1
+    assert plan.items[0].disposition == "retire"
+    assert plan.items[0].reason_codes == (reason_code,)
+    result = store.execute_pending_migration(plan.plan_id)
+    assert result.count("retired") == 1
+    assert store.get_proposal(legacy_id).error == f"migration:{reason_code}"
+
+
+def test_pending_migration_rejects_a_stale_plan(tmp_path: Path) -> None:
+    store, vault, _ = _store(tmp_path)
+    source = vault / "legacy.md"
+    source.write_text("# Legacy\n\n旧版本。\n", encoding="utf-8")
+    _legacy_pending(store, "legacy.md")
+    plan = store.plan_pending_migration()
+    source.write_text("# Legacy\n\n计划生成后变化。\n", encoding="utf-8")
+
+    with pytest.raises(KnowledgeConflictError, match="migration plan changed"):
+        store.execute_pending_migration(plan.plan_id)
 
 
 def test_ingest_rejects_traversal_and_symlink_sources(tmp_path: Path) -> None:

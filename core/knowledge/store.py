@@ -19,10 +19,21 @@ from importlib import import_module
 from pathlib import Path, PurePosixPath
 from threading import RLock
 
+from core.knowledge.migration import (
+    KnowledgeMigrationItem,
+    KnowledgeMigrationPlan,
+    KnowledgeMigrationResult,
+    KnowledgeMigrationResultItem,
+    build_migration_plan,
+)
 from core.knowledge.parsing import (
+    DocumentParseError,
+    DocumentRequiresOcrError,
     ParseArtifact,
     ParsedDocument,
+    ParserConflictError,
     ParseRequest,
+    ParserNotFoundError,
     ParserRegistry,
     default_parser_registry,
     deserialize_document,
@@ -33,6 +44,7 @@ from core.knowledge.policy import (
     POLICY_VERSION,
     KnowledgePolicyInput,
     evaluate_knowledge_policy,
+    is_trusted_local_parser,
 )
 from core.knowledge.synthesis import (
     WorkspaceSynthesis,
@@ -912,6 +924,252 @@ class KnowledgeStore:
                     (status,),
                 ).fetchall()
         return [_proposal(row) for row in rows]
+
+    def plan_pending_migration(self, *, limit: int = 500) -> KnowledgeMigrationPlan:
+        """Reassess legacy pending proposals without mutating proposal or Git state."""
+
+        self.initialize()
+        if limit < 1 or limit > 1000:
+            raise ValueError("knowledge migration limit must be between 1 and 1000")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM knowledge_proposals
+                WHERE status='pending'
+                ORDER BY created_at, proposal_id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        items = [self._plan_pending_proposal(_proposal(row)) for row in rows]
+        return build_migration_plan(items)
+
+    def execute_pending_migration(
+        self, expected_plan_id: str, *, limit: int = 500
+    ) -> KnowledgeMigrationResult:
+        """Apply a fresh migration plan item by item so failures remain retryable."""
+
+        plan = self.plan_pending_migration(limit=limit)
+        if plan.plan_id != _bounded_id(expected_plan_id):
+            raise KnowledgeConflictError("knowledge migration plan changed")
+        results: list[KnowledgeMigrationResultItem] = []
+        for item in plan.items:
+            try:
+                if item.disposition == "auto_apply":
+                    replacement = self.ingest(
+                        item.source_root_id,
+                        item.source_relative_path,
+                    )
+                    replacement = self.evaluate_and_apply_policy(replacement.proposal_id)
+                    if (
+                        replacement.status != "approved"
+                        or replacement.projection_status != "complete"
+                    ):
+                        raise KnowledgeConflictError(
+                            "reassessed proposal did not satisfy auto-apply policy"
+                        )
+                    if replacement.proposal_id != item.proposal_id:
+                        self._retire_pending_proposal(
+                            item.proposal_id,
+                            reason_code="superseded_by_reparse",
+                            replacement_proposal_id=replacement.proposal_id,
+                        )
+                    results.append(
+                        KnowledgeMigrationResultItem(
+                            proposal_id=item.proposal_id,
+                            status="auto_applied",
+                            replacement_proposal_id=replacement.proposal_id,
+                        )
+                    )
+                elif item.disposition in {"retire", "block"}:
+                    self._retire_pending_proposal(
+                        item.proposal_id,
+                        reason_code=item.reason_codes[0],
+                    )
+                    results.append(
+                        KnowledgeMigrationResultItem(
+                            proposal_id=item.proposal_id,
+                            status=("blocked" if item.disposition == "block" else "retired"),
+                            reason_code=item.reason_codes[0],
+                        )
+                    )
+                else:
+                    results.append(
+                        KnowledgeMigrationResultItem(
+                            proposal_id=item.proposal_id,
+                            status="review",
+                            reason_code=item.reason_codes[0],
+                        )
+                    )
+            except (
+                DocumentParseError,
+                FileNotFoundError,
+                KeyError,
+                KnowledgeConflictError,
+                KnowledgeProjectionError,
+                KnowledgeStoreError,
+                ValueError,
+            ) as exc:
+                results.append(
+                    KnowledgeMigrationResultItem(
+                        proposal_id=item.proposal_id,
+                        status="error",
+                        reason_code=_migration_error_code(exc),
+                    )
+                )
+        return KnowledgeMigrationResult(plan_id=plan.plan_id, items=tuple(results))
+
+    def _plan_pending_proposal(self, proposal: KnowledgeProposal) -> KnowledgeMigrationItem:
+        base = {
+            "proposal_id": proposal.proposal_id,
+            "source_root_id": proposal.source_root_id,
+            "source_relative_path": proposal.source_relative_path,
+            "source_revision": proposal.source_revision,
+        }
+        if proposal.change_kind != "ingest":
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="review",
+                reason_codes=("non_ingest_proposal",),
+            )
+        try:
+            source = self.load_source(
+                proposal.source_root_id,
+                proposal.source_relative_path,
+            )
+        except FileNotFoundError:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="retire",
+                reason_codes=("source_missing",),
+            )
+        except KeyError:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="review",
+                reason_codes=("source_root_unavailable",),
+            )
+        except ValueError as exc:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="block",
+                reason_codes=(_migration_error_code(exc),),
+            )
+        if source.source_revision != proposal.source_revision:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="retire",
+                reason_codes=("source_revision_superseded",),
+                current_source_revision=source.source_revision,
+            )
+        if proposal.parse_artifact_id is not None:
+            try:
+                artifact = self.get_parse_artifact(proposal.proposal_id)
+            except KnowledgeStoreError:
+                return KnowledgeMigrationItem(
+                    **base,
+                    disposition="block",
+                    reason_codes=("invalid_parse_evidence",),
+                    current_source_revision=source.source_revision,
+                )
+            if artifact is None:
+                return KnowledgeMigrationItem(
+                    **base,
+                    disposition="block",
+                    reason_codes=("missing_parse_evidence",),
+                    current_source_revision=source.source_revision,
+                )
+            parser_id = artifact.document.provenance.parser_id
+            return KnowledgeMigrationItem(
+                **base,
+                disposition=("auto_apply" if is_trusted_local_parser(parser_id) else "review"),
+                reason_codes=(
+                    "trusted_local_parser"
+                    if is_trusted_local_parser(parser_id)
+                    else "external_parser_output",
+                ),
+                parser_id=parser_id,
+                parser_version=artifact.document.provenance.parser_version,
+                current_source_revision=source.source_revision,
+            )
+        try:
+            document = self.parser_registry.parse(source.parse_request())
+        except DocumentRequiresOcrError:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="review",
+                reason_codes=("external_parser_required",),
+                current_source_revision=source.source_revision,
+            )
+        except DocumentParseError:
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="review",
+                reason_codes=("local_parse_failed",),
+                current_source_revision=source.source_revision,
+            )
+        except (ParserNotFoundError, ParserConflictError):
+            return KnowledgeMigrationItem(
+                **base,
+                disposition="review",
+                reason_codes=("local_parser_unavailable",),
+                current_source_revision=source.source_revision,
+            )
+        return KnowledgeMigrationItem(
+            **base,
+            disposition=(
+                "auto_apply"
+                if is_trusted_local_parser(document.provenance.parser_id)
+                else "review"
+            ),
+            reason_codes=(
+                "trusted_local_reparse"
+                if is_trusted_local_parser(document.provenance.parser_id)
+                else "external_parser_output",
+            ),
+            parser_id=document.provenance.parser_id,
+            parser_version=document.provenance.parser_version,
+            current_source_revision=source.source_revision,
+        )
+
+    def _retire_pending_proposal(
+        self,
+        proposal_id: str,
+        *,
+        reason_code: str,
+        replacement_proposal_id: str | None = None,
+    ) -> None:
+        current = self.get_proposal(proposal_id)
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE knowledge_proposals
+                SET status='rejected', revision=revision+1,
+                    projection_status='complete', error=?, updated_at=?
+                WHERE proposal_id=? AND status='pending' AND revision=?
+                """,
+                (
+                    f"migration:{reason_code}",
+                    _now(),
+                    current.proposal_id,
+                    current.revision,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise KnowledgeConflictError("knowledge migration proposal changed")
+            detail = {"reason_code": reason_code}
+            if replacement_proposal_id is not None:
+                detail["replacement_proposal_id"] = replacement_proposal_id
+            self._event(
+                connection,
+                current.proposal_id,
+                "migration_retired",
+                current.revision + 1,
+                detail,
+            )
+            connection.commit()
 
     def list_events(self, proposal_id: str) -> list[KnowledgeEvent]:
         self.initialize()
@@ -2069,6 +2327,24 @@ def _bounded_id(value: str) -> str:
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _migration_error_code(exc: Exception) -> str:
+    if isinstance(exc, DocumentRequiresOcrError):
+        return "external_parser_required"
+    if isinstance(exc, FileNotFoundError):
+        return "source_missing"
+    if isinstance(exc, KeyError):
+        return "source_root_unavailable"
+    if isinstance(exc, KnowledgeProjectionError):
+        return "projection_failed"
+    if isinstance(exc, KnowledgeConflictError):
+        return "revision_conflict"
+    if isinstance(exc, DocumentParseError):
+        return "local_parse_failed"
+    if isinstance(exc, ValueError) and "secret material" in str(exc):
+        return "sensitive_content"
+    return "migration_failed"
 
 
 def _lock_descriptor(descriptor: int) -> None:

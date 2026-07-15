@@ -24,6 +24,11 @@ from api.schemas import (
     KnowledgeJobItemResponse,
     KnowledgeJobResponse,
     KnowledgeJobsResponse,
+    KnowledgeMigrationApplyRequest,
+    KnowledgeMigrationPlanItemResponse,
+    KnowledgeMigrationPlanResponse,
+    KnowledgeMigrationResultItemResponse,
+    KnowledgeMigrationResultResponse,
     KnowledgePageResponse,
     KnowledgePagesResponse,
     KnowledgeParseArtifactResponse,
@@ -46,6 +51,8 @@ from api.schemas import (
 )
 from core.knowledge import (
     KnowledgeConflictError,
+    KnowledgeMigrationPlan,
+    KnowledgeMigrationResult,
     KnowledgePage,
     KnowledgePolicyDecision,
     KnowledgeProjectionError,
@@ -155,6 +162,31 @@ async def list_knowledge_jobs(
             )
         )
     return KnowledgeJobsResponse(jobs=responses)
+
+
+@router.get(
+    "/api/v1/knowledge/migrations/pending",
+    response_model=KnowledgeMigrationPlanResponse,
+)
+async def get_pending_knowledge_migration(request: Request) -> KnowledgeMigrationPlanResponse:
+    store = _require_store(request)
+    return _migration_plan_response(store.plan_pending_migration())
+
+
+@router.post(
+    "/api/v1/knowledge/migrations/pending/apply",
+    response_model=KnowledgeMigrationResultResponse,
+)
+async def apply_pending_knowledge_migration(
+    payload: KnowledgeMigrationApplyRequest,
+    request: Request,
+) -> KnowledgeMigrationResultResponse:
+    store = _require_store(request)
+    try:
+        result = store.execute_pending_migration(payload.expected_plan_id)
+    except KnowledgeConflictError as exc:
+        raise HTTPException(status_code=409, detail="knowledge migration plan changed") from exc
+    return _migration_result_response(result)
 
 
 @router.get("/api/v1/knowledge/jobs/{job_id}", response_model=KnowledgeJobResponse)
@@ -521,6 +553,52 @@ def _proposal_response(
         diff_truncated=truncated,
         created_at=proposal.created_at,
         updated_at=proposal.updated_at,
+    )
+
+
+def _migration_plan_response(plan: KnowledgeMigrationPlan) -> KnowledgeMigrationPlanResponse:
+    return KnowledgeMigrationPlanResponse(
+        plan_id=plan.plan_id,
+        total=plan.total,
+        auto_apply_count=plan.count("auto_apply"),
+        retire_count=plan.count("retire"),
+        review_count=plan.count("review"),
+        block_count=plan.count("block"),
+        items=[
+            KnowledgeMigrationPlanItemResponse(
+                proposal_id=item.proposal_id,
+                source_root_id=item.source_root_id,
+                source_relative_path=item.source_relative_path,
+                disposition=item.disposition,  # type: ignore[arg-type]
+                reason_codes=list(item.reason_codes),
+                parser_id=item.parser_id,
+            )
+            for item in plan.items
+        ],
+    )
+
+
+def _migration_result_response(
+    result: KnowledgeMigrationResult,
+) -> KnowledgeMigrationResultResponse:
+    return KnowledgeMigrationResultResponse(
+        plan_id=result.plan_id,
+        status=result.status,  # type: ignore[arg-type]
+        total=len(result.items),
+        auto_applied_count=result.count("auto_applied"),
+        retired_count=result.count("retired"),
+        review_count=result.count("review"),
+        blocked_count=result.count("blocked"),
+        error_count=result.count("error"),
+        items=[
+            KnowledgeMigrationResultItemResponse(
+                proposal_id=item.proposal_id,
+                status=item.status,  # type: ignore[arg-type]
+                replacement_proposal_id=item.replacement_proposal_id,
+                reason_code=item.reason_code,
+            )
+            for item in result.items
+        ],
     )
 
 

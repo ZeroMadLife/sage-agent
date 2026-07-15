@@ -201,6 +201,42 @@ export type KnowledgeWorkspaceSummary = {
   source_roots: KnowledgeSourceRoot[]
 }
 
+export type KnowledgeMigrationPlanItem = {
+  proposal_id: string
+  source_root_id: string
+  source_relative_path: string
+  disposition: 'auto_apply' | 'retire' | 'review' | 'block'
+  reason_codes: string[]
+  parser_id: string | null
+}
+
+export type KnowledgeMigrationPlan = {
+  plan_id: string
+  total: number
+  auto_apply_count: number
+  retire_count: number
+  review_count: number
+  block_count: number
+  items: KnowledgeMigrationPlanItem[]
+}
+
+export type KnowledgeMigrationResult = {
+  plan_id: string
+  status: 'completed' | 'completed_with_errors'
+  total: number
+  auto_applied_count: number
+  retired_count: number
+  review_count: number
+  blocked_count: number
+  error_count: number
+  items: Array<{
+    proposal_id: string
+    status: 'auto_applied' | 'retired' | 'review' | 'blocked' | 'error'
+    replacement_proposal_id: string | null
+    reason_code: string | null
+  }>
+}
+
 export type KnowledgeProposal = {
   proposal_id: string
   source_root_id: string

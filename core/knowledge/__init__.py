@@ -1,5 +1,11 @@
 """Auditable personal knowledge workspace primitives."""
 
+from core.knowledge.migration import (
+    KnowledgeMigrationItem,
+    KnowledgeMigrationPlan,
+    KnowledgeMigrationResult,
+    KnowledgeMigrationResultItem,
+)
 from core.knowledge.store import (
     KnowledgeConflictError,
     KnowledgeEvent,
@@ -24,6 +30,10 @@ from core.knowledge.understanding import (
 __all__ = [
     "KnowledgeConflictError",
     "KnowledgeEvent",
+    "KnowledgeMigrationItem",
+    "KnowledgeMigrationPlan",
+    "KnowledgeMigrationResult",
+    "KnowledgeMigrationResultItem",
     "KnowledgePage",
     "KnowledgePageRevision",
     "KnowledgePolicyDecision",

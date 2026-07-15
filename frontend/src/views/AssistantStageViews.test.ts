@@ -2,8 +2,10 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, expect, it, vi } from 'vitest'
 import {
+  applyPendingKnowledgeMigration,
   createKnowledgeJob,
   fetchKnowledgeJobs,
+  fetchPendingKnowledgeMigration,
   fetchKnowledgePages,
   fetchKnowledgeProposals,
   fetchKnowledgeSummary,
@@ -14,11 +16,13 @@ import {
 import KnowledgeView from './KnowledgeView.vue'
 
 vi.mock('../api/knowledge', () => ({
+  applyPendingKnowledgeMigration: vi.fn(),
   buildKnowledgeJobStreamUrl: vi.fn(),
   cancelKnowledgeJob: vi.fn(),
   createKnowledgeJob: vi.fn(),
   fetchKnowledgeJob: vi.fn(),
   fetchKnowledgeJobs: vi.fn(),
+  fetchPendingKnowledgeMigration: vi.fn(),
   fetchKnowledgePages: vi.fn(),
   fetchKnowledgeProposals: vi.fn(),
   fetchKnowledgeSummary: vi.fn(),
@@ -55,6 +59,20 @@ beforeEach(() => {
   vi.mocked(fetchKnowledgeProposals).mockReset().mockResolvedValue([proposal])
   vi.mocked(fetchKnowledgePages).mockReset().mockResolvedValue([])
   vi.mocked(fetchKnowledgeJobs).mockReset().mockResolvedValue([])
+  vi.mocked(fetchPendingKnowledgeMigration).mockReset().mockResolvedValue({
+    plan_id: 'kmig-review',
+    total: 1,
+    auto_apply_count: 0,
+    retire_count: 0,
+    review_count: 1,
+    block_count: 0,
+    items: [{
+      proposal_id: 'kprop-1', source_root_id: 'sage-learning',
+      source_relative_path: 'harness.md', disposition: 'review',
+      reason_codes: ['external_parser_output'], parser_id: 'external.parser',
+    }],
+  })
+  vi.mocked(applyPendingKnowledgeMigration).mockReset()
   vi.mocked(createKnowledgeJob).mockReset()
   vi.mocked(ingestKnowledgeSource).mockReset().mockResolvedValue(proposal)
   vi.mocked(transitionKnowledgeProposal).mockReset().mockResolvedValue({
@@ -165,5 +183,38 @@ it('keeps the P2.1 review workspace usable when durable jobs are disabled', asyn
   expect(wrapper.text()).toContain('持久任务未启用')
   expect(wrapper.get('button.approve').attributes('disabled')).toBeUndefined()
   expect(wrapper.get('input[aria-label="来源相对目录"]').attributes('disabled')).toBeDefined()
+  wrapper.unmount()
+})
+
+it('organizes safe historical proposals in one action and keeps only exceptions visible', async () => {
+  const actionable = {
+    plan_id: 'kmig-actionable', total: 3, auto_apply_count: 2, retire_count: 1,
+    review_count: 0, block_count: 0,
+    items: [
+      { proposal_id: 'legacy-1', source_root_id: 'sage-learning', source_relative_path: 'a.md', disposition: 'auto_apply' as const, reason_codes: ['trusted_local_reparse'], parser_id: 'sage.markdown' },
+      { proposal_id: 'legacy-2', source_root_id: 'sage-learning', source_relative_path: 'b.md', disposition: 'auto_apply' as const, reason_codes: ['trusted_local_reparse'], parser_id: 'sage.markdown' },
+      { proposal_id: 'legacy-3', source_root_id: 'sage-learning', source_relative_path: 'gone.md', disposition: 'retire' as const, reason_codes: ['source_missing'], parser_id: null },
+    ],
+  }
+  vi.mocked(fetchPendingKnowledgeMigration)
+    .mockResolvedValueOnce(actionable)
+    .mockResolvedValue({ ...actionable, plan_id: 'kmig-empty', total: 0, auto_apply_count: 0, retire_count: 0, items: [] })
+  vi.mocked(applyPendingKnowledgeMigration).mockResolvedValue({
+    plan_id: actionable.plan_id, status: 'completed', total: 3,
+    auto_applied_count: 2, retired_count: 1, review_count: 0,
+    blocked_count: 0, error_count: 0, items: [],
+  })
+
+  const wrapper = await mountKnowledge()
+
+  expect(wrapper.text()).toContain('无需逐条审核')
+  const apply = wrapper.findAll('button').find((button) => button.text().includes('一键整理 3 条'))
+  expect(apply).toBeDefined()
+  await apply!.trigger('click')
+  await flushPromises()
+
+  expect(applyPendingKnowledgeMigration).toHaveBeenCalledWith('kmig-actionable')
+  expect(wrapper.text()).toContain('本次已自动沉淀 2 条')
+  expect(wrapper.text()).toContain('当前没有异常')
   wrapper.unmount()
 })

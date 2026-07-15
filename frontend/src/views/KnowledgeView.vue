@@ -1,12 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { Check, FilePlus2, FolderUp, RotateCcw, RotateCw, Square, X } from 'lucide-vue-next'
 import {
+  Check,
+  FilePlus2,
+  FolderUp,
+  RotateCcw,
+  RotateCw,
+  Sparkles,
+  Square,
+  X,
+} from 'lucide-vue-next'
+import {
+  applyPendingKnowledgeMigration,
   buildKnowledgeJobStreamUrl,
   cancelKnowledgeJob,
   createKnowledgeJob,
   fetchKnowledgeJob,
   fetchKnowledgeJobs,
+  fetchPendingKnowledgeMigration,
   fetchKnowledgePages,
   fetchKnowledgeProposals,
   fetchKnowledgeSummary,
@@ -18,13 +29,22 @@ import {
   undoKnowledgeAutoApply,
 } from '../api/knowledge'
 import { AssistantSectionView } from '../components/assistant'
-import type { KnowledgeJob, KnowledgePage, KnowledgeProposal, KnowledgeWorkspaceSummary } from '../types/api'
+import type {
+  KnowledgeJob,
+  KnowledgeMigrationPlan,
+  KnowledgeMigrationResult,
+  KnowledgePage,
+  KnowledgeProposal,
+  KnowledgeWorkspaceSummary,
+} from '../types/api'
 
 const summary = ref<KnowledgeWorkspaceSummary | null>(null)
 const proposals = ref<KnowledgeProposal[]>([])
 const autoApplied = ref<KnowledgeProposal[]>([])
 const pages = ref<KnowledgePage[]>([])
 const jobs = ref<KnowledgeJob[]>([])
+const migrationPlan = ref<KnowledgeMigrationPlan | null>(null)
+const migrationResult = ref<KnowledgeMigrationResult | null>(null)
 const jobsAvailable = ref(true)
 const loading = ref(true)
 const error = ref('')
@@ -36,6 +56,10 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 const jobSockets = new Map<string, WebSocket>()
 
 const activeJobs = computed(() => jobs.value.filter((job) => !isTerminal(job.status)))
+const migrationActionCount = computed(() => {
+  const plan = migrationPlan.value
+  return plan ? plan.auto_apply_count + plan.retire_count + plan.block_count : 0
+})
 
 const selectedSource = computed(() =>
   summary.value?.source_roots.find((item) => item.root_id === selectedRoot.value),
@@ -45,21 +69,30 @@ async function refresh() {
   loading.value = true
   error.value = ''
   try {
-    const [nextSummary, nextProposals, nextPages] = await Promise.all([
+    const [nextSummary, nextProposals, nextPages, nextMigrationPlan] = await Promise.all([
       fetchKnowledgeSummary(),
       fetchKnowledgeProposals(null),
       fetchKnowledgePages(),
+      fetchPendingKnowledgeMigration(),
     ])
     const nextJobs = await fetchKnowledgeJobs().catch(() => {
       jobsAvailable.value = false
       return []
     })
     summary.value = nextSummary
-    proposals.value = nextProposals.filter((proposal) => proposal.status === 'pending')
+    const migrationReviewIds = new Set(
+      nextMigrationPlan.items
+        .filter((item) => item.disposition === 'review')
+        .map((item) => item.proposal_id),
+    )
+    proposals.value = nextProposals.filter(
+      (proposal) => proposal.status === 'pending' && migrationReviewIds.has(proposal.proposal_id),
+    )
     autoApplied.value = nextProposals.filter(
       (proposal) => proposal.policy_decision?.action === 'auto_apply',
     ).slice(0, 10)
     pages.value = nextPages
+    migrationPlan.value = nextMigrationPlan
     jobs.value = nextJobs
     syncJobStreams()
     if (!selectedRoot.value) selectedRoot.value = nextSummary.source_roots[0]?.root_id || ''
@@ -67,6 +100,23 @@ async function refresh() {
     error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     loading.value = false
+  }
+}
+
+async function applyMigration() {
+  const plan = migrationPlan.value
+  if (!plan || migrationActionCount.value === 0) return
+  busy.value = { ...busy.value, migration: true }
+  error.value = ''
+  try {
+    migrationResult.value = await applyPendingKnowledgeMigration(plan.plan_id)
+    await refresh()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+  } finally {
+    const next = { ...busy.value }
+    delete next.migration
+    busy.value = next
   }
 }
 
@@ -265,9 +315,46 @@ onUnmounted(() => {
       <section class="knowledge-metrics" aria-label="知识库状态">
         <div><strong>{{ summary.source_count }}</strong><span>来源</span></div>
         <div><strong>{{ summary.wiki_page_count }}</strong><span>Wiki 页面</span></div>
-        <div><strong>{{ summary.pending_proposal_count }}</strong><span>待审核</span></div>
+        <div><strong>{{ summary.pending_proposal_count }}</strong><span>待处理</span></div>
         <div><strong>{{ summary.workspace_name }}</strong><span>Git 工作区</span></div>
       </section>
+
+      <section
+        v-if="migrationPlan && migrationPlan.total > 0"
+        class="migration-banner"
+        aria-labelledby="migration-title"
+      >
+        <div class="migration-icon"><Sparkles :size="19" /></div>
+        <div class="migration-copy">
+          <strong id="migration-title">历史知识整理</strong>
+          <p>
+            无需逐条审核。可信本地解析会自动提交，缺失或旧版本来源会归档，
+            只有异常记录保留给你确认。
+          </p>
+          <div class="migration-counts">
+            <span>自动沉淀 {{ migrationPlan.auto_apply_count }}</span>
+            <span>归档 {{ migrationPlan.retire_count }}</span>
+            <span>异常 {{ migrationPlan.review_count }}</span>
+            <span v-if="migrationPlan.block_count">拦截 {{ migrationPlan.block_count }}</span>
+          </div>
+        </div>
+        <button
+          v-if="migrationActionCount > 0"
+          type="button"
+          :disabled="busy.migration"
+          @click="applyMigration"
+        >
+          <Sparkles :size="15" />
+          {{ busy.migration ? '正在整理' : `一键整理 ${migrationActionCount} 条` }}
+        </button>
+        <em v-else>只剩 {{ migrationPlan.review_count }} 条异常</em>
+      </section>
+
+      <p v-if="migrationResult" class="migration-result" role="status">
+        本次已自动沉淀 {{ migrationResult.auto_applied_count }} 条、归档
+        {{ migrationResult.retired_count }} 条；{{ migrationResult.review_count }} 条保留确认，
+        {{ migrationResult.error_count }} 条执行失败。
+      </p>
 
       <section class="stage-content ingest-section">
         <div><h2>批量摄取目录</h2><p>{{ selectedSource?.label || '尚未配置来源' }} · 任务离开页面后仍会继续</p></div>
@@ -355,8 +442,8 @@ onUnmounted(() => {
       </section>
 
       <section class="knowledge-section" aria-labelledby="proposal-title">
-        <header><div><span>Review queue</span><h2 id="proposal-title">待审核知识更新</h2></div><strong>{{ proposals.length }}</strong></header>
-        <p v-if="proposals.length === 0" class="empty-copy">当前没有待审核提案。导入来源后，Wiki 不会立即变化。</p>
+        <header><div><span>Exceptions only</span><h2 id="proposal-title">异常与需确认</h2></div><strong>{{ proposals.length }}</strong></header>
+        <p v-if="proposals.length === 0" class="empty-copy">当前没有异常。可信本地来源会自动沉淀并保留撤销入口。</p>
         <article v-for="proposal in proposals" :key="proposal.proposal_id" class="proposal-row">
           <div class="proposal-heading">
             <div><strong>{{ proposal.title }}</strong><span>{{ proposal.change_kind === 'rollback' ? '回滚提案' : proposal.source_relative_path }}</span></div>
@@ -395,6 +482,7 @@ onUnmounted(() => {
 
 <style scoped>
 .jobs-disabled { margin:0 0 9px; color:var(--sage-coral); font-size:var(--sage-font-xs); }
+  .migration-banner { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:14px; margin:22px 0 0; padding:16px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius); background:var(--sage-source-bg); }.migration-icon { display:grid; place-items:center; width:38px; height:38px; border-radius:var(--sage-radius-sm); background:var(--sage-source); color:white; }.migration-copy strong { font-size:var(--sage-font-md); }.migration-copy p { margin:4px 0 0; color:var(--sage-text-secondary); font-size:var(--sage-font-sm); line-height:1.55; }.migration-counts { display:flex; flex-wrap:wrap; gap:12px; margin-top:8px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.migration-banner button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:36px; border:1px solid var(--sage-source); border-radius:var(--sage-radius-sm); background:var(--sage-source); color:white; padding:0 13px; font-weight:650; }.migration-banner em { color:var(--sage-review-strong); font-size:var(--sage-font-sm); font-style:normal; font-weight:650; }.migration-result { margin:10px 0 0; color:var(--sage-success); font-size:var(--sage-font-sm); }
   .knowledge-error,.knowledge-state { margin:22px 0 0; padding:10px 12px; border-left:3px solid var(--sage-coral); background:var(--sage-danger-bg); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.knowledge-state { border-color:var(--sage-source); background:var(--sage-source-bg); }.knowledge-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-bottom:1px solid var(--sage-border); }.knowledge-metrics div { min-width:0; padding:24px 18px; border-right:1px solid var(--sage-border); }.knowledge-metrics div:last-child { border-right:0; }.knowledge-metrics strong,.knowledge-metrics span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.knowledge-metrics strong { font-size:19px; }.knowledge-metrics span { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.ingest-section>div p { margin-top:5px; font-size:var(--sage-font-xs); }.single-ingest { border-top:1px solid var(--sage-border); }.ingest-form { display:grid; grid-template-columns:190px minmax(0,1fr) auto; gap:8px; }.ingest-form select,.ingest-form input { min-width:0; height:38px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 10px; }.ingest-form button,.proposal-actions button,.page-row button,.job-row button,.auto-row button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 12px; font-weight:650; }.ingest-form button,.proposal-actions .approve { border-color:var(--sage-source); background:var(--sage-source); color:white; }.knowledge-section { padding:30px 0; border-bottom:1px solid var(--sage-border); }.knowledge-section>header { display:flex; align-items:end; justify-content:space-between; gap:16px; margin-bottom:18px; }.knowledge-section>header span { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-transform:uppercase; }.knowledge-section h2 { margin:5px 0 0; font-size:var(--sage-font-lg); }.knowledge-section>header>strong { color:var(--sage-source); font-size:22px; }.empty-copy { color:var(--sage-text-muted); }.proposal-row,.page-row,.job-row,.auto-row { padding:18px 0; border-top:1px solid var(--sage-border); }.auto-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }.auto-row strong,.auto-row span { display:block; }.auto-row span { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.auto-row em { color:var(--sage-text-muted); font-style:normal; font-size:var(--sage-font-sm); }.proposal-heading,.job-heading { display:flex; justify-content:space-between; gap:18px; }.proposal-heading strong,.proposal-heading span,.page-row>div strong,.page-row>div code,.job-heading strong,.job-heading span { display:block; }.proposal-heading span,.proposal-heading code,.page-row code,.job-heading span,.job-heading code { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-progress { height:6px; margin:14px 0 10px; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress span { display:block; height:100%; background:var(--sage-source); transition:width .2s ease; }.job-counts { display:flex; align-items:center; gap:14px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-counts button { margin-left:auto; min-height:28px; color:var(--sage-coral); }.failed-items { margin:12px 0 0; padding:0; list-style:none; }.failed-items li { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:9px 0; border-top:1px dashed var(--sage-border); }.failed-items code,.failed-items span { display:block; }.failed-items span { margin-top:3px; color:var(--sage-coral); font-size:var(--sage-font-xs); }.proposal-row pre { max-height:320px; margin:14px 0; overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); background:var(--sage-code-bg); color:var(--sage-code-text); padding:13px; font-size:12px; line-height:1.55; }.proposal-actions { display:flex; justify-content:flex-end; gap:8px; }.proposal-actions .reject { color:var(--sage-coral); }.page-row ol { margin:14px 0 0; padding:0; list-style:none; }.page-row li { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:38px; border-top:1px dashed var(--sage-border); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.page-row em { color:var(--sage-success); font-style:normal; font-weight:650; }button:disabled,input:disabled,select:disabled { opacity:.5; cursor:not-allowed; }
-@media (max-width:760px) { .knowledge-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.knowledge-metrics div:nth-child(2) { border-right:0; }.ingest-form { grid-template-columns:1fr; }.proposal-heading,.job-heading { flex-direction:column; gap:4px; }.job-counts { flex-wrap:wrap; }.job-counts button { margin-left:0; }.failed-items li { align-items:flex-start; flex-direction:column; }.proposal-actions { justify-content:stretch; }.proposal-actions button { flex:1; }.page-row li { align-items:flex-start; flex-direction:column; padding:9px 0; } }
+@media (max-width:760px) { .knowledge-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.knowledge-metrics div:nth-child(2) { border-right:0; }.migration-banner { grid-template-columns:auto minmax(0,1fr); align-items:start; }.migration-banner button,.migration-banner>em { grid-column:1 / -1; width:100%; }.ingest-form { grid-template-columns:1fr; }.proposal-heading,.job-heading { flex-direction:column; gap:4px; }.job-counts { flex-wrap:wrap; }.job-counts button { margin-left:0; }.failed-items li { align-items:flex-start; flex-direction:column; }.proposal-actions { justify-content:stretch; }.proposal-actions button { flex:1; }.page-row li { align-items:flex-start; flex-direction:column; padding:9px 0; } }
 </style>
