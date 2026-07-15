@@ -185,7 +185,18 @@ BACKEND_PORT=8010 bash scripts/dev.sh
 
 # 已经手动启动 docker compose 时
 SAGE_SKIP_DOCKER=1 bash scripts/dev.sh
+
+# 在 Git worktree 中复用主工作区的密钥文件（脚本只显示已配置的 Provider 名称）
+SAGE_ENV_FILE=/absolute/path/to/tour-agent/.env \
+  BACKEND_PORT=8017 FRONTEND_PORT=5187 SAGE_SKIP_DOCKER=1 \
+  bash scripts/dev.sh
+
+# 只检查环境文件和模型 Provider，不启动服务
+SAGE_ENV_FILE=/absolute/path/to/tour-agent/.env \
+  SAGE_DEV_CHECK_ONLY=1 bash scripts/dev.sh
 ```
+
+`SAGE_ENV_FILE` 只在当前进程中读取，不会复制密钥到 worktree，也不会把密钥写入日志或 Git。
 
 Windows 建议用 Git Bash 或 WSL 运行 `bash scripts/dev.sh`。如果必须用 CMD，请分别开两个窗口：
 

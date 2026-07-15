@@ -4,6 +4,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${SAGE_ENV_FILE:-${ROOT_DIR}/.env}"
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
@@ -25,9 +26,53 @@ trap cleanup EXIT INT TERM
 
 cd "${ROOT_DIR}"
 
-if [[ ! -f ".env" ]]; then
-  echo "Missing .env. Create one with: cp .env.example .env"
+if [[ "${ENV_FILE}" != /* ]]; then
+  ENV_FILE="${ROOT_DIR}/${ENV_FILE}"
+fi
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "Missing environment file: ${ENV_FILE}"
+  echo "Create one with: cp .env.example .env"
   exit 1
+fi
+
+env_file_has_value() {
+  local key="$1"
+  awk -F= -v key="${key}" '
+    /^[[:space:]]*#/ { next }
+    {
+      candidate = $1
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", candidate)
+      if (candidate != key) { next }
+      value = substr($0, index($0, "=") + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (length(value) > 0) { found = 1 }
+    }
+    END { exit found ? 0 : 1 }
+  ' "${ENV_FILE}"
+}
+
+configured_providers=()
+for provider_key in \
+  DEEPSEEK_API_KEY \
+  DOUBAO_API_KEY \
+  OPENAI_PROXY_API_KEY \
+  OPENAI_API_KEY \
+  ANTHROPIC_API_KEY; do
+  if [[ -n "${!provider_key:-}" ]] || env_file_has_value "${provider_key}"; then
+    configured_providers+=("${provider_key%_API_KEY}")
+  fi
+done
+
+if [[ ${#configured_providers[@]} -eq 0 ]]; then
+  echo "Warning: no model provider API key is configured; coding sessions cannot call a real model."
+else
+  echo "Configured model providers: ${configured_providers[*]}"
+fi
+
+if [[ "${SAGE_DEV_CHECK_ONLY:-0}" == "1" ]]; then
+  echo "Local development configuration is valid."
+  exit 0
 fi
 
 if [[ "${SAGE_SKIP_DOCKER:-0}" != "1" ]]; then
@@ -43,7 +88,7 @@ python -m uvicorn api.main:app \
   --host "${BACKEND_HOST}" \
   --port "${BACKEND_PORT}" \
   --reload \
-  --env-file ".env" &
+  --env-file "${ENV_FILE}" &
 BACKEND_PID="$!"
 
 echo "Starting frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
