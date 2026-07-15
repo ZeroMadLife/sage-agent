@@ -10,6 +10,15 @@ def test_settings_loads_from_env() -> None:
     assert settings.qweather_api_key == "test-weather-key"
 
 
+def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.knowledge_external_parsing_enabled is False
+    assert settings.knowledge_external_allowed_source_ids == ""
+    assert settings.knowledge_mineru_enabled is True
+    assert settings.knowledge_qwen_vl_enabled is False
+
+
 def test_settings_has_amap_base_url() -> None:
     """Amap API base URL has a default value."""
     settings = Settings()

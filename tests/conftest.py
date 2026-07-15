@@ -38,6 +38,10 @@ def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
         "KNOWLEDGE_DATABASE_PATH": "",
         "KNOWLEDGE_SOURCE_ROOT": "",
         "KNOWLEDGE_JOBS_ENABLED": "false",
+        "KNOWLEDGE_EXTERNAL_PARSING_ENABLED": "false",
+        "KNOWLEDGE_EXTERNAL_ALLOWED_SOURCE_IDS": "",
+        "KNOWLEDGE_QWEN_VL_ENABLED": "false",
+        "KNOWLEDGE_QWEN_VL_API_KEY": "",
     }
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)

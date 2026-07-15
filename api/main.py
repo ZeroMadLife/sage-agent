@@ -28,6 +28,7 @@ from core.knowledge.jobs import (
     KnowledgeJobService,
     RedisKnowledgeJobQueue,
 )
+from core.knowledge.parsing.adapters import build_external_parse_coordinator
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
@@ -371,6 +372,7 @@ def create_app(
                 app.state.knowledge_store,
                 KnowledgeJobRepository(AsyncSessionFactory),
                 RedisKnowledgeJobQueue(redis_client),
+                external_parser=build_external_parse_coordinator(settings),
             )
     app.state.coding_usage_store = UsageStore(resolved_workspace_root / ".sage" / "usage.sqlite3")
     app.state.coding_sessions = {}

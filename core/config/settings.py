@@ -140,6 +140,21 @@ class Settings(BaseSettings):
     knowledge_source_label: str = "Sage Learning"
     knowledge_source_kind: str = "obsidian"
     knowledge_jobs_enabled: bool = False
+    # External parsing is a separate trust boundary. It stays disabled until
+    # both a source-root allowlist and at least one adapter are configured.
+    knowledge_external_parsing_enabled: bool = False
+    knowledge_external_allowed_source_ids: str = ""
+    knowledge_external_timeout_seconds: float = Field(default=180.0, ge=10.0, le=900.0)
+    knowledge_mineru_enabled: bool = True
+    knowledge_mineru_base_url: str = "https://mineru.net/api/v1/agent"
+    knowledge_mineru_poll_seconds: float = Field(default=1.0, gt=0.0, le=30.0)
+    knowledge_qwen_vl_enabled: bool = False
+    knowledge_qwen_vl_api_key: str = Field(default="", repr=False)
+    knowledge_qwen_vl_base_url: str = (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )
+    knowledge_qwen_vl_model: str = "qwen3-vl-flash"
+    knowledge_qwen_vl_max_pages: int = Field(default=12, ge=1, le=20)
 
     langsmith_api_key: str = ""
     langsmith_project: str = "tourswarm"
