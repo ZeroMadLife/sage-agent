@@ -212,12 +212,25 @@ export type KnowledgeProposal = {
   target_path: string
   title: string
   base_page_revision: string
-  change_kind: 'ingest' | 'rollback' | 'synthesis'
+  change_kind: 'ingest' | 'rollback' | 'synthesis' | 'retraction'
   status: 'pending' | 'approved' | 'rejected'
   projection_status: 'pending' | 'complete' | 'error'
   revision: number
   parse_artifact_id: string | null
   error: string | null
+  policy_decision: {
+    decision_id: string
+    policy_id: string
+    policy_version: string
+    risk_level: 'low' | 'medium' | 'high' | 'blocked'
+    action: 'auto_apply' | 'draft' | 'require_review' | 'block'
+    reason_codes: string[]
+    applied_page_revision: string | null
+    undo_available: boolean
+    undo_proposal_id: string | null
+    undo_page_revision: string | null
+    undone_at: string | null
+  } | null
   diff: string
   diff_truncated: boolean
   created_at: string
@@ -287,7 +300,7 @@ export type KnowledgePageRevision = {
   content_hash: string
   source_revision: string
   proposal_id: string
-  change_kind: 'ingest' | 'rollback' | 'synthesis'
+  change_kind: 'ingest' | 'rollback' | 'synthesis' | 'retraction'
   git_commit: string
   created_at: string
 }

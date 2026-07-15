@@ -15,12 +15,14 @@ import {
   proposeKnowledgeRollback,
   transitionKnowledgeProposal,
   retryKnowledgeJobItem,
+  undoKnowledgeAutoApply,
 } from '../api/knowledge'
 import { AssistantSectionView } from '../components/assistant'
 import type { KnowledgeJob, KnowledgePage, KnowledgeProposal, KnowledgeWorkspaceSummary } from '../types/api'
 
 const summary = ref<KnowledgeWorkspaceSummary | null>(null)
 const proposals = ref<KnowledgeProposal[]>([])
+const autoApplied = ref<KnowledgeProposal[]>([])
 const pages = ref<KnowledgePage[]>([])
 const jobs = ref<KnowledgeJob[]>([])
 const jobsAvailable = ref(true)
@@ -45,7 +47,7 @@ async function refresh() {
   try {
     const [nextSummary, nextProposals, nextPages] = await Promise.all([
       fetchKnowledgeSummary(),
-      fetchKnowledgeProposals(),
+      fetchKnowledgeProposals(null),
       fetchKnowledgePages(),
     ])
     const nextJobs = await fetchKnowledgeJobs().catch(() => {
@@ -53,7 +55,10 @@ async function refresh() {
       return []
     })
     summary.value = nextSummary
-    proposals.value = nextProposals
+    proposals.value = nextProposals.filter((proposal) => proposal.status === 'pending')
+    autoApplied.value = nextProposals.filter(
+      (proposal) => proposal.policy_decision?.action === 'auto_apply',
+    ).slice(0, 10)
     pages.value = nextPages
     jobs.value = nextJobs
     syncJobStreams()
@@ -217,6 +222,24 @@ async function rollback(page: KnowledgePage, revisionId: string) {
   }
 }
 
+async function undoAutoApply(proposal: KnowledgeProposal) {
+  const revision = proposal.policy_decision?.applied_page_revision
+  if (!revision) return
+  const key = `undo:${proposal.proposal_id}`
+  busy.value = { ...busy.value, [key]: true }
+  error.value = ''
+  try {
+    await undoKnowledgeAutoApply(proposal.proposal_id, revision)
+    await refresh()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : String(reason)
+  } finally {
+    const next = { ...busy.value }
+    delete next[key]
+    busy.value = next
+  }
+}
+
 onMounted(() => {
   void refresh()
   pollTimer = setInterval(() => void refreshJobs(), 2000)
@@ -293,7 +316,7 @@ onUnmounted(() => {
       </section>
 
       <section class="stage-content ingest-section single-ingest">
-        <div><h2>单文件提案</h2><p>精确导入 Markdown、HTML 或文本 PDF</p></div>
+        <div><h2>单文件沉淀</h2><p>本地确定性解析自动提交；外部解析结果进入审核队列</p></div>
         <form class="ingest-form" @submit.prevent="ingest">
           <select v-model="selectedRoot" aria-label="来源目录" :disabled="busy.ingest">
             <option v-for="root in summary.source_roots" :key="root.root_id" :value="root.root_id">
@@ -308,9 +331,27 @@ onUnmounted(() => {
             :disabled="busy.ingest || !selectedRoot"
           />
           <button type="submit" :disabled="busy.ingest || !relativePath.trim() || !selectedRoot">
-            <FilePlus2 :size="16" />{{ busy.ingest ? '正在生成提案' : '生成摄取提案' }}
+            <FilePlus2 :size="16" />{{ busy.ingest ? '正在处理' : '导入并执行策略' }}
           </button>
         </form>
+      </section>
+
+      <section class="knowledge-section" aria-labelledby="auto-title">
+        <header><div><span>Autonomous deposits</span><h2 id="auto-title">最近自动沉淀</h2></div><strong>{{ autoApplied.length }}</strong></header>
+        <p v-if="autoApplied.length === 0" class="empty-copy">本地确定性解析的私有来源会自动形成 Git revision，并可在后续修改前一键撤销。</p>
+        <article v-for="proposal in autoApplied" :key="proposal.proposal_id" class="auto-row">
+          <div>
+            <strong>{{ proposal.title }}</strong>
+            <span>低风险 · {{ proposal.source_relative_path }} · policy {{ proposal.policy_decision?.policy_version }}</span>
+          </div>
+          <button
+            v-if="proposal.policy_decision?.undo_available"
+            type="button"
+            :disabled="busy[`undo:${proposal.proposal_id}`]"
+            @click="undoAutoApply(proposal)"
+          ><RotateCcw :size="14" />撤销自动沉淀</button>
+          <em v-else>{{ proposal.policy_decision?.undone_at ? '已撤销' : '不可撤销' }}</em>
+        </article>
       </section>
 
       <section class="knowledge-section" aria-labelledby="proposal-title">
@@ -354,6 +395,6 @@ onUnmounted(() => {
 
 <style scoped>
 .jobs-disabled { margin:0 0 9px; color:var(--sage-coral); font-size:var(--sage-font-xs); }
-.knowledge-error,.knowledge-state { margin:22px 0 0; padding:10px 12px; border-left:3px solid var(--sage-coral); background:var(--sage-danger-bg); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.knowledge-state { border-color:var(--sage-source); background:var(--sage-source-bg); }.knowledge-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-bottom:1px solid var(--sage-border); }.knowledge-metrics div { min-width:0; padding:24px 18px; border-right:1px solid var(--sage-border); }.knowledge-metrics div:last-child { border-right:0; }.knowledge-metrics strong,.knowledge-metrics span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.knowledge-metrics strong { font-size:19px; }.knowledge-metrics span { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.ingest-section>div p { margin-top:5px; font-size:var(--sage-font-xs); }.single-ingest { border-top:1px solid var(--sage-border); }.ingest-form { display:grid; grid-template-columns:190px minmax(0,1fr) auto; gap:8px; }.ingest-form select,.ingest-form input { min-width:0; height:38px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 10px; }.ingest-form button,.proposal-actions button,.page-row button,.job-row button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 12px; font-weight:650; }.ingest-form button,.proposal-actions .approve { border-color:var(--sage-source); background:var(--sage-source); color:white; }.knowledge-section { padding:30px 0; border-bottom:1px solid var(--sage-border); }.knowledge-section>header { display:flex; align-items:end; justify-content:space-between; gap:16px; margin-bottom:18px; }.knowledge-section>header span { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-transform:uppercase; }.knowledge-section h2 { margin:5px 0 0; font-size:var(--sage-font-lg); }.knowledge-section>header>strong { color:var(--sage-source); font-size:22px; }.empty-copy { color:var(--sage-text-muted); }.proposal-row,.page-row,.job-row { padding:18px 0; border-top:1px solid var(--sage-border); }.proposal-heading,.job-heading { display:flex; justify-content:space-between; gap:18px; }.proposal-heading strong,.proposal-heading span,.page-row>div strong,.page-row>div code,.job-heading strong,.job-heading span { display:block; }.proposal-heading span,.proposal-heading code,.page-row code,.job-heading span,.job-heading code { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-progress { height:6px; margin:14px 0 10px; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress span { display:block; height:100%; background:var(--sage-source); transition:width .2s ease; }.job-counts { display:flex; align-items:center; gap:14px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-counts button { margin-left:auto; min-height:28px; color:var(--sage-coral); }.failed-items { margin:12px 0 0; padding:0; list-style:none; }.failed-items li { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:9px 0; border-top:1px dashed var(--sage-border); }.failed-items code,.failed-items span { display:block; }.failed-items span { margin-top:3px; color:var(--sage-coral); font-size:var(--sage-font-xs); }.proposal-row pre { max-height:320px; margin:14px 0; overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); background:var(--sage-code-bg); color:var(--sage-code-text); padding:13px; font-size:12px; line-height:1.55; }.proposal-actions { display:flex; justify-content:flex-end; gap:8px; }.proposal-actions .reject { color:var(--sage-coral); }.page-row ol { margin:14px 0 0; padding:0; list-style:none; }.page-row li { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:38px; border-top:1px dashed var(--sage-border); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.page-row em { color:var(--sage-success); font-style:normal; font-weight:650; }button:disabled,input:disabled,select:disabled { opacity:.5; cursor:not-allowed; }
+  .knowledge-error,.knowledge-state { margin:22px 0 0; padding:10px 12px; border-left:3px solid var(--sage-coral); background:var(--sage-danger-bg); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.knowledge-state { border-color:var(--sage-source); background:var(--sage-source-bg); }.knowledge-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); border-bottom:1px solid var(--sage-border); }.knowledge-metrics div { min-width:0; padding:24px 18px; border-right:1px solid var(--sage-border); }.knowledge-metrics div:last-child { border-right:0; }.knowledge-metrics strong,.knowledge-metrics span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.knowledge-metrics strong { font-size:19px; }.knowledge-metrics span { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.ingest-section>div p { margin-top:5px; font-size:var(--sage-font-xs); }.single-ingest { border-top:1px solid var(--sage-border); }.ingest-form { display:grid; grid-template-columns:190px minmax(0,1fr) auto; gap:8px; }.ingest-form select,.ingest-form input { min-width:0; height:38px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 10px; }.ingest-form button,.proposal-actions button,.page-row button,.job-row button,.auto-row button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-sm); background:var(--sage-surface); color:var(--sage-text); padding:0 12px; font-weight:650; }.ingest-form button,.proposal-actions .approve { border-color:var(--sage-source); background:var(--sage-source); color:white; }.knowledge-section { padding:30px 0; border-bottom:1px solid var(--sage-border); }.knowledge-section>header { display:flex; align-items:end; justify-content:space-between; gap:16px; margin-bottom:18px; }.knowledge-section>header span { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-transform:uppercase; }.knowledge-section h2 { margin:5px 0 0; font-size:var(--sage-font-lg); }.knowledge-section>header>strong { color:var(--sage-source); font-size:22px; }.empty-copy { color:var(--sage-text-muted); }.proposal-row,.page-row,.job-row,.auto-row { padding:18px 0; border-top:1px solid var(--sage-border); }.auto-row { display:flex; align-items:center; justify-content:space-between; gap:16px; }.auto-row strong,.auto-row span { display:block; }.auto-row span { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.auto-row em { color:var(--sage-text-muted); font-style:normal; font-size:var(--sage-font-sm); }.proposal-heading,.job-heading { display:flex; justify-content:space-between; gap:18px; }.proposal-heading strong,.proposal-heading span,.page-row>div strong,.page-row>div code,.job-heading strong,.job-heading span { display:block; }.proposal-heading span,.proposal-heading code,.page-row code,.job-heading span,.job-heading code { margin-top:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-progress { height:6px; margin:14px 0 10px; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress span { display:block; height:100%; background:var(--sage-source); transition:width .2s ease; }.job-counts { display:flex; align-items:center; gap:14px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.job-counts button { margin-left:auto; min-height:28px; color:var(--sage-coral); }.failed-items { margin:12px 0 0; padding:0; list-style:none; }.failed-items li { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:9px 0; border-top:1px dashed var(--sage-border); }.failed-items code,.failed-items span { display:block; }.failed-items span { margin-top:3px; color:var(--sage-coral); font-size:var(--sage-font-xs); }.proposal-row pre { max-height:320px; margin:14px 0; overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); background:var(--sage-code-bg); color:var(--sage-code-text); padding:13px; font-size:12px; line-height:1.55; }.proposal-actions { display:flex; justify-content:flex-end; gap:8px; }.proposal-actions .reject { color:var(--sage-coral); }.page-row ol { margin:14px 0 0; padding:0; list-style:none; }.page-row li { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:38px; border-top:1px dashed var(--sage-border); color:var(--sage-text-secondary); font-size:var(--sage-font-sm); }.page-row em { color:var(--sage-success); font-style:normal; font-weight:650; }button:disabled,input:disabled,select:disabled { opacity:.5; cursor:not-allowed; }
 @media (max-width:760px) { .knowledge-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }.knowledge-metrics div:nth-child(2) { border-right:0; }.ingest-form { grid-template-columns:1fr; }.proposal-heading,.job-heading { flex-direction:column; gap:4px; }.job-counts { flex-wrap:wrap; }.job-counts button { margin-left:0; }.failed-items li { align-items:flex-start; flex-direction:column; }.proposal-actions { justify-content:stretch; }.proposal-actions button { flex:1; }.page-row li { align-items:flex-start; flex-direction:column; padding:9px 0; } }
 </style>

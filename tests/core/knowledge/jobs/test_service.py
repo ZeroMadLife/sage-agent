@@ -81,7 +81,7 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     assert len(await service.repository.list_items(first.job_id, limit=1)) == 1
     assert await _finish(service, first.job_id) == "completed"
     completed = await service.repository.get_job(first.job_id)
-    assert completed.pipeline_version == "p2.2-b4-understanding-v1"
+    assert completed.pipeline_version == "p2.2-b5-autonomy-policy-v1"
     assert completed.total_items == 3
     assert completed.succeeded_items == 3
     assert completed.latest_sequence >= 6
@@ -238,8 +238,14 @@ async def test_scanned_pdf_uses_authorized_external_parser_and_persists_progress
     [completed] = await service.repository.list_items(job.job_id)
     assert completed.proposal_id is not None
     artifact = service.store.get_parse_artifact(completed.proposal_id)
+    proposal = service.store.get_proposal(completed.proposal_id)
+    decision = service.store.get_policy_decision(completed.proposal_id)
     assert artifact is not None
     assert artifact.document.provenance.parser_id == "test.ocr"
+    assert proposal.status == "pending"
+    assert decision is not None
+    assert decision.risk_level == "medium"
+    assert decision.action == "draft"
     parser_events = [
         event for event in await service.repository.list_events(job.job_id)
         if event.kind == "parser"

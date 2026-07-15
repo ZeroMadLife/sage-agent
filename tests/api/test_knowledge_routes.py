@@ -92,15 +92,19 @@ def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None
     )
     assert ingested.status_code == 201
     proposal = ingested.json()
-    assert proposal["status"] == "pending"
+    assert proposal["status"] == "approved"
+    assert proposal["projection_status"] == "complete"
+    assert proposal["policy_decision"]["risk_level"] == "low"
+    assert proposal["policy_decision"]["action"] == "auto_apply"
+    assert proposal["policy_decision"]["undo_available"] is True
     assert proposal["source_relative_path"] == "harness.md"
     assert proposal["source_revision"].startswith("sha256:")
-    assert "可恢复、可审核" in proposal["diff"]
+    assert proposal["diff"] == ""
     assert proposal["diff_truncated"] is False
     assert str(vault) not in ingested.text
-    assert not (knowledge / proposal["target_path"]).exists()
+    assert (knowledge / proposal["target_path"]).exists()
 
-    listed = client.get("/api/v1/knowledge/proposals", params={"status": "pending"})
+    listed = client.get("/api/v1/knowledge/proposals", params={"status": "approved"})
     assert listed.status_code == 200
     assert [item["proposal_id"] for item in listed.json()["proposals"]] == [proposal["proposal_id"]]
     detail = client.get(f"/api/v1/knowledge/proposals/{proposal['proposal_id']}").json()
@@ -119,14 +123,6 @@ def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None
     assert understanding["citations"][0]["block_id"].startswith("pblk_")
     assert "text" not in understanding["citations"][0]
 
-    approved = client.post(
-        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}/approve",
-        json={"expected_revision": 0},
-    )
-    assert approved.status_code == 200
-    assert approved.json()["status"] == "approved"
-    assert approved.json()["projection_status"] == "complete"
-
     pages = client.get("/api/v1/knowledge/pages")
     assert pages.status_code == 200
     page = pages.json()["pages"][0]
@@ -144,6 +140,8 @@ def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None
     assert rollback.status_code == 201
     assert rollback.json()["change_kind"] == "rollback"
     assert rollback.json()["status"] == "pending"
+    assert rollback.json()["policy_decision"]["risk_level"] == "high"
+    assert rollback.json()["policy_decision"]["action"] == "require_review"
 
 
 def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) -> None:
@@ -163,11 +161,43 @@ def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) 
         json={"source_root_id": "sage-learning", "relative_path": "note.md"},
     ).json()
     stale = client.post(
-        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}/approve",
-        json={"expected_revision": 7},
+        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}/undo-auto-apply",
+        json={"expected_page_revision": "krev_stale"},
     )
     assert stale.status_code == 409
     assert stale.json() == {"detail": "knowledge revision conflict"}
+
+
+def test_auto_applied_ingest_can_be_undone_once_through_api(tmp_path: Path) -> None:
+    app, vault, knowledge = _app(tmp_path)
+    (vault / "note.md").write_text("# Note\n\n可撤销。\n", encoding="utf-8")
+    client = TestClient(app)
+    proposal = client.post(
+        "/api/v1/knowledge/ingest",
+        json={"source_root_id": "sage-learning", "relative_path": "note.md"},
+    ).json()
+
+    undone = client.post(
+        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}/undo-auto-apply",
+        json={
+            "expected_page_revision": proposal["policy_decision"]["applied_page_revision"]
+        },
+    )
+
+    assert undone.status_code == 200
+    assert undone.json()["change_kind"] == "retraction"
+    detail = client.get(
+        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}"
+    ).json()
+    assert detail["proposal"]["policy_decision"]["undo_available"] is False
+    assert detail["proposal"]["policy_decision"]["undo_proposal_id"] == undone.json()[
+        "proposal_id"
+    ]
+    page = client.get("/api/v1/knowledge/pages").json()["pages"][0]
+    assert page["revisions"][-1]["change_kind"] == "retraction"
+    assert "此自动沉淀已由用户撤销" in (knowledge / page["path"]).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_workspace_synthesis_api_requires_approved_sources_and_returns_evidence(
@@ -192,6 +222,8 @@ def test_workspace_synthesis_api_requires_approved_sources_and_returns_evidence(
     created = client.post("/api/v1/knowledge/synthesis")
     assert created.status_code == 201
     assert created.json()["change_kind"] == "synthesis"
+    assert created.json()["policy_decision"]["risk_level"] == "medium"
+    assert created.json()["policy_decision"]["action"] == "draft"
     detail = client.get(
         f"/api/v1/knowledge/proposals/{created.json()['proposal_id']}"
     ).json()

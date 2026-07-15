@@ -28,6 +28,12 @@ from core.knowledge.parsing import (
     deserialize_document,
     serialize_document,
 )
+from core.knowledge.policy import (
+    POLICY_ID,
+    POLICY_VERSION,
+    KnowledgePolicyInput,
+    evaluate_knowledge_policy,
+)
 from core.knowledge.synthesis import (
     WorkspaceSynthesis,
     deserialize_synthesis,
@@ -44,7 +50,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 5
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -138,6 +144,24 @@ CREATE TABLE IF NOT EXISTS knowledge_workspace_syntheses (
 );
 CREATE INDEX IF NOT EXISTS knowledge_workspace_syntheses_input_idx
     ON knowledge_workspace_syntheses(input_hash, created_at);
+CREATE TABLE IF NOT EXISTS knowledge_policy_decisions (
+    decision_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL UNIQUE,
+    policy_id TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason_codes_json TEXT NOT NULL,
+    base_page_revision TEXT NOT NULL,
+    applied_page_revision TEXT,
+    undo_proposal_id TEXT,
+    undo_page_revision TEXT,
+    undone_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS knowledge_policy_decisions_action_idx
+    ON knowledge_policy_decisions(action, created_at);
 CREATE TABLE IF NOT EXISTS knowledge_events (
     event_id TEXT PRIMARY KEY,
     proposal_id TEXT NOT NULL,
@@ -225,6 +249,24 @@ class KnowledgeEvent:
     revision: int
     detail: dict[str, str]
     created_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgePolicyDecision:
+    decision_id: str
+    proposal_id: str
+    policy_id: str
+    policy_version: str
+    risk_level: str
+    action: str
+    reason_codes: tuple[str, ...]
+    base_page_revision: str
+    applied_page_revision: str | None
+    undo_proposal_id: str | None
+    undo_page_revision: str | None
+    undone_at: str | None
+    created_at: str
+    updated_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -897,6 +939,126 @@ class KnowledgeStore:
             for row in rows
         ]
 
+    def get_policy_decision(self, proposal_id: str) -> KnowledgePolicyDecision | None:
+        """Return the persisted autonomy decision for a proposal, if evaluated."""
+
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_policy_decisions WHERE proposal_id=?",
+                (_bounded_id(proposal_id),),
+            ).fetchone()
+        return _policy_decision(row) if row is not None else None
+
+    def evaluate_and_apply_policy(self, proposal_id: str) -> KnowledgeProposal:
+        """Persist one deterministic decision and apply only its allowed transition."""
+
+        proposal = self.get_proposal(proposal_id)
+        decision = self.get_policy_decision(proposal_id)
+        if decision is None and proposal.status != "pending":
+            # Never relabel a historical human decision as an autonomous action.
+            return proposal
+        if decision is None:
+            artifact = self.get_parse_artifact(proposal_id)
+            visibility = _proposal_visibility(proposal.proposed_content)
+            outcome = evaluate_knowledge_policy(
+                KnowledgePolicyInput(
+                    change_kind=proposal.change_kind,
+                    source_kind=proposal.source_kind,
+                    target_path=proposal.target_path,
+                    visibility=visibility,
+                    parser_id=(artifact.document.provenance.parser_id if artifact else None),
+                )
+            )
+            now = _now()
+            decision_id = "kpol_" + hashlib.sha256(
+                f"{POLICY_ID}\0{POLICY_VERSION}\0{proposal.proposal_id}".encode()
+            ).hexdigest()[:32]
+            with self._lock, self._exclusive_lock(), self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                inserted = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO knowledge_policy_decisions (
+                        decision_id, proposal_id, policy_id, policy_version,
+                        risk_level, action, reason_codes_json, base_page_revision,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision_id,
+                        proposal.proposal_id,
+                        POLICY_ID,
+                        POLICY_VERSION,
+                        outcome.risk_level,
+                        outcome.action,
+                        json.dumps(outcome.reason_codes, sort_keys=True),
+                        proposal.base_page_revision,
+                        now,
+                        now,
+                    ),
+                )
+                if inserted.rowcount == 1:
+                    self._event(
+                        connection,
+                        proposal.proposal_id,
+                        "policy_evaluated",
+                        proposal.revision,
+                        {
+                            "policy_id": POLICY_ID,
+                            "policy_version": POLICY_VERSION,
+                            "risk_level": outcome.risk_level,
+                            "action": outcome.action,
+                            "reason_codes": ",".join(outcome.reason_codes),
+                        },
+                    )
+                connection.commit()
+            decision = self.get_policy_decision(proposal_id)
+        if decision is None:
+            raise KnowledgeStoreError("knowledge policy decision could not be persisted")
+
+        current = self.get_proposal(proposal_id)
+        if decision.action == "auto_apply":
+            if current.status == "pending":
+                try:
+                    current = self.approve(proposal_id, current.revision)
+                except KnowledgeConflictError:
+                    current = self.get_proposal(proposal_id)
+                    if current.status != "approved" or current.projection_status != "complete":
+                        raise
+            if current.status != "approved" or current.projection_status != "complete":
+                return current
+            applied_revision = self._projection_revision_for_proposal(proposal_id)
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE knowledge_policy_decisions
+                    SET applied_page_revision=?, updated_at=?
+                    WHERE proposal_id=? AND applied_page_revision IS NULL
+                    """,
+                    (applied_revision, _now(), proposal_id),
+                )
+                connection.commit()
+            return self.get_proposal(proposal_id)
+
+        if decision.action == "block" and current.status == "pending":
+            rejected = self.reject(proposal_id, current.revision)
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    UPDATE knowledge_proposals SET error=?, updated_at=? WHERE proposal_id=?
+                    """,
+                    ("blocked by knowledge autonomy policy", _now(), proposal_id),
+                )
+                self._event(
+                    connection,
+                    proposal_id,
+                    "policy_blocked",
+                    rejected.revision,
+                    {"reason_codes": ",".join(decision.reason_codes)},
+                )
+                connection.commit()
+        return self.get_proposal(proposal_id)
+
     def approve(self, proposal_id: str, expected_revision: int) -> KnowledgeProposal:
         self.initialize()
         with self._lock, self._exclusive_lock():
@@ -1043,6 +1205,131 @@ class KnowledgeStore:
             )
             connection.commit()
         return self.get_proposal(proposal_id)
+
+    def undo_auto_apply(
+        self, proposal_id: str, *, expected_page_revision: str
+    ) -> KnowledgeProposal:
+        """Undo an automatic projection without erasing its immutable history."""
+
+        original = self.get_proposal(proposal_id)
+        decision = self.get_policy_decision(proposal_id)
+        if (
+            decision is None
+            or decision.action != "auto_apply"
+            or decision.applied_page_revision is None
+            or decision.undone_at is not None
+        ):
+            raise KnowledgeConflictError("proposal is not an undoable auto-apply")
+        if expected_page_revision != decision.applied_page_revision:
+            raise KnowledgeConflictError("page revision conflict")
+        page = next(
+            (item for item in self.list_pages() if item.page_id == original.page_id),
+            None,
+        )
+        if page is None or page.current_revision != expected_page_revision:
+            raise KnowledgeConflictError("page revision conflict")
+
+        if decision.base_page_revision:
+            undo = self.propose_rollback(
+                original.page_id,
+                target_revision_id=decision.base_page_revision,
+                expected_page_revision=expected_page_revision,
+            )
+        else:
+            undo = self._propose_retraction(original, expected_page_revision)
+        self.evaluate_and_apply_policy(undo.proposal_id)
+        approved = self.approve(undo.proposal_id, expected_revision=0)
+        undo_revision = self._projection_revision_for_proposal(approved.proposal_id)
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                UPDATE knowledge_policy_decisions
+                SET undo_proposal_id=?, undo_page_revision=?, undone_at=?, updated_at=?
+                WHERE proposal_id=? AND undone_at IS NULL
+                """,
+                (
+                    approved.proposal_id,
+                    undo_revision,
+                    _now(),
+                    _now(),
+                    original.proposal_id,
+                ),
+            )
+            if cursor.rowcount != 1:
+                connection.rollback()
+                raise KnowledgeConflictError("auto-apply was already undone")
+            self._event(
+                connection,
+                original.proposal_id,
+                "auto_apply_undone",
+                original.revision,
+                {
+                    "undo_proposal_id": approved.proposal_id,
+                    "undo_page_revision": undo_revision,
+                },
+            )
+            connection.commit()
+        return approved
+
+    def _propose_retraction(
+        self, original: KnowledgeProposal, expected_page_revision: str
+    ) -> KnowledgeProposal:
+        proposal_id = "kprop_" + uuid.uuid4().hex
+        now = _now()
+        content = _retraction_page(original, proposal_id)
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            page = connection.execute(
+                "SELECT * FROM knowledge_pages WHERE page_id=?", (original.page_id,)
+            ).fetchone()
+            if page is None or str(page["current_revision"]) != expected_page_revision:
+                connection.rollback()
+                raise KnowledgeConflictError("page revision conflict")
+            connection.execute(
+                """
+                INSERT INTO knowledge_proposals (
+                    proposal_id, source_id, source_root_id, source_kind,
+                    source_relative_path, source_revision, raw_path, page_id,
+                    target_path, title, proposed_content, base_page_revision,
+                    change_kind, status, projection_status, revision,
+                    parse_artifact_id, error, created_at, updated_at
+                ) VALUES (?, ?, 'knowledge', 'retraction', ?, ?, '', ?, ?, ?, ?, ?,
+                          'retraction', 'pending', 'pending', 0, NULL, NULL, ?, ?)
+                """,
+                (
+                    proposal_id,
+                    f"retraction:{original.proposal_id}",
+                    original.source_relative_path,
+                    f"retracted:{original.source_revision}",
+                    original.page_id,
+                    original.target_path,
+                    original.title,
+                    content,
+                    expected_page_revision,
+                    now,
+                    now,
+                ),
+            )
+            self._event(
+                connection,
+                proposal_id,
+                "retraction_proposed",
+                0,
+                {"retracted_proposal_id": original.proposal_id},
+            )
+            connection.commit()
+        return self.get_proposal(proposal_id)
+
+    def _projection_revision_for_proposal(self, proposal_id: str) -> str:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT revision_id FROM knowledge_page_revisions WHERE proposal_id=?",
+                (_bounded_id(proposal_id),),
+            ).fetchone()
+        if row is None:
+            raise KnowledgeStoreError("knowledge projection revision is missing")
+        return str(row["revision_id"])
 
     def proposal_diff(self, proposal: KnowledgeProposal) -> str:
         current_path = self.workspace_root / proposal.target_path
@@ -1280,7 +1567,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {
@@ -1461,6 +1748,40 @@ def _proposal(row: sqlite3.Row) -> KnowledgeProposal:
     )
 
 
+def _policy_decision(row: sqlite3.Row) -> KnowledgePolicyDecision:
+    reason_codes = json.loads(str(row["reason_codes_json"]))
+    if not isinstance(reason_codes, list) or not all(
+        isinstance(item, str) for item in reason_codes
+    ):
+        raise KnowledgeStoreError("knowledge policy decision is invalid")
+    return KnowledgePolicyDecision(
+        decision_id=str(row["decision_id"]),
+        proposal_id=str(row["proposal_id"]),
+        policy_id=str(row["policy_id"]),
+        policy_version=str(row["policy_version"]),
+        risk_level=str(row["risk_level"]),
+        action=str(row["action"]),
+        reason_codes=tuple(reason_codes),
+        base_page_revision=str(row["base_page_revision"]),
+        applied_page_revision=(
+            str(row["applied_page_revision"])
+            if row["applied_page_revision"] is not None
+            else None
+        ),
+        undo_proposal_id=(
+            str(row["undo_proposal_id"]) if row["undo_proposal_id"] is not None else None
+        ),
+        undo_page_revision=(
+            str(row["undo_page_revision"])
+            if row["undo_page_revision"] is not None
+            else None
+        ),
+        undone_at=str(row["undone_at"]) if row["undone_at"] is not None else None,
+        created_at=str(row["created_at"]),
+        updated_at=str(row["updated_at"]),
+    )
+
+
 def _page_revision(row: sqlite3.Row) -> KnowledgePageRevision:
     return KnowledgePageRevision(
         revision_id=str(row["revision_id"]),
@@ -1598,6 +1919,35 @@ def _source_page(
         "> 本页是可审核的来源投影。后续 LLM 综合必须继续保留来源 revision。\n\n"
         "## 来源内容\n\n"
         f"{content.rstrip()}\n"
+    )
+
+
+def _proposal_visibility(content: str) -> str:
+    if not content.startswith("---\n"):
+        return ""
+    end = content.find("\n---\n", 4)
+    if end < 0:
+        return ""
+    for line in content[4:end].splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "visibility":
+            return value.strip().strip("'\"")
+    return ""
+
+
+def _retraction_page(original: KnowledgeProposal, undo_proposal_id: str) -> str:
+    return (
+        "---\n"
+        f"id: {original.page_id}\n"
+        "type: source\n"
+        f"title: {json.dumps(original.title, ensure_ascii=False)}\n"
+        "status: retracted\n"
+        "visibility: private\n"
+        f"retracted_proposal_id: {original.proposal_id}\n"
+        f"retraction_proposal_id: {undo_proposal_id}\n"
+        "---\n\n"
+        f"# {original.title}\n\n"
+        "> 此自动沉淀已由用户撤销。历史来源、提案和 Git revision 仍保留用于审计。\n"
     )
 
 

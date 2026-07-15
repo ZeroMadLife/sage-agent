@@ -9,6 +9,7 @@ import {
   fetchKnowledgeSummary,
   ingestKnowledgeSource,
   transitionKnowledgeProposal,
+  undoKnowledgeAutoApply,
 } from '../api/knowledge'
 import KnowledgeView from './KnowledgeView.vue'
 
@@ -26,6 +27,7 @@ vi.mock('../api/knowledge', () => ({
   proposeKnowledgeRollback: vi.fn(),
   retryKnowledgeJobItem: vi.fn(),
   transitionKnowledgeProposal: vi.fn(),
+  undoKnowledgeAutoApply: vi.fn(),
 }))
 
 const summary = {
@@ -44,6 +46,7 @@ const proposal = {
   page_id: 'page-1', target_path: 'wiki/sources/harness.md', title: 'Agent Harness',
   base_page_revision: '', change_kind: 'ingest' as const, status: 'pending' as const,
   projection_status: 'pending' as const, revision: 0, parse_artifact_id: 'part-1', error: null,
+  policy_decision: null,
   diff: '+可审核知识', diff_truncated: false, created_at: '', updated_at: '',
 }
 
@@ -57,6 +60,7 @@ beforeEach(() => {
   vi.mocked(transitionKnowledgeProposal).mockReset().mockResolvedValue({
     ...proposal, status: 'approved', projection_status: 'complete', revision: 1,
   })
+  vi.mocked(undoKnowledgeAutoApply).mockReset()
 })
 
 async function mountKnowledge() {
@@ -113,6 +117,42 @@ it('creates a durable batch job from a relative directory', async () => {
 
   expect(createKnowledgeJob).toHaveBeenCalledWith('sage-learning', 'notes')
   expect(wrapper.text()).toContain('已完成')
+  wrapper.unmount()
+})
+
+it('shows and undoes a current auto-applied knowledge revision', async () => {
+  const autoApplied = {
+    ...proposal,
+    status: 'approved' as const,
+    projection_status: 'complete' as const,
+    revision: 1,
+    policy_decision: {
+      decision_id: 'kpol-1', policy_id: 'sage.knowledge-autonomy', policy_version: '1.0.0',
+      risk_level: 'low' as const, action: 'auto_apply' as const,
+      reason_codes: ['deterministic_local_parser'], applied_page_revision: 'krev-1',
+      undo_available: true, undo_proposal_id: null, undo_page_revision: null, undone_at: null,
+    },
+  }
+  vi.mocked(fetchKnowledgeProposals).mockResolvedValue([autoApplied])
+  vi.mocked(undoKnowledgeAutoApply).mockResolvedValue({
+    ...autoApplied,
+    change_kind: 'retraction',
+    policy_decision: {
+      ...autoApplied.policy_decision,
+      risk_level: 'high',
+      action: 'require_review',
+      applied_page_revision: null,
+      undo_available: false,
+    },
+  })
+  const wrapper = await mountKnowledge()
+
+  const undo = wrapper.findAll('button').find((button) => button.text().includes('撤销自动沉淀'))
+  expect(undo).toBeDefined()
+  await undo!.trigger('click')
+  await flushPromises()
+
+  expect(undoKnowledgeAutoApply).toHaveBeenCalledWith('kprop-1', 'krev-1')
   wrapper.unmount()
 })
 

@@ -80,7 +80,7 @@ def test_ingest_is_content_addressed_idempotent_and_does_not_write_wiki(
     assert "parser_id: sage.markdown" in first.proposed_content
 
 
-def test_v1_metadata_database_migrates_to_v4_without_rewriting_existing_rows(
+def test_v1_metadata_database_migrates_to_v5_without_rewriting_existing_rows(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "state" / "knowledge.sqlite3"
@@ -144,13 +144,18 @@ def test_v1_metadata_database_migrates_to_v4_without_rewriting_existing_rows(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='knowledge_parse_artifacts'"
         ).fetchone()
+        policy_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='knowledge_policy_decisions'"
+        ).fetchone()
         legacy = connection.execute(
             "SELECT proposal_id, parse_artifact_id FROM knowledge_proposals "
             "WHERE proposal_id='legacy'"
         ).fetchone()
-    assert version == 4
+    assert version == 5
     assert "parse_artifact_id" in columns
     assert artifact_table is not None
+    assert policy_table is not None
     assert legacy == ("legacy", None)
 
 
@@ -177,7 +182,7 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
     assert understanding is not None
     assert "可追溯的旧解析产物" in understanding.summary
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_source_understandings"
         ).fetchone()[0] == 1
@@ -254,6 +259,95 @@ def test_approve_updates_git_wiki_and_reject_is_terminal(tmp_path: Path) -> None
     assert rejected.status == "rejected"
     with pytest.raises(KnowledgeConflictError):
         store.approve(rejected.proposal_id, expected_revision=1)
+
+
+def test_low_risk_local_ingest_auto_applies_once_and_persists_policy(tmp_path: Path) -> None:
+    store, vault, repository = _store(tmp_path)
+    (vault / "learning.md").write_text(
+        "# Learning\n\n确定性来源自动沉淀。\n", encoding="utf-8"
+    )
+    proposal = store.ingest("sage-learning", "learning.md")
+
+    first = store.evaluate_and_apply_policy(proposal.proposal_id)
+    repeated = store.evaluate_and_apply_policy(proposal.proposal_id)
+    decision = store.get_policy_decision(proposal.proposal_id)
+
+    assert first == repeated
+    assert first.status == "approved"
+    assert first.projection_status == "complete"
+    assert decision is not None
+    assert decision.policy_version == "1.0.0"
+    assert decision.risk_level == "low"
+    assert decision.action == "auto_apply"
+    assert decision.applied_page_revision == store.list_pages()[0].current_revision
+    assert "确定性来源自动沉淀" in (repository / first.target_path).read_text(
+        encoding="utf-8"
+    )
+    assert len(store.list_pages()[0].revisions) == 1
+    assert [event.event_type for event in store.list_events(first.proposal_id)].count(
+        "policy_evaluated"
+    ) == 1
+
+
+def test_policy_does_not_relabel_a_historical_manual_approval(tmp_path: Path) -> None:
+    store, vault, _ = _store(tmp_path)
+    (vault / "manual.md").write_text("# Manual\n\n人工批准。\n", encoding="utf-8")
+    proposal = store.ingest("sage-learning", "manual.md")
+    approved = store.approve(proposal.proposal_id, 0)
+
+    repeated = store.evaluate_and_apply_policy(approved.proposal_id)
+
+    assert repeated == approved
+    assert store.get_policy_decision(approved.proposal_id) is None
+
+
+def test_undo_first_auto_apply_adds_retraction_revision_and_is_single_use(
+    tmp_path: Path,
+) -> None:
+    store, vault, repository = _store(tmp_path)
+    (vault / "learning.md").write_text("# Learning\n\n第一版。\n", encoding="utf-8")
+    original = store.ingest("sage-learning", "learning.md")
+    store.evaluate_and_apply_policy(original.proposal_id)
+    applied_revision = store.list_pages()[0].current_revision
+
+    undone = store.undo_auto_apply(
+        original.proposal_id, expected_page_revision=applied_revision
+    )
+    page = store.list_pages()[0]
+    decision = store.get_policy_decision(original.proposal_id)
+
+    assert undone.change_kind == "retraction"
+    assert undone.status == "approved"
+    assert len(page.revisions) == 2
+    assert page.revisions[-1].change_kind == "retraction"
+    assert "此自动沉淀已由用户撤销" in (repository / page.path).read_text(
+        encoding="utf-8"
+    )
+    assert decision is not None
+    assert decision.undo_proposal_id == undone.proposal_id
+    assert decision.undo_page_revision == page.current_revision
+    assert decision.undone_at is not None
+    with pytest.raises(KnowledgeConflictError):
+        store.undo_auto_apply(original.proposal_id, expected_page_revision=applied_revision)
+
+
+def test_undo_auto_apply_refuses_to_overwrite_a_newer_revision(tmp_path: Path) -> None:
+    store, vault, _ = _store(tmp_path)
+    note = vault / "learning.md"
+    note.write_text("# Learning\n\n第一版。\n", encoding="utf-8")
+    original = store.ingest("sage-learning", "learning.md")
+    store.evaluate_and_apply_policy(original.proposal_id)
+    original_revision = store.list_pages()[0].current_revision
+
+    note.write_text("# Learning\n\n第二版。\n", encoding="utf-8")
+    second = store.ingest("sage-learning", "learning.md")
+    store.evaluate_and_apply_policy(second.proposal_id)
+
+    with pytest.raises(KnowledgeConflictError, match="page revision conflict"):
+        store.undo_auto_apply(
+            original.proposal_id,
+            expected_page_revision=original_revision,
+        )
 
 
 def test_workspace_synthesis_uses_only_approved_sources_and_is_reviewable(

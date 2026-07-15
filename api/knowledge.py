@@ -28,6 +28,7 @@ from api.schemas import (
     KnowledgePagesResponse,
     KnowledgeParseArtifactResponse,
     KnowledgeParseBlockResponse,
+    KnowledgePolicyDecisionResponse,
     KnowledgeProposalDetailResponse,
     KnowledgeProposalEvent,
     KnowledgeProposalResponse,
@@ -39,12 +40,14 @@ from api.schemas import (
     KnowledgeTransitionRequest,
     KnowledgeUnderstandingCitationResponse,
     KnowledgeUnderstandingSectionResponse,
+    KnowledgeUndoAutoApplyRequest,
     KnowledgeWorkspaceSummary,
     KnowledgeWorkspaceSynthesisResponse,
 )
 from core.knowledge import (
     KnowledgeConflictError,
     KnowledgePage,
+    KnowledgePolicyDecision,
     KnowledgeProjectionError,
     KnowledgeProposal,
     KnowledgeStore,
@@ -101,6 +104,7 @@ async def ingest_knowledge_source(
     store = _require_store(request)
     try:
         proposal = store.ingest(payload.source_root_id, payload.relative_path)
+        proposal = store.evaluate_and_apply_policy(proposal.proposal_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="knowledge source root not found") from exc
     except FileNotFoundError as exc:
@@ -274,6 +278,7 @@ async def create_workspace_synthesis(request: Request) -> KnowledgeProposalRespo
     store = _require_store(request)
     try:
         proposal = store.propose_workspace_synthesis()
+        proposal = store.evaluate_and_apply_policy(proposal.proposal_id)
     except ValueError as exc:
         raise HTTPException(
             status_code=409,
@@ -352,6 +357,28 @@ async def reject_knowledge_proposal(
     return _proposal_response(store, proposal)
 
 
+@router.post(
+    "/api/v1/knowledge/proposals/{proposal_id}/undo-auto-apply",
+    response_model=KnowledgeProposalResponse,
+)
+async def undo_knowledge_auto_apply(
+    proposal_id: str, payload: KnowledgeUndoAutoApplyRequest, request: Request
+) -> KnowledgeProposalResponse:
+    store = _require_store(request)
+    try:
+        proposal = store.undo_auto_apply(
+            proposal_id,
+            expected_page_revision=payload.expected_page_revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge proposal not found") from exc
+    except KnowledgeConflictError as exc:
+        raise HTTPException(status_code=409, detail="knowledge revision conflict") from exc
+    except KnowledgeProjectionError as exc:
+        raise HTTPException(status_code=500, detail="knowledge projection failed") from exc
+    return _proposal_response(store, proposal)
+
+
 @router.get("/api/v1/knowledge/pages", response_model=KnowledgePagesResponse)
 async def list_knowledge_pages(request: Request) -> KnowledgePagesResponse:
     store = _require_store(request)
@@ -373,6 +400,7 @@ async def propose_knowledge_rollback(
             target_revision_id=payload.target_revision_id,
             expected_page_revision=payload.expected_page_revision,
         )
+        proposal = store.evaluate_and_apply_policy(proposal.proposal_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="knowledge page revision not found") from exc
     except (ValueError, KnowledgeConflictError) as exc:
@@ -488,10 +516,35 @@ def _proposal_response(
         revision=proposal.revision,
         parse_artifact_id=proposal.parse_artifact_id,
         error=proposal.error,
+        policy_decision=_policy_decision_response(store.get_policy_decision(proposal.proposal_id)),
         diff=diff,
         diff_truncated=truncated,
         created_at=proposal.created_at,
         updated_at=proposal.updated_at,
+    )
+
+
+def _policy_decision_response(
+    decision: KnowledgePolicyDecision | None,
+) -> KnowledgePolicyDecisionResponse | None:
+    if decision is None:
+        return None
+    return KnowledgePolicyDecisionResponse(
+        decision_id=decision.decision_id,
+        policy_id=decision.policy_id,
+        policy_version=decision.policy_version,
+        risk_level=decision.risk_level,  # type: ignore[arg-type]
+        action=decision.action,  # type: ignore[arg-type]
+        reason_codes=list(decision.reason_codes),
+        applied_page_revision=decision.applied_page_revision,
+        undo_available=(
+            decision.action == "auto_apply"
+            and decision.applied_page_revision is not None
+            and decision.undone_at is None
+        ),
+        undo_proposal_id=decision.undo_proposal_id,
+        undo_page_revision=decision.undo_page_revision,
+        undone_at=decision.undone_at,
     )
 
 

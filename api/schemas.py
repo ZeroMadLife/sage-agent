@@ -249,6 +249,24 @@ class KnowledgeTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class KnowledgeUndoAutoApplyRequest(BaseModel):
+    expected_page_revision: str = Field(min_length=1, max_length=128)
+
+
+class KnowledgePolicyDecisionResponse(BaseModel):
+    decision_id: str
+    policy_id: str
+    policy_version: str
+    risk_level: Literal["low", "medium", "high", "blocked"]
+    action: Literal["auto_apply", "draft", "require_review", "block"]
+    reason_codes: list[str]
+    applied_page_revision: str | None = None
+    undo_available: bool
+    undo_proposal_id: str | None = None
+    undo_page_revision: str | None = None
+    undone_at: str | None = None
+
+
 class KnowledgeProposalResponse(BaseModel):
     """One reviewable Wiki change without server absolute paths."""
 
@@ -262,12 +280,13 @@ class KnowledgeProposalResponse(BaseModel):
     target_path: str
     title: str
     base_page_revision: str
-    change_kind: Literal["ingest", "rollback", "synthesis"]
+    change_kind: Literal["ingest", "rollback", "synthesis", "retraction"]
     status: Literal["pending", "approved", "rejected"]
     projection_status: Literal["pending", "complete", "error"]
     revision: int = Field(ge=0)
     parse_artifact_id: str | None = None
     error: str | None = None
+    policy_decision: KnowledgePolicyDecisionResponse | None = None
     diff: str
     diff_truncated: bool
     created_at: str
@@ -373,7 +392,7 @@ class KnowledgePageRevisionResponse(BaseModel):
     content_hash: str
     source_revision: str
     proposal_id: str
-    change_kind: Literal["ingest", "rollback", "synthesis"]
+    change_kind: Literal["ingest", "rollback", "synthesis", "retraction"]
     git_commit: str
     created_at: str
 

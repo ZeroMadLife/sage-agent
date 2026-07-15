@@ -25,7 +25,7 @@ from .repository import KnowledgeJobConflictError, KnowledgeJobRepository
 from .scanner import read_source_revision, scan_knowledge_directory
 from .types import KnowledgeJob, KnowledgeJobItem, QueueMessage
 
-PIPELINE_VERSION = "p2.2-b4-understanding-v1"
+PIPELINE_VERSION = "p2.2-b5-autonomy-policy-v1"
 logger = logging.getLogger(__name__)
 
 
@@ -253,6 +253,9 @@ class KnowledgeJobService:
                 raise KnowledgeJobConflictError("job cancellation requested")
             await self.repository.start_applying(item.item_id, worker_id=self.worker_id)
             proposal = await asyncio.to_thread(self.store.ingest_prepared, prepared)
+            proposal = await asyncio.to_thread(
+                self.store.evaluate_and_apply_policy, proposal.proposal_id
+            )
             await self.repository.complete_item(
                 item.item_id,
                 worker_id=self.worker_id,

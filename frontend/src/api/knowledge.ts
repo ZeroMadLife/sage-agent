@@ -25,11 +25,27 @@ export function fetchKnowledgeSummary(): Promise<KnowledgeWorkspaceSummary> {
   return request('/api/v1/knowledge')
 }
 
-export function fetchKnowledgeProposals(status = 'pending'): Promise<KnowledgeProposal[]> {
+export function fetchKnowledgeProposals(
+  status: 'pending' | 'approved' | 'rejected' | null = 'pending',
+): Promise<KnowledgeProposal[]> {
   const url = new URL('/api/v1/knowledge/proposals', API_BASE_URL)
-  url.searchParams.set('status', status)
+  if (status) url.searchParams.set('status', status)
   return request<{ proposals: KnowledgeProposal[] }>(`${url.pathname}${url.search}`)
     .then((response) => response.proposals)
+}
+
+export function undoKnowledgeAutoApply(
+  proposalId: string,
+  expectedPageRevision: string,
+): Promise<KnowledgeProposal> {
+  return request(
+    `/api/v1/knowledge/proposals/${encodeURIComponent(proposalId)}/undo-auto-apply`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_page_revision: expectedPageRevision }),
+    },
+  )
 }
 
 export function fetchKnowledgePages(): Promise<KnowledgePage[]> {
