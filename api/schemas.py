@@ -262,7 +262,7 @@ class KnowledgeProposalResponse(BaseModel):
     target_path: str
     title: str
     base_page_revision: str
-    change_kind: Literal["ingest", "rollback"]
+    change_kind: Literal["ingest", "rollback", "synthesis"]
     status: Literal["pending", "approved", "rejected"]
     projection_status: Literal["pending", "complete", "error"]
     revision: int = Field(ge=0)
@@ -338,11 +338,33 @@ class KnowledgeSourceUnderstandingResponse(BaseModel):
     generator_version: str
 
 
+class KnowledgeSynthesisSourceResponse(BaseModel):
+    page_id: str
+    page_revision: str
+    proposal_id: str
+    understanding_id: str
+    source_revision: str
+    title: str
+    path: str
+    summary: str
+    topics: list[str]
+    citation_block_ids: list[str]
+
+
+class KnowledgeWorkspaceSynthesisResponse(BaseModel):
+    synthesis_id: str
+    input_hash: str
+    generator_id: str
+    generator_version: str
+    sources: list[KnowledgeSynthesisSourceResponse]
+
+
 class KnowledgeProposalDetailResponse(BaseModel):
     proposal: KnowledgeProposalResponse
     events: list[KnowledgeProposalEvent]
     parse_artifact: KnowledgeParseArtifactResponse | None = None
     source_understanding: KnowledgeSourceUnderstandingResponse | None = None
+    workspace_synthesis: KnowledgeWorkspaceSynthesisResponse | None = None
 
 
 class KnowledgePageRevisionResponse(BaseModel):
@@ -351,7 +373,7 @@ class KnowledgePageRevisionResponse(BaseModel):
     content_hash: str
     source_revision: str
     proposal_id: str
-    change_kind: Literal["ingest", "rollback"]
+    change_kind: Literal["ingest", "rollback", "synthesis"]
     git_commit: str
     created_at: str
 

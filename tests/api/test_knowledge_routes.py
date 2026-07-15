@@ -168,3 +168,37 @@ def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) 
     )
     assert stale.status_code == 409
     assert stale.json() == {"detail": "knowledge revision conflict"}
+
+
+def test_workspace_synthesis_api_requires_approved_sources_and_returns_evidence(
+    tmp_path: Path,
+) -> None:
+    app, vault, _ = _app(tmp_path)
+    client = TestClient(app)
+
+    empty = client.post("/api/v1/knowledge/synthesis")
+    assert empty.status_code == 409
+
+    (vault / "source.md").write_text("# Source\n\nApproved evidence.\n", encoding="utf-8")
+    ingested = client.post(
+        "/api/v1/knowledge/ingest",
+        json={"source_root_id": "sage-learning", "relative_path": "source.md"},
+    ).json()
+    client.post(
+        f"/api/v1/knowledge/proposals/{ingested['proposal_id']}/approve",
+        json={"expected_revision": 0},
+    )
+
+    created = client.post("/api/v1/knowledge/synthesis")
+    assert created.status_code == 201
+    assert created.json()["change_kind"] == "synthesis"
+    detail = client.get(
+        f"/api/v1/knowledge/proposals/{created.json()['proposal_id']}"
+    ).json()
+    assert detail["parse_artifact"] is None
+    assert detail["source_understanding"] is None
+    synthesis = detail["workspace_synthesis"]
+    assert synthesis["generator_id"] == "sage.workspace-index"
+    assert len(synthesis["sources"]) == 1
+    assert synthesis["sources"][0]["proposal_id"] == ingested["proposal_id"]
+    assert synthesis["sources"][0]["citation_block_ids"]

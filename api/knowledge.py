@@ -35,10 +35,12 @@ from api.schemas import (
     KnowledgeRollbackRequest,
     KnowledgeSourceRootSummary,
     KnowledgeSourceUnderstandingResponse,
+    KnowledgeSynthesisSourceResponse,
     KnowledgeTransitionRequest,
     KnowledgeUnderstandingCitationResponse,
     KnowledgeUnderstandingSectionResponse,
     KnowledgeWorkspaceSummary,
+    KnowledgeWorkspaceSynthesisResponse,
 )
 from core.knowledge import (
     KnowledgeConflictError,
@@ -47,6 +49,7 @@ from core.knowledge import (
     KnowledgeProposal,
     KnowledgeStore,
     SourceUnderstanding,
+    WorkspaceSynthesis,
 )
 from core.knowledge.jobs import (
     TERMINAL_JOB_STATUSES,
@@ -262,6 +265,23 @@ async def list_knowledge_proposals(
     )
 
 
+@router.post(
+    "/api/v1/knowledge/synthesis",
+    response_model=KnowledgeProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_workspace_synthesis(request: Request) -> KnowledgeProposalResponse:
+    store = _require_store(request)
+    try:
+        proposal = store.propose_workspace_synthesis()
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="workspace synthesis requires approved knowledge sources",
+        ) from exc
+    return _proposal_response(store, proposal)
+
+
 @router.get(
     "/api/v1/knowledge/proposals/{proposal_id}",
     response_model=KnowledgeProposalDetailResponse,
@@ -275,6 +295,7 @@ async def get_knowledge_proposal(
         events = store.list_events(proposal_id)
         parse_artifact = store.get_parse_artifact(proposal_id)
         source_understanding = store.get_source_understanding(proposal_id)
+        workspace_synthesis = store.get_workspace_synthesis(proposal_id)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=404, detail="knowledge proposal not found") from exc
     return KnowledgeProposalDetailResponse(
@@ -291,6 +312,7 @@ async def get_knowledge_proposal(
         ],
         parse_artifact=_parse_artifact_response(parse_artifact),
         source_understanding=_source_understanding_response(source_understanding),
+        workspace_synthesis=_workspace_synthesis_response(workspace_synthesis),
     )
 
 
@@ -536,6 +558,34 @@ def _source_understanding_response(
         ],
         generator_id=understanding.generator_id,
         generator_version=understanding.generator_version,
+    )
+
+
+def _workspace_synthesis_response(
+    synthesis: WorkspaceSynthesis | None,
+) -> KnowledgeWorkspaceSynthesisResponse | None:
+    if synthesis is None:
+        return None
+    return KnowledgeWorkspaceSynthesisResponse(
+        synthesis_id=synthesis.synthesis_id,
+        input_hash=synthesis.input_hash,
+        generator_id=synthesis.generator_id,
+        generator_version=synthesis.generator_version,
+        sources=[
+            KnowledgeSynthesisSourceResponse(
+                page_id=item.page_id,
+                page_revision=item.page_revision,
+                proposal_id=item.proposal_id,
+                understanding_id=item.understanding_id,
+                source_revision=item.source_revision,
+                title=item.title,
+                path=item.path,
+                summary=item.summary,
+                topics=list(item.topics),
+                citation_block_ids=list(item.citation_block_ids),
+            )
+            for item in synthesis.sources
+        ],
     )
 
 

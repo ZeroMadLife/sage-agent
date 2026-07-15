@@ -13,6 +13,7 @@ from core.knowledge.store import (
     LoadedKnowledgeSource,
     PreparedKnowledgeSource,
 )
+from core.knowledge.synthesis import WorkspaceSourceEvidence, WorkspaceSynthesis
 from core.knowledge.understanding import (
     SourceSection,
     SourceUnderstanding,
@@ -34,4 +35,6 @@ __all__ = [
     "SourceSection",
     "SourceUnderstanding",
     "UnderstandingCitation",
+    "WorkspaceSourceEvidence",
+    "WorkspaceSynthesis",
 ]

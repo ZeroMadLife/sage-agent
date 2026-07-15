@@ -80,7 +80,7 @@ def test_ingest_is_content_addressed_idempotent_and_does_not_write_wiki(
     assert "parser_id: sage.markdown" in first.proposed_content
 
 
-def test_v1_metadata_database_migrates_to_v3_without_rewriting_existing_rows(
+def test_v1_metadata_database_migrates_to_v4_without_rewriting_existing_rows(
     tmp_path: Path,
 ) -> None:
     database = tmp_path / "state" / "knowledge.sqlite3"
@@ -148,7 +148,7 @@ def test_v1_metadata_database_migrates_to_v3_without_rewriting_existing_rows(
             "SELECT proposal_id, parse_artifact_id FROM knowledge_proposals "
             "WHERE proposal_id='legacy'"
         ).fetchone()
-    assert version == 3
+    assert version == 4
     assert "parse_artifact_id" in columns
     assert artifact_table is not None
     assert legacy == ("legacy", None)
@@ -177,7 +177,7 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
     assert understanding is not None
     assert "可追溯的旧解析产物" in understanding.summary
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_source_understandings"
         ).fetchone()[0] == 1
@@ -254,6 +254,46 @@ def test_approve_updates_git_wiki_and_reject_is_terminal(tmp_path: Path) -> None
     assert rejected.status == "rejected"
     with pytest.raises(KnowledgeConflictError):
         store.approve(rejected.proposal_id, expected_revision=1)
+
+
+def test_workspace_synthesis_uses_only_approved_sources_and_is_reviewable(
+    tmp_path: Path,
+) -> None:
+    store, vault, repository = _store(tmp_path)
+    (vault / "approved.md").write_text(
+        "# Approved\n\n已批准来源证据。\n", encoding="utf-8"
+    )
+    (vault / "pending.md").write_text(
+        "# Pending\n\n不能进入总览。\n", encoding="utf-8"
+    )
+    approved = store.ingest("sage-learning", "approved.md")
+    store.approve(approved.proposal_id, 0)
+    pending = store.ingest("sage-learning", "pending.md")
+
+    synthesis = store.propose_workspace_synthesis()
+    repeated = store.propose_workspace_synthesis()
+    artifact = store.get_workspace_synthesis(synthesis.proposal_id)
+
+    assert repeated == synthesis
+    assert synthesis.change_kind == "synthesis"
+    assert synthesis.status == "pending"
+    assert "已批准来源证据" in synthesis.proposed_content
+    assert "不能进入总览" not in synthesis.proposed_content
+    assert pending.proposal_id not in synthesis.proposed_content
+    assert artifact is not None
+    assert len(artifact.sources) == 1
+    assert artifact.sources[0].proposal_id == approved.proposal_id
+    assert artifact.sources[0].citation_block_ids
+    assert (repository / "overview.md").read_text(encoding="utf-8") == (
+        "# Overview\n\n尚无已批准知识页面。\n"
+    )
+
+    projected = store.approve(synthesis.proposal_id, 0)
+
+    assert projected.projection_status == "complete"
+    assert "已批准来源证据" in (repository / "overview.md").read_text(encoding="utf-8")
+    page = next(item for item in store.list_pages() if item.page_id == "page_workspace_overview")
+    assert page.revisions[-1].change_kind == "synthesis"
 
 
 def test_stale_proposal_conflicts_and_rollback_creates_new_revision(

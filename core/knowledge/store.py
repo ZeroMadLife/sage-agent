@@ -28,6 +28,13 @@ from core.knowledge.parsing import (
     deserialize_document,
     serialize_document,
 )
+from core.knowledge.synthesis import (
+    WorkspaceSynthesis,
+    deserialize_synthesis,
+    serialize_synthesis,
+    source_evidence,
+    synthesize_workspace,
+)
 from core.knowledge.understanding import (
     SourceUnderstanding,
     deserialize_understanding,
@@ -37,7 +44,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -55,6 +62,7 @@ _SECRET_PATTERNS = (
         r"\s*=\s*['\"]?[A-Za-z0-9_./+-]{20,}"
     ),
 )
+_INITIAL_OVERVIEW = "# Overview\n\n尚无已批准知识页面。\n"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_sources (
@@ -118,6 +126,18 @@ CREATE TABLE IF NOT EXISTS knowledge_source_understandings (
 );
 CREATE INDEX IF NOT EXISTS knowledge_source_understandings_source_idx
     ON knowledge_source_understandings(source_id, source_revision);
+CREATE TABLE IF NOT EXISTS knowledge_workspace_syntheses (
+    synthesis_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL UNIQUE,
+    input_hash TEXT NOT NULL,
+    generator_id TEXT NOT NULL,
+    generator_version TEXT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS knowledge_workspace_syntheses_input_idx
+    ON knowledge_workspace_syntheses(input_hash, created_at);
 CREATE TABLE IF NOT EXISTS knowledge_events (
     event_id TEXT PRIMARY KEY,
     proposal_id TEXT NOT NULL,
@@ -696,6 +716,144 @@ class KnowledgeStore:
             raise KnowledgeStoreError("source understanding integrity check failed")
         return understanding
 
+    def propose_workspace_synthesis(self) -> KnowledgeProposal:
+        """Create an idempotent overview proposal from current approved source pages."""
+        self.initialize()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT p.page_id, p.path, p.current_revision,
+                       r.proposal_id, u.payload_json AS understanding_json
+                FROM knowledge_pages AS p
+                JOIN knowledge_page_revisions AS r
+                  ON r.revision_id = p.current_revision
+                JOIN knowledge_proposals AS proposal
+                  ON proposal.proposal_id = r.proposal_id
+                JOIN knowledge_source_understandings AS u
+                  ON u.artifact_id = proposal.parse_artifact_id
+                WHERE proposal.change_kind = 'ingest'
+                  AND proposal.status = 'approved'
+                  AND proposal.projection_status = 'complete'
+                ORDER BY p.title, p.page_id
+                """
+            ).fetchall()
+            evidence = []
+            for row in rows:
+                try:
+                    understanding = deserialize_understanding(str(row["understanding_json"]))
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    connection.rollback()
+                    raise KnowledgeStoreError(
+                        "source understanding integrity check failed"
+                    ) from exc
+                evidence.append(
+                    source_evidence(
+                        page_id=str(row["page_id"]),
+                        page_revision=str(row["current_revision"]),
+                        proposal_id=str(row["proposal_id"]),
+                        path=str(row["path"]),
+                        understanding=understanding,
+                    )
+                )
+            synthesis = synthesize_workspace(tuple(evidence))
+            overview = connection.execute(
+                "SELECT current_revision FROM knowledge_pages WHERE page_id=?",
+                ("page_workspace_overview",),
+            ).fetchone()
+            base_revision = str(overview["current_revision"]) if overview else ""
+            proposal_id = "kprop_" + hashlib.sha256(
+                f"{synthesis.synthesis_id}\0{base_revision}".encode()
+            ).hexdigest()[:32]
+            existing = connection.execute(
+                "SELECT * FROM knowledge_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+            if existing is not None:
+                connection.rollback()
+                return _proposal(existing)
+            now = _now()
+            connection.execute(
+                """
+                INSERT INTO knowledge_proposals (
+                    proposal_id, source_id, source_root_id, source_kind,
+                    source_relative_path, source_revision, raw_path, page_id,
+                    target_path, title, proposed_content, base_page_revision,
+                    change_kind, status, projection_status, revision,
+                    parse_artifact_id, error, created_at, updated_at
+                ) VALUES (?, ?, 'knowledge', 'synthesis', 'overview.md', ?, '', ?,
+                          'overview.md', 'Knowledge Overview', ?, ?, 'synthesis',
+                          'pending', 'pending', 0, NULL, NULL, ?, ?)
+                """,
+                (
+                    proposal_id,
+                    f"synthesis:{synthesis.synthesis_id}",
+                    synthesis.input_hash,
+                    "page_workspace_overview",
+                    synthesis.rendered_markdown,
+                    base_revision,
+                    now,
+                    now,
+                ),
+            )
+            payload_json = serialize_synthesis(synthesis)
+            connection.execute(
+                """
+                INSERT INTO knowledge_workspace_syntheses (
+                    synthesis_id, proposal_id, input_hash, generator_id,
+                    generator_version, payload_hash, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    synthesis.synthesis_id,
+                    proposal_id,
+                    synthesis.input_hash,
+                    synthesis.generator_id,
+                    synthesis.generator_version,
+                    hashlib.sha256(payload_json.encode("utf-8")).hexdigest(),
+                    payload_json,
+                    now,
+                ),
+            )
+            self._event(
+                connection,
+                proposal_id,
+                "synthesis_proposed",
+                0,
+                {
+                    "synthesis_id": synthesis.synthesis_id,
+                    "input_hash": synthesis.input_hash,
+                    "source_count": str(len(synthesis.sources)),
+                },
+            )
+            connection.commit()
+        return self.get_proposal(proposal_id)
+
+    def get_workspace_synthesis(self, proposal_id: str) -> WorkspaceSynthesis | None:
+        self.get_proposal(proposal_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM knowledge_workspace_syntheses WHERE proposal_id=?",
+                (_bounded_id(proposal_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        payload_json = str(row["payload_json"])
+        if hashlib.sha256(payload_json.encode("utf-8")).hexdigest() != str(row["payload_hash"]):
+            raise KnowledgeStoreError("workspace synthesis integrity check failed")
+        try:
+            synthesis = deserialize_synthesis(payload_json)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise KnowledgeStoreError("workspace synthesis integrity check failed") from exc
+        if (
+            synthesis.synthesis_id != str(row["synthesis_id"])
+            or synthesis.input_hash != str(row["input_hash"])
+            or synthesis.generator_id != str(row["generator_id"])
+            or synthesis.generator_version != str(row["generator_version"])
+        ):
+            raise KnowledgeStoreError("workspace synthesis integrity check failed")
+        return synthesis
+
     def list_proposals(self, status: str | None = None) -> list[KnowledgeProposal]:
         self.initialize()
         if status not in {None, "pending", "approved", "rejected"}:
@@ -1050,7 +1208,16 @@ class KnowledgeStore:
                 if proposal.base_page_revision:
                     raise KnowledgeConflictError("proposal base revision is stale")
                 if (self.workspace_root / proposal.target_path).exists():
-                    raise KnowledgeConflictError("page changed outside Sage")
+                    initial_overview = (
+                        proposal.change_kind == "synthesis"
+                        and proposal.target_path == "overview.md"
+                        and (self.workspace_root / proposal.target_path).read_text(
+                            encoding="utf-8"
+                        )
+                        == _INITIAL_OVERVIEW
+                    )
+                    if not initial_overview:
+                        raise KnowledgeConflictError("page changed outside Sage")
                 return
             if str(page["current_revision"]) != proposal.base_page_revision:
                 raise KnowledgeConflictError("proposal base revision is stale")
@@ -1083,7 +1250,7 @@ class KnowledgeStore:
         defaults = {
             "purpose.md": "# Purpose\n\n构建可审核、可追溯、持续演进的个人知识库。\n",
             "schema.md": "# Schema\n\n所有 Wiki 写入必须来自 proposal，并保留 source revision。\n",
-            "overview.md": "# Overview\n\n尚无已批准知识页面。\n",
+            "overview.md": _INITIAL_OVERVIEW,
             "index.md": "# Knowledge Index\n\n## Sources\n",
             "log.md": "# Knowledge Log\n",
         }
@@ -1113,7 +1280,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {
