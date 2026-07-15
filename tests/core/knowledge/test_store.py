@@ -168,6 +168,26 @@ def test_ingest_rejects_traversal_and_symlink_sources(tmp_path: Path) -> None:
         store.ingest("sage-learning", "credential.md")
 
 
+def test_ingest_html_uses_parser_output_and_preserves_raw_snapshot(tmp_path: Path) -> None:
+    store, vault, repository = _store(tmp_path)
+    source = vault / "guide.html"
+    source.write_text(
+        "<html><head><title>Sage Guide</title><script>alert(1)</script></head>"
+        "<body><h1>Harness</h1><p>可恢复执行。</p></body></html>",
+        encoding="utf-8",
+    )
+
+    proposal = store.ingest("sage-learning", "guide.html")
+    artifact = store.get_parse_artifact(proposal.proposal_id)
+
+    assert artifact is not None
+    assert artifact.document.provenance.parser_id == "sage.html"
+    assert proposal.raw_path.endswith(".html")
+    assert (repository / proposal.raw_path).read_bytes() == source.read_bytes()
+    assert "可恢复执行" in proposal.proposed_content
+    assert "alert" not in proposal.proposed_content
+
+
 def test_approve_updates_git_wiki_and_reject_is_terminal(tmp_path: Path) -> None:
     store, vault, repository = _store(tmp_path)
     (vault / "harness.md").write_text("# Agent Harness\n\n第一版。\n", encoding="utf-8")

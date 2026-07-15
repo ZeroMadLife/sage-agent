@@ -9,13 +9,18 @@ import uuid
 from collections.abc import Mapping
 
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
+from core.knowledge.parsing import (
+    DocumentParseError,
+    DocumentRequiresOcrError,
+    ParserNotFoundError,
+)
 
 from .queue import RedisKnowledgeJobQueue
 from .repository import KnowledgeJobConflictError, KnowledgeJobRepository
-from .scanner import read_source_revision, scan_markdown_directory
+from .scanner import read_source_revision, scan_knowledge_directory
 from .types import KnowledgeJob, KnowledgeJobItem, QueueMessage
 
-PIPELINE_VERSION = "p2.2-b1-parser-v1"
+PIPELINE_VERSION = "p2.2-b2-multiformat-v1"
 logger = logging.getLogger(__name__)
 
 
@@ -93,7 +98,7 @@ class KnowledgeJobService:
         if source_id is None:
             raise KeyError(source_root_id)
         files = await asyncio.to_thread(
-            scan_markdown_directory,
+            scan_knowledge_directory,
             self.store,
             source_root_id,
             relative_directory,
@@ -223,6 +228,8 @@ class KnowledgeJobService:
                 worker_id=self.worker_id,
                 error=_safe_error(exc),
                 retry_delay_seconds=delay,
+                error_code=_error_code(exc),
+                retryable=_is_retryable(exc),
             )
         finally:
             heartbeat_stop.set()
@@ -264,3 +271,26 @@ def _safe_error(exc: Exception) -> str:
     if isinstance(exc, UnicodeError):
         return "knowledge source is not valid UTF-8"
     return f"{type(exc).__name__}: knowledge ingestion failed"
+
+
+def _error_code(exc: Exception) -> str:
+    if isinstance(exc, DocumentRequiresOcrError):
+        return "requires_ocr"
+    if isinstance(exc, ParserNotFoundError):
+        return "unsupported_format"
+    if isinstance(exc, DocumentParseError):
+        return "parse_failed"
+    if isinstance(exc, KnowledgeJobConflictError):
+        return "source_conflict"
+    if isinstance(exc, FileNotFoundError):
+        return "source_missing"
+    if isinstance(exc, ValueError | UnicodeError):
+        return "invalid_source"
+    return "transient_error"
+
+
+def _is_retryable(exc: Exception) -> bool:
+    return not isinstance(
+        exc,
+        ValueError | ParserNotFoundError | KnowledgeJobConflictError | FileNotFoundError,
+    )

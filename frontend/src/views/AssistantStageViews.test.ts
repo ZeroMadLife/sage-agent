@@ -43,7 +43,7 @@ const proposal = {
   source_relative_path: 'harness.md', source_revision: 'sha256:abc', raw_path: 'raw/source.md',
   page_id: 'page-1', target_path: 'wiki/sources/harness.md', title: 'Agent Harness',
   base_page_revision: '', change_kind: 'ingest' as const, status: 'pending' as const,
-  projection_status: 'pending' as const, revision: 0, error: null,
+  projection_status: 'pending' as const, revision: 0, parse_artifact_id: 'part-1', error: null,
   diff: '+可审核知识', diff_truncated: false, created_at: '', updated_at: '',
 }
 

@@ -216,6 +216,7 @@ export type KnowledgeProposal = {
   status: 'pending' | 'approved' | 'rejected'
   projection_status: 'pending' | 'complete' | 'error'
   revision: number
+  parse_artifact_id: string | null
   error: string | null
   diff: string
   diff_truncated: boolean

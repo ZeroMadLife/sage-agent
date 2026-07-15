@@ -387,6 +387,8 @@ class KnowledgeJobRepository:
         worker_id: str,
         error: str,
         retry_delay_seconds: float,
+        error_code: str | None = None,
+        retryable: bool = True,
     ) -> KnowledgeJobItem:
         async with self._session_factory() as session, session.begin():
             item, job = await self._locked_item_and_job(session, item_id)
@@ -400,7 +402,7 @@ class KnowledgeJobRepository:
                 key = await session.get(KnowledgeIdempotencyRecord, item.idempotency_key)
                 if key is not None and key.owner_item_id == item.id:
                     key.status = "failed"
-            elif item.attempts < item.max_attempts:
+            elif retryable and item.attempts < item.max_attempts:
                 item.status = "retry_wait"
                 item.next_attempt_at = _now() + timedelta(seconds=retry_delay_seconds)
             else:
@@ -419,6 +421,8 @@ class KnowledgeJobRepository:
                     "relative_path": item.relative_path,
                     "attempt": item.attempts,
                     "error": item.error,
+                    "error_code": error_code,
+                    "retryable": retryable,
                 },
             )
             await self._refresh_job(session, job)

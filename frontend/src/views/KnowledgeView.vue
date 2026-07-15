@@ -270,7 +270,7 @@ onUnmounted(() => {
 
       <section class="knowledge-section jobs-section" aria-labelledby="jobs-title">
         <header><div><span>Durable ingestion</span><h2 id="jobs-title">批量任务</h2></div><strong>{{ jobs.length }}</strong></header>
-        <p v-if="jobs.length === 0" class="empty-copy">尚无批量任务。目录会按 Markdown 文件拆分，失败项可单独重试。</p>
+        <p v-if="jobs.length === 0" class="empty-copy">尚无批量任务。目录会按 Markdown、HTML 和文本 PDF 拆分，失败项可单独重试。</p>
         <article v-for="job in jobs" :key="job.job_id" class="job-row">
           <div class="job-heading">
             <div><strong>{{ job.source_label }} / {{ job.relative_directory }}</strong><span>{{ jobStatus(job.status) }} · {{ job.processed_items }}/{{ job.total_items }}</span></div>
@@ -293,7 +293,7 @@ onUnmounted(() => {
       </section>
 
       <section class="stage-content ingest-section single-ingest">
-        <div><h2>单文件提案</h2><p>精确导入一个 Markdown 文件</p></div>
+        <div><h2>单文件提案</h2><p>精确导入 Markdown、HTML 或文本 PDF</p></div>
         <form class="ingest-form" @submit.prevent="ingest">
           <select v-model="selectedRoot" aria-label="来源目录" :disabled="busy.ingest">
             <option v-for="root in summary.source_roots" :key="root.root_id" :value="root.root_id">
@@ -304,7 +304,7 @@ onUnmounted(() => {
             v-model="relativePath"
             type="text"
             aria-label="来源相对路径"
-            placeholder="例如：45-V7-P1.1共享Shell与对话形变源码复盘.md"
+            placeholder="例如：notes/harness.md、docs/guide.html 或 reports/design.pdf"
             :disabled="busy.ingest || !selectedRoot"
           />
           <button type="submit" :disabled="busy.ingest || !relativePath.trim() || !selectedRoot">

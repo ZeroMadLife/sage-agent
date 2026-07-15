@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 from pathlib import PurePosixPath
 
+from .common import decode_utf8, stable_id
 from .types import BlockKind, ParsedBlock, ParsedDocument, ParseProvenance, ParseRequest
 
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*#*\s*$")
@@ -21,7 +21,8 @@ class MarkdownParser:
     extensions = frozenset({".md", ".markdown"})
 
     def parse(self, request: ParseRequest) -> ParsedDocument:
-        document_id = _stable_id(
+        content = decode_utf8(request.payload, document_kind="Markdown")
+        document_id = stable_id(
             "pdoc",
             request.source_id,
             request.relative_path,
@@ -29,7 +30,7 @@ class MarkdownParser:
             self.parser_id,
             self.parser_version,
         )
-        blocks = self._blocks(document_id, request.content)
+        blocks = self._blocks(document_id, content)
         title = next(
             (
                 block.text.removeprefix("# ").strip()
@@ -45,7 +46,7 @@ class MarkdownParser:
             source_revision=request.source_revision,
             title=title.strip() or "Untitled",
             language="und",
-            rendered_markdown=request.content,
+            rendered_markdown=content,
             blocks=tuple(blocks),
             provenance=ParseProvenance(
                 parser_id=self.parser_id,
@@ -130,13 +131,13 @@ class MarkdownParser:
     ) -> None:
         text = "\n".join(lines).strip()
         ordinal = len(blocks)
-        block_id = _stable_id(
+        block_id = stable_id(
             "pblk",
             document_id,
             str(ordinal),
             kind,
             "\0".join(headings),
-            hashlib.sha256(text.encode()).hexdigest(),
+            stable_id("text", text),
         )
         blocks.append(
             ParsedBlock(
@@ -147,8 +148,3 @@ class MarkdownParser:
                 heading_path=tuple(headings),
             )
         )
-
-
-def _stable_id(prefix: str, *parts: str) -> str:
-    payload = "\0".join(parts).encode()
-    return f"{prefix}_{hashlib.sha256(payload).hexdigest()[:32]}"

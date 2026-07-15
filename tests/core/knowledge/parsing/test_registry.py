@@ -22,12 +22,12 @@ def _request(path: str = "notes/harness.md") -> ParseRequest:
         relative_path=path,
         source_revision="sha256:source",
         media_type="text/markdown",
-        content=(
+        payload=(
             "---\nvisibility: private\n---\n\n"
             "# Agent Harness\n\n可恢复执行。\n\n"
             "## Runtime\n\n- lease\n- retry\n\n"
             "```python\nprint('sage')\n```\n"
-        ),
+        ).encode(),
     )
 
 
@@ -55,7 +55,7 @@ def test_markdown_parser_produces_stable_heading_aware_blocks() -> None:
     assert first.blocks[-1].heading_path == ("Agent Harness", "Runtime")
     assert len({block.block_id for block in first.blocks}) == len(first.blocks)
     assert all(block.confidence == 1.0 for block in first.blocks)
-    assert first.rendered_markdown == _request().content
+    assert first.rendered_markdown == _request().payload.decode()
 
 
 def test_registry_routes_deterministically_and_rejects_ambiguous_registration() -> None:
@@ -82,3 +82,4 @@ def test_default_registry_is_fresh_and_contains_markdown() -> None:
 
     assert first is not second
     assert first.resolve(_request()).parser_id == "sage.markdown"
+    assert first.parser_ids() == ("sage.html", "sage.markdown", "sage.pdf.text")

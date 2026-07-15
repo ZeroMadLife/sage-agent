@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pypdf import PdfWriter
 
 from core.knowledge import KnowledgeStore
 from core.knowledge.jobs import (
@@ -56,6 +58,10 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     _, vault = knowledge_store
     (vault / "one.md").write_text("# One\n\nDurable.\n", encoding="utf-8")
     (vault / "two.md").write_text("# Two\n\nAuditable.\n", encoding="utf-8")
+    (vault / "three.html").write_text(
+        "<html><title>Three</title><h1>Three</h1><p>Semantic.</p></html>",
+        encoding="utf-8",
+    )
     service = await _service(knowledge_store, job_infrastructure)
 
     first = await service.create_batch("vault")
@@ -66,9 +72,9 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     assert len(await service.repository.list_items(first.job_id, limit=1)) == 1
     assert await _finish(service, first.job_id) == "completed"
     completed = await service.repository.get_job(first.job_id)
-    assert completed.pipeline_version == "p2.2-b1-parser-v1"
-    assert completed.total_items == 2
-    assert completed.succeeded_items == 2
+    assert completed.pipeline_version == "p2.2-b2-multiformat-v1"
+    assert completed.total_items == 3
+    assert completed.succeeded_items == 3
     assert completed.latest_sequence >= 6
     assert all(
         len(event.event_id) <= 36 for event in await service.repository.list_events(first.job_id)
@@ -76,11 +82,21 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     assert any(
         event.status == "parsing" for event in await service.repository.list_events(first.job_id)
     )
+    proposals = [
+        item.proposal_id
+        for item in await service.repository.list_items(first.job_id)
+        if item.proposal_id is not None
+    ]
+    assert {
+        service.store.get_parse_artifact(proposal_id).document.provenance.parser_id
+        for proposal_id in proposals
+        if service.store.get_parse_artifact(proposal_id) is not None
+    } == {"sage.markdown", "sage.html"}
 
     repeated = await service.create_batch("vault")
     assert await _finish(service, repeated.job_id) == "completed"
     deduplicated = await service.repository.get_job(repeated.job_id)
-    assert deduplicated.skipped_items == 2
+    assert deduplicated.skipped_items == 3
     assert deduplicated.succeeded_items == 0
 
 
@@ -113,6 +129,31 @@ async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
     [retried] = await service.repository.list_items(job.job_id)
     assert retried.status == "completed"
     assert retried.attempts == 1
+
+
+async def test_scanned_pdf_is_dead_lettered_once_with_requires_ocr_code(
+    knowledge_store: tuple[KnowledgeStore, Path],
+    job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
+) -> None:
+    _, vault = knowledge_store
+    buffer = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(buffer)
+    (vault / "scan.pdf").write_bytes(buffer.getvalue())
+    service = await _service(knowledge_store, job_infrastructure)
+
+    job = await service.create_batch("vault")
+
+    assert await _finish(service, job.job_id) == "completed_with_errors"
+    [failed] = await service.repository.list_items(job.job_id)
+    assert failed.status == "dead_letter"
+    assert failed.attempts == 1
+    assert "requires OCR" in (failed.error or "")
+    events = await service.repository.list_events(job.job_id)
+    failure = next(event for event in events if event.status == "dead_letter")
+    assert failure.detail["error_code"] == "requires_ocr"
+    assert failure.detail["retryable"] is False
 
 
 async def test_cancel_marks_unclaimed_items_without_processing(

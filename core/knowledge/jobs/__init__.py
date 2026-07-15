@@ -6,7 +6,12 @@ from .repository import (
     KnowledgeJobNotFoundError,
     KnowledgeJobRepository,
 )
-from .scanner import KnowledgeScanError, read_source_revision, scan_markdown_directory
+from .scanner import (
+    KnowledgeScanError,
+    read_source_revision,
+    scan_knowledge_directory,
+    scan_markdown_directory,
+)
 from .service import PIPELINE_VERSION, KnowledgeJobService
 from .types import (
     TERMINAL_JOB_STATUSES,
@@ -32,5 +37,6 @@ __all__ = [
     "RedisKnowledgeJobQueue",
     "ScannedKnowledgeFile",
     "read_source_revision",
+    "scan_knowledge_directory",
     "scan_markdown_directory",
 ]

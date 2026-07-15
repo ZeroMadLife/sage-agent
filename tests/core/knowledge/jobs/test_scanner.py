@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from core.knowledge import KnowledgeStore
-from core.knowledge.jobs import KnowledgeScanError, scan_markdown_directory
+from core.knowledge.jobs import KnowledgeScanError, scan_knowledge_directory
 
 
 def test_scans_one_thousand_markdown_files_deterministically(
@@ -20,7 +20,7 @@ def test_scans_one_thousand_markdown_files_deterministically(
         (nested / f"{index:04d}.md").write_text(f"# Note {index}\n", encoding="utf-8")
     (nested / "ignored.txt").write_text("ignored", encoding="utf-8")
 
-    scanned = scan_markdown_directory(
+    scanned = scan_knowledge_directory(
         store,
         "vault",
         "notes",
@@ -43,7 +43,7 @@ def test_rejects_traversal_and_skips_symlinks(
     (outside / "secret.md").write_text("# Outside\n", encoding="utf-8")
     (vault / "linked").symlink_to(outside, target_is_directory=True)
 
-    scanned = scan_markdown_directory(
+    scanned = scan_knowledge_directory(
         store,
         "vault",
         ".",
@@ -53,7 +53,7 @@ def test_rejects_traversal_and_skips_symlinks(
 
     assert scanned == []
     with pytest.raises(KnowledgeScanError, match="invalid relative source directory"):
-        scan_markdown_directory(
+        scan_knowledge_directory(
             store,
             "vault",
             "../outside",
@@ -72,10 +72,34 @@ def test_rejects_a_requested_directory_reached_through_an_internal_symlink(
     (vault / "alias").symlink_to(target, target_is_directory=True)
 
     with pytest.raises(KnowledgeScanError, match="invalid relative source directory"):
-        scan_markdown_directory(
+        scan_knowledge_directory(
             store,
             "vault",
             "alias",
             workspace_id="workspace-1",
             pipeline_version="pipeline-v1",
         )
+
+
+def test_scans_supported_markdown_html_and_pdf_files(
+    knowledge_store: tuple[KnowledgeStore, Path],
+) -> None:
+    store, vault = knowledge_store
+    (vault / "note.md").write_text("# Note\n", encoding="utf-8")
+    (vault / "page.html").write_text("<h1>Page</h1>", encoding="utf-8")
+    (vault / "manual.pdf").write_bytes(b"%PDF-1.4\n")
+    (vault / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    scanned = scan_knowledge_directory(
+        store,
+        "vault",
+        ".",
+        workspace_id="workspace-1",
+        pipeline_version="pipeline-v2",
+    )
+
+    assert [item.relative_path for item in scanned] == [
+        "manual.pdf",
+        "note.md",
+        "page.html",
+    ]

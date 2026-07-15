@@ -25,7 +25,7 @@ class ParseRequest:
     relative_path: str
     source_revision: str
     media_type: str
-    content: str
+    payload: bytes
 
 
 @dataclass(frozen=True, slots=True)

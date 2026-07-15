@@ -29,10 +29,17 @@ from core.knowledge.parsing import (
     serialize_document,
 )
 
-_MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _SCHEMA_VERSION = 2
+_SOURCE_FORMATS = {
+    ".md": ("text/markdown", 2 * 1024 * 1024),
+    ".markdown": ("text/markdown", 2 * 1024 * 1024),
+    ".html": ("text/html", 5 * 1024 * 1024),
+    ".htm": ("text/html", 5 * 1024 * 1024),
+    ".xhtml": ("application/xhtml+xml", 5 * 1024 * 1024),
+    ".pdf": ("application/pdf", 20 * 1024 * 1024),
+}
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
@@ -223,7 +230,7 @@ class PreparedKnowledgeSource:
     relative_path: str
     source_id: str
     source_revision: str
-    content: str
+    payload: bytes
     document: ParsedDocument
 
 
@@ -285,12 +292,12 @@ class KnowledgeStore:
         root = self.source_roots.get(source_root_id)
         if root is None:
             raise KeyError(source_root_id)
-        normalized = _relative_markdown_path(relative_path)
+        normalized = _relative_source_path(relative_path)
+        media_type, max_bytes = _source_format(normalized)
         source_path = root.path / normalized
-        content = _read_source(root.path, source_path)
-        if any(pattern.search(content) for pattern in _SECRET_PATTERNS):
-            raise ValueError("source may contain secret material")
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        payload = _read_source_bytes(root.path, source_path, max_bytes=max_bytes)
+        _scan_source_secrets(payload, media_type)
+        digest = hashlib.sha256(payload).hexdigest()
         source_revision = f"sha256:{digest}"
         source_id = (
             "src_"
@@ -300,18 +307,19 @@ class KnowledgeStore:
             source_id=source_id,
             relative_path=normalized.as_posix(),
             source_revision=source_revision,
-            media_type="text/markdown",
-            content=content,
+            media_type=media_type,
+            payload=payload,
         )
         document = self.parser_registry.parse(request)
         _validate_parsed_document(request, document)
+        _scan_text_secrets(f"{document.title}\n{document.rendered_markdown}")
         return PreparedKnowledgeSource(
             source_root_id=source_root_id,
             source_kind=root.kind,
             relative_path=normalized.as_posix(),
             source_id=source_id,
             source_revision=source_revision,
-            content=content,
+            payload=payload,
             document=document,
         )
 
@@ -320,9 +328,10 @@ class KnowledgeStore:
         root = self.source_roots.get(prepared.source_root_id)
         if root is None or root.kind != prepared.source_kind:
             raise KnowledgeConflictError("prepared knowledge source is stale")
-        normalized = _relative_markdown_path(prepared.relative_path)
-        current_content = _read_source(root.path, root.path / normalized)
-        current_revision = "sha256:" + hashlib.sha256(current_content.encode("utf-8")).hexdigest()
+        normalized = _relative_source_path(prepared.relative_path)
+        media_type, max_bytes = _source_format(normalized)
+        current_payload = _read_source_bytes(root.path, root.path / normalized, max_bytes=max_bytes)
+        current_revision = "sha256:" + hashlib.sha256(current_payload).hexdigest()
         expected_source_id = (
             "src_"
             + hashlib.sha256(
@@ -331,31 +340,30 @@ class KnowledgeStore:
         )
         if (
             current_revision != prepared.source_revision
-            or current_content != prepared.content
+            or current_payload != prepared.payload
             or prepared.source_id != expected_source_id
         ):
             raise KnowledgeConflictError("source revision changed during parsing")
-        if any(pattern.search(current_content) for pattern in _SECRET_PATTERNS):
-            raise ValueError("source may contain secret material")
+        _scan_source_secrets(current_payload, media_type)
         document = prepared.document
         request = ParseRequest(
             source_id=prepared.source_id,
             relative_path=prepared.relative_path,
             source_revision=prepared.source_revision,
-            media_type=document.provenance.media_type,
-            content=prepared.content,
+            media_type=media_type,
+            payload=prepared.payload,
         )
         _validate_parsed_document(request, document)
+        _scan_text_secrets(f"{document.title}\n{document.rendered_markdown}")
         source_id = prepared.source_id
         source_revision = prepared.source_revision
-        content = prepared.content
         title = document.title
         digest = source_revision.removeprefix("sha256:")
         slug = _slug(normalized.with_suffix("").as_posix())
         page_id = "page_" + source_id.removeprefix("src_")
         target_path = f"wiki/sources/{slug}-{source_id[-8:]}.md"
-        raw_path = f"raw/sources/{root.kind}/{digest[:2]}/{digest}.md"
-        _write_immutable(self.workspace_root / raw_path, content)
+        raw_path = f"raw/sources/{root.kind}/{digest[:2]}/{digest}{normalized.suffix.lower()}"
+        _write_immutable_bytes(self.workspace_root / raw_path, prepared.payload)
         payload_json = serialize_document(document)
         payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         artifact_id = (
@@ -1144,20 +1152,27 @@ def _page_revision(row: sqlite3.Row) -> KnowledgePageRevision:
     )
 
 
-def _relative_markdown_path(value: str) -> PurePosixPath:
+def _relative_source_path(value: str) -> PurePosixPath:
     normalized = value.strip().replace("\\", "/")
     path = PurePosixPath(normalized)
     if (
         not normalized
         or path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
-        or path.suffix.lower() not in {".md", ".markdown"}
+        or path.suffix.lower() not in _SOURCE_FORMATS
     ):
         raise ValueError("invalid relative source path")
     return path
 
 
-def _read_source(root: Path, path: Path) -> str:
+def _source_format(path: PurePosixPath) -> tuple[str, int]:
+    try:
+        return _SOURCE_FORMATS[path.suffix.lower()]
+    except KeyError as exc:
+        raise ValueError("unsupported knowledge source format") from exc
+
+
+def _read_source_bytes(root: Path, path: Path, *, max_bytes: int) -> bytes:
     try:
         lexical_relative = path.relative_to(root)
     except ValueError as exc:
@@ -1175,20 +1190,32 @@ def _read_source(root: Path, path: Path) -> str:
     if not resolved.is_file():
         raise FileNotFoundError(path)
     stat = resolved.stat()
-    if stat.st_size > _MAX_SOURCE_BYTES:
-        raise ValueError("source exceeds 2 MiB limit")
+    if stat.st_size > max_bytes:
+        raise ValueError(f"source exceeds {max_bytes // (1024 * 1024)} MiB limit")
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor = os.open(resolved, flags)
     with os.fdopen(descriptor, "rb") as handle:
-        payload = handle.read(_MAX_SOURCE_BYTES + 1)
-    if len(payload) > _MAX_SOURCE_BYTES:
-        raise ValueError("source exceeds 2 MiB limit")
+        payload = handle.read(max_bytes + 1)
+    if len(payload) > max_bytes:
+        raise ValueError(f"source exceeds {max_bytes // (1024 * 1024)} MiB limit")
+    return payload
+
+
+def _scan_source_secrets(payload: bytes, media_type: str) -> None:
+    if media_type not in {"text/markdown", "text/html", "application/xhtml+xml"}:
+        return
     try:
-        return payload.decode("utf-8")
+        content = payload.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise ValueError("source must be UTF-8 Markdown") from exc
+        raise ValueError("text source must be UTF-8") from exc
+    _scan_text_secrets(content)
+
+
+def _scan_text_secrets(content: str) -> None:
+    if any(pattern.search(content) for pattern in _SECRET_PATTERNS):
+        raise ValueError("source may contain secret material")
 
 
 def _source_page(
@@ -1244,6 +1271,15 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
         raise KnowledgeStoreError("parser returned mismatched source provenance")
     if not document.document_id.startswith("pdoc_"):
         raise KnowledgeStoreError("parser returned invalid document identity")
+    if (
+        not document.title.strip()
+        or len(document.title) > 500
+        or "\n" in document.title
+        or len(document.rendered_markdown.encode("utf-8")) > _MAX_PROPOSAL_BYTES
+        or sum(len(block.text.encode("utf-8")) for block in document.blocks)
+        > _MAX_PROPOSAL_BYTES * 2
+    ):
+        raise KnowledgeStoreError("parser returned oversized document content")
     if not document.provenance.parser_id or not document.provenance.parser_version:
         raise KnowledgeStoreError("parser returned incomplete provenance")
     block_ids: set[str] = set()
@@ -1266,12 +1302,24 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
         block_ids.add(block.block_id)
 
 
-def _write_immutable(path: Path, content: str) -> None:
+def _write_immutable_bytes(path: Path, content: bytes) -> None:
     if path.exists():
-        if path.is_symlink() or path.read_text(encoding="utf-8") != content:
+        if path.is_symlink() or path.read_bytes() != content:
             raise KnowledgeConflictError("immutable raw snapshot conflict")
         return
-    _atomic_write(path, content)
+    if path.is_symlink():
+        raise ValueError("knowledge file must not be a symbolic link")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def _atomic_write(path: Path, content: str) -> None:
