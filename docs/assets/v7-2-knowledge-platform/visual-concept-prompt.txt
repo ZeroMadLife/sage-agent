@@ -1,0 +1,33 @@
+Use case: ui-mockup
+Asset type: full desktop product design concept for implementation reference
+Input image: the supplied LLM Wiki screenshot is a structural reference only. Preserve its recognizable four-column knowledge-tool skeleton, but redesign it as Sage's original product. Do not copy its branding, exact CSS, assets, or text.
+
+Create a complete, polished 16:9 desktop screen for "Sage Knowledge". This is a personal AI knowledge operating system for programmers. The screen must feel like a real mature productivity application, not a marketing page and not a decorative dashboard.
+
+Information architecture:
+- 64px dark vertical product rail with a simple Sage sprout mark and icons for 对话, 知识, 来源, 搜索, 图谱, 审计, 任务, 设置. 知识 is selected.
+- 276px light knowledge navigation column titled "我的知识空间", showing a compact "今日学会" summary and a collapsible tree: Overview, Projects, Concepts, People, Sources. Use sample items Sage, Agent Harness, RAG, Memory, Context Compression.
+- Main flexible canvas titled "Knowledge Graph", containing an elegant interactive graph with colored node communities. Toolbar controls: 类型, 社区, 洞察, 搜索, 适应画布. The graph should have clear hierarchy and generous whitespace, not a dense hairball.
+- 340px detail inspector titled "Agent Harness", showing summary, source provenance, related concepts, latest learning change, confidence, and a clear "在对话中询问" action.
+- A slim bottom activity bar showing a real ingest pipeline: 解析 14/18, Vision 3, Wiki 更新 6, with a chevron to expand.
+
+Autonomy experience:
+- Do not show a wall of approval buttons.
+- A compact summary near the knowledge tree says "今天学会 24 · 自动沉淀 22 · 需确认 2".
+- Low-risk changes are visibly auto-applied with an undo affordance.
+- High-risk changes are represented by a small coral attention count, not a blocking modal.
+
+Visual direction:
+- Mature editorial developer-tool aesthetic, a blend of Swiss information design and quiet clean-tech product UI.
+- True white and cool mist-gray surfaces, near-black product rail, thin neutral dividers, minimal shadows, 6-8px radii.
+- More color than the current Sage UI without becoming playful: teal/emerald for learned and healthy state, coral for attention, amber for observing, blue and violet as graph community colors.
+- Chinese body text must feel comfortably readable at 15-16px. Strong typographic hierarchy, no tiny gray text.
+- Typography mood similar to Inter / PingFang SC with JetBrains Mono only for hashes or revisions.
+- Use Lucide-style outline icons, 1.75px strokes, consistent 18-20px optical size.
+- Open panel layout with rails, lists, canvas and inspector. Avoid nested cards and excessive rounded containers.
+
+Constraints:
+- Full primary screen, no browser chrome, no laptop mockup, no marketing hero.
+- All UI must be implementation-friendly with stable panel dimensions.
+- No gradients, glassmorphism, purple-dominated palette, beige/cream background, decorative blobs, fake charts, floating marketing cards, or excessive pills.
+- No unreadable microtext, clipped labels, overlapping graph labels, watermark, Hermes branding, or LLM Wiki branding.

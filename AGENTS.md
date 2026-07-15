@@ -1,5 +1,12 @@
 # Sage 开发协作约定
 
+## 图像生成平台
+
+- 默认使用 GPT Image CLI，通过 `gpt-image-2` 和 `https://api.honglin.asia/v1` 生成图片。运行时从 macOS Keychain 服务 `codex-image-api-honglin` 读取凭据，只向单次进程注入 `OPENAI_API_KEY`。
+- 默认平台不可用时，可以使用 `https://image.mentalout.top` 网页工作台。凭据从 macOS Keychain 服务 `codex-image-api-mentalout` 读取，只填写到该网站的 API Key 输入框，完成后清空输入并关闭临时标签页。
+- mentalout 当前使用网页任务协议，不能把它当作兼容 `/v1/images/generations` 的 OpenAI Images API。
+- 不得把原始凭据写入仓库、文档、日志、终端输出或聊天回复。
+
 ## Git 与 Worktree 收口
 
 每次功能提交、修复提交或阶段结束后，必须完成一次收口回顾：

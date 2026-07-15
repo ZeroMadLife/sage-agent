@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sage Knowledge Workbench</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --rail: #101820;
+      --rail-hover: #1b2731;
+      --page: #f7f9fb;
+      --surface: #ffffff;
+      --surface-soft: #f2f6f7;
+      --border: #dce3e8;
+      --border-strong: #c8d1d8;
+      --text: #18222b;
+      --text-soft: #64727e;
+      --text-faint: #8b97a1;
+      --teal: #0f9d8a;
+      --teal-soft: #e7f7f3;
+      --coral: #e76757;
+      --coral-soft: #fff0ed;
+      --amber: #d99717;
+      --amber-soft: #fff7df;
+      --blue: #3f7fdb;
+      --blue-soft: #eaf2fd;
+      --violet: #7a67d8;
+      --violet-soft: #f0edfc;
+      --shadow: 0 14px 44px rgba(32, 48, 61, 0.12);
+      --radius-sm: 6px;
+      --radius: 8px;
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+      font-size: 16px;
+    }
+
+    * { box-sizing: border-box; }
+    body { margin: 0; min-width: 320px; background: var(--page); color: var(--text); overflow: hidden; }
+    button, input, select, textarea { font: inherit; color: inherit; letter-spacing: 0; }
+    button { border: 0; cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+    svg { display: block; }
+    .icon { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .app { height: 100dvh; display: grid; grid-template-columns: 72px 286px minmax(420px, 1fr) 348px; grid-template-rows: minmax(0, 1fr) 62px; background: var(--surface); }
+
+    .product-rail { grid-row: 1 / 3; background: var(--rail); color: #cad3d9; display: flex; flex-direction: column; align-items: center; padding: 18px 8px 12px; z-index: 20; }
+    .brand { width: 48px; height: 54px; display: grid; place-items: center; margin-bottom: 22px; color: #51d0ab; }
+    .brand .icon { width: 34px; height: 34px; stroke-width: 2.1; }
+    .rail-nav { display: flex; width: 100%; flex-direction: column; gap: 5px; }
+    .rail-button { position: relative; width: 56px; min-height: 54px; margin: 0 auto; display: grid; place-items: center; gap: 2px; background: transparent; color: #aeb9c1; border-radius: var(--radius-sm); }
+    .rail-button span { font-size: 12px; line-height: 1; }
+    .rail-button:hover { background: var(--rail-hover); color: #fff; }
+    .rail-button.is-active { background: #17352f; color: #5ee0bb; }
+    .rail-button.is-active::before { content: ""; position: absolute; left: -8px; width: 3px; height: 28px; background: #5ee0bb; border-radius: 0 3px 3px 0; }
+    .rail-spacer { flex: 1; }
+
+    .knowledge-nav { grid-column: 2; grid-row: 1 / 3; min-width: 0; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; z-index: 12; }
+    .nav-header { min-height: 76px; padding: 18px 18px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .nav-title { font-size: 18px; font-weight: 700; line-height: 1.3; }
+    .nav-subtitle { margin-top: 5px; color: var(--text-soft); font-size: 13px; }
+    .icon-button { width: 34px; height: 34px; flex: 0 0 34px; display: grid; place-items: center; color: var(--text-soft); background: transparent; border-radius: var(--radius-sm); }
+    .icon-button:hover { background: var(--surface-soft); color: var(--text); }
+    .learning-summary { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--border); }
+    .metric { min-width: 0; padding: 14px 8px 13px; text-align: center; border-right: 1px solid var(--border); }
+    .metric:last-child { border-right: 0; }
+    .metric strong { display: block; font-size: 22px; line-height: 1.1; font-weight: 700; }
+    .metric span { display: block; margin-top: 5px; font-size: 12px; color: var(--text-soft); white-space: nowrap; }
+    .metric.learned strong { color: var(--teal); }
+    .metric.auto strong { color: var(--blue); }
+    .metric.review strong { color: var(--coral); }
+    .auto-feed { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+    .feed-row { display: grid; grid-template-columns: 18px 1fr auto; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; color: var(--text-soft); }
+    .feed-row .icon { width: 17px; height: 17px; }
+    .feed-row.is-auto .icon { color: var(--teal); }
+    .feed-row.is-review .icon { color: var(--coral); }
+    .text-action { background: transparent; color: var(--text-soft); padding: 4px 3px; font-size: 13px; }
+    .text-action:hover { color: var(--text); text-decoration: underline; }
+    .tree-scroll { flex: 1; min-height: 0; overflow: auto; padding: 12px 10px 76px; scrollbar-width: thin; }
+    .tree-section { margin-bottom: 12px; }
+    .tree-heading { width: 100%; display: flex; align-items: center; gap: 7px; padding: 8px; background: transparent; border-radius: var(--radius-sm); font-size: 14px; font-weight: 650; text-align: left; }
+    .tree-heading:hover { background: var(--surface-soft); }
+    .tree-heading .icon { width: 17px; height: 17px; color: var(--text-soft); }
+    .tree-heading .chevron { margin-left: auto; transition: transform .18s ease; }
+    .tree-section.is-collapsed .chevron { transform: rotate(-90deg); }
+    .tree-section.is-collapsed .tree-items { display: none; }
+    .tree-items { display: grid; gap: 2px; }
+    .tree-item { width: 100%; min-height: 36px; display: flex; align-items: center; gap: 9px; padding: 6px 9px 6px 32px; background: transparent; color: var(--text-soft); border-radius: var(--radius-sm); text-align: left; font-size: 14px; }
+    .tree-item:hover { background: var(--surface-soft); color: var(--text); }
+    .tree-item.is-active { background: var(--teal-soft); color: #087765; font-weight: 600; }
+    .tree-item .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); flex: 0 0 7px; }
+    .tree-item.is-active .dot { background: var(--teal); }
+    .tree-count { margin-left: auto; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+    .nav-footer { position: absolute; left: 72px; bottom: 0; width: 286px; padding: 11px 12px; border-top: 1px solid var(--border); background: rgba(255,255,255,.96); }
+    .new-space { width: 100%; height: 38px; display: flex; align-items: center; justify-content: center; gap: 8px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); font-size: 13px; }
+    .new-space:hover { border-color: var(--border-strong); background: var(--surface-soft); }
+    .new-space .icon { width: 17px; height: 17px; }
+
+    .canvas { grid-column: 3; grid-row: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: #fbfcfd; position: relative; }
+    .canvas-header { min-height: 64px; padding: 0 18px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; background: rgba(255,255,255,.94); z-index: 4; }
+    .canvas-title { font-size: 18px; font-weight: 700; white-space: nowrap; }
+    .canvas-meta { font-size: 13px; color: var(--text-soft); white-space: nowrap; }
+    .toolbar { margin-left: auto; display: flex; gap: 7px; }
+    .tool-button { height: 34px; min-width: 34px; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-sm); font-size: 13px; color: var(--text-soft); }
+    .tool-button:hover { color: var(--text); border-color: var(--border-strong); }
+    .tool-button.is-active { color: #087765; border-color: #91d8c9; background: var(--teal-soft); }
+    .tool-button .icon { width: 17px; height: 17px; }
+    .mobile-nav-button { display: none; }
+    .graph-stage { flex: 1; min-height: 0; position: relative; overflow: hidden; background-image: radial-gradient(circle at center, rgba(121,138,151,.12) 1px, transparent 1px); background-size: 28px 28px; }
+    .graph-stage::after { content: ""; position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 90px rgba(232,237,241,.58); }
+    .graph { width: 100%; height: 100%; min-height: 480px; }
+    .edge { stroke: #b8c5cf; stroke-width: 1.5; fill: none; opacity: .78; transition: opacity .2s, stroke .2s; }
+    .edge.is-highlighted { stroke: var(--teal); opacity: 1; stroke-width: 2.2; }
+    .community-halo { fill: none; stroke-width: 1.4; stroke-dasharray: 6 8; opacity: .32; }
+    .node-group { cursor: pointer; outline: none; }
+    .node-group:hover .node-core, .node-group:focus .node-core { stroke-width: 3; filter: drop-shadow(0 8px 10px rgba(25,45,58,.14)); }
+    .node-core { fill: white; stroke-width: 2; transition: filter .18s ease, stroke-width .18s ease; }
+    .node-label { font-family: Inter, "PingFang SC", sans-serif; font-size: 16px; font-weight: 650; fill: var(--text); text-anchor: middle; pointer-events: none; }
+    .node-sub { font-family: Inter, "PingFang SC", sans-serif; font-size: 13px; fill: var(--text-soft); text-anchor: middle; pointer-events: none; }
+    .node-dot { stroke: white; stroke-width: 3; }
+    .node-group[data-community="harness"] .node-core, .node-group[data-community="harness"] .node-dot { stroke: var(--blue); }
+    .node-group[data-community="rag"] .node-core, .node-group[data-community="rag"] .node-dot { stroke: var(--teal); }
+    .node-group[data-community="memory"] .node-core, .node-group[data-community="memory"] .node-dot { stroke: var(--violet); }
+    .node-group[data-community="context"] .node-core, .node-group[data-community="context"] .node-dot { stroke: var(--amber); }
+    .node-group[data-community="review"] .node-core, .node-group[data-community="review"] .node-dot { stroke: var(--coral); }
+    .node-group.is-selected .node-core { stroke-width: 4; filter: drop-shadow(0 10px 13px rgba(25,45,58,.17)); }
+    .graph[data-mode="type"] .node-group[data-type="source"] .node-core { fill: var(--blue-soft); stroke: var(--blue); }
+    .graph[data-mode="type"] .node-group[data-type="concept"] .node-core { fill: var(--teal-soft); stroke: var(--teal); }
+    .graph[data-mode="type"] .node-group[data-type="memory"] .node-core { fill: var(--violet-soft); stroke: var(--violet); }
+    .graph[data-mode="type"] .node-group[data-type="attention"] .node-core { fill: var(--coral-soft); stroke: var(--coral); }
+    .graph-legend { position: absolute; left: 18px; bottom: 18px; width: 160px; padding: 10px 12px; background: rgba(255,255,255,.94); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 5px 20px rgba(32,48,61,.08); z-index: 3; }
+    .legend-row { display: flex; align-items: center; gap: 8px; min-height: 24px; font-size: 12px; color: var(--text-soft); }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .zoom-control { position: absolute; right: 18px; bottom: 18px; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--surface); z-index: 3; box-shadow: 0 5px 20px rgba(32,48,61,.08); }
+    .zoom-control button { width: 34px; height: 34px; display: grid; place-items: center; background: white; color: var(--text-soft); border-bottom: 1px solid var(--border); }
+    .zoom-control button:last-child { border-bottom: 0; }
+    .zoom-control button:hover { background: var(--surface-soft); color: var(--text); }
+
+    .inspector { grid-column: 4; grid-row: 1; min-width: 0; min-height: 0; border-left: 1px solid var(--border); background: var(--surface); display: flex; flex-direction: column; z-index: 11; }
+    .inspector-header { min-height: 64px; padding: 0 16px 0 18px; display: flex; align-items: center; gap: 9px; border-bottom: 1px solid var(--border); }
+    .inspector-title { min-width: 0; font-size: 18px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 0 4px var(--teal-soft); }
+    .inspector-close { display: none; margin-left: auto; }
+    .inspector-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 18px 28px; scrollbar-width: thin; }
+    .inspector-tabs { position: sticky; top: 0; z-index: 2; display: flex; gap: 18px; background: white; border-bottom: 1px solid var(--border); }
+    .tab-button { height: 48px; background: transparent; color: var(--text-soft); border-bottom: 2px solid transparent; font-size: 13px; }
+    .tab-button.is-active { color: var(--text); border-bottom-color: var(--teal); font-weight: 650; }
+    .section { padding: 18px 0; border-bottom: 1px solid var(--border); }
+    .section:last-of-type { border-bottom: 0; }
+    .section h3 { margin: 0 0 11px; font-size: 14px; }
+    .summary-text { margin: 0; color: #40505d; font-size: 14px; line-height: 1.75; }
+    .source-list { display: grid; gap: 8px; }
+    .source-row { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; gap: 8px; min-height: 42px; }
+    .source-icon { width: 28px; height: 28px; display: grid; place-items: center; background: var(--blue-soft); color: var(--blue); border-radius: var(--radius-sm); }
+    .source-icon .icon { width: 16px; height: 16px; }
+    .source-name { min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .source-meta { font-size: 12px; color: var(--text-faint); }
+    .concept-list { display: flex; flex-wrap: wrap; gap: 7px; }
+    .concept-chip { padding: 6px 8px; border: 1px solid #b7ddd4; border-radius: 5px; background: var(--teal-soft); color: #087765; font-size: 12px; }
+    .learning-event { display: grid; grid-template-columns: 9px 1fr; gap: 10px; color: #40505d; font-size: 13px; line-height: 1.55; }
+    .learning-event .dot { width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: var(--teal); }
+    .event-meta { margin-top: 6px; color: var(--text-faint); font-size: 11px; }
+    .confidence { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+    .confidence span { font-size: 12px; color: var(--text-soft); }
+    .confidence-track { height: 7px; background: #edf1f4; border-radius: 4px; overflow: hidden; }
+    .confidence-fill { height: 100%; width: 89%; background: var(--teal); border-radius: 4px; transition: width .2s; }
+    .ask-button { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; background: var(--teal); color: white; border-radius: var(--radius-sm); font-weight: 650; }
+    .ask-button:hover { background: #0a8877; }
+    .ask-button .icon { width: 18px; height: 18px; }
+
+    .activity-bar { grid-column: 3 / 5; grid-row: 2; position: relative; display: grid; grid-template-columns: 170px repeat(3, minmax(160px, 1fr)) 58px; align-items: stretch; border-top: 1px solid var(--border); background: var(--surface); z-index: 15; }
+    .activity-label { display: flex; align-items: center; gap: 9px; padding: 0 18px; font-size: 13px; font-weight: 650; border-right: 1px solid var(--border); }
+    .pulse { width: 8px; height: 8px; background: var(--teal); border-radius: 50%; animation: pulse 1.8s infinite; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(15,157,138,0); } 0%,100% { box-shadow: 0 0 0 0 rgba(15,157,138,.22); } }
+    .activity-step { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 10px; padding: 0 18px; border-right: 1px solid var(--border); }
+    .step-icon { width: 32px; height: 32px; display: grid; place-items: center; color: var(--blue); background: var(--blue-soft); border-radius: var(--radius-sm); }
+    .step-icon .icon { width: 17px; height: 17px; }
+    .step-name { font-size: 13px; font-weight: 600; }
+    .step-track { height: 4px; margin-top: 5px; background: #edf1f4; border-radius: 2px; overflow: hidden; }
+    .step-fill { height: 100%; border-radius: 2px; background: var(--blue); }
+    .step-count { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; }
+    .activity-toggle { display: grid; place-items: center; background: white; color: var(--text-soft); }
+    .activity-toggle:hover { background: var(--surface-soft); color: var(--text); }
+    .activity-toggle .icon { transition: transform .18s ease; }
+    .activity-toggle.is-open .icon { transform: rotate(180deg); }
+    .activity-drawer { position: absolute; left: 0; right: 0; bottom: 61px; height: 0; overflow: hidden; background: white; border-top: 1px solid var(--border); box-shadow: 0 -16px 40px rgba(32,48,61,.1); transition: height .22s ease; }
+    .activity-drawer.is-open { height: 240px; }
+    .job-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .job-table th, .job-table td { height: 46px; padding: 0 18px; border-bottom: 1px solid var(--border); text-align: left; }
+    .job-table th { color: var(--text-soft); font-size: 12px; font-weight: 600; }
+    .job-state { display: inline-flex; align-items: center; gap: 6px; }
+    .job-state::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--teal); }
+    .job-state.is-running::before { background: var(--amber); }
+    .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; }
+    .toast { position: fixed; z-index: 40; right: 22px; bottom: 82px; max-width: 360px; padding: 11px 14px; color: white; background: #21313d; border-radius: var(--radius-sm); box-shadow: var(--shadow); font-size: 13px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .18s ease; }
+    .toast.is-visible { opacity: 1; transform: translateY(0); }
+    .backdrop { display: none; position: fixed; inset: 0; z-index: 29; background: rgba(16,24,32,.28); }
+
+    @media (max-width: 1200px) {
+      .app { grid-template-columns: 64px 244px minmax(420px, 1fr); }
+      .product-rail { padding-inline: 4px; }
+      .knowledge-nav { grid-column: 2; }
+      .nav-footer { left: 64px; width: 244px; }
+      .canvas { grid-column: 3; }
+      .inspector { position: fixed; top: 0; right: 0; bottom: 62px; width: 360px; z-index: 32; transform: translateX(102%); box-shadow: var(--shadow); transition: transform .22s ease; }
+      .inspector.is-open { transform: translateX(0); }
+      .inspector-close { display: grid; }
+      .activity-bar { grid-column: 3; }
+      .backdrop.is-visible { display: block; }
+      .toolbar .tool-label { display: none; }
+      .tool-button { padding-inline: 8px; }
+    }
+
+    @media (max-width: 760px) {
+      body { overflow: hidden; }
+      .app { display: grid; grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) 60px; }
+      .product-rail { grid-column: 1; grid-row: 2; flex-direction: row; padding: 4px 8px; width: 100vw; max-width: 100vw; }
+      .brand { display: none; }
+      .rail-nav { flex-direction: row; justify-content: space-around; }
+      .rail-nav .rail-button:nth-child(n+7) { display: none; }
+      .rail-button { width: 50px; min-height: 50px; }
+      .rail-button.is-active::before { left: 12px; right: 12px; top: -4px; width: auto; height: 3px; border-radius: 0 0 3px 3px; }
+      .rail-button[data-mobile-hide="true"] { display: none; }
+      .rail-spacer { display: none; }
+      .knowledge-nav { position: fixed; inset: 0 34px 60px 0; width: auto; transform: translateX(-103%); box-shadow: var(--shadow); transition: transform .22s ease; z-index: 32; }
+      .knowledge-nav.is-open { transform: translateX(0); }
+      .nav-footer { position: absolute; left: 0; bottom: 0; width: 100%; }
+      .canvas { grid-column: 1; grid-row: 1; }
+      .canvas-header { min-height: 58px; padding: 0 10px; }
+      .canvas-title { font-size: 17px; }
+      .canvas-meta { display: none; }
+      .mobile-nav-button { display: grid; }
+      .toolbar { gap: 3px; min-width: 0; }
+      .tool-button { height: 34px; min-width: 32px; padding-inline: 6px; }
+      .tool-button[data-mobile-hide="true"] { display: none; }
+      .toolbar .mode-button { display: none; }
+      .graph { min-height: 560px; width: 760px; transform-origin: top left; transform: translateX(-145px) scale(.78); }
+      .graph-stage { overflow: auto; }
+      .graph-legend { left: 10px; bottom: 10px; width: 140px; }
+      .zoom-control { right: 10px; bottom: 10px; }
+      .inspector { bottom: 60px; width: min(92vw, 370px); }
+      .activity-bar { grid-column: 1; grid-row: 1; align-self: end; height: 48px; grid-template-columns: 1fr 42px; z-index: 8; }
+      .activity-label { padding: 0 12px; border-right: 1px solid var(--border); }
+      .activity-step { display: none; }
+      .activity-drawer { bottom: 47px; overflow: auto; }
+      .activity-drawer.is-open { height: 260px; }
+      .job-table { min-width: 640px; }
+      .toast { right: 12px; left: 12px; bottom: 72px; max-width: none; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" width="0" height="0" style="position:absolute">
+    <symbol id="i-sprout" viewBox="0 0 24 24"><path d="M7 20h10M12 20V10M12 10C8 10 5 7 5 3c4 0 7 2 7 7Zm0 4c0-4 3-7 7-7 0 4-3 7-7 7Z"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3v-7a9 9 0 1 1 18 0Z"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V4H6.5A2.5 2.5 0 0 0 4 6.5v13Z"/><path d="M8 7h8M8 11h6"/></symbol>
+    <symbol id="i-source" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+    <symbol id="i-graph" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="7" cy="18" r="2"/><circle cx="18" cy="17" r="2"/><path d="m8 6 8-1M7 8v8m2-9 7 8M9 18l7-1"/></symbol>
+    <symbol id="i-checks" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4M2 12l3 3m4 4 3 3 10-10"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6h6l2 2h10v10H3Z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.7 2.7 17a2 2 0 0 0 1.7 3h15.2a2 2 0 0 0 1.7-3L13.7 3.7a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 3h.01"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 5h16l-6 7v5l-4 2v-7Z"/></symbol>
+    <symbol id="i-lightbulb" viewBox="0 0 24 24"><path d="M9 18h6M10 22h4M8 14a7 7 0 1 1 8 0c-1 1-1 2-1 2H9s0-1-1-2Z"/></symbol>
+    <symbol id="i-maximize" viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5m13 5h5v-5"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 2h8l4 4v16H6Z"/><path d="M14 2v5h5M9 13h6M9 17h5"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  </svg>
+
+  <main class="app">
+    <nav class="product-rail" aria-label="产品导航">
+      <div class="brand" title="Sage"><svg class="icon"><use href="#i-sprout"/></svg></div>
+      <div class="rail-nav">
+        <button class="rail-button" data-view="chat" title="对话"><svg class="icon"><use href="#i-chat"/></svg><span>对话</span></button>
+        <button class="rail-button is-active" data-view="knowledge" title="知识"><svg class="icon"><use href="#i-book"/></svg><span>知识</span></button>
+        <button class="rail-button" data-view="sources" title="来源"><svg class="icon"><use href="#i-source"/></svg><span>来源</span></button>
+        <button class="rail-button" data-view="search" title="搜索"><svg class="icon"><use href="#i-search"/></svg><span>搜索</span></button>
+        <button class="rail-button" data-view="graph" title="图谱"><svg class="icon"><use href="#i-graph"/></svg><span>图谱</span></button>
+        <button class="rail-button" data-view="review" title="审计"><svg class="icon"><use href="#i-checks"/></svg><span>审计</span></button>
+        <button class="rail-button" data-view="tasks" title="任务"><svg class="icon"><use href="#i-list"/></svg><span>任务</span></button>
+      </div>
+      <div class="rail-spacer"></div>
+      <button class="rail-button" data-view="settings" data-mobile-hide="true" title="设置"><svg class="icon"><use href="#i-settings"/></svg><span>设置</span></button>
+    </nav>
+
+    <aside class="knowledge-nav" id="knowledgeNav">
+      <header class="nav-header">
+        <div><div class="nav-title">我的知识空间</div><div class="nav-subtitle">Sage Knowledge · 已同步</div></div>
+        <button class="icon-button" title="添加知识来源"><svg class="icon"><use href="#i-plus"/></svg></button>
+      </header>
+      <section class="learning-summary" aria-label="今日学习摘要">
+        <div class="metric learned"><strong>24</strong><span>今天学会</span></div>
+        <div class="metric auto"><strong>22</strong><span>自动沉淀</span></div>
+        <div class="metric review"><strong>2</strong><span>需确认</span></div>
+      </section>
+      <section class="auto-feed">
+        <div class="feed-row is-auto"><svg class="icon"><use href="#i-check"/></svg><span>低风险变更已自动应用</span><button class="text-action" id="undoChange">撤销</button></div>
+        <div class="feed-row is-review"><svg class="icon"><use href="#i-alert"/></svg><span>高风险变更需要确认</span><button class="text-action" id="openReview">查看</button></div>
+      </section>
+      <div class="tree-scroll">
+        <section class="tree-section"><button class="tree-heading"><svg class="icon"><use href="#i-folder"/></svg>Overview<svg class="icon chevron"><use href="#i-chevron"/></svg></button><div class="tree-items"><button class="tree-item is-active" data-node="sage"><span class="dot"></span>知识概览<span class="tree-count">1</span></button><button class="tree-item"><span class="dot"></span>近期变化<span class="tree-count">24</span></button></div></section>
+        <section class="tree-section"><button class="tree-heading"><svg class="icon"><use href="#i-folder"/></svg>Projects<svg class="icon chevron"><use href="#i-chevron"/></svg></button><div class="tree-items"><button class="tree-item" data-node="sage"><span class="dot"></span>Sage<span class="tree-count">126</span></button><button class="tree-item" data-node="harness"><span class="dot"></span>Agent Harness<span class="tree-count">42</span></button><button class="tree-item" data-node="rag"><span class="dot"></span>RAG<span class="tree-count">38</span></button><button class="tree-item" data-node="memory"><span class="dot"></span>Memory<span class="tree-count">31</span></button></div></section>
+        <section class="tree-section"><button class="tree-heading"><svg class="icon"><use href="#i-folder"/></svg>Concepts<svg class="icon chevron"><use href="#i-chevron"/></svg></button><div class="tree-items"><button class="tree-item" data-node="context"><span class="dot"></span>Context Compression<span class="tree-count">18</span></button><button class="tree-item"><span class="dot"></span>Agentic Retrieval<span class="tree-count">15</span></button><button class="tree-item"><span class="dot"></span>Tool Isolation<span class="tree-count">12</span></button></div></section>
+        <section class="tree-section is-collapsed"><button class="tree-heading"><svg class="icon"><use href="#i-folder"/></svg>People<svg class="icon chevron"><use href="#i-chevron"/></svg></button><div class="tree-items"></div></section>
+        <section class="tree-section is-collapsed"><button class="tree-heading"><svg class="icon"><use href="#i-folder"/></svg>Sources<svg class="icon chevron"><use href="#i-chevron"/></svg></button><div class="tree-items"></div></section>
+      </div>
+      <footer class="nav-footer"><button class="new-space"><svg class="icon"><use href="#i-plus"/></svg>新建知识库</button></footer>
+    </aside>
+
+    <section class="canvas">
+      <header class="canvas-header">
+        <button class="icon-button mobile-nav-button" id="mobileNavOpen" title="打开知识导航"><svg class="icon"><use href="#i-menu"/></svg></button>
+        <div class="canvas-title">Knowledge Graph</div><div class="canvas-meta">70 pages · 154 links</div>
+        <div class="toolbar">
+          <button class="tool-button is-active mode-button" data-mode="community"><svg class="icon"><use href="#i-graph"/></svg><span class="tool-label">社区</span></button>
+          <button class="tool-button mode-button" data-mode="type"><svg class="icon"><use href="#i-filter"/></svg><span class="tool-label">类型</span></button>
+          <button class="tool-button" id="insightButton" data-mobile-hide="true"><svg class="icon"><use href="#i-lightbulb"/></svg><span class="tool-label">洞察</span></button>
+          <button class="tool-button" id="fitButton" title="适应画布"><svg class="icon"><use href="#i-maximize"/></svg></button>
+        </div>
+      </header>
+      <div class="graph-stage">
+        <svg class="graph" id="graph" data-mode="community" viewBox="0 0 900 650" role="img" aria-label="Sage 知识图谱">
+          <ellipse class="community-halo" cx="275" cy="205" rx="170" ry="120" stroke="#3f7fdb"/>
+          <ellipse class="community-halo" cx="650" cy="185" rx="145" ry="108" stroke="#0f9d8a"/>
+          <ellipse class="community-halo" cx="245" cy="470" rx="130" ry="98" stroke="#7a67d8"/>
+          <ellipse class="community-halo" cx="685" cy="455" rx="145" ry="105" stroke="#d99717"/>
+          <path class="edge is-highlighted" d="M450 330 310 220"/><path class="edge is-highlighted" d="M450 330 625 205"/><path class="edge" d="M450 330 275 455"/><path class="edge" d="M450 330 665 440"/><path class="edge" d="M450 330 455 545"/>
+          <path class="edge" d="M275 185 170 125M275 185 145 215M275 185 260 80M275 185 365 115M275 185 370 235"/>
+          <path class="edge" d="M650 175 570 90M650 175 735 105M650 175 790 195M650 175 690 285"/>
+          <path class="edge" d="M245 455 125 425M245 455 130 510M245 455 230 575M245 455 355 525"/>
+          <path class="edge" d="M685 440 590 390M685 440 795 390M685 440 815 480M685 440 720 560"/>
+          <g class="node-group is-selected" data-id="sage" data-community="rag" data-type="concept" tabindex="0"><circle class="node-core" cx="450" cy="330" r="72"/><circle class="node-dot" cx="450" cy="330" r="58" fill="#0f9d8a"/><path d="M428 344h44M450 344v-37M450 317c-17 0-27-10-27-25 16 0 27 9 27 25Zm0 11c0-16 11-26 27-26 0 15-11 26-27 26Z" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/><text class="node-label" x="450" y="373" fill="white">Sage</text></g>
+          <g class="node-group" data-id="harness" data-community="harness" data-type="concept" tabindex="0"><rect class="node-core" x="215" y="145" rx="18" width="120" height="80"/><text class="node-label" x="275" y="180">Agent</text><text class="node-label" x="275" y="199">Harness</text></g>
+          <g class="node-group" data-id="rag" data-community="rag" data-type="concept" tabindex="0"><rect class="node-core" x="595" y="135" rx="18" width="110" height="78"/><text class="node-label" x="650" y="181">RAG</text></g>
+          <g class="node-group" data-id="memory" data-community="memory" data-type="memory" tabindex="0"><rect class="node-core" x="190" y="420" rx="18" width="110" height="72"/><text class="node-label" x="245" y="463">Memory</text></g>
+          <g class="node-group" data-id="context" data-community="context" data-type="concept" tabindex="0"><rect class="node-core" x="620" y="402" rx="18" width="130" height="78"/><text class="node-label" x="685" y="435">Context</text><text class="node-label" x="685" y="454">Compression</text></g>
+          <g class="node-group" data-id="review" data-community="review" data-type="attention" tabindex="0"><circle class="node-core" cx="455" cy="545" r="43"/><text class="node-label" x="455" y="541">需确认</text><text class="node-sub" x="455" y="561">2 changes</text></g>
+          <g data-community="harness"><circle cx="170" cy="125" r="8" fill="#3f7fdb"/><text class="node-sub" x="170" y="105">工具调用</text><circle cx="145" cy="215" r="8" fill="#3f7fdb"/><text class="node-sub" x="145" y="240">执行控制</text><circle cx="260" cy="80" r="8" fill="#3f7fdb"/><text class="node-sub" x="260" y="59">任务规划</text><circle cx="365" cy="115" r="8" fill="#3f7fdb"/><text class="node-sub" x="365" y="94">观测评估</text><circle cx="370" cy="235" r="8" fill="#3f7fdb"/><text class="node-sub" x="370" y="259">安全沙箱</text></g>
+          <g data-community="rag"><circle cx="570" cy="90" r="8" fill="#0f9d8a"/><text class="node-sub" x="570" y="69">混合检索</text><circle cx="735" cy="105" r="8" fill="#0f9d8a"/><text class="node-sub" x="735" y="84">向量索引</text><circle cx="790" cy="195" r="8" fill="#0f9d8a"/><text class="node-sub" x="790" y="220">RRF 融合</text><circle cx="690" cy="285" r="8" fill="#0f9d8a"/><text class="node-sub" x="690" y="310">引用追溯</text></g>
+          <g data-community="memory"><circle cx="125" cy="425" r="8" fill="#7a67d8"/><text class="node-sub" x="125" y="404">短期记忆</text><circle cx="130" cy="510" r="8" fill="#7a67d8"/><text class="node-sub" x="130" y="535">长期记忆</text><circle cx="230" cy="575" r="8" fill="#7a67d8"/><text class="node-sub" x="230" y="600">去重合并</text><circle cx="355" cy="525" r="8" fill="#7a67d8"/><text class="node-sub" x="355" y="550">记忆图谱</text></g>
+          <g data-community="context"><circle cx="590" cy="390" r="8" fill="#d99717"/><text class="node-sub" x="585" y="370">摘要压缩</text><circle cx="795" cy="390" r="8" fill="#d99717"/><text class="node-sub" x="795" y="369">选择保留</text><circle cx="815" cy="480" r="8" fill="#d99717"/><text class="node-sub" x="815" y="505">层级摘要</text><circle cx="720" cy="560" r="8" fill="#d99717"/><text class="node-sub" x="720" y="585">Token 预算</text></g>
+        </svg>
+        <div class="graph-legend"><div class="legend-row"><span class="legend-dot" style="background:var(--teal)"></span>已学会 <span style="margin-left:auto">1,230</span></div><div class="legend-row"><span class="legend-dot" style="background:var(--amber)"></span>学习中 <span style="margin-left:auto">342</span></div><div class="legend-row"><span class="legend-dot" style="background:var(--coral)"></span>需关注 <span style="margin-left:auto">2</span></div></div>
+        <div class="zoom-control"><button title="放大" id="zoomIn"><svg class="icon"><use href="#i-plus"/></svg></button><button title="缩小" id="zoomOut"><svg class="icon"><use href="#i-minus"/></svg></button><button title="适应画布"><svg class="icon"><use href="#i-maximize"/></svg></button></div>
+      </div>
+    </section>
+
+    <aside class="inspector" id="inspector">
+      <header class="inspector-header"><span class="status-dot"></span><div class="inspector-title" id="inspectorTitle">Sage</div><button class="icon-button inspector-close" id="inspectorClose" title="关闭详情"><svg class="icon"><use href="#i-x"/></svg></button></header>
+      <div class="inspector-scroll">
+        <div class="inspector-tabs"><button class="tab-button is-active">概览</button><button class="tab-button">来源 5</button><button class="tab-button">关联 18</button></div>
+        <section class="section"><h3>摘要</h3><p class="summary-text" id="summaryText">Sage 把对话、知识、记忆和工具执行连接为一个可恢复、可追溯的个人智能体工作台。</p></section>
+        <section class="section"><h3>来源追溯</h3><div class="source-list"><div class="source-row"><span class="source-icon"><svg class="icon"><use href="#i-file"/></svg></span><div><div class="source-name">docs/architecture/sage-v7.md</div><div class="source-meta">Git Wiki · 5 小时前</div></div><span class="mono">a17c4e</span></div><div class="source-row"><span class="source-icon"><svg class="icon"><use href="#i-file"/></svg></span><div><div class="source-name">sage-learning/47-V7知识摄取.md</div><div class="source-meta">Obsidian · 昨天</div></div><span class="mono">b81d29</span></div></div></section>
+        <section class="section"><h3>关联概念</h3><div class="concept-list" id="conceptList"><span class="concept-chip">Agent Harness</span><span class="concept-chip">RAG</span><span class="concept-chip">Memory</span><span class="concept-chip">Context</span></div></section>
+        <section class="section"><h3>最新学习</h3><div class="learning-event"><span class="dot"></span><div><strong>已自动应用</strong>：补充了任务恢复与 Timeline 回放的关系。<div class="event-meta">来源：V7 runtime spec · 5 小时前 · 可撤销</div></div></div></section>
+        <section class="section"><h3>置信度</h3><div class="confidence"><span>高</span><div class="confidence-track"><div class="confidence-fill" id="confidenceFill"></div></div><strong id="confidenceText">89%</strong></div></section>
+        <button class="ask-button" id="askButton"><svg class="icon"><use href="#i-chat"/></svg>在对话中询问</button>
+      </div>
+    </aside>
+
+    <section class="activity-bar">
+      <div class="activity-drawer" id="activityDrawer"><table class="job-table"><thead><tr><th>任务</th><th>来源</th><th>阶段</th><th>进度</th><th>更新时间</th></tr></thead><tbody><tr><td class="mono">ingest-8f32</td><td>Obsidian / sage-learning</td><td><span class="job-state is-running">Vision 解析</span></td><td>14 / 18</td><td>刚刚</td></tr><tr><td class="mono">wiki-29ab</td><td>GitHub / Sage-knowledge</td><td><span class="job-state">Wiki 更新</span></td><td>6 / 6</td><td>2 分钟前</td></tr><tr><td class="mono">graph-14c1</td><td>Knowledge revision 47</td><td><span class="job-state">图谱投影</span></td><td>154 / 154</td><td>5 分钟前</td></tr></tbody></table></div>
+      <div class="activity-label"><span class="pulse"></span>知识摄入中</div>
+      <div class="activity-step"><span class="step-icon"><svg class="icon"><use href="#i-file"/></svg></span><div><div class="step-name">解析中</div><div class="step-track"><div class="step-fill" style="width:78%"></div></div></div><span class="step-count">14 / 18</span></div>
+      <div class="activity-step"><span class="step-icon" style="color:var(--teal);background:var(--teal-soft)"><svg class="icon"><use href="#i-image"/></svg></span><div><div class="step-name">Vision 处理中</div><div class="step-track"><div class="step-fill" style="width:54%;background:var(--teal)"></div></div></div><span class="step-count">3</span></div>
+      <div class="activity-step"><span class="step-icon" style="color:var(--violet);background:var(--violet-soft)"><svg class="icon"><use href="#i-book"/></svg></span><div><div class="step-name">Wiki 更新中</div><div class="step-track"><div class="step-fill" style="width:66%;background:var(--violet)"></div></div></div><span class="step-count">6</span></div>
+      <button class="activity-toggle" id="activityToggle" title="展开任务"><svg class="icon"><use href="#i-chevron"/></svg></button>
+    </section>
+  </main>
+  <div class="backdrop" id="backdrop"></div><div class="toast" id="toast" role="status"></div>
+
+  <script>
+    const nodeData = {
+      sage: { title: 'Sage', summary: 'Sage 把对话、知识、记忆和工具执行连接为一个可恢复、可追溯的个人智能体工作台。', confidence: 89, concepts: ['Agent Harness','RAG','Memory','Context'] },
+      harness: { title: 'Agent Harness', summary: 'Agent Harness 负责规划、执行、观测与恢复，让模型、工具、MCP 和 RAG 在统一状态机内可靠协作。', confidence: 92, concepts: ['工具调用','执行控制','任务恢复','安全沙箱'] },
+      rag: { title: 'Agentic RAG', summary: 'Hybrid Retrieval 结合全文、向量与图谱召回，通过 RRF 融合并保留每条答案的来源引用。', confidence: 86, concepts: ['BM25','Qdrant','RRF','GraphRAG'] },
+      memory: { title: 'Memory', summary: '分层记忆连接短期会话、长期语义与运行状态，并通过提案、去重和生命周期规则持续沉淀。', confidence: 84, concepts: ['短期记忆','长期记忆','Dream','记忆图谱'] },
+      context: { title: 'Context Compression', summary: '上下文压缩根据 Token 预算选择保留关键状态、工具结果和层级摘要，使长任务可持续恢复。', confidence: 88, concepts: ['摘要压缩','选择保留','Token 预算','层级摘要'] },
+      review: { title: '需确认变更', summary: '只有删除、跨域合并、知识库目标变更和 HR 对外发布等高风险动作需要人工确认。', confidence: 74, concepts: ['公开发布','冲突合并','删除知识','权限边界'] }
+    };
+    const graph = document.getElementById('graph');
+    const inspector = document.getElementById('inspector');
+    const backdrop = document.getElementById('backdrop');
+    const toast = document.getElementById('toast');
+    let toastTimer;
+    let zoom = 1;
+    function syncInspectorLayout() {
+      if (window.innerWidth > 1200) {
+        inspector.classList.add('is-open');
+        backdrop.classList.remove('is-visible');
+      } else if (!inspector.dataset.userOpened) {
+        inspector.classList.remove('is-open');
+      }
+    }
+    function showToast(message) { clearTimeout(toastTimer); toast.textContent = message; toast.classList.add('is-visible'); toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 2400); }
+    function selectNode(id) {
+      const data = nodeData[id]; if (!data) return;
+      document.querySelectorAll('.node-group').forEach(n => n.classList.toggle('is-selected', n.dataset.id === id));
+      document.getElementById('inspectorTitle').textContent = data.title;
+      document.getElementById('summaryText').textContent = data.summary;
+      document.getElementById('confidenceText').textContent = `${data.confidence}%`;
+      document.getElementById('confidenceFill').style.width = `${data.confidence}%`;
+      document.getElementById('conceptList').innerHTML = data.concepts.map(item => `<span class="concept-chip">${item}</span>`).join('');
+      inspector.classList.add('is-open');
+      if (window.innerWidth <= 1200) { inspector.dataset.userOpened = 'true'; backdrop.classList.add('is-visible'); }
+    }
+    document.querySelectorAll('.node-group').forEach(node => { node.addEventListener('click', () => selectNode(node.dataset.id)); node.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') selectNode(node.dataset.id); }); });
+    document.querySelectorAll('.tree-item[data-node]').forEach(item => item.addEventListener('click', () => { document.querySelectorAll('.tree-item').forEach(i => i.classList.remove('is-active')); item.classList.add('is-active'); selectNode(item.dataset.node); if (window.innerWidth <= 760) closeOverlays(); }));
+    document.querySelectorAll('.tree-heading').forEach(button => button.addEventListener('click', () => button.closest('.tree-section').classList.toggle('is-collapsed')));
+    document.querySelectorAll('.mode-button').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('.mode-button').forEach(b => b.classList.remove('is-active')); button.classList.add('is-active'); graph.dataset.mode = button.dataset.mode; showToast(button.dataset.mode === 'type' ? '已按知识类型着色' : '已按社区关系着色'); }));
+    document.querySelectorAll('.rail-button').forEach(button => button.addEventListener('click', () => { document.querySelectorAll('.rail-button').forEach(b => b.classList.remove('is-active')); button.classList.add('is-active'); const view = button.dataset.view; if (view === 'review') { selectNode('review'); showToast('2 项高风险变更等待确认'); } else if (view === 'tasks') { toggleActivity(true); } else if (view !== 'knowledge' && view !== 'graph') { showToast(`${button.querySelector('span')?.textContent || '该'}视图将在后续阶段接入`); } }));
+    function toggleActivity(force) { const drawer = document.getElementById('activityDrawer'); const toggle = document.getElementById('activityToggle'); const open = force ?? !drawer.classList.contains('is-open'); drawer.classList.toggle('is-open', open); toggle.classList.toggle('is-open', open); }
+    document.getElementById('activityToggle').addEventListener('click', () => toggleActivity());
+    document.getElementById('openReview').addEventListener('click', () => selectNode('review'));
+    document.getElementById('undoChange').addEventListener('click', event => { event.currentTarget.closest('.feed-row').style.opacity = '.42'; showToast('已撤销最近一次自动沉淀，可在审计记录中恢复'); });
+    document.getElementById('askButton').addEventListener('click', () => showToast(`已将「${document.getElementById('inspectorTitle').textContent}」带入新对话`));
+    document.getElementById('insightButton').addEventListener('click', () => showToast('发现 3 个知识缺口：评测基线、回滚策略、图谱增量更新'));
+    function applyZoom(next) { zoom = Math.max(.76, Math.min(1.2, next)); graph.style.transform = `scale(${zoom})`; graph.style.transformOrigin = 'center'; }
+    document.getElementById('zoomIn').addEventListener('click', () => applyZoom(zoom + .08)); document.getElementById('zoomOut').addEventListener('click', () => applyZoom(zoom - .08)); document.getElementById('fitButton').addEventListener('click', () => applyZoom(1));
+    function closeOverlays() { inspector.classList.remove('is-open'); inspector.dataset.userOpened = ''; document.getElementById('knowledgeNav').classList.remove('is-open'); backdrop.classList.remove('is-visible'); }
+    document.getElementById('inspectorClose').addEventListener('click', closeOverlays); backdrop.addEventListener('click', closeOverlays);
+    document.getElementById('mobileNavOpen').addEventListener('click', () => { document.getElementById('knowledgeNav').classList.add('is-open'); backdrop.classList.add('is-visible'); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeOverlays(); toggleActivity(false); } });
+    window.addEventListener('resize', syncInspectorLayout);
+    syncInspectorLayout();
+  </script>
+</body>
+</html>
