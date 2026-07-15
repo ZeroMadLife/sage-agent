@@ -101,9 +101,8 @@ git diff --check
 
 收口：
 
-1. 写入 Obsidian `43-V7-P1.1共享Shell与对话形变源码复盘.md`；
+1. 写入 Obsidian `45-V7-P1.1共享Shell与对话形变源码复盘.md`；
 2. 记录 source commit、测试证据、关闭风险和 V7-P2 边界；
 3. 给出“可合并 / 继续开发 / 需修复”结论；
 4. 合入 `dev/sage-v7` 后重跑受影响测试和构建；
 5. 确认祖先关系与 worktree 干净后删除短期分支和 worktree。
-
