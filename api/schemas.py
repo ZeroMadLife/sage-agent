@@ -63,6 +63,95 @@ class CodingSessionsResponse(BaseModel):
     sessions: list[CodingSessionSummary]
 
 
+AssistantHomeSectionStatus = Literal[
+    "ready", "empty", "not_configured", "unavailable", "error"
+]
+
+
+class AssistantHomeIdentity(BaseModel):
+    """Browser-safe identity shown on the personal assistant home."""
+
+    mode: Literal["local", "cloud"]
+    user_id: str | None = None
+    display_name: str
+
+
+class AssistantHomeKnowledge(BaseModel):
+    """Knowledge readiness without exposing source contents."""
+
+    status: AssistantHomeSectionStatus
+    source_count: int = Field(ge=0)
+    wiki_page_count: int = Field(ge=0)
+    last_synced_at: str | None = None
+
+
+class AssistantHomeRecentSession(BaseModel):
+    """One bounded, owner-visible session link."""
+
+    session_id: str
+    title: str
+    workspace_name: str
+    updated_at: str = ""
+    message_count: int = Field(ge=0)
+    target: str
+
+
+class AssistantHomeSessions(BaseModel):
+    """Recent session section with independent failure state."""
+
+    status: AssistantHomeSectionStatus
+    items: list[AssistantHomeRecentSession]
+    total: int = Field(ge=0)
+    error: str | None = None
+
+
+class AssistantHomeProject(BaseModel):
+    """One owner-scoped cloud project safe for the home page."""
+
+    project_id: str
+    name: str
+
+
+class AssistantHomeProjects(BaseModel):
+    """Cloud project section with independent availability state."""
+
+    status: AssistantHomeSectionStatus
+    items: list[AssistantHomeProject]
+    total: int = Field(ge=0)
+    error: str | None = None
+
+
+class AssistantHomeProposals(BaseModel):
+    """Proposal counts only; candidate contents remain in review APIs."""
+
+    status: AssistantHomeSectionStatus
+    memory_pending: int = Field(ge=0)
+    wiki_pending: int = Field(default=0, ge=0)
+    note_pending: int = Field(default=0, ge=0)
+    error: str | None = None
+
+
+class AssistantHomeAction(BaseModel):
+    """Deterministic next action derived from current persisted state."""
+
+    id: str
+    kind: Literal["chat", "knowledge", "review", "project"]
+    label: str
+    description: str
+    target: str
+
+
+class AssistantHomeSummary(BaseModel):
+    """Bounded read model for the V7 personal assistant home."""
+
+    identity: AssistantHomeIdentity
+    knowledge: AssistantHomeKnowledge
+    sessions: AssistantHomeSessions
+    projects: AssistantHomeProjects
+    proposals: AssistantHomeProposals
+    suggested_actions: list[AssistantHomeAction] = Field(max_length=4)
+
+
 class CodingSessionMessage(BaseModel):
     """One replayable coding-agent chat message."""
 

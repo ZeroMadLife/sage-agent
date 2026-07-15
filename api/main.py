@@ -312,8 +312,17 @@ def create_app(
 
     app.state.coding_run_registry = CodingRunRegistry(app.state.coding_storage_root)
 
-    from api import cloud_auth, cloud_model_providers, cloud_workspaces, coding, routes, ws
+    from api import (
+        assistant,
+        cloud_auth,
+        cloud_model_providers,
+        cloud_workspaces,
+        coding,
+        routes,
+        ws,
+    )
 
+    app.include_router(assistant.router)
     app.include_router(routes.router)
     app.include_router(ws.router)
     app.include_router(coding.router)
