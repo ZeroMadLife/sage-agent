@@ -130,7 +130,7 @@ function compactArgs(args: Record<string, unknown>) {
 .eyebrow {
   margin: 0 0 4px;
   color: var(--sage-warning);
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
   font-weight: 700;
 }
 
@@ -230,7 +230,7 @@ button:disabled {
   background: var(--sage-surface-raised);
   color: var(--sage-text-muted);
   font-family: Inter, system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
 }
 
 .view-diff,
@@ -311,7 +311,7 @@ button:disabled {
 .diff-modal-header p {
   margin: 0 0 3px;
   color: var(--sage-text-muted);
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
   font-weight: 700;
   text-transform: uppercase;
 }

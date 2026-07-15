@@ -1,6 +1,12 @@
 :root {
   --sage-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --sage-font-mono: "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  --sage-font-xs: 12px;
+  --sage-font-sm: 13px;
+  --sage-font-md: 14px;
+  --sage-font-body: 15px;
+  --sage-font-lg: 18px;
+  --sage-font-title: 28px;
   --sage-bg: #f7f7f8;
   --sage-surface: #ffffff;
   --sage-surface-muted: #f1f2f4;
@@ -88,12 +94,31 @@
 
 * { box-sizing: border-box; }
 
-body { min-width: 320px; min-height: 100vh; margin: 0; color: var(--sage-text); background: var(--sage-bg); }
+body { min-width: 320px; min-height: 100vh; margin: 0; color: var(--sage-text); background: var(--sage-bg); font-size:var(--sage-font-body); line-height:1.6; }
 button, textarea, input, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--sage-focus); outline-offset: 2px; }
 button:disabled { cursor: not-allowed; }
 #app { min-height: 100vh; }
+
+::view-transition-old(sage-composer),
+::view-transition-new(sage-composer) {
+  height: 100%;
+  animation-duration: 300ms;
+  animation-timing-function: cubic-bezier(.2,.8,.2,1);
+}
+
+html[data-view-transition="composer"]::view-transition-old(root),
+html[data-view-transition="composer"]::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation:none !important; }
+}
 
 /* Highlight.js code blocks — use sage tokens for theme integration */
 .message-content .hljs {

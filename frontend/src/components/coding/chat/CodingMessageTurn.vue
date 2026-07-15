@@ -151,7 +151,7 @@ onBeforeUnmount(() => {
 .message-author {
   margin: 2px 0 8px;
   color: var(--sage-text-muted);
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
   font-weight: 700;
 }
 
@@ -184,8 +184,8 @@ onBeforeUnmount(() => {
   min-width: 0;
   max-width: 100%;
   color: var(--sage-text);
-  font-size: 14px;
-  line-height: 1.72;
+  font-size: var(--sage-font-body);
+  line-height: 1.75;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -258,7 +258,7 @@ onBeforeUnmount(() => {
   color: var(--sage-text-muted);
   background: color-mix(in srgb, var(--sage-surface-raised) 75%, var(--sage-code-bg));
   font-family: var(--sage-font-mono);
-  font-size: 10px;
+  font-size: var(--sage-font-xs);
   text-transform: lowercase;
 }
 
@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
   background: transparent;
   cursor: pointer;
   font-family: inherit;
-  font-size: 10px;
+  font-size: var(--sage-font-xs);
 }
 
 .message-content :deep(.code-copy-button:hover),

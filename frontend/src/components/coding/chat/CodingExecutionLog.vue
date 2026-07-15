@@ -81,7 +81,7 @@ function toggle() {
 
 .execution-status {
   margin-left: auto;
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
 }
 
 .execution-status.running { color: var(--sage-warning); }
@@ -119,7 +119,7 @@ function toggle() {
   overflow: hidden;
   color: var(--sage-text-muted);
   font-family: var(--sage-font-mono);
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

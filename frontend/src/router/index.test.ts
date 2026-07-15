@@ -29,4 +29,14 @@ describe('settings router', () => {
     await router.push('/missing')
     expect(router.currentRoute.value.fullPath).toBe('/assistant')
   })
+
+  it('keeps personal assistant routes inside the shared Sage shell', async () => {
+    for (const path of ['/assistant', '/coding', '/coding/session/saved-session', '/knowledge', '/evolution', '/public']) {
+      await router.push(path)
+      expect(router.currentRoute.value.meta.assistantShell).toBe(true)
+    }
+
+    await router.push('/settings/appearance')
+    expect(router.currentRoute.value.meta.assistantShell).not.toBe(true)
+  })
 })

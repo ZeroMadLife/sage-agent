@@ -83,6 +83,6 @@ function formatDecimal(value: number) {
   .context-copy-mobile { display: block; }
   .context-track { width: 28px; }
   .compact-context { display: none; }
-  .context-copy { font-size: 10px; }
+  .context-copy { font-size: var(--sage-font-xs); }
 }
 </style>

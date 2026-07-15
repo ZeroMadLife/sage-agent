@@ -10,16 +10,19 @@ const router = createRouter({
     {
       path: '/assistant',
       name: 'assistant.home',
+      meta: { assistantShell: true },
       component: () => import('../views/AssistantHomeView.vue'),
     },
     {
       path: '/coding',
       name: 'coding.home',
+      meta: { assistantShell: true },
       component: () => import('../views/CodingView.vue'),
     },
     {
       path: '/coding/session/:sessionId',
       name: 'coding.session',
+      meta: { assistantShell: true },
       component: () => import('../views/CodingView.vue'),
     },
     {
@@ -30,16 +33,19 @@ const router = createRouter({
     {
       path: '/knowledge',
       name: 'knowledge',
+      meta: { assistantShell: true },
       component: () => import('../views/KnowledgeView.vue'),
     },
     {
       path: '/evolution',
       name: 'evolution',
+      meta: { assistantShell: true },
       component: () => import('../views/EvolutionView.vue'),
     },
     {
       path: '/public',
       name: 'public.profile',
+      meta: { assistantShell: true },
       component: () => import('../views/PublicProfileView.vue'),
     },
     {

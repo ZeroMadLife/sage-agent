@@ -189,6 +189,7 @@ describe('CodingView chat route lifecycle', () => {
     store.selectSession = vi.fn(async (sessionId: string) => { store.sessionId = sessionId })
     const { router, root, wrapper } = await mountChat('/coding/session/session-a')
 
+    await wrapper().get('button[aria-label="打开会话"]').trigger('click')
     await wrapper().findComponent({ name: 'CodingSidebar' }).vm.$emit('navigate', 'session-b')
 
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/coding/session/session-b'))
@@ -203,6 +204,7 @@ describe('CodingView chat route lifecycle', () => {
     store.startNewSession = vi.fn(async () => { store.sessionId = 'session-new' })
     const { router, root, wrapper } = await mountChat('/coding/session/session-a')
 
+    await wrapper().get('button[aria-label="打开会话"]').trigger('click')
     await wrapper().findComponent({ name: 'CodingSidebar' }).vm.$emit('archiveCurrent', 'session-a')
 
     await vi.waitFor(() => expect(store.setSessionArchived).toHaveBeenCalledWith('session-a', true))
@@ -211,7 +213,7 @@ describe('CodingView chat route lifecycle', () => {
     root.unmount()
   })
 
-  it('uses a compact modal drawer and central session title bar on tablet', async () => {
+  it('uses a modal session drawer and central session title bar on tablet', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
     const store = useCodingStore()
     store.sessionId = 'session-a'
@@ -220,7 +222,6 @@ describe('CodingView chat route lifecycle', () => {
 
     expect(wrapper().find('.pane-left').exists()).toBe(false)
     expect(wrapper().get('.session-titlebar').text()).toContain('修复路由')
-    expect(wrapper().find('.workbench-header .git-badge').exists()).toBe(false)
     await wrapper().get('button[aria-label="打开会话"]').trigger('click')
     expect(wrapper().get('.pane-left').attributes('role')).toBe('dialog')
     expect(wrapper().get('.session-backdrop').classes()).toContain('visible')
@@ -246,7 +247,7 @@ describe('CodingView chat route lifecycle', () => {
     root.unmount()
   })
 
-  it('uses a full-screen drawer and isolates header and chat on mobile', async () => {
+  it('uses a full-screen drawer and isolates chat on mobile', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
     const store = useCodingStore()
     store.sessionId = 'session-a'
@@ -254,9 +255,8 @@ describe('CodingView chat route lifecycle', () => {
 
     await wrapper().get('button[aria-label="打开会话"]').trigger('click')
     expect(wrapper().get('.pane-left').attributes('role')).toBe('dialog')
-    expect(wrapper().get('.workbench-header').attributes('aria-hidden')).toBe('true')
-    expect(wrapper().get('.workbench-header').attributes('inert')).toBeDefined()
     expect(wrapper().get('.pane-center').attributes('aria-hidden')).toBe('true')
+    expect(wrapper().get('.pane-center').attributes('inert')).toBeDefined()
     root.unmount()
   })
 

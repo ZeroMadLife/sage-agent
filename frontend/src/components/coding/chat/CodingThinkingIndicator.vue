@@ -57,7 +57,7 @@ onBeforeUnmount(() => {
 .thinking-copy { display:grid; gap:2px; min-width:0; }
 .thinking-title { display:flex; align-items:baseline; gap:7px; min-width:0; }
 .thinking-copy strong { color:var(--sage-text); font-size:12px; }
-.thinking-time { color:var(--sage-text-muted); font-family:var(--sage-font-mono); font-size:10px; }
+.thinking-time { color:var(--sage-text-muted); font-family:var(--sage-font-mono); font-size:var(--sage-font-xs); }
 
 @keyframes thinking-sheen { 0%,100% { background-position: 100% 0; } 50% { background-position: 0 0; } }
 @keyframes thinking-sweep { 0% { transform:translateX(-100%); } 55%,100% { transform:translateX(100%); } }
@@ -67,7 +67,7 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   color:var(--sage-text-muted);
-  font-size:11px;
+  font-size:var(--sage-font-xs);
 }
 
 @media (prefers-reduced-motion: reduce) {

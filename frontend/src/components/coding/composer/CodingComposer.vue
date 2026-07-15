@@ -201,6 +201,7 @@ defineExpose({
 .composer::before { position:absolute; inset:0 0 auto; height:24px; background:linear-gradient(to bottom,transparent,var(--sage-surface)); transform:translateY(-100%); pointer-events:none; content:''; }
 
 .composer-frame {
+  view-transition-name: sage-composer;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -234,7 +235,7 @@ defineExpose({
   border: 0;
   border-radius: var(--sage-radius);
   padding: 3px 8px;
-  font-size: 12px;
+  font-size: var(--sage-font-xs);
   background: transparent;
   color: var(--sage-text-secondary);
   cursor: pointer;
@@ -256,7 +257,7 @@ defineExpose({
 .rail-icon:hover { border-color: var(--sage-border); color: var(--sage-text); background: var(--sage-surface-muted); }
 
 .reasoning-control { display:flex; align-items:center; gap:2px; min-height:28px; padding:2px 3px 2px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); }
-.reasoning-control button { min-width:28px; height:22px; padding:0 5px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:10px; }
+.reasoning-control button { min-width:30px; height:24px; padding:0 5px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-xs); }
 .reasoning-control button.active { color:var(--sage-text); background:var(--sage-surface-muted); font-weight:700; }
 
 .model-select:focus {
@@ -266,7 +267,7 @@ defineExpose({
 
 .context-error {
   color: var(--sage-danger);
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
   max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -298,8 +299,8 @@ defineExpose({
   color: var(--sage-text);
   background: var(--sage-surface);
   padding: 14px min(42%, 330px) 9px 14px;
-  line-height: 1.5;
-  font-size: 13px;
+  line-height: 1.65;
+  font-size: var(--sage-font-body);
   font-family: inherit;
 }
 
