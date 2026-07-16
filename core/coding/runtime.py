@@ -9,7 +9,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from inspect import signature
@@ -697,6 +697,54 @@ class CodingRuntime:
         )
         self._save_session()
         return item
+
+    @asynccontextmanager
+    async def harness_turn(self, run_id: str) -> AsyncIterator[None]:
+        """Own the runtime-side lease for one externally coordinated graph turn."""
+        if not run_id.strip():
+            raise ValueError("run_id must not be empty")
+        if self.active_run_id is not None:
+            raise ContextBusyError("active run")
+        await self._acquire_context_operation()
+        if self.active_run_id is not None:
+            self._context_operation_lock.release()
+            raise ContextBusyError("active run")
+        self.stop_requested = False
+        self._turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        self.active_run_id = run_id
+        try:
+            yield
+        finally:
+            self.stop_requested = False
+            self.active_run_id = None
+            self._turn_id = ""
+            if self._context_operation_lock.locked():
+                self._context_operation_lock.release()
+            self._save_session()
+
+    async def prepare_harness_context(
+        self,
+        *,
+        user_message: str,
+        run_id: str,
+    ) -> PreparedContext | None:
+        """Prepare and apply Sage context compaction before a graph turn starts."""
+        if self.active_run_id != run_id or not self._context_operation_lock.locked():
+            raise ContextBusyError("harness turn is not active")
+        if self.context_controller is None:
+            return None
+        prepared = await self.context_controller.on_turn_start(
+            deepcopy(self._active_projection),
+            user_message,
+            run_id,
+            previous_checkpoint=self._active_checkpoint,
+            transcript_range=self._active_transcript_range(),
+        )
+        result = prepared.compaction_result
+        if result is not None and result.applied:
+            self._apply_compaction_result(result)
+            self._save_session()
+        return prepared
 
     @staticmethod
     def _history_to_transcript_item(enriched: dict[str, Any]) -> TranscriptItem:

@@ -245,60 +245,102 @@ async def _deerflow_timeline_events(
     mcp_catalog: McpCatalogPort | None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
-    workspace_id = workspace_id_from_path(runtime.workspace.root)
-    durable_context = build_deerflow_durable_context(runtime)
-    adapter = SageHarnessRuntimeAdapter(
-        model=runtime.model,
-        checkpointer=checkpointer,
-        tools=build_deerflow_coding_tools(runtime, run_id=run_id),
-        system_prompt=build_deerflow_system_prompt(runtime),
-    )
-    runtime.append_harness_message(role="user", content=content, run_id=run_id)
-    yield RunEvent(
-        kind="user",
-        status="completed",
-        payload={"type": "user", "content": content, "run_id": run_id},
-        event_id=f"harness:{run_id}:user",
-    )
-    context_event = context_status_event(runtime, run_id, durable_context)
-    if context_event is not None:
-        yield context_event
-    if mcp_catalog is not None:
-        yield await mcp_catalog_event(
-            mcp_catalog,
-            session_id=runtime.session_id,
+    async with runtime.harness_turn(run_id):
+        prepared = await runtime.prepare_harness_context(
+            user_message=content,
             run_id=run_id,
         )
-    response_parts: list[str] = []
-    async for event in adapter.stream_turn(
-        session_id=runtime.session_id,
-        run_id=run_id,
-        workspace_id=workspace_id,
-        workspace_path=str(runtime.workspace.root),
-        content=content,
-        surface_context=surface_context,
-        durable_context=durable_context,
-    ):
-        if event.payload.get("type") == "text_delta":
-            delta = str(event.payload.get("delta", ""))
-            response_parts.append(delta)
-        yield event
-    answer = "".join(response_parts).strip()
-    if not answer:
-        raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
-    runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
-    yield RunEvent(
-        kind="assistant",
-        status="completed",
-        payload={"type": "final", "content": answer, "run_id": run_id},
-        event_id=f"harness:{run_id}:final",
-    )
-    yield RunEvent(
-        kind="terminal",
-        status="completed",
-        payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
-        event_id=f"harness:{run_id}:terminal",
-    )
+        runtime.append_harness_message(role="user", content=content, run_id=run_id)
+        yield RunEvent(
+            kind="user",
+            status="completed",
+            payload={"type": "user", "content": content, "run_id": run_id},
+            event_id=f"harness:{run_id}:user",
+        )
+
+        durable_context = build_deerflow_durable_context(runtime)
+        context_event = context_status_event(runtime, run_id, durable_context)
+        if prepared is not None:
+            for raw_event in prepared.events:
+                payload = raw_event.model_dump()
+                event_type = str(payload.get("type", ""))
+                if event_type == "context_usage_updated" and context_event is not None:
+                    continue
+                yield RunEvent(
+                    kind="context",
+                    status=_timeline_status(event_type, payload),
+                    payload=payload,
+                    event_id=(
+                        f"harness:{run_id}:{event_type}:"
+                        f"{payload.get('compaction_id', 'context')}"
+                    ),
+                )
+        if context_event is not None:
+            yield context_event
+
+        if prepared is not None and not prepared.allow_model_request:
+            message = "context emergency: model request blocked"
+            yield RunEvent(
+                kind="system",
+                status="error",
+                payload={"type": "error", "run_id": run_id, "message": message},
+                event_id=f"harness:{run_id}:context-emergency",
+            )
+            yield RunEvent(
+                kind="terminal",
+                status="error",
+                payload={
+                    "event": "run_error",
+                    "runtime_profile": "deerflow_v2",
+                    "error_type": "context_emergency",
+                },
+                event_id=f"harness:{run_id}:terminal",
+            )
+            return
+
+        if mcp_catalog is not None:
+            yield await mcp_catalog_event(
+                mcp_catalog,
+                session_id=runtime.session_id,
+                run_id=run_id,
+            )
+        workspace_id = workspace_id_from_path(runtime.workspace.root)
+        adapter = SageHarnessRuntimeAdapter(
+            model=runtime.model,
+            checkpointer=checkpointer,
+            tools=build_deerflow_coding_tools(runtime, run_id=run_id),
+            system_prompt=build_deerflow_system_prompt(runtime),
+        )
+        response_parts: list[str] = []
+        async for event in adapter.stream_turn(
+            session_id=runtime.session_id,
+            run_id=run_id,
+            workspace_id=workspace_id,
+            workspace_path=str(runtime.workspace.root),
+            content=content,
+            surface_context=surface_context,
+            durable_context=durable_context,
+        ):
+            if event.payload.get("type") == "text_delta":
+                delta = str(event.payload.get("delta", ""))
+                response_parts.append(delta)
+            yield event
+        answer = "".join(response_parts).strip()
+        if not answer:
+            raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
+        runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
+        yield RunEvent(
+            kind="assistant",
+            status="completed",
+            payload={"type": "final", "content": answer, "run_id": run_id},
+            event_id=f"harness:{run_id}:final",
+        )
+        yield RunEvent(
+            kind="terminal",
+            status="completed",
+            payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
+            event_id=f"harness:{run_id}:terminal",
+        )
 
 
 def _timeline_kind(event_type: str) -> str:
