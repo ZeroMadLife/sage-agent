@@ -322,6 +322,9 @@ describe('CodingView chat route lifecycle', () => {
     store.messages.push({ role: 'assistant', content: '新的后台结果' })
     await nextTick()
 
+    await vi.waitFor(() => {
+      expect(wrapper().find('button[aria-label="回到底部，1 条新消息"]').exists()).toBe(true)
+    })
     const returnToBottom = wrapper().get('button[aria-label="回到底部，1 条新消息"]')
     expect(messageArea.element.scrollTop).toBe(120)
     await returnToBottom.trigger('click')
