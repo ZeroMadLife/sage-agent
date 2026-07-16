@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import subprocess
 from pathlib import Path
 from typing import ClassVar
 
@@ -18,9 +20,11 @@ from core.harness.context_adapter import (
     context_status_event,
 )
 from core.harness.event_adapter import HarnessEventAdapter
+from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import build_deerflow_coding_tools
+from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 
 
 class BindableFakeMessagesListChatModel(FakeMessagesListChatModel):
@@ -515,3 +519,99 @@ def test_runtime_adapter_streams_proposal_only_memory_tool(tmp_path: Path) -> No
     assert any(item.get("type") == "text_delta" for item in payloads)
     assert runtime.memory_manager.memory_store.list_facts() == []
     assert len(runtime.memory_manager.list_proposals("pending")) == 1
+
+
+def test_runtime_adapter_streams_revision_bound_knowledge_search(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=knowledge,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    store = KnowledgeStore(
+        knowledge,
+        tmp_path / "knowledge.sqlite3",
+        {
+            "notes": KnowledgeSourceRoot(
+                root_id="notes",
+                kind="obsidian",
+                label="Notes",
+                path=vault,
+            )
+        },
+    )
+    (vault / "harness.md").write_text(
+        "# Harness\n\nRevision-bound citations make checkpoint answers auditable.\n",
+        encoding="utf-8",
+    )
+    proposal = store.ingest("notes", "harness.md")
+    store.evaluate_and_apply_policy(proposal.proposal_id)
+
+    async def run() -> list[dict[str, object]]:
+        async with open_sqlite_checkpointer(tmp_path / "knowledge-checkpoints.sqlite3") as saver:
+            runtime = CodingRuntime(
+                session_id="s-knowledge",
+                workspace_root=tmp_path / "workspace",
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                knowledge_store=store,
+                runtime_profile="deerflow_v2",
+            )
+            model = BindableFakeMessagesListChatModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "knowledge_search",
+                                "args": {
+                                    "query": "checkpoint citation audit",
+                                    "top_k": 4,
+                                    "token_budget": 512,
+                                },
+                                "id": "call-knowledge",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="The cited evidence confirms the audit rule."),
+                ]
+            )
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                tools=build_deerflow_coding_tools(
+                    runtime,
+                    run_id="r-knowledge",
+                    knowledge_port=CodingKnowledgePort(runtime),
+                ),
+            )
+            return [
+                event.payload
+                async for event in adapter.stream_turn(
+                    session_id="s-knowledge",
+                    run_id="r-knowledge",
+                    workspace_id="w-knowledge",
+                    workspace_path=str(tmp_path / "workspace"),
+                    content="What makes checkpoint answers auditable?",
+                )
+            ]
+
+    payloads = asyncio.run(run())
+
+    tool_result = next(
+        item
+        for item in payloads
+        if item.get("type") == "tool_result" and item.get("tool") == "knowledge_search"
+    )
+    retrieval = json.loads(str(tool_result["content"]))
+    assert retrieval["status"] == "evidence_found"
+    assert retrieval["citations"][0]["citation_id"].startswith("kcite_")
+    assert retrieval["citations"][0]["page_revision"].startswith("krev_")
+    assert str(vault) not in str(tool_result["content"])
+    assert any(item.get("type") == "text_delta" for item in payloads)

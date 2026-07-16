@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
-from sage_harness import MemoryPort
+from sage_harness import KnowledgePort, MemoryPort
 
 from core.coding.engine.events import ToolResultEvent, event_to_dict
 from core.coding.runtime import CodingRuntime
@@ -22,6 +22,7 @@ def build_deerflow_coding_tools(
     runtime: CodingRuntime,
     *,
     run_id: str,
+    knowledge_port: KnowledgePort | None = None,
     memory_port: MemoryPort | None = None,
 ) -> list[BaseTool]:
     """Build LangChain tools through Sage's existing executor and approval gate."""
@@ -29,7 +30,10 @@ def build_deerflow_coding_tools(
     from core.coding.tools.registry import registered_tool_definitions
 
     definitions = registered_tool_definitions()
-    for name in sorted(_DEERFLOW_TOOLS):
+    tool_names = set(_DEERFLOW_TOOLS)
+    if knowledge_port is not None and knowledge_port.available:
+        tool_names.add("knowledge_learn")
+    for name in sorted(tool_names):
         registered = runtime.tools.get(name)
         definition = definitions.get(name)
         if registered is None or definition is None:
@@ -70,6 +74,65 @@ def build_deerflow_coding_tools(
                 args_schema=definition.schema_model,
             )
         )
+    if knowledge_port is not None:
+        search_definition = definitions.get("knowledge_search")
+        if search_definition is not None:
+
+            async def search_knowledge(
+                query: str,
+                top_k: int = 8,
+                token_budget: int = 3000,
+            ) -> str:
+                result = await knowledge_port.search(
+                    query,
+                    workspace_id=knowledge_port.workspace_id,
+                    token_budget=token_budget,
+                    top_k=top_k,
+                )
+                payload = {
+                    "status": result.status,
+                    "query": result.query,
+                    "used_tokens": result.used_tokens,
+                    "token_budget": result.token_budget,
+                    "omitted_count": result.omitted_count,
+                    "instruction": (
+                        "Use only the cited excerpts for knowledge-base claims. "
+                        "Call knowledge_learn only after explicit user confirmation."
+                        if result.evidence
+                        else "The knowledge base is unavailable."
+                        if result.status == "unavailable"
+                        else "The knowledge base has no evidence for this query. Say so explicitly."
+                    ),
+                    "citations": [
+                        {
+                            "citation_id": item.citation_id,
+                            "rank": item.metadata.get("rank", index),
+                            "page_revision": item.page_revision,
+                            "source_revision": item.source_revision,
+                            "source_kind": item.metadata.get("source_kind", ""),
+                            "source_relative_path": item.metadata.get(
+                                "source_relative_path", ""
+                            ),
+                            "title": item.metadata.get("title", item.citation_id),
+                            "heading_path": item.metadata.get("heading_path", ()),
+                            "block_id": item.metadata.get("block_id", ""),
+                            "excerpt": item.content,
+                            "token_count": item.metadata.get("token_count", 0),
+                            "truncated": item.metadata.get("truncated", False),
+                        }
+                        for index, item in enumerate(result.evidence, start=1)
+                    ],
+                }
+                return json.dumps(payload, ensure_ascii=False, indent=2)
+
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=search_knowledge,
+                    name="knowledge_search",
+                    description=search_definition.description,
+                    args_schema=search_definition.schema_model,
+                )
+            )
     if memory_port is not None:
         remember_definition = definitions.get("remember")
         if remember_definition is not None:

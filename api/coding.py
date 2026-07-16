@@ -95,6 +95,7 @@ from core.harness.context_adapter import (
     build_deerflow_system_prompt,
     context_status_event,
 )
+from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
@@ -152,6 +153,13 @@ def _valid_session_id(session_id: str) -> bool:
 def _require_valid_session_id(session_id: str) -> None:
     if not _valid_session_id(session_id):
         raise HTTPException(status_code=422, detail="invalid coding session id")
+
+
+def _coding_knowledge_store(connection: HTTPConnection) -> Any | None:
+    """Do not bypass the Knowledge API's production tenant-isolation gate."""
+    if str(getattr(connection.app.state, "cloud_app_env", "development")) == "production":
+        return None
+    return getattr(connection.app.state, "knowledge_store", None)
 
 
 async def _runtime_timeline_events(
@@ -312,6 +320,7 @@ async def _deerflow_timeline_events(
             tools=build_deerflow_coding_tools(
                 runtime,
                 run_id=run_id,
+                knowledge_port=CodingKnowledgePort(runtime),
                 memory_port=CodingMemoryPort(runtime),
             ),
             system_prompt=build_deerflow_system_prompt(runtime),
@@ -460,7 +469,7 @@ async def create_coding_session(
         model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
         owner_user_id=account.user_id if account is not None else None,
-        knowledge_store=getattr(request.app.state, "knowledge_store", None),
+        knowledge_store=_coding_knowledge_store(request),
         runtime_profile=runtime_profile,
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
@@ -598,7 +607,7 @@ async def resume_coding_session(
         reasoning_mode=reasoning_mode,
         model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
-        knowledge_store=getattr(request.app.state, "knowledge_store", None),
+        knowledge_store=_coding_knowledge_store(request),
         runtime_profile=runtime_profile,
     )
     sessions[session_id] = runtime

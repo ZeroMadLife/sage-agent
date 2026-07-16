@@ -2,11 +2,13 @@
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 
+from api.coding import _coding_knowledge_store
 from api.main import create_app
 
 
@@ -30,6 +32,23 @@ def _receive_until(websocket, event_type: str, *, limit: int = 20):
         if event["type"] == event_type:
             return events
     raise AssertionError(f"runtime did not emit {event_type} within {limit} events")
+
+
+def test_coding_runtime_does_not_bypass_production_knowledge_gate() -> None:
+    store = object()
+    development = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(cloud_app_env="development", knowledge_store=store)
+        )
+    )
+    production = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(cloud_app_env="production", knowledge_store=store)
+        )
+    )
+
+    assert _coding_knowledge_store(development) is store
+    assert _coding_knowledge_store(production) is None
 
 
 class FakeModel:

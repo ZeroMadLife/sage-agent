@@ -78,9 +78,23 @@ class KnowledgeEvidence:
 
     citation_id: str
     content: str
+    page_revision: str
     source_revision: str
     score: float = 0.0
     metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeRetrievalResult:
+    """One bounded retrieval result owned by an application Knowledge adapter."""
+
+    query: str
+    workspace_id: str
+    status: Literal["evidence_found", "no_evidence", "unavailable"]
+    token_budget: int
+    used_tokens: int
+    omitted_count: int
+    evidence: tuple[KnowledgeEvidence, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,13 +159,20 @@ class ApprovalPort(Protocol):
 class KnowledgePort(Protocol):
     """Retrieve evidence without coupling the harness to a Knowledge store."""
 
+    @property
+    def workspace_id(self) -> str: ...
+
+    @property
+    def available(self) -> bool: ...
+
     async def search(
         self,
         query: str,
         *,
         workspace_id: str,
         token_budget: int,
-    ) -> Sequence[KnowledgeEvidence]: ...
+        top_k: int = 8,
+    ) -> KnowledgeRetrievalResult: ...
 
 
 class MemoryPort(Protocol):
