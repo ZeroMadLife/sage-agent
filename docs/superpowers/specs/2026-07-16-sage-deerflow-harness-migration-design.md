@@ -490,6 +490,23 @@ Vue 继续使用：
 
 如果某 Provider 不支持标准 tool calling，则在 model catalog 标记 `native_tools=false`，只能使用 legacy profile；不能在新 Harness 中静默降级回 XML 协议。
 
+### 15.1 Wave 0 兼容性审计结论
+
+2026-07-16 使用 uv 管理的 CPython 3.12.13 对候选依赖做了隔离解析和 import spike，结论如下：
+
+- Sage 当前 LangChain/LangGraph 直接 import 面较小；`StateGraph`、`START/END`、`BaseChatModel`、`ChatOpenAI`、`ChatAnthropic`、messages 与 `add_messages` 的现有 import 均能在候选 1.x 基线上导入。
+- DeerFlow 方向标所需的 `create_agent`、`AgentMiddleware`、`ModelRequest/ModelResponse`、`Command/interrupt` 与 `ToolCallRequest` 也能在同一基线上导入。
+- 移除遗留 Mem0 固定版本后，Python 3.12 + LangChain/LangGraph 1.x + Sage 其余核心依赖能够完成一套无冲突解析；这只是依赖可解证明，不替代全量行为测试。
+- 唯一确定性的解析阻断是 `mem0ai==0.1.50` 要求 `openai<2`，而 `langchain-openai==1.2.1` 要求 `openai>=2.26,<3`。
+
+`mem0ai==2.0.12` 虽然能与 OpenAI 2.x 共存，但不是无行为变化升级：其 `search()` 契约已经从顶层 `user_id`/`limit` 转为 `filters.user_id`/`top_k`，Sage 现有 `LongTermMemory` 不能原样复用。因此 Wave 0 采用以下边界：
+
+1. `mem0ai`、`qdrant-client`、`sentence-transformers` 从 Harness 核心安装集移到独立的 legacy memory 可选依赖清单。
+2. `core/memory/mem0_factory.py` 保持可选导入和失败降级；核心 API、Coding Harness 与 Sage Durable Memory 不依赖它启动。
+3. Wave 0 不假装完成 Mem0 2.x 迁移；若后续仍保留旧旅行 Agent 记忆演示，必须单独实现 2.x adapter 并通过真实 Qdrant/embedding smoke test。
+4. Harness 的长期记忆主线继续以 Sage Durable Memory、proposal/approval 和 Knowledge citation 为准，不让遗留 SDK 成为核心升级阻塞项。
+5. 依赖升级提交必须使用干净 Python 3.12 环境重新安装，不能从已混装的本机 Conda 环境推断兼容性。
+
 ## 16. 实施波次
 
 ### Wave 0：依赖与边界基线
