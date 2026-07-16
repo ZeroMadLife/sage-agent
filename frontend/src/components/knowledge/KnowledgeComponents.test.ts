@@ -34,7 +34,8 @@ const pageNode = {
 
 const sourceNode = {
   node_id: 'source-1', kind: 'source' as const, label: 'harness.md', page_id: null,
-  page_revision: null, source_id: 'source-1', source_revision: 'sha256:source', properties: {},
+  page_revision: null, source_id: 'source-1', source_revision: 'sha256:source',
+  properties: { relative_path: 'notes/harness.md', source_kind: 'obsidian' },
 }
 
 const edge = {
@@ -108,6 +109,21 @@ it('waits for a measurable desktop container before mounting Sigma', async () =>
   wrapper.unmount()
 })
 
+it('summarizes the selected neighborhood without exposing every graph label', () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
+  const wrapper = mount(KnowledgeGraphCanvas, {
+    props: {
+      graph, communities, selectedNodeId: 'page-1', colorMode: 'community',
+      visibleKinds: ['page', 'source'], query: '',
+    },
+  })
+
+  expect(wrapper.get('.graph-focus-summary').text()).toContain('Agent Harness')
+  expect(wrapper.get('.graph-focus-summary').text()).toContain('1 条直接连接')
+  expect(wrapper.find('.graph-global-summary').exists()).toBe(false)
+  wrapper.unmount()
+})
+
 it('shows revision evidence and one-hop relations in the inspector', async () => {
   const neighborhood: KnowledgeGraphNeighborhood = {
     snapshot, center: pageNode, nodes: [pageNode, sourceNode], edges: [edge],
@@ -135,7 +151,8 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   await flushPromises()
   expect(document.activeElement).toBe(wrapper.get('button[aria-label="关闭知识详情"]').element)
   await wrapper.findAll('.inspector-tabs button')[1].trigger('click')
-  expect(wrapper.text()).toContain('kcite-1')
+  expect(wrapper.text()).toContain('notes/harness.md')
+  expect(wrapper.text()).toContain('来源证据')
   expect(wrapper.text()).toContain('sha256:source')
   await wrapper.findAll('.inspector-tabs button')[2].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
