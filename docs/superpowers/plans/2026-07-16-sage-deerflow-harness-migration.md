@@ -47,7 +47,6 @@
 **修改：**
 
 - `requirements.txt`
-- 新增 `requirements-legacy-memory.txt`
 - `pyproject.toml`
 - 新增 `.python-version`
 - `README.md`
@@ -58,7 +57,7 @@
 
 1. 固定 Python 3.12，升级 LangChain/LangGraph/Provider/MCP adapter 到已审计候选版本。
 2. 显式加入 SQLAlchemy async 所需 `greenlet`。
-3. 将 `mem0ai`、`qdrant-client`、`sentence-transformers` 移到 legacy memory 可选清单。
+3. 删除无生产入口的 Mem0/Qdrant/sentence-transformers 具体实现和发布依赖，保留 provider-neutral memory port。
 4. CI 从干净环境安装核心依赖并执行 pytest、ruff、mypy；不得依赖开发机已安装包。
 5. 文档启动命令改为 Python 3.12，并解释旧 Conda 环境不可继续混装。
 
@@ -72,19 +71,20 @@ PYTHONPATH=. /tmp/sage-wave0/bin/python -m pytest -q
 PYTHONPATH=. /tmp/sage-wave0/bin/python -m mypy core/ mcp_servers/ agents/ api/ db/
 ```
 
-### Task 0.2：让 legacy memory 真正可选
+### Task 0.2：删除废弃 Mem0 实现并保留通用 memory seam
 
 **修改：**
 
-- `core/memory/mem0_factory.py`
-- `tests/core/memory/test_mem0_factory.py`
-- `tests/scripts/test_demo_memory.py`
+- 删除 `core/memory/mem0_factory.py`、`core/memory/long_term.py` 和 `scripts/demo_memory.py`
+- `core/memory/extractor.py`
+- `agents/memory_node.py`
+- 对应通用 port 测试
 
 **行为：**
 
-- 核心环境未安装 Mem0/Qdrant 时模块仍可导入，`create_mem0_client()` 返回 `None` 并记录一次受控 warning。
-- legacy extra 安装后保留旧演示入口；不宣称已兼容 Mem0 2.x。
-- 任何 Mem0 2.x 升级必须进入独立 adapter 和真实外部 smoke，不混入 Harness 核心迁移。
+- 发布环境不再安装或启动 Mem0/Qdrant，不保留无法在新依赖基线上运行的演示入口。
+- 旅行图仍接受符合 `LongTermMemoryPort` 的外部实现，`MemoryManager` 不依赖具体 SDK。
+- 未来接入任何第三方 memory provider 时必须进入独立 adapter 和真实外部 smoke，不混入 Harness 核心包。
 
 ### Task 0.3：建立 Harness 包和依赖防火墙
 

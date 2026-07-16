@@ -3,6 +3,8 @@
 from collections.abc import Callable
 from typing import Any
 
+from core.state import TravelState
+
 
 def _numeric(value: Any) -> float:
     """Convert sortable numeric fields from scenic data into floats."""
@@ -15,7 +17,7 @@ def _numeric(value: Any) -> float:
 
 
 def recommend_node(
-    state: dict[str, Any],
+    state: TravelState,
     scenic_client: Any,
 ) -> dict[str, list[dict[str, Any]]]:
     """Search scenic spots and rank them by user budget and quality."""
@@ -46,10 +48,10 @@ def recommend_node(
 
 def create_recommend_agent(
     scenic_client: Any,
-) -> Callable[[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+) -> Callable[[TravelState], dict[str, list[dict[str, Any]]]]:
     """Create a LangGraph-compatible Recommend Agent node."""
 
-    def _node(state: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    def _node(state: TravelState) -> dict[str, list[dict[str, Any]]]:
         return recommend_node(state, scenic_client)
 
     return _node

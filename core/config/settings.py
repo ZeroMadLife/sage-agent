@@ -159,9 +159,6 @@ class Settings(BaseSettings):
     langsmith_api_key: str = ""
     langsmith_project: str = "tourswarm"
 
-    mem0_vector_store: str = "qdrant"
-    mem0_embedder_model: str = "BAAI/bge-large-zh-v1.5"
-
     @property
     def postgres_dsn(self) -> str:
         """Return the async PostgreSQL DSN."""

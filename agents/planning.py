@@ -5,6 +5,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from core.state import TravelState
 from models.itinerary import Itinerary
 
 logger = logging.getLogger(__name__)
@@ -209,7 +210,7 @@ def create_planning_prompt(
 请生成行程方案，确保总花费不超过 {budget_total} 元。只输出 JSON，不要其他文字。"""
 
 
-async def planning_node(state: dict[str, Any], llm: Any) -> dict[str, Itinerary]:
+async def planning_node(state: TravelState, llm: Any) -> dict[str, Itinerary]:
     """Generate an itinerary with an LLM and validate it as an Itinerary."""
     prompt = create_planning_prompt(
         destination=str(state.get("destination", "")),
@@ -239,10 +240,10 @@ async def planning_node(state: dict[str, Any], llm: Any) -> dict[str, Itinerary]
     return {"itinerary": Itinerary.model_validate(normalized_data)}
 
 
-def create_planning_agent(llm: Any) -> Callable[[dict[str, Any]], Awaitable[dict[str, Itinerary]]]:
+def create_planning_agent(llm: Any) -> Callable[[TravelState], Awaitable[dict[str, Itinerary]]]:
     """Create a LangGraph-compatible Planning Agent node."""
 
-    async def _node(state: dict[str, Any]) -> dict[str, Itinerary]:
+    async def _node(state: TravelState) -> dict[str, Itinerary]:
         return await planning_node(state, llm)
 
     return _node

@@ -500,15 +500,15 @@ Vue 继续使用：
 - 唯一确定性的解析阻断是 `mem0ai==0.1.50` 要求 `openai<2`，而 `langchain-openai==1.2.1` 要求 `openai>=2.26,<3`。
 - 干净核心环境中现有 Agent、Provider、Coding Engine、Coding API 的 720 个定向测试全部通过；补齐 SQLAlchemy async 所需的显式 `greenlet==3.5.3`，并仅为现有遗留 Mem0 factory 测试临时安装 Qdrant 后，后端全量结果为 1176 passed。
 
-`mem0ai==2.0.12` 虽然能与 OpenAI 2.x 共存，但不是无行为变化升级：其 `search()` 契约已经从顶层 `user_id`/`limit` 转为 `filters.user_id`/`top_k`，Sage 现有 `LongTermMemory` 不能原样复用。因此 Wave 0 采用以下边界：
+`mem0ai==2.0.12` 虽然能与 OpenAI 2.x 共存，但不是无行为变化升级：其 `search()` 契约已经从顶层 `user_id`/`limit` 转为 `filters.user_id`/`top_k`。进一步生产引用审计确认，具体 Mem0/Qdrant 实现只服务未接入 API 的旧旅行演示；旅行图真正需要的是通用 memory capability。用户确认允许删除已证明无用的遗留实现后，Wave 0 采用以下边界：
 
-1. `mem0ai`、`qdrant-client`、`sentence-transformers` 从 Harness 核心安装集移到独立的 legacy memory 可选依赖清单。
-2. `core/memory/mem0_factory.py` 保持可选导入和失败降级；核心 API、Coding Harness 与 Sage Durable Memory 不依赖它启动。
-3. Wave 0 不假装完成 Mem0 2.x 迁移；若后续仍保留旧旅行 Agent 记忆演示，必须单独实现 2.x adapter 并通过真实 Qdrant/embedding smoke test。
-4. Harness 的长期记忆主线继续以 Sage Durable Memory、proposal/approval 和 Knowledge citation 为准，不让遗留 SDK 成为核心升级阻塞项。
+1. 删除具体 Mem0 factory、Mem0-backed LongTermMemory、专属演示与测试，并从发布依赖和 Docker Compose 移除 Mem0/Qdrant/sentence-transformers。
+2. 保留 provider-neutral `LongTermMemoryPort`、`MemoryFact` 和旅行图的可选 memory injection，避免删除可扩展契约。
+3. Wave 0 不假装完成 Mem0 2.x 迁移；未来若重新引入第三方 memory provider，必须作为独立 adapter 并通过真实存储/embedding smoke test。
+4. Harness 的长期记忆主线以 Sage Durable Memory、proposal/approval 和 Knowledge citation 为准，不让遗留 SDK 成为核心升级阻塞项。
 5. 依赖升级提交必须使用干净 Python 3.12 环境重新安装，不能从已混装的本机 Conda 环境推断兼容性。
 6. `greenlet` 作为 SQLAlchemy async 的运行依赖显式固定；不得继续依赖 Mem0 或其他无关包偶然传递安装。
-7. `qdrant_client` 当前仍在 `mem0_factory.py` 顶层强制导入，Wave 0 必须改为真正的可选导入，否则“核心安装不含 legacy memory”无法启动该模块。
+7. 当前 README、`.env.example` 和 Compose 中的 Qdrant 说明随实现一起删除，避免发布包继续宣称不存在的服务依赖。
 
 ## 16. 实施波次
 

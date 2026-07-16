@@ -5,16 +5,17 @@ from collections.abc import Callable
 from typing import Any
 
 from core.memory.extractor import MemoryManager
+from core.state import TravelState
 
 logger = logging.getLogger(__name__)
 
 
 def create_memory_node(
     memory_manager: MemoryManager,
-) -> Callable[[dict[str, Any]], dict[str, Any]]:
+) -> Callable[[TravelState], dict[str, Any]]:
     """Create a node that retrieves user memories before planning."""
 
-    def _node(state: dict[str, Any]) -> dict[str, Any]:
+    def _node(state: TravelState) -> dict[str, Any]:
         destination = str(state.get("destination", ""))
         preferences = state.get("preferences", [])
         prefs_text = (
