@@ -121,6 +121,73 @@ def test_versioned_knowledge_graph_api_etag_and_neighborhood(tmp_path: Path) -> 
     )
     assert missing.status_code == 404
 
+    goal = client.get("/api/v1/knowledge/goal")
+    assert goal.status_code == 200
+    assert goal.json()["structured"] is True
+    goal_revision = goal.json()["goal_revision"]
+    updated_goal = client.put(
+        "/api/v1/knowledge/goal",
+        json={
+            "expected_goal_revision": goal_revision,
+            "goal_id": "full-stack-ai-engineer",
+            "title": "成为全栈 AI 应用工程师",
+            "description": "完成 AI 产品从开发到部署的闭环。",
+            "capabilities": [
+                {
+                    "capability_id": "agent-harness",
+                    "label": "Agent Harness",
+                    "description": "有状态、可恢复的运行时。",
+                    "keywords": ["Agent Harness", "Recovery"],
+                    "weight": 1.5,
+                    "required": True,
+                },
+                {
+                    "capability_id": "cloud-delivery",
+                    "label": "云端交付",
+                    "description": "容器化和自动部署。",
+                    "keywords": ["Docker", "Kubernetes", "GitHub Actions"],
+                    "weight": 1.0,
+                    "required": True,
+                },
+            ],
+        },
+    )
+    assert updated_goal.status_code == 200
+    assert updated_goal.json()["goal_revision"] != goal_revision
+    conflict = client.put(
+        "/api/v1/knowledge/goal",
+        json={
+            **updated_goal.json(),
+            "expected_goal_revision": goal_revision,
+        },
+    )
+    assert conflict.status_code == 409
+
+    communities = client.get("/api/v1/knowledge/graph/communities")
+    assert communities.status_code == 200
+    community_payload = communities.json()
+    assert community_payload["analysis"]["algorithm_id"] == "networkx.louvain"
+    assert community_payload["analysis"]["seed"] == 42
+    assert community_payload["communities"]
+    assert all(
+        metric["community_id"] for metric in community_payload["node_metrics"]
+    )
+
+    insights = client.get("/api/v1/knowledge/graph/insights")
+    assert insights.status_code == 200
+    insight_payload = insights.json()
+    assert insight_payload["goal"]["goal_id"] == "full-stack-ai-engineer"
+    alignments = {item["capability_id"]: item for item in insight_payload["alignments"]}
+    assert alignments["agent-harness"]["status"] == "covered"
+    assert alignments["cloud-delivery"]["status"] == "gap"
+    gaps = client.get(
+        "/api/v1/knowledge/graph/insights",
+        params={"kind": "capability_gap", "limit": 1},
+    )
+    assert gaps.status_code == 200
+    assert len(gaps.json()["insights"]) == 1
+    assert gaps.json()["insights"][0]["kind"] == "capability_gap"
+
 
 def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None:
     app, vault, knowledge = _app(tmp_path)

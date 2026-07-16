@@ -351,6 +351,11 @@ class LocalKnowledgeGraph:
             has_more=has_more,
         )
 
+    def snapshot(
+        self, connection: sqlite3.Connection, graph_revision: str | None = None
+    ) -> KnowledgeGraphSnapshot:
+        return self._ready_snapshot(connection, graph_revision)
+
     def node(
         self,
         connection: sqlite3.Connection,

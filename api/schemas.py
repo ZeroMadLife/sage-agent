@@ -603,6 +603,114 @@ class KnowledgeGraphStatusResponse(BaseModel):
     snapshot: KnowledgeGraphSnapshotResponse | None = None
 
 
+class KnowledgeLearningCapabilityInput(BaseModel):
+    capability_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    label: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=1_000)
+    keywords: list[str] = Field(min_length=1, max_length=24)
+    weight: float = Field(default=1.0, ge=0.1, le=10.0)
+    required: bool = True
+
+
+class KnowledgeLearningGoalUpdateRequest(BaseModel):
+    expected_goal_revision: str = Field(min_length=1, max_length=96)
+    goal_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    title: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2_000)
+    capabilities: list[KnowledgeLearningCapabilityInput] = Field(max_length=32)
+
+
+class KnowledgeLearningCapabilityResponse(KnowledgeLearningCapabilityInput):
+    pass
+
+
+class KnowledgeLearningGoalResponse(BaseModel):
+    schema_version: int = Field(ge=1)
+    goal_id: str
+    title: str
+    description: str
+    capabilities: list[KnowledgeLearningCapabilityResponse]
+    goal_revision: str
+    git_commit: str
+    structured: bool
+
+
+class KnowledgeGraphAnalysisSnapshotResponse(BaseModel):
+    analysis_revision: str
+    workspace_id: str
+    graph_revision: str
+    goal_revision: str
+    algorithm_id: str
+    algorithm_version: str
+    seed: int
+    resolution: float
+    threshold: float
+    status: Literal["building", "ready", "error"]
+    community_count: int = Field(ge=0)
+    insight_count: int = Field(ge=0)
+    error: str | None = None
+    created_at: str
+    completed_at: str | None = None
+
+
+class KnowledgeGraphCommunityResponse(BaseModel):
+    community_id: str
+    label: str
+    node_count: int = Field(ge=1)
+    edge_count: int = Field(ge=0)
+    cohesion: float = Field(ge=0, le=1)
+    properties: dict[str, Any]
+
+
+class KnowledgeGraphNodeMetricResponse(BaseModel):
+    node_id: str
+    community_id: str
+    degree: int = Field(ge=0)
+    weighted_degree: float = Field(ge=0)
+    bridge_score: float = Field(ge=0, le=1)
+
+
+class KnowledgeGoalAlignmentResponse(BaseModel):
+    capability_id: str
+    label: str
+    coverage: float = Field(ge=0, le=1)
+    status: Literal["covered", "learning", "gap"]
+    matched_keywords: list[str]
+    missing_keywords: list[str]
+    matched_node_ids: list[str]
+
+
+class KnowledgeGraphInsightResponse(BaseModel):
+    insight_id: str
+    kind: Literal[
+        "missing_concept",
+        "isolated_node",
+        "bridge_node",
+        "sparse_community",
+        "capability_gap",
+    ]
+    severity: Literal["low", "medium", "high"]
+    title: str
+    description: str
+    node_id: str | None = None
+    community_id: str | None = None
+    capability_id: str | None = None
+    properties: dict[str, Any]
+
+
+class KnowledgeGraphCommunitiesResponse(BaseModel):
+    analysis: KnowledgeGraphAnalysisSnapshotResponse
+    communities: list[KnowledgeGraphCommunityResponse]
+    node_metrics: list[KnowledgeGraphNodeMetricResponse]
+
+
+class KnowledgeGraphInsightsResponse(BaseModel):
+    analysis: KnowledgeGraphAnalysisSnapshotResponse
+    goal: KnowledgeLearningGoalResponse
+    alignments: list[KnowledgeGoalAlignmentResponse]
+    insights: list[KnowledgeGraphInsightResponse]
+
+
 class KnowledgeRollbackRequest(BaseModel):
     target_revision_id: str = Field(min_length=1, max_length=128)
     expected_page_revision: str = Field(min_length=1, max_length=128)

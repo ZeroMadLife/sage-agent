@@ -1,6 +1,12 @@
 """Auditable personal knowledge workspace primitives."""
 
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
+from core.knowledge.goals import (
+    LearningCapability,
+    LearningGoal,
+    LearningGoalDefinition,
+    LearningGoalError,
+)
 from core.knowledge.graph import (
     KnowledgeGraphEdge,
     KnowledgeGraphError,
@@ -10,6 +16,16 @@ from core.knowledge.graph import (
     KnowledgeGraphOverview,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
+)
+from core.knowledge.graph_analysis import (
+    KnowledgeGoalAlignment,
+    KnowledgeGraphAnalysis,
+    KnowledgeGraphAnalysisError,
+    KnowledgeGraphAnalysisSnapshot,
+    KnowledgeGraphCommunity,
+    KnowledgeGraphInsight,
+    KnowledgeGraphNodeMetric,
+    LocalKnowledgeGraphAnalyzer,
 )
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
@@ -57,11 +73,18 @@ __all__ = [
     "KnowledgeEvent",
     "KnowledgeEvidence",
     "KnowledgeEvidenceError",
+    "KnowledgeGoalAlignment",
+    "KnowledgeGraphAnalysis",
+    "KnowledgeGraphAnalysisError",
+    "KnowledgeGraphAnalysisSnapshot",
+    "KnowledgeGraphCommunity",
     "KnowledgeGraphEdge",
     "KnowledgeGraphError",
     "KnowledgeGraphEvidence",
+    "KnowledgeGraphInsight",
     "KnowledgeGraphNeighborhood",
     "KnowledgeGraphNode",
+    "KnowledgeGraphNodeMetric",
     "KnowledgeGraphOverview",
     "KnowledgeGraphSnapshot",
     "KnowledgeIndexSummary",
@@ -79,8 +102,13 @@ __all__ = [
     "KnowledgeSourceRoot",
     "KnowledgeStore",
     "KnowledgeSummary",
+    "LearningCapability",
+    "LearningGoal",
+    "LearningGoalDefinition",
+    "LearningGoalError",
     "LoadedKnowledgeSource",
     "LocalKnowledgeGraph",
+    "LocalKnowledgeGraphAnalyzer",
     "PreparedKnowledgeSource",
     "SourceSection",
     "SourceUnderstanding",

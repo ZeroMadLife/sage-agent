@@ -25,6 +25,13 @@ from core.knowledge.evolution import (
     deserialize_evidence_learning,
     serialize_evidence_learning,
 )
+from core.knowledge.goals import (
+    LearningGoal,
+    LearningGoalDefinition,
+    default_learning_goal_content,
+    parse_learning_goal,
+    render_learning_goal,
+)
 from core.knowledge.graph import (
     KnowledgeGraphError,
     KnowledgeGraphNeighborhood,
@@ -32,6 +39,11 @@ from core.knowledge.graph import (
     KnowledgeGraphOverview,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
+)
+from core.knowledge.graph_analysis import (
+    KnowledgeGraphAnalysis,
+    KnowledgeGraphAnalysisError,
+    LocalKnowledgeGraphAnalyzer,
 )
 from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.migration import (
@@ -83,7 +95,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 8
+_SCHEMA_VERSION = 9
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -398,6 +410,7 @@ class KnowledgeStore:
         parser_registry: ParserRegistry | None = None,
         knowledge_index: LocalKnowledgeIndex | None = None,
         knowledge_graph: LocalKnowledgeGraph | None = None,
+        knowledge_graph_analyzer: LocalKnowledgeGraphAnalyzer | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
@@ -405,6 +418,9 @@ class KnowledgeStore:
         self.parser_registry = parser_registry or default_parser_registry()
         self.knowledge_index = knowledge_index or LocalKnowledgeIndex()
         self.knowledge_graph = knowledge_graph or LocalKnowledgeGraph(
+            workspace_id=self.knowledge_index.workspace_id
+        )
+        self.knowledge_graph_analyzer = knowledge_graph_analyzer or LocalKnowledgeGraphAnalyzer(
             workspace_id=self.knowledge_index.workspace_id
         )
         self._lock = RLock()
@@ -1739,6 +1755,90 @@ class KnowledgeStore:
             connection.commit()
         return result
 
+    def learning_goal(self) -> LearningGoal:
+        self.initialize()
+        with self._lock:
+            return self._read_learning_goal()
+
+    def update_learning_goal(
+        self,
+        definition: LearningGoalDefinition,
+        *,
+        expected_goal_revision: str,
+    ) -> LearningGoal:
+        """Commit an explicit user-authored goal without treating it as learned evidence."""
+
+        self.initialize()
+        with self._lock, self._exclusive_lock():
+            path = self.workspace_root / "purpose.md"
+            current_content = path.read_text(encoding="utf-8")
+            current = self._read_learning_goal(content=current_content)
+            if current.goal_revision != expected_goal_revision:
+                raise KnowledgeConflictError("learning goal revision conflict")
+            managed_status = self._git(
+                "status", "--porcelain=v1", "--", "purpose.md"
+            ).stdout.strip()
+            if managed_status:
+                raise KnowledgeConflictError("purpose document changed outside Sage")
+            rendered = render_learning_goal(definition)
+            if rendered == current_content:
+                return current
+            _atomic_write(path, rendered)
+            try:
+                self._git("add", "--", "purpose.md")
+                self._git(
+                    "-c",
+                    "user.name=Sage Knowledge",
+                    "-c",
+                    "user.email=sage-knowledge@local",
+                    "commit",
+                    "--only",
+                    "-m",
+                    "knowledge: update learning goal",
+                    "--",
+                    "purpose.md",
+                )
+            except Exception:
+                _atomic_write(path, current_content)
+                subprocess.run(
+                    ["git", "reset", "--", "purpose.md"],
+                    cwd=self.workspace_root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                raise
+            return self._read_learning_goal(content=rendered)
+
+    def analyze_graph(
+        self,
+        *,
+        graph_revision: str | None = None,
+        force: bool = False,
+    ) -> KnowledgeGraphAnalysis:
+        self.initialize()
+        goal = self.learning_goal()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                graph_snapshot = self.knowledge_graph.snapshot(connection, graph_revision)
+                analysis = self.knowledge_graph_analyzer.analyze(
+                    connection, graph_snapshot, goal, force=force
+                )
+            except (KnowledgeGraphError, KnowledgeGraphAnalysisError):
+                connection.commit()
+                raise
+            connection.commit()
+        return analysis
+
+    def _read_learning_goal(self, *, content: str | None = None) -> LearningGoal:
+        path = self.workspace_root / "purpose.md"
+        if path.is_symlink():
+            raise KnowledgeStoreError("purpose document must not be a symbolic link")
+        document = content if content is not None else path.read_text(encoding="utf-8")
+        commit = self._git("log", "-1", "--format=%H", "--", "purpose.md").stdout.strip()
+        return parse_learning_goal(document, git_commit=commit)
+
     def search(
         self,
         query: str,
@@ -2176,7 +2276,7 @@ class KnowledgeStore:
         ):
             (self.workspace_root / directory).mkdir(parents=True, exist_ok=True)
         defaults = {
-            "purpose.md": "# Purpose\n\n构建可审核、可追溯、持续演进的个人知识库。\n",
+            "purpose.md": default_learning_goal_content(),
             "schema.md": "# Schema\n\n所有 Wiki 写入必须来自 proposal，并保留 source revision。\n",
             "overview.md": _INITIAL_OVERVIEW,
             "index.md": "# Knowledge Index\n\n## Sources\n",
@@ -2208,7 +2308,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, 4, 5, 6, 7, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {
@@ -2223,6 +2323,7 @@ class KnowledgeStore:
             self.knowledge_index.ensure_schema(connection)
             self.knowledge_index.backfill(connection)
             self.knowledge_graph.ensure_schema(connection)
+            self.knowledge_graph_analyzer.ensure_schema(connection)
             connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             connection.commit()
 

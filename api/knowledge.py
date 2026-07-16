@@ -20,10 +20,17 @@ from fastapi import (
 from api.schemas import (
     KnowledgeBatchIngestRequest,
     KnowledgeEvidenceResponse,
+    KnowledgeGoalAlignmentResponse,
+    KnowledgeGraphAnalysisSnapshotResponse,
+    KnowledgeGraphCommunitiesResponse,
+    KnowledgeGraphCommunityResponse,
     KnowledgeGraphEdgeResponse,
     KnowledgeGraphEvidenceResponse,
+    KnowledgeGraphInsightResponse,
+    KnowledgeGraphInsightsResponse,
     KnowledgeGraphNeighborhoodResponse,
     KnowledgeGraphNodeDetailResponse,
+    KnowledgeGraphNodeMetricResponse,
     KnowledgeGraphNodeResponse,
     KnowledgeGraphResponse,
     KnowledgeGraphSnapshotResponse,
@@ -35,6 +42,9 @@ from api.schemas import (
     KnowledgeJobItemResponse,
     KnowledgeJobResponse,
     KnowledgeJobsResponse,
+    KnowledgeLearningCapabilityResponse,
+    KnowledgeLearningGoalResponse,
+    KnowledgeLearningGoalUpdateRequest,
     KnowledgeLearningRequest,
     KnowledgeMigrationApplyRequest,
     KnowledgeMigrationPlanItemResponse,
@@ -66,10 +76,17 @@ from api.schemas import (
 from core.knowledge import (
     KnowledgeConflictError,
     KnowledgeEvidenceError,
+    KnowledgeGoalAlignment,
+    KnowledgeGraphAnalysis,
+    KnowledgeGraphAnalysisError,
+    KnowledgeGraphAnalysisSnapshot,
+    KnowledgeGraphCommunity,
     KnowledgeGraphEdge,
     KnowledgeGraphError,
+    KnowledgeGraphInsight,
     KnowledgeGraphNeighborhood,
     KnowledgeGraphNode,
+    KnowledgeGraphNodeMetric,
     KnowledgeGraphOverview,
     KnowledgeGraphSnapshot,
     KnowledgeIndexSummary,
@@ -81,6 +98,10 @@ from core.knowledge import (
     KnowledgeProposal,
     KnowledgeRetrievalBundle,
     KnowledgeStore,
+    LearningCapability,
+    LearningGoal,
+    LearningGoalDefinition,
+    LearningGoalError,
     SourceUnderstanding,
     WorkspaceSynthesis,
 )
@@ -165,6 +186,141 @@ async def rebuild_knowledge_graph(
     return _graph_snapshot_response(snapshot)
 
 
+@router.get("/api/v1/knowledge/goal", response_model=KnowledgeLearningGoalResponse)
+async def get_knowledge_learning_goal(
+    request: Request, response: Response
+) -> KnowledgeLearningGoalResponse:
+    try:
+        goal = await asyncio.to_thread(_require_store(request).learning_goal)
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _learning_goal_response(goal)
+
+
+@router.put("/api/v1/knowledge/goal", response_model=KnowledgeLearningGoalResponse)
+async def update_knowledge_learning_goal(
+    payload: KnowledgeLearningGoalUpdateRequest,
+    request: Request,
+    response: Response,
+) -> KnowledgeLearningGoalResponse:
+    definition = LearningGoalDefinition(
+        goal_id=payload.goal_id,
+        title=payload.title,
+        description=payload.description,
+        capabilities=tuple(
+            LearningCapability(
+                capability_id=item.capability_id,
+                label=item.label,
+                description=item.description,
+                keywords=tuple(item.keywords),
+                weight=item.weight,
+                required=item.required,
+            )
+            for item in payload.capabilities
+        ),
+    )
+    try:
+        goal = await asyncio.to_thread(
+            _require_store(request).update_learning_goal,
+            definition,
+            expected_goal_revision=payload.expected_goal_revision,
+        )
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KnowledgeConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _learning_goal_response(goal)
+
+
+@router.get(
+    "/api/v1/knowledge/graph/communities",
+    response_model=KnowledgeGraphCommunitiesResponse,
+)
+async def get_knowledge_graph_communities(
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+) -> KnowledgeGraphCommunitiesResponse:
+    try:
+        analysis = await asyncio.to_thread(
+            _require_store(request).analyze_graph, graph_revision=graph_revision
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph revision not found") from exc
+    except (KnowledgeGraphError, KnowledgeGraphAnalysisError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "private, no-cache"
+    return _graph_communities_response(analysis)
+
+
+@router.get(
+    "/api/v1/knowledge/graph/insights",
+    response_model=KnowledgeGraphInsightsResponse,
+)
+async def get_knowledge_graph_insights(
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+    kind: Annotated[
+        Literal[
+            "missing_concept",
+            "isolated_node",
+            "bridge_node",
+            "sparse_community",
+            "capability_gap",
+        ]
+        | None,
+        Query(),
+    ] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+) -> KnowledgeGraphInsightsResponse:
+    store = _require_store(request)
+    try:
+        analysis = await asyncio.to_thread(store.analyze_graph, graph_revision=graph_revision)
+        goal = await asyncio.to_thread(store.learning_goal)
+        if goal.goal_revision != analysis.snapshot.goal_revision:
+            analysis = await asyncio.to_thread(store.analyze_graph, graph_revision=graph_revision)
+            goal = await asyncio.to_thread(store.learning_goal)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph revision not found") from exc
+    except (KnowledgeGraphError, KnowledgeGraphAnalysisError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    selected = [item for item in analysis.insights if kind is None or item.kind == kind][:limit]
+    response.headers["Cache-Control"] = "private, no-cache"
+    return _graph_insights_response(analysis, goal, selected)
+
+
+@router.post(
+    "/api/v1/knowledge/graph/analysis/rebuild",
+    response_model=KnowledgeGraphAnalysisSnapshotResponse,
+)
+async def rebuild_knowledge_graph_analysis(
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+) -> KnowledgeGraphAnalysisSnapshotResponse:
+    try:
+        analysis = await asyncio.to_thread(
+            _require_store(request).analyze_graph,
+            graph_revision=graph_revision,
+            force=True,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph revision not found") from exc
+    except (KnowledgeGraphError, KnowledgeGraphAnalysisError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _graph_analysis_snapshot_response(analysis.snapshot)
+
+
 @router.get("/api/v1/knowledge/graph", response_model=KnowledgeGraphResponse)
 async def get_knowledge_graph(
     request: Request,
@@ -172,8 +328,7 @@ async def get_knowledge_graph(
     graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
     q: str = Query(default="", max_length=200),
     kind: Annotated[
-        list[Literal["page", "source", "project", "concept", "decision", "tool"]]
-        | None,
+        list[Literal["page", "source", "project", "concept", "decision", "tool"]] | None,
         Query(),
     ] = None,
     offset: int = Query(default=0, ge=0, le=100_000),
@@ -828,6 +983,129 @@ def _graph_snapshot_response(
             "completed_at": snapshot.completed_at,
             "stale": snapshot.stale,
         }
+    )
+
+
+def _learning_goal_response(goal: LearningGoal) -> KnowledgeLearningGoalResponse:
+    return KnowledgeLearningGoalResponse(
+        schema_version=goal.schema_version,
+        goal_id=goal.goal_id,
+        title=goal.title,
+        description=goal.description,
+        capabilities=[
+            KnowledgeLearningCapabilityResponse(
+                capability_id=item.capability_id,
+                label=item.label,
+                description=item.description,
+                keywords=list(item.keywords),
+                weight=item.weight,
+                required=item.required,
+            )
+            for item in goal.capabilities
+        ],
+        goal_revision=goal.goal_revision,
+        git_commit=goal.git_commit,
+        structured=goal.structured,
+    )
+
+
+def _graph_analysis_snapshot_response(
+    snapshot: KnowledgeGraphAnalysisSnapshot,
+) -> KnowledgeGraphAnalysisSnapshotResponse:
+    return KnowledgeGraphAnalysisSnapshotResponse.model_validate(
+        {
+            "analysis_revision": snapshot.analysis_revision,
+            "workspace_id": snapshot.workspace_id,
+            "graph_revision": snapshot.graph_revision,
+            "goal_revision": snapshot.goal_revision,
+            "algorithm_id": snapshot.algorithm_id,
+            "algorithm_version": snapshot.algorithm_version,
+            "seed": snapshot.seed,
+            "resolution": snapshot.resolution,
+            "threshold": snapshot.threshold,
+            "status": snapshot.status,
+            "community_count": snapshot.community_count,
+            "insight_count": snapshot.insight_count,
+            "error": snapshot.error,
+            "created_at": snapshot.created_at,
+            "completed_at": snapshot.completed_at,
+        }
+    )
+
+
+def _graph_community_response(
+    community: KnowledgeGraphCommunity,
+) -> KnowledgeGraphCommunityResponse:
+    return KnowledgeGraphCommunityResponse(
+        community_id=community.community_id,
+        label=community.label,
+        node_count=community.node_count,
+        edge_count=community.edge_count,
+        cohesion=community.cohesion,
+        properties=community.properties,
+    )
+
+
+def _graph_metric_response(metric: KnowledgeGraphNodeMetric) -> KnowledgeGraphNodeMetricResponse:
+    return KnowledgeGraphNodeMetricResponse(
+        node_id=metric.node_id,
+        community_id=metric.community_id,
+        degree=metric.degree,
+        weighted_degree=metric.weighted_degree,
+        bridge_score=metric.bridge_score,
+    )
+
+
+def _goal_alignment_response(alignment: KnowledgeGoalAlignment) -> KnowledgeGoalAlignmentResponse:
+    return KnowledgeGoalAlignmentResponse.model_validate(
+        {
+            "capability_id": alignment.capability_id,
+            "label": alignment.label,
+            "coverage": alignment.coverage,
+            "status": alignment.status,
+            "matched_keywords": list(alignment.matched_keywords),
+            "missing_keywords": list(alignment.missing_keywords),
+            "matched_node_ids": list(alignment.matched_node_ids),
+        }
+    )
+
+
+def _graph_insight_response(insight: KnowledgeGraphInsight) -> KnowledgeGraphInsightResponse:
+    return KnowledgeGraphInsightResponse.model_validate(
+        {
+            "insight_id": insight.insight_id,
+            "kind": insight.kind,
+            "severity": insight.severity,
+            "title": insight.title,
+            "description": insight.description,
+            "node_id": insight.node_id,
+            "community_id": insight.community_id,
+            "capability_id": insight.capability_id,
+            "properties": insight.properties,
+        }
+    )
+
+
+def _graph_communities_response(
+    analysis: KnowledgeGraphAnalysis,
+) -> KnowledgeGraphCommunitiesResponse:
+    return KnowledgeGraphCommunitiesResponse(
+        analysis=_graph_analysis_snapshot_response(analysis.snapshot),
+        communities=[_graph_community_response(item) for item in analysis.communities],
+        node_metrics=[_graph_metric_response(item) for item in analysis.node_metrics],
+    )
+
+
+def _graph_insights_response(
+    analysis: KnowledgeGraphAnalysis,
+    goal: LearningGoal,
+    insights: list[KnowledgeGraphInsight],
+) -> KnowledgeGraphInsightsResponse:
+    return KnowledgeGraphInsightsResponse(
+        analysis=_graph_analysis_snapshot_response(analysis.snapshot),
+        goal=_learning_goal_response(goal),
+        alignments=[_goal_alignment_response(item) for item in analysis.alignments],
+        insights=[_graph_insight_response(item) for item in insights],
     )
 
 

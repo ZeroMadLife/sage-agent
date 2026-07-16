@@ -29,6 +29,7 @@ asyncpg==0.30.0
 psycopg2-binary==2.9.10
 pgvector==0.3.6
 redis==5.2.1
+networkx==3.5
 
 # ---------- 工具 ----------
 pydantic==2.10.4
