@@ -146,14 +146,23 @@ def test_permission_mode_auto_keeps_dangerous_shell_behind_approval(tmp_path: Pa
     assert decision.reason == "approval_required"
 
 
-def test_permission_mode_auto_keeps_knowledge_deposit_behind_approval(tmp_path: Path) -> None:
-    """Automatic coding actions cannot implicitly approve durable learning deposits."""
+@pytest.mark.parametrize("tool_name", ["knowledge_learn", "remember"])
+def test_permission_mode_auto_keeps_durable_learning_behind_approval(
+    tmp_path: Path,
+    tool_name: str,
+) -> None:
+    """Automatic coding actions cannot implicitly approve durable learning or memory."""
     workspace, tools = _tools(tmp_path)
     checker = PermissionChecker(permission_mode="auto")
+    args = (
+        {"topic": "Harness", "citation_ids": ["kcite_1"]}
+        if tool_name == "knowledge_learn"
+        else {"topic": "project-conventions", "fact": "Keep revisions bound"}
+    )
 
     decision = checker.check(
-        tools["knowledge_learn"],
-        {"topic": "Harness", "citation_ids": ["kcite_1"]},
+        tools[tool_name],
+        args,
         workspace,
     )
 

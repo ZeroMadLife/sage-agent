@@ -167,6 +167,9 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
     assert tools["knowledge_search"].requires_approval is False
     assert tools["knowledge_learn"].risky is True
     assert tools["knowledge_learn"].requires_approval is True
+    assert tools["remember"].risky is True
+    assert tools["remember"].requires_approval is True
+    assert tools["dream"].risky is False
 
 
 def test_knowledge_search_returns_revision_bound_evidence(tmp_path: Path) -> None:

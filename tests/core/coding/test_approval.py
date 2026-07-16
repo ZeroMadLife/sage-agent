@@ -1,5 +1,7 @@
 """Approval manager and dangerous command tests."""
 
+import pytest
+
 from core.coding.tool_executor import ApprovalManager, check_dangerous_command
 
 
@@ -31,20 +33,22 @@ def test_approval_manager_tracks_session_approval() -> None:
     assert manager.is_session_approved("s1", "shell:sudo") is True
 
 
-def test_knowledge_learning_cannot_be_approved_for_the_whole_session() -> None:
-    """Every durable knowledge deposit keeps its own explicit confirmation boundary."""
+@pytest.mark.parametrize("tool", ["knowledge_learn", "remember"])
+def test_durable_learning_cannot_be_approved_for_the_whole_session(tool: str) -> None:
+    """Every durable knowledge or memory write keeps its own confirmation boundary."""
     manager = ApprovalManager()
+    pattern_key = f"tool:{tool}"
     entry = manager.submit(
         "s1",
-        "knowledge_learn",
-        {"topic": "Harness", "citation_ids": ["kcite_1"]},
+        tool,
+        {"topic": "Harness"},
         "Persist cited evidence.",
-        "tool:knowledge_learn",
+        pattern_key,
     )
 
     assert manager.resolve("s1", entry.approval_id, "session") is True
     assert entry.result == "once"
-    assert manager.is_session_approved("s1", "tool:knowledge_learn") is False
+    assert manager.is_session_approved("s1", pattern_key) is False
 
 
 def test_approval_manager_cancel_session_denies_pending_entries() -> None:

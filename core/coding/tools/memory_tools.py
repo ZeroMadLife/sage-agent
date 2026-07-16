@@ -19,11 +19,12 @@ from core.coding.tools.schemas import DreamArgs, RememberArgs
 
 @register_tool(
     name="remember",
-    description="Save a fact to durable workspace memory.",
+    description="Save a user-confirmed fact to durable workspace memory.",
     schema={"fact": "str", "topic": "str='project-conventions'"},
     schema_model=RememberArgs,
-    risky=False,
+    risky=True,
     category="memory",
+    requires_approval=True,
     deferred=True,
 )
 def remember(

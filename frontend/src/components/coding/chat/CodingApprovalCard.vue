@@ -13,7 +13,9 @@ const emit = defineEmits<{
 }>()
 
 const showFullDiff = ref(false)
-const allowsSessionApproval = computed(() => props.approval.tool !== 'knowledge_learn')
+const allowsSessionApproval = computed(
+  () => !['knowledge_learn', 'remember'].includes(props.approval.tool),
+)
 const diffPath = computed(() => {
   const path = props.approval.args.path
   return typeof path === 'string' && path.trim() ? path : props.approval.tool
@@ -36,6 +38,15 @@ const approvalSummary = computed(() => {
       ? props.approval.args.citation_ids.length
       : 0
     return `将“${topic}”与 ${citations} 条引用证据保存到知识库`
+  }
+  if (props.approval.tool === 'remember') {
+    const topic = typeof props.approval.args.topic === 'string'
+      ? props.approval.args.topic
+      : 'project-conventions'
+    const fact = typeof props.approval.args.fact === 'string'
+      ? props.approval.args.fact
+      : ''
+    return `保存到 ${topic}: ${fact}`
   }
   return JSON.stringify(compactArgs(props.approval.args), null, 2)
 })

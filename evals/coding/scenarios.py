@@ -153,6 +153,7 @@ SCENARIOS: list[Scenario] = [
         ],
         memory_fact="这个项目用 pytest 跑测试",
         expected_tool_calls=["tool_search", "remember"],
+        expected_approval=True,
     ),
     Scenario(
         name="remember-convention",
@@ -166,5 +167,6 @@ SCENARIOS: list[Scenario] = [
         ],
         memory_fact="代码风格用 4 空格缩进",
         expected_tool_calls=["tool_search", "remember"],
+        expected_approval=True,
     ),
 ]

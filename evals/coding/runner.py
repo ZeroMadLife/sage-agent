@@ -92,10 +92,10 @@ async def _run_turn_with_auto_approval(
 ) -> list[dict[str, Any]]:
     """Run a turn, granting any pending approval so the flow is non-blocking.
 
-    Used by the default-mode approval scenario: the engine emits
-    ``approval_required`` and then blocks waiting for resolution. We run the turn
-    in a task and, in parallel, poll the runtime's approval manager for a
-    pending entry and resolve it, which unblocks the turn.
+    Used by scenarios that explicitly expect a confirmation boundary, including
+    durable memory writes. The engine emits ``approval_required`` and then blocks
+    waiting for resolution. We run the turn in a task and, in parallel, resolve
+    exactly one pending entry, which models one user confirmation.
     """
     events: list[dict[str, Any]] = []
 

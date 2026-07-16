@@ -70,6 +70,27 @@ it('requires a one-time decision for every knowledge learning deposit', () => {
   expect(wrapper.find('button.deny').exists()).toBe(true)
 })
 
+it('requires a one-time decision before writing durable memory', () => {
+  const wrapper = mount(CodingApprovalCard, {
+    props: {
+      approval: {
+        approval_id: 'appr_memory',
+        session_id: 'c1',
+        tool: 'remember',
+        args: { topic: 'project-conventions', fact: 'Keep revision-bound citations.' },
+        description: '保存事实到长期工作区记忆前需要确认。',
+        pattern_key: 'tool:remember',
+      },
+    },
+  })
+
+  expect(wrapper.text()).toContain(
+    '保存到 project-conventions: Keep revision-bound citations.',
+  )
+  expect(wrapper.find('button.session').exists()).toBe(false)
+  expect(wrapper.find('button.allow').exists()).toBe(true)
+})
+
 it('summarizes write content instead of rendering the full payload', () => {
   const content = 'def two_sum():\n    return [0, 1]\n'
   const wrapper = mount(CodingApprovalCard, {

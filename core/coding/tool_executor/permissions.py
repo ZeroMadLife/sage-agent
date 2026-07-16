@@ -88,7 +88,7 @@ class PermissionChecker:
 
         # Knowledge deposition changes durable user-owned state. Unlike ordinary
         # coding edits, automatic mode must never treat it as implicitly approved.
-        if tool.name == "knowledge_learn":
+        if tool.name in {"knowledge_learn", "remember"}:
             return PermissionDecision.allow("approval_required")
 
         # Mode-specific decisions for risky tools (write_file, patch_file, run_shell).

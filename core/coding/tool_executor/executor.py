@@ -143,6 +143,8 @@ class ToolExecutor:
         pattern_key = f"tool:{tool.name}"
         if tool.name == "knowledge_learn":
             description = "保存本轮引用证据到知识库前需要确认。"
+        elif tool.name == "remember":
+            description = "保存事实到长期工作区记忆前需要确认。"
         elif tool.name == "run_shell":
             dangerous, command_description, command_pattern = check_dangerous_command(
                 str(args.get("command", ""))

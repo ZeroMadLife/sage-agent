@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from core.coding.context import WorkspaceContext
 from core.coding.engine import (
     ApprovalGrantedEvent,
@@ -113,21 +115,32 @@ async def test_auto_approval_path_executes_tool(tmp_path: Path) -> None:
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "approved"
 
 
-async def test_knowledge_learning_requires_explicit_user_approval(tmp_path: Path) -> None:
-    """Knowledge deposition pauses before execution even when citations are model-selected."""
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("knowledge_learn", {"topic": "Harness lessons", "citation_ids": ["kcite_123"]}),
+        ("remember", {"topic": "project-conventions", "fact": "Keep revisions bound"}),
+    ],
+)
+async def test_durable_learning_requires_explicit_user_approval(
+    tmp_path: Path,
+    tool: str,
+    args: dict[str, object],
+) -> None:
+    """Durable learning pauses before execution even when content is model-selected."""
     manager = ApprovalManager()
     executor = _executor(tmp_path, approval_manager=manager)
     stream = executor.execute(
         {
-            "name": "knowledge_learn",
-            "args": {"topic": "Harness lessons", "citation_ids": ["kcite_123"]},
+            "name": tool,
+            "args": args,
         }
     )
 
     first = await anext(stream)
 
     assert isinstance(first, ApprovalRequiredEvent)
-    assert first.tool == "knowledge_learn"
+    assert first.tool == tool
     await stream.aclose()
 
 
