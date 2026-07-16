@@ -143,7 +143,7 @@ class DeerflowApprovalFakeModel(FakeMessagesListChatModel):
 
 
 class DeerflowAgentFakeModel(FakeMessagesListChatModel):
-    """Tool-capable fake that launches one bounded Explore worker."""
+    """Tool-capable fake that awaits one bounded Explore child."""
 
     def __init__(self) -> None:
         super().__init__(
@@ -152,19 +152,18 @@ class DeerflowAgentFakeModel(FakeMessagesListChatModel):
                     content="",
                     tool_calls=[
                         {
-                            "name": "agent",
+                            "name": "task",
                             "args": {
                                 "description": "读取 README",
                                 "prompt": "读取 README 并返回第一行",
                                 "subagent_type": "Explore",
-                                "write_scope": [],
                             },
-                            "id": "call-agent",
+                            "id": "call-task",
                             "type": "tool_call",
                         }
                     ],
                 ),
-                AIMessage(content="子任务已启动"),
+                AIMessage(content="子任务结果已合并"),
             ]
         )
 
@@ -363,7 +362,7 @@ def test_enabled_deerflow_profile_reuses_approval_endpoint_for_write_tool(tmp_pa
     assert any(item.get("type") == "final" for item in payloads)
 
 
-def test_enabled_deerflow_profile_projects_subagent_launch(tmp_path: Path) -> None:
+def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
     app = create_app(
         coding_model_factory=DeerflowAgentFakeModel,
@@ -376,6 +375,7 @@ def test_enabled_deerflow_profile_projects_subagent_launch(tmp_path: Path) -> No
             "/api/v1/coding/session",
             json={"runtime_profile": "deerflow_v2"},
         ).json()["session_id"]
+        app.state.coding_sessions[session_id].worker_manager.model_factory = lambda: FakeModel()
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
             websocket.send_json({"content": "启动一个探索任务"})
             payloads: list[dict] = []
@@ -385,9 +385,16 @@ def test_enabled_deerflow_profile_projects_subagent_launch(tmp_path: Path) -> No
                 if event["kind"] == "terminal":
                     break
 
-    agent_events = [item for item in payloads if item.get("type") == "agent_started"]
-    assert agent_events
-    assert agent_events[0]["agent_run_id"].startswith("agent_")
+    agent_events = [
+        item for item in payloads if str(item.get("type", "")).startswith("subagent_")
+    ]
+    assert [item["type"] for item in agent_events] == [
+        "subagent_started",
+        "subagent_completed",
+    ]
+    assert agent_events[0]["child_run_id"].startswith("child_")
+    assert agent_events[1]["child_run_id"] == agent_events[0]["child_run_id"]
+    assert agent_events[1]["result_ref"].startswith("subagent://")
     assert any(item.get("type") == "final" for item in payloads)
 
 

@@ -546,6 +546,27 @@ def test_event_adapter_projects_agent_started_event() -> None:
     assert events[0].payload["agent_run_id"] == "agent_1"
 
 
+def test_event_adapter_projects_subagent_terminal_status() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "subagent_timed_out",
+                "child_run_id": "child_1",
+                "status": "timed_out",
+                "error_code": "timeout",
+            },
+            "source-child",
+        )
+    )
+
+    assert events[0].kind == "agent"
+    assert events[0].status == "error"
+    assert events[0].payload["agent_run_id"] == "child_1"
+
+
 def test_event_adapter_projects_memory_proposal_without_candidate_content() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
     events = adapter.adapt(

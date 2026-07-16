@@ -178,8 +178,15 @@ class HarnessEventAdapter:
             "tool_result",
             "agent_started",
             "agent_completed",
+            "subagent_started",
+            "subagent_completed",
+            "subagent_failed",
+            "subagent_cancelled",
+            "subagent_timed_out",
         }:
             event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
+            if event_type.startswith("subagent"):
+                event_payload.setdefault("agent_run_id", event_payload.get("child_run_id", ""))
             if event_type == "tool_call":
                 tool_name = str(event_payload.get("tool", ""))
                 pending = self._pending_model_calls_by_tool.get(tool_name, 0)
@@ -202,14 +209,18 @@ class HarnessEventAdapter:
                         "approval"
                         if event_type.startswith("approval")
                         else "agent"
-                        if event_type.startswith("agent")
+                        if event_type.startswith(("agent", "subagent"))
                         else "tool"
                     ),
                     (
                         "blocked"
                         if event_type == "approval_required"
                         else "running"
-                        if event_type == "agent_started"
+                        if event_type in {"agent_started", "subagent_started"}
+                        else "cancelled"
+                        if event_type == "subagent_cancelled"
+                        else "error"
+                        if event_type in {"subagent_failed", "subagent_timed_out"}
                         else "completed"
                     ),
                     event_payload,

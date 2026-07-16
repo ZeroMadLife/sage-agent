@@ -198,6 +198,21 @@ describe('harness timeline projection', () => {
     }))
   })
 
+  it('updates one child resource from started to terminal status', () => {
+    const projection = projectLatestCodingHarness([
+      codingEvent(1, 'agent', {
+        type: 'subagent_started', child_run_id: 'child-1', description: '读取项目',
+      }, 'running'),
+      codingEvent(2, 'agent', {
+        type: 'subagent_completed', child_run_id: 'child-1', result_ref: 'subagent://child-1',
+      }),
+    ])
+
+    expect(projection.runtimeResources).toContainEqual({
+      id: 'agent:child-1', kind: 'agent', label: '子代理', detail: '读取项目', status: 'completed',
+    })
+  })
+
   it('keeps blocked and resumed approval activity in one tool-stage visit', () => {
     const events = adaptCodingTimeline([
       codingEvent(1, 'harness', {

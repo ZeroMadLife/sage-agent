@@ -18,6 +18,8 @@ from sage_harness import (
     SandboxDescriptor,
     SkillActivationMiddleware,
     SkillCatalog,
+    SubagentLifecycleMiddleware,
+    SubagentLimits,
     create_sage_agent,
     load_graph_message_compaction_plan,
     render_deferred_tool_index,
@@ -41,6 +43,7 @@ class SageHarnessRuntimeAdapter:
         system_prompt: str | None = None,
         deferred_setup: DeferredToolSetup | None = None,
         skill_catalog: SkillCatalog | None = None,
+        subagent_limits: SubagentLimits | None = None,
     ) -> None:
         self.checkpointer = checkpointer
         registry = build_default_registry()
@@ -70,6 +73,14 @@ class SageHarnessRuntimeAdapter:
                     lambda config: SkillActivationMiddleware(skill_catalog),
                 ),
                 before="input_sanitization",
+            )
+        if subagent_limits is not None:
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "subagent_lifecycle",
+                    lambda config: SubagentLifecycleMiddleware(subagent_limits),
+                ),
+                before="durable_context",
             )
         self.graph = create_sage_agent(
             model=model,

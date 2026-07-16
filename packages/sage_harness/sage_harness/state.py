@@ -8,10 +8,14 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 from langchain.agents import AgentState
 
 GoalStatus = Literal["pending", "in_progress", "succeeded", "failed", "cancelled"]
-DelegationStatus = Literal["pending", "running", "succeeded", "failed", "cancelled"]
+DelegationStatus = Literal[
+    "pending", "running", "succeeded", "failed", "cancelled", "timed_out"
+]
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
-TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
+TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
+    {"succeeded", "failed", "cancelled", "timed_out"}
+)
 TERMINAL_APPROVAL_STATUSES: frozenset[str] = frozenset({"approved", "rejected", "expired"})
 MAX_ARTIFACTS = 100
 MAX_DELEGATIONS = 50
@@ -70,6 +74,9 @@ class DelegationEntry(TypedDict, total=False):
     status: DelegationStatus
     result_brief: str
     result_ref: str
+    tool_scope: list[str]
+    token_budget: int
+    timeout_seconds: float
     created_at: str
 
 

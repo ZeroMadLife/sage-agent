@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
 from langchain_core.tools import BaseTool
-from sage_harness import McpCatalogPort, McpManager, McpScope
+from sage_harness import McpCatalogPort, McpManager, McpScope, SubagentLimits, SubagentToolConfig
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
@@ -101,6 +101,7 @@ from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
+from core.harness.subagent_adapter import CodingSubagentExecutor
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
@@ -345,6 +346,8 @@ async def _deerflow_timeline_events(
             allow_writes=True,
         )
         try:
+            subagent_executor = CodingSubagentExecutor(runtime)
+            subagent_config = SubagentToolConfig()
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
                 run_id=run_id,
@@ -352,6 +355,8 @@ async def _deerflow_timeline_events(
                 memory_port=CodingMemoryPort(runtime),
                 sandbox=sandbox,
                 extra_deferred_tools=mcp_tools,
+                subagent_executor=subagent_executor,
+                subagent_config=subagent_config,
             )
             adapter = SageHarnessRuntimeAdapter(
                 model=runtime.model,
@@ -360,6 +365,7 @@ async def _deerflow_timeline_events(
                 system_prompt=build_deerflow_system_prompt(runtime),
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
+                subagent_limits=SubagentLimits(),
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None

@@ -22,6 +22,7 @@ from sage_harness.middleware.registry import (
     build_default_registry,
 )
 from sage_harness.skills import SkillActivationMiddleware
+from sage_harness.subagents import SubagentLifecycleMiddleware
 
 __all__ = [
     "DeferredToolFilterMiddleware",
@@ -35,6 +36,7 @@ __all__ = [
     "ProviderErrorMiddleware",
     "RemoteContentSanitizationMiddleware",
     "SkillActivationMiddleware",
+    "SubagentLifecycleMiddleware",
     "TerminalResponseMiddleware",
     "ThreadContextMiddleware",
     "TokenBudgetMiddleware",

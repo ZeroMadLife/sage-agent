@@ -13,7 +13,10 @@ from sage_harness import (
     KnowledgePort,
     MemoryPort,
     SandboxPort,
+    SubagentExecutorPort,
+    SubagentToolConfig,
     assemble_deferred_tools,
+    build_task_tool,
 )
 
 from core.coding.engine.events import ToolResultEvent, event_to_dict
@@ -21,8 +24,9 @@ from core.coding.runtime import CodingRuntime
 from core.coding.tool_executor.executor import ToolExecutor
 
 _DEERFLOW_TOOLS = frozenset(
-    {"list_files", "read_file", "search", "write_file", "patch_file", "run_shell", "agent"}
+    {"list_files", "read_file", "search", "write_file", "patch_file", "run_shell"}
 )
+_LEGACY_AGENT_TOOLS = frozenset({"agent", "send_message", "task_stop"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +44,8 @@ def build_deerflow_coding_tools(
     knowledge_port: KnowledgePort | None = None,
     memory_port: MemoryPort | None = None,
     sandbox: SandboxPort | None = None,
+    subagent_executor: SubagentExecutorPort | None = None,
+    subagent_config: SubagentToolConfig | None = None,
 ) -> list[BaseTool]:
     """Build the established resident tool slice without deferred discovery."""
     return list(
@@ -49,6 +55,8 @@ def build_deerflow_coding_tools(
             knowledge_port=knowledge_port,
             memory_port=memory_port,
             sandbox=sandbox,
+            subagent_executor=subagent_executor,
+            subagent_config=subagent_config,
             enable_deferred_tools=False,
         ).tools
     )
@@ -62,6 +70,8 @@ def build_deerflow_coding_tool_bundle(
     memory_port: MemoryPort | None = None,
     sandbox: SandboxPort | None = None,
     extra_deferred_tools: Sequence[BaseTool] = (),
+    subagent_executor: SubagentExecutorPort | None = None,
+    subagent_config: SubagentToolConfig | None = None,
     enable_deferred_tools: bool = True,
 ) -> CodingToolBundle:
     """Build V2 tools while preserving Sage execution and approval boundaries."""
@@ -71,6 +81,8 @@ def build_deerflow_coding_tool_bundle(
 
     definitions = registered_tool_definitions()
     tool_names = set(_DEERFLOW_TOOLS)
+    if subagent_executor is None:
+        tool_names.add("agent")
     if knowledge_port is not None and knowledge_port.available:
         tool_names.add("knowledge_learn")
     if enable_deferred_tools:
@@ -79,6 +91,7 @@ def build_deerflow_coding_tool_bundle(
             for name, registered in runtime.tools.items()
             if registered.deferred
             and name not in _DEERFLOW_TOOLS
+            and name not in _LEGACY_AGENT_TOOLS
             and not (name == "remember" and memory_port is not None)
         )
     for name in sorted(tool_names):
@@ -199,6 +212,9 @@ def build_deerflow_coding_tool_bundle(
             )
             (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
 
+    if subagent_executor is not None:
+        resident_tools.append(build_task_tool(subagent_executor, subagent_config))
+
     deferred_tools.extend(extra_deferred_tools)
 
     graph_tools, deferred_setup = assemble_deferred_tools(
@@ -239,10 +255,6 @@ def _build_runtime_tool(
                 writer(payload)
             if isinstance(event, ToolResultEvent):
                 result = event.content
-                if name == "agent" and writer is not None:
-                    agent_event = _agent_started_event(result)
-                    if agent_event is not None:
-                        writer(agent_event)
         return result or f"{name} completed without a result"
 
     return StructuredTool.from_function(
@@ -265,24 +277,6 @@ def _stream_writer() -> Callable[[Any], None] | None:
         return get_stream_writer()
     except (KeyError, RuntimeError):
         return None
-
-
-def _agent_started_event(content: str) -> dict[str, Any] | None:
-    """Project a worker launch into a small public event, never its full trace."""
-    import json
-
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict) or not str(payload.get("task_id", "")).strip():
-        return None
-    return {
-        "type": "agent_started",
-        "agent_run_id": str(payload["task_id"]),
-        "status": str(payload.get("status", "started")),
-        "description": str(payload.get("description", ""))[:400],
-    }
 
 
 __all__ = [

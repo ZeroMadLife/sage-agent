@@ -226,19 +226,23 @@ function projectCodingRuntimeResources(
       status: explicitStatus(context.status),
     })
   }
-  const agents = events.filter(
-    (event) => event.kind === 'agent' && event.payload.type === 'agent_started',
-  )
-  for (const event of agents) {
-    const agentId = stringValue(event.payload.agent_run_id) || event.event_id
-    resources.push({
+  const agentResources = new Map<string, HarnessRuntimeResource>()
+  for (const event of events) {
+    const eventType = stringValue(event.payload.type)
+    if (event.kind !== 'agent' || (!eventType.startsWith('agent_') && !eventType.startsWith('subagent_'))) continue
+    const agentId = stringValue(event.payload.child_run_id)
+      || stringValue(event.payload.agent_run_id)
+      || event.event_id
+    const previous = agentResources.get(agentId)
+    agentResources.set(agentId, {
       id: `agent:${agentId}`,
       kind: 'agent',
       label: '子代理',
-      detail: stringValue(event.payload.description) || agentId,
+      detail: stringValue(event.payload.description) || previous?.detail || agentId,
       status: explicitStatus(event.status),
     })
   }
+  resources.push(...agentResources.values())
   return resources
 }
 
