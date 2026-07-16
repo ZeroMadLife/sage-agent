@@ -261,6 +261,28 @@ class KnowledgeRetrievalResponse(BaseModel):
     citations: list[KnowledgeEvidenceResponse]
 
 
+class KnowledgeCitationResponse(BaseModel):
+    """One current, bounded citation for browser evidence inspection."""
+
+    citation_id: str
+    chunk_id: str
+    page_id: str
+    page_revision: str
+    page_path: str
+    source_id: str
+    source_revision: str
+    source_kind: str
+    source_relative_path: str
+    block_id: str
+    ordinal: int = Field(ge=0)
+    title: str
+    heading_path: list[str]
+    page_number: int | None = Field(default=None, ge=1)
+    excerpt: str
+    token_count: int = Field(ge=0)
+    truncated: bool
+
+
 class KnowledgeLearningRequest(BaseModel):
     """Create an extractive learning note from current knowledge citations."""
 

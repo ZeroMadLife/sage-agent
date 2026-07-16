@@ -423,6 +423,26 @@ export type KnowledgeRetrieval = {
   citations: KnowledgeEvidence[]
 }
 
+export type KnowledgeCitation = {
+  citation_id: string
+  chunk_id: string
+  page_id: string
+  page_revision: string
+  page_path: string
+  source_id: string
+  source_revision: string
+  source_kind: string
+  source_relative_path: string
+  block_id: string
+  ordinal: number
+  title: string
+  heading_path: string[]
+  page_number: number | null
+  excerpt: string
+  token_count: number
+  truncated: boolean
+}
+
 export type KnowledgeMigrationPlanItem = {
   proposal_id: string
   source_root_id: string

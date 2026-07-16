@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
+import { fetchKnowledgeCitation } from '../../api/knowledge'
 import type {
   KnowledgeGraph,
   KnowledgeGraphCommunities,
@@ -7,6 +8,10 @@ import type {
 } from '../../types/api'
 import KnowledgeGraphCanvas from './KnowledgeGraphCanvas.vue'
 import KnowledgeInspector from './KnowledgeInspector.vue'
+
+vi.mock('../../api/knowledge', () => ({
+  fetchKnowledgeCitation: vi.fn(),
+}))
 
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'WebGLRenderingContext', {
@@ -74,6 +79,14 @@ const communities: KnowledgeGraphCommunities = {
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
   localStorage.clear()
+  vi.mocked(fetchKnowledgeCitation).mockResolvedValue({
+    citation_id: 'kcite-1', chunk_id: 'chunk-1', page_id: 'page-1',
+    page_revision: 'krev-page', page_path: 'wiki/sources/harness.md',
+    source_id: 'source-1', source_revision: 'sha256:source', source_kind: 'obsidian',
+    source_relative_path: 'notes/harness.md', block_id: 'block-1', ordinal: 0,
+    title: 'Agent Harness', heading_path: ['Harness', 'Recovery'], page_number: null,
+    excerpt: 'Harness 使用可恢复的状态机保存执行证据。', token_count: 12, truncated: false,
+  })
 })
 
 it('degrades the graph to a searchable node list on mobile', async () => {
@@ -154,6 +167,11 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   expect(wrapper.text()).toContain('notes/harness.md')
   expect(wrapper.text()).toContain('来源证据')
   expect(wrapper.text()).toContain('sha256:source')
+  await wrapper.get('button[aria-label="查看 notes/harness.md 的证据片段"]').trigger('click')
+  await flushPromises()
+  expect(fetchKnowledgeCitation).toHaveBeenCalledWith('kcite-1')
+  expect(wrapper.text()).toContain('Harness 使用可恢复的状态机保存执行证据。')
+  expect(wrapper.text()).toContain('Harness / Recovery')
   await wrapper.findAll('.inspector-tabs button')[2].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
   expect(wrapper.emitted('select')).toEqual([['source-1']])

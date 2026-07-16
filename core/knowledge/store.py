@@ -78,6 +78,7 @@ from core.knowledge.policy import (
     is_trusted_local_parser,
 )
 from core.knowledge.retrieval import (
+    KnowledgeChunk,
     KnowledgeIndexSummary,
     KnowledgeRetrievalBundle,
     KnowledgeSearchHit,
@@ -1977,6 +1978,22 @@ class KnowledgeStore:
             page_revisions=page_revisions,
         )
         return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
+
+    def citation(
+        self,
+        citation_id: str,
+        *,
+        visibility: str = "private",
+    ) -> KnowledgeChunk:
+        """Resolve one current indexed citation without reading its source path."""
+
+        self.initialize()
+        with self._connect() as connection:
+            return self.knowledge_index.resolve_citations(
+                connection,
+                (citation_id,),
+                visibility=visibility,
+            )[0][1]
 
     def propose_rollback(
         self,

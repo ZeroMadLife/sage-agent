@@ -9,6 +9,7 @@ from typing import Annotated, Any, Literal
 from fastapi import (
     APIRouter,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -19,6 +20,7 @@ from fastapi import (
 
 from api.schemas import (
     KnowledgeBatchIngestRequest,
+    KnowledgeCitationResponse,
     KnowledgeEvidenceResponse,
     KnowledgeGoalAlignmentResponse,
     KnowledgeGraphAnalysisSnapshotResponse,
@@ -79,6 +81,7 @@ from api.schemas import (
     KnowledgeWorkspaceSynthesisResponse,
 )
 from core.knowledge import (
+    KnowledgeChunk,
     KnowledgeConflictError,
     KnowledgeEvidenceError,
     KnowledgeGoalAlignment,
@@ -126,6 +129,7 @@ from core.knowledge.sources import default_source_adapter_registry, fetch_source
 
 router = APIRouter()
 _MAX_DIFF_CHARS = 200_000
+_MAX_CITATION_EXCERPT_CHARS = 3_200
 
 
 @router.get("/api/v1/knowledge", response_model=KnowledgeWorkspaceSummary)
@@ -487,6 +491,28 @@ async def search_knowledge(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response.headers["Cache-Control"] = "no-store"
     return _retrieval_response(bundle)
+
+
+@router.get(
+    "/api/v1/knowledge/citations/{citation_id}",
+    response_model=KnowledgeCitationResponse,
+)
+async def get_knowledge_citation(
+    citation_id: Annotated[
+        str,
+        Path(pattern=r"^kcite_[0-9a-f]{32}$", min_length=38, max_length=38),
+    ],
+    request: Request,
+    response: Response,
+) -> KnowledgeCitationResponse:
+    """Return one current indexed excerpt without exposing configured source roots."""
+
+    try:
+        chunk = await asyncio.to_thread(_require_store(request).citation, citation_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="knowledge citation is stale or unknown") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _citation_response(citation_id, chunk)
 
 
 @router.post(
@@ -1339,6 +1365,35 @@ def _retrieval_response(bundle: KnowledgeRetrievalBundle) -> KnowledgeRetrievalR
         used_tokens=bundle.used_tokens,
         omitted_count=bundle.omitted_count,
         citations=citations,
+    )
+
+
+def _citation_response(
+    citation_id: str,
+    chunk: KnowledgeChunk,
+) -> KnowledgeCitationResponse:
+    truncated = len(chunk.text) > _MAX_CITATION_EXCERPT_CHARS
+    excerpt = chunk.text[:_MAX_CITATION_EXCERPT_CHARS].rstrip()
+    if truncated:
+        excerpt += "..."
+    return KnowledgeCitationResponse(
+        citation_id=citation_id,
+        chunk_id=chunk.chunk_id,
+        page_id=chunk.page_id,
+        page_revision=chunk.page_revision,
+        page_path=chunk.page_path,
+        source_id=chunk.source_id,
+        source_revision=chunk.source_revision,
+        source_kind=chunk.source_kind,
+        source_relative_path=chunk.source_relative_path,
+        block_id=chunk.block_id,
+        ordinal=chunk.ordinal,
+        title=chunk.title,
+        heading_path=list(chunk.heading_path),
+        page_number=chunk.page_number,
+        excerpt=excerpt,
+        token_count=chunk.token_count,
+        truncated=truncated,
     )
 
 

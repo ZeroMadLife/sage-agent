@@ -1,4 +1,5 @@
 import type {
+  KnowledgeCitation,
   KnowledgePage,
   KnowledgeJob,
   KnowledgeJobEvent,
@@ -97,6 +98,10 @@ export function searchKnowledge(
       token_budget: options.tokenBudget ?? 3000,
     }),
   })
+}
+
+export function fetchKnowledgeCitation(citationId: string): Promise<KnowledgeCitation> {
+  return request(`/api/v1/knowledge/citations/${encodeURIComponent(citationId)}`)
 }
 
 export function depositKnowledgeLearning(

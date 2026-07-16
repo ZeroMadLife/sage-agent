@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ArrowUpRight, BookOpenText, FileText, Link2, Network, Target, X } from 'lucide-vue-next'
+import { ArrowUpRight, BookOpenText, ChevronDown, FileText, Link2, LoaderCircle, Network, Target, X } from 'lucide-vue-next'
+import { fetchKnowledgeCitation } from '../../api/knowledge'
 import type {
+  KnowledgeCitation,
   KnowledgeGoalAlignment,
   KnowledgeGraphCommunity,
   KnowledgeGraphInsight,
@@ -32,7 +34,19 @@ const emit = defineEmits<{
 const panel = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 const tab = ref<'overview' | 'evidence' | 'relations'>('overview')
-watch(() => props.node?.node_id, () => { tab.value = 'overview' })
+const expandedEvidenceId = ref<string | null>(null)
+const evidenceDetails = ref<Record<string, KnowledgeCitation>>({})
+const evidenceLoading = ref<Set<string>>(new Set())
+const evidenceErrors = ref<Record<string, string>>({})
+let evidenceRequestVersion = 0
+watch(() => props.node?.node_id, () => {
+  tab.value = 'overview'
+  expandedEvidenceId.value = null
+  evidenceDetails.value = {}
+  evidenceLoading.value = new Set()
+  evidenceErrors.value = {}
+  evidenceRequestVersion += 1
+})
 
 const community = computed(() => props.communities.find(
   (item) => item.community_id === props.communityId,
@@ -96,6 +110,38 @@ const evidence = computed(() => {
     return true
   })
 })
+
+async function toggleEvidence(citationId: string) {
+  if (expandedEvidenceId.value === citationId) {
+    expandedEvidenceId.value = null
+    return
+  }
+  expandedEvidenceId.value = citationId
+  if (evidenceDetails.value[citationId] || evidenceLoading.value.has(citationId)) return
+
+  const requestVersion = evidenceRequestVersion
+  evidenceLoading.value = new Set([...evidenceLoading.value, citationId])
+  const nextErrors = { ...evidenceErrors.value }
+  delete nextErrors[citationId]
+  evidenceErrors.value = nextErrors
+  try {
+    const detail = await fetchKnowledgeCitation(citationId)
+    if (requestVersion !== evidenceRequestVersion) return
+    evidenceDetails.value = { ...evidenceDetails.value, [citationId]: detail }
+  } catch (reason) {
+    if (requestVersion !== evidenceRequestVersion) return
+    evidenceErrors.value = {
+      ...evidenceErrors.value,
+      [citationId]: reason instanceof Error ? reason.message : String(reason),
+    }
+  } finally {
+    if (requestVersion === evidenceRequestVersion) {
+      const nextLoading = new Set(evidenceLoading.value)
+      nextLoading.delete(citationId)
+      evidenceLoading.value = nextLoading
+    }
+  }
+}
 
 function focusableElements() {
   if (!panel.value) return []
@@ -196,6 +242,29 @@ onMounted(() => {
             <div><dt>Wiki revision</dt><dd>{{ item.page_revision.slice(0, 18) }}</dd></div>
             <div><dt>Source revision</dt><dd>{{ item.source_revision.slice(0, 18) }}</dd></div>
           </dl>
+          <button
+            type="button"
+            class="evidence-toggle"
+            :aria-label="`查看 ${item.sourcePath} 的证据片段`"
+            :aria-expanded="expandedEvidenceId === item.citation_id"
+            @click="toggleEvidence(item.citation_id)"
+          >
+            <LoaderCircle v-if="evidenceLoading.has(item.citation_id)" :size="14" class="spinning" />
+            <FileText v-else :size="14" />
+            {{ evidenceLoading.has(item.citation_id) ? '读取中' : '查看证据片段' }}
+            <ChevronDown :size="14" :class="{ expanded: expandedEvidenceId === item.citation_id }" />
+          </button>
+          <div v-if="expandedEvidenceId === item.citation_id" class="evidence-preview">
+            <p v-if="evidenceErrors[item.citation_id]" role="alert">{{ evidenceErrors[item.citation_id] }}</p>
+            <template v-else-if="evidenceDetails[item.citation_id]">
+              <small>
+                {{ evidenceDetails[item.citation_id].heading_path.join(' / ') || evidenceDetails[item.citation_id].title }}
+                <template v-if="evidenceDetails[item.citation_id].page_number"> · 第 {{ evidenceDetails[item.citation_id].page_number }} 页</template>
+              </small>
+              <pre>{{ evidenceDetails[item.citation_id].excerpt }}</pre>
+              <span v-if="evidenceDetails[item.citation_id].truncated">片段已按浏览器展示上限截断。</span>
+            </template>
+          </div>
         </article>
       </div>
 
@@ -242,7 +311,10 @@ onMounted(() => {
 .inspector-tabs { display:grid; grid-template-columns:repeat(3,1fr); min-height:44px; border-bottom:1px solid var(--sage-border); }.inspector-tabs button { border:0; border-bottom:2px solid transparent; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-sm); }.inspector-tabs button.active { border-color:var(--sage-source); color:var(--sage-text); font-weight:650; }
 .inspector-body { min-height:0; overflow:auto; padding:2px 17px 24px; }.inspector-body section { padding:17px 0; border-bottom:1px solid var(--sage-border); }.section-title { display:flex; align-items:center; gap:7px; margin-bottom:10px; color:var(--sage-text-secondary); }.section-title h3 { margin:0; font-size:var(--sage-font-sm); }.inspector-body section>strong { overflow-wrap:anywhere; font-size:var(--sage-font-md); }.inspector-body p { margin:5px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); line-height:1.55; }.inspector-body code { display:block; overflow:hidden; color:var(--sage-text-secondary); font-family:var(--sage-font-mono); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }.inspector-body article[data-severity] { padding:9px 10px; border-left:3px solid var(--sage-source); background:var(--sage-surface-muted); }.inspector-body article[data-severity="high"] { border-color:var(--sage-coral); }.inspector-body article[data-severity="medium"] { border-color:var(--sage-review); }.inspector-body article+article { margin-top:7px; }.inspector-body article strong { font-size:var(--sage-font-sm); }.inspector-body article p { font-size:var(--sage-font-xs); }dl { margin:0; }dl div { display:flex; justify-content:space-between; gap:12px; min-height:30px; }dt { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }dd { overflow:hidden; margin:0; font-family:var(--sage-font-mono); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
 .inspector-state { padding:24px 0; color:var(--sage-text-muted); text-align:center; }.evidence-list article { padding:13px 0; border-bottom:1px solid var(--sage-border); }.evidence-list header { display:flex; align-items:center; justify-content:space-between; gap:8px; }.evidence-list strong { overflow:hidden; font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.evidence-list em { flex:none; padding:2px 5px; border-radius:var(--sage-radius); color:var(--sage-source); background:var(--sage-source-bg); font-size:10px; font-style:normal; }.evidence-list code { margin-top:5px; color:var(--sage-text-muted); }.evidence-list dl { margin-top:9px; }.evidence-list dl div { min-height:24px; }.relation-list button { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:58px; padding:7px 2px; border:0; border-bottom:1px solid var(--sage-border); text-align:left; color:var(--sage-text); background:transparent; }.relation-list button:hover { color:var(--sage-source); }.relation-list span,.relation-list strong,.relation-list small { display:block; min-width:0; }.relation-list strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--sage-font-sm); }.relation-list small { margin-top:3px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }
+.evidence-toggle { display:flex; align-items:center; gap:6px; width:100%; min-height:32px; margin-top:8px; padding:0 7px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:var(--sage-surface-muted); font-size:var(--sage-font-xs); }.evidence-toggle:hover { color:var(--sage-source); border-color:var(--sage-source); }.evidence-toggle svg:last-child { margin-left:auto; transition:transform .16s ease; }.evidence-toggle svg.expanded { transform:rotate(180deg); }.evidence-preview { margin-top:7px; padding:9px 10px; border-left:2px solid var(--sage-source); background:var(--sage-surface-muted); }.evidence-preview small,.evidence-preview span { display:block; color:var(--sage-text-muted); font-size:10px; }.evidence-preview pre { max-height:220px; overflow:auto; margin:7px 0 0; color:var(--sage-text-secondary); font-family:var(--sage-font-mono); font-size:11px; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }.evidence-preview p { color:var(--sage-danger); }.spinning { animation:spin 1s linear infinite; }
 .goal-inspector { padding-top:4px; }.alignment-row { padding:10px 0 !important; border:0 !important; background:transparent !important; }.alignment-row>div:first-child { display:flex; justify-content:space-between; gap:12px; }.alignment-row span { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.coverage-track { height:5px; margin-top:7px; overflow:hidden; border-radius:3px; background:var(--sage-border); }.coverage-track i { display:block; height:100%; background:var(--sage-brand); }.alignment-row p { font-size:11px; }
 .knowledge-inspector.compact { position:fixed; z-index:60; inset:52px 0 0 auto; width:min(380px,100vw); box-shadow:var(--sage-shadow-drawer); }
 @media (max-width:600px) { .knowledge-inspector.compact { inset:0; width:100%; }.inspector-heading { min-height:60px; } }
+@keyframes spin { to { transform:rotate(360deg); } }
+@media (prefers-reduced-motion:reduce) { .spinning { animation:none; }.evidence-toggle svg:last-child { transition:none; } }
 </style>

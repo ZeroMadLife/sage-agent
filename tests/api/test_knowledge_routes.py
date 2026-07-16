@@ -388,6 +388,27 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert body["citations"][0]["source_relative_path"] == "memory.md"
     assert str(vault) not in found.text
 
+    citation = client.get(
+        f"/api/v1/knowledge/citations/{body['citations'][0]['citation_id']}"
+    )
+    assert citation.status_code == 200
+    assert citation.headers["cache-control"] == "no-store"
+    citation_body = citation.json()
+    assert citation_body["chunk_id"] == body["citations"][0]["chunk_id"]
+    assert citation_body["page_revision"] == body["citations"][0]["page_revision"]
+    assert citation_body["source_revision"] == body["citations"][0]["source_revision"]
+    assert citation_body["source_relative_path"] == "memory.md"
+    assert "长期记忆使用事实证据" in citation_body["excerpt"]
+    assert citation_body["truncated"] is False
+    assert str(vault) not in citation.text
+
+    stale_citation = client.get(
+        "/api/v1/knowledge/citations/kcite_00000000000000000000000000000000"
+    )
+    assert stale_citation.status_code == 404
+    malformed_citation = client.get("/api/v1/knowledge/citations/not-a-citation")
+    assert malformed_citation.status_code == 422
+
     learned = client.post(
         "/api/v1/knowledge/learnings",
         json={
