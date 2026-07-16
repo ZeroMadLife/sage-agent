@@ -197,7 +197,11 @@ class CodingHarnessStageProjector:
             stage,
             status=status,
             detail=detail,
-            operation_ref={"kind": "coding_run", "id": self.run_id},
+            operation_ref=(
+                {"kind": "coding_run", "id": self.run_id}
+                if stage == "act"
+                else None
+            ),
         )
 
     def _stage(

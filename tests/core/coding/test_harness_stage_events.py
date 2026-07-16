@@ -37,6 +37,11 @@ def test_projects_a_direct_reply_into_explicit_durable_stages() -> None:
         "decision": "skip",
         "gate": "model_tool_selection",
     }
+    assert all(
+        "operation_ref" not in item
+        for item in payloads
+        if item.get("stage_id") in {"receive", "context", "plan", "reply"}
+    )
 
 
 def test_records_revision_bound_retrieval_metrics_and_react_loop() -> None:
