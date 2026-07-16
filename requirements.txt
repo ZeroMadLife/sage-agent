@@ -5,6 +5,7 @@
 
 # ---------- Agent 编排 ----------
 langgraph==1.1.9
+langgraph-checkpoint-sqlite==3.1.0
 langchain==1.2.15
 langchain-core==1.4.9
 langchain-openai==1.2.1

@@ -4,12 +4,13 @@ import hashlib
 import logging
 import os
 from collections.abc import AsyncIterator, Mapping
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from importlib import import_module
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from sage_harness.runtime.checkpoint import open_sqlite_checkpointer
 
 from agents.graph import build_graph
 from agents.itinerary_tool import create_itinerary_tool
@@ -189,6 +190,13 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        checkpoint_stack = AsyncExitStack()
+        if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
+            app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
+                open_sqlite_checkpointer(
+                    Path(app.state.coding_storage_root) / "harness-checkpoints.sqlite3"
+                )
+            )
         service = getattr(app.state, "knowledge_job_service", None)
         if isinstance(service, KnowledgeJobService):
             await service.start()
@@ -201,6 +209,7 @@ def create_app(
             if owned_redis is not None:
                 await owned_redis.aclose()
             await app.state.coding_run_registry.shutdown()
+            await checkpoint_stack.aclose()
 
     app = FastAPI(title="Sage API", lifespan=lifespan)
     app.state.agent = agent
@@ -328,6 +337,7 @@ def create_app(
         if coding_deerflow_v2_enabled is None
         else coding_deerflow_v2_enabled
     )
+    app.state.sage_harness_checkpointer = None
     app.state.coding_workspace_root = resolved_workspace_root
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
     configured_knowledge_root = (

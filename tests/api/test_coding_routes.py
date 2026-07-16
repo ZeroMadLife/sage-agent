@@ -4,6 +4,8 @@ import threading
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
 
 from api.main import create_app
 
@@ -56,6 +58,13 @@ class FakeWriteModel:
     async def complete(self, prompt: str) -> str:
         _ = prompt
         return self.responses.pop(0)
+
+
+class DeerflowFakeModel(FakeMessagesListChatModel):
+    """LangChain streaming model used by the explicit DeerFlow profile smoke."""
+
+    def __init__(self) -> None:
+        super().__init__(responses=[AIMessage(content="LangGraph 回答")])
 
 
 def test_create_coding_session(tmp_path: Path) -> None:
@@ -119,6 +128,38 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert resumed.status_code == 200
     assert resumed.json()["runtime_profile"] == "deerflow_v2"
     assert app.state.coding_sessions[session_id].runtime_profile == "deerflow_v2"
+
+
+def test_enabled_deerflow_profile_streams_public_answer_and_replays_history(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2"},
+        )
+        assert created.status_code == 200
+        session_id = created.json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "回答一句话"})
+            events: list[dict] = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    break
+
+        payloads = [event["payload"] for event in events]
+        assert any(payload.get("type") == "text_delta" for payload in payloads)
+        assert any(payload.get("type") == "final" for payload in payloads)
+        assert events[-1]["status"] == "completed"
+        messages = client.get(f"/api/v1/coding/session/{session_id}/messages").json()["messages"]
+        assert [item["role"] for item in messages] == ["user", "assistant"]
+        assert messages[-1]["content"] == "LangGraph 回答"
 
 
 def test_create_coding_session_accepts_approval_policy(tmp_path: Path) -> None:

@@ -89,6 +89,7 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
@@ -153,8 +154,21 @@ async def _runtime_timeline_events(
     arguments: str,
     run_id: str,
     surface_context: Mapping[str, Any] | None,
+    harness_checkpointer: Any | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
+    if runtime.runtime_profile == "deerflow_v2":
+        if harness_checkpointer is None:
+            raise RuntimeError("deerflow_v2 checkpointer is not configured")
+        async for graph_event in _deerflow_timeline_events(
+            runtime,
+            content=content,
+            run_id=run_id,
+            surface_context=surface_context,
+            checkpointer=harness_checkpointer,
+        ):
+            yield graph_event
+        return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)
     yield RunEvent(
@@ -171,12 +185,13 @@ async def _runtime_timeline_events(
     for stage_event in harness.start():
         yield stage_event
     try:
-        async for event in runtime.run_turn(
+        async for raw_event in runtime.run_turn(
             content,
             skill_prompt=skill_prompt,
             surface_context=surface_context,
             run_id=run_id,
         ):
+            event: dict[str, Any] = dict(raw_event)
             event_type = str(event.get("type", ""))
             if event_type == "run_finished":
                 candidate = str(event.get("status", "completed"))
@@ -207,6 +222,57 @@ async def _runtime_timeline_events(
         payload={
             "event": "run_completed" if terminal_status == "completed" else f"run_{terminal_status}"
         },
+    )
+
+
+async def _deerflow_timeline_events(
+    runtime: CodingRuntime,
+    *,
+    content: str,
+    run_id: str,
+    surface_context: Mapping[str, Any] | None,
+    checkpointer: Any,
+) -> AsyncGenerator[RunEvent, None]:
+    """Run the explicit DeerFlow-compatible graph and project public output."""
+    workspace_id = workspace_id_from_path(runtime.workspace.root)
+    adapter = SageHarnessRuntimeAdapter(
+        model=runtime.model,
+        checkpointer=checkpointer,
+    )
+    runtime.append_harness_message(role="user", content=content, run_id=run_id)
+    yield RunEvent(
+        kind="user",
+        status="completed",
+        payload={"type": "user", "content": content, "run_id": run_id},
+        event_id=f"harness:{run_id}:user",
+    )
+    response_parts: list[str] = []
+    async for event in adapter.stream_turn(
+        session_id=runtime.session_id,
+        run_id=run_id,
+        workspace_id=workspace_id,
+        workspace_path=str(runtime.workspace.root),
+        content=content,
+    ):
+        if event.payload.get("type") == "text_delta":
+            delta = str(event.payload.get("delta", ""))
+            response_parts.append(delta)
+        yield event
+    answer = "".join(response_parts).strip()
+    if not answer:
+        raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
+    runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
+    yield RunEvent(
+        kind="assistant",
+        status="completed",
+        payload={"type": "final", "content": answer, "run_id": run_id},
+        event_id=f"harness:{run_id}:final",
+    )
+    yield RunEvent(
+        kind="terminal",
+        status="completed",
+        payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
+        event_id=f"harness:{run_id}:terminal",
     )
 
 
@@ -646,6 +712,7 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 arguments=args,
                 run_id=run_id,
                 surface_context=surface_context,
+                harness_checkpointer=getattr(websocket.app.state, "sage_harness_checkpointer", None),
             )
             try:
                 task = await coordinator.start_run(
