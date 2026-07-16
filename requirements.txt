@@ -1,6 +1,8 @@
 # Sage Python dependencies
 # Python >= 3.12
 
+-e ./packages/sage_harness
+
 # ---------- Agent 编排 ----------
 langgraph==1.1.9
 langchain==1.2.15

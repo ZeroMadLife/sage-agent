@@ -32,7 +32,7 @@ jobs:
         run: python -m pytest -q
 
       - name: Run Ruff
-        run: python -m ruff check agents api core db evals mcp_servers models tests
+        run: python -m ruff check agents api core db evals mcp_servers models packages/sage_harness/sage_harness tests
 
       - name: Run mypy
-        run: python -m mypy core mcp_servers agents
+        run: python -m mypy core mcp_servers agents packages/sage_harness/sage_harness
