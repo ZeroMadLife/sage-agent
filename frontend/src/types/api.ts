@@ -494,6 +494,33 @@ export type KnowledgeProposal = {
   updated_at: string
 }
 
+export type KnowledgeSyncChange = {
+  relative_path: string
+  change_kind: 'added' | 'modified' | 'deleted'
+  previous_revision: string | null
+  source_revision: string | null
+  idempotency_key: string
+}
+
+export type KnowledgeSyncPlan = {
+  plan_id: string
+  workspace_id: string
+  source_root_id: string
+  relative_directory: string
+  pipeline_version: string
+  base_watermark: number
+  target_watermark: number
+  manifest_hash: string
+  status: string
+  added_count: number
+  modified_count: number
+  deleted_count: number
+  total_count: number
+  has_more: boolean
+  changes: KnowledgeSyncChange[]
+  created_at: string
+}
+
 export type KnowledgeJobStatus =
   | 'queued'
   | 'running'
@@ -507,6 +534,7 @@ export type KnowledgeJobItem = {
   job_id: string
   relative_path: string
   source_revision: string
+  change_kind: 'added' | 'modified' | 'deleted'
   status: string
   attempts: number
   max_attempts: number
@@ -537,6 +565,7 @@ export type KnowledgeJob = {
   started_at: string | null
   completed_at: string | null
   updated_at: string
+  sync_plan_id?: string | null
   items: KnowledgeJobItem[]
 }
 

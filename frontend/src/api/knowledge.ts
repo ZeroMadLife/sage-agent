@@ -15,6 +15,7 @@ import type {
   KnowledgeMigrationResult,
   KnowledgeProposal,
   KnowledgeRetrieval,
+  KnowledgeSyncPlan,
   KnowledgeWorkspaceSummary,
 } from '../types/api'
 
@@ -165,8 +166,24 @@ export function ingestKnowledgeSource(
 export function createKnowledgeJob(
   sourceRootId: string,
   relativeDirectory: string,
+  syncPlanId?: string,
 ): Promise<KnowledgeJob> {
   return request('/api/v1/knowledge/jobs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_root_id: sourceRootId,
+      relative_directory: relativeDirectory || '.',
+      sync_plan_id: syncPlanId,
+    }),
+  })
+}
+
+export function previewKnowledgeSync(
+  sourceRootId: string,
+  relativeDirectory: string,
+): Promise<KnowledgeSyncPlan> {
+  return request('/api/v1/knowledge/sync/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({

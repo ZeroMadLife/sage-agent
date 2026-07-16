@@ -7,8 +7,10 @@ import {
   fetchKnowledgeGraphNeighborhood,
   fetchKnowledgeJobs,
   ingestKnowledgeSource,
+  previewKnowledgeSync,
   rebuildKnowledgeGraph,
   rebuildKnowledgeIndex,
+  retryKnowledgeJobItem,
   transitionKnowledgeProposal,
 } from '../api/knowledge'
 import KnowledgeView from './KnowledgeView.vue'
@@ -42,6 +44,7 @@ vi.mock('../api/knowledge', () => ({
   fetchKnowledgeSummary: vi.fn(),
   fetchPendingKnowledgeMigration: vi.fn(),
   ingestKnowledgeSource: vi.fn(),
+  previewKnowledgeSync: vi.fn(),
   proposeKnowledgeRollback: vi.fn(),
   rebuildKnowledgeGraph: vi.fn(),
   rebuildKnowledgeIndex: vi.fn(),
@@ -136,6 +139,26 @@ const indexSummary = {
   active_chunk_count: 4, total_chunk_count: 4, error_count: 0,
 }
 
+const syncPlan = {
+  plan_id: 'ksync-1', workspace_id: 'knowledge-local', source_root_id: 'sage-learning',
+  relative_directory: 'notes', pipeline_version: 'markdown-v1', base_watermark: 4,
+  target_watermark: 5, manifest_hash: 'sha256:manifest', status: 'planned',
+  added_count: 1, modified_count: 1, deleted_count: 0, total_count: 2,
+  has_more: false,
+  changes: [
+    {
+      relative_path: 'notes/new.md', change_kind: 'added' as const,
+      previous_revision: null, source_revision: 'sha256:new', idempotency_key: 'idem-new',
+    },
+    {
+      relative_path: 'notes/changed.md', change_kind: 'modified' as const,
+      previous_revision: 'sha256:old', source_revision: 'sha256:changed',
+      idempotency_key: 'idem-changed',
+    },
+  ],
+  created_at: '2026-07-16T00:00:00Z',
+}
+
 beforeEach(async () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
   vi.clearAllMocks()
@@ -186,6 +209,7 @@ beforeEach(async () => {
   vi.mocked(api.rebuildKnowledgeIndex).mockResolvedValue(indexSummary)
   vi.mocked(api.rebuildKnowledgeGraph).mockResolvedValue(snapshot)
   vi.mocked(api.ingestKnowledgeSource).mockResolvedValue(proposal)
+  vi.mocked(api.previewKnowledgeSync).mockResolvedValue(syncPlan)
   vi.mocked(api.transitionKnowledgeProposal).mockResolvedValue({
     ...proposal, status: 'approved', projection_status: 'complete', revision: 1,
   })
@@ -243,14 +267,15 @@ it('imports a single source from an authorized root', async () => {
   wrapper.unmount()
 })
 
-it('creates a durable directory job and exposes it in activity', async () => {
+it('previews a bounded sync plan before creating its durable directory job', async () => {
   const job = {
     job_id: 'kjob-1', workspace_id: 'knowledge-local', source_root_id: 'sage-learning',
     source_kind: 'obsidian', source_label: 'Sage Learning', relative_directory: 'notes',
     pipeline_version: 'markdown-v1', status: 'running' as const, cancel_requested: false,
     total_items: 2, processed_items: 1, succeeded_items: 1, skipped_items: 0,
     failed_items: 0, cancelled_items: 0, latest_sequence: 1,
-    created_at: '', started_at: null, completed_at: null, updated_at: '', items: [],
+    created_at: '', started_at: null, completed_at: null, updated_at: '',
+    sync_plan_id: 'ksync-1', items: [],
   }
   vi.mocked(createKnowledgeJob).mockResolvedValue(job)
   const wrapper = await mountKnowledge()
@@ -261,9 +286,73 @@ it('creates a durable directory job and exposes it in activity', async () => {
   input.element.closest('form')?.dispatchEvent(new Event('submit'))
   await flushPromises()
 
-  expect(createKnowledgeJob).toHaveBeenCalledWith('sage-learning', 'notes')
+  expect(previewKnowledgeSync).toHaveBeenCalledWith('sage-learning', 'notes')
+  expect(createKnowledgeJob).not.toHaveBeenCalled()
+  expect(wrapper.get('.sync-preview').text()).toContain('发现 2 项变更')
+  expect(wrapper.get('.sync-preview').text()).toContain('修改')
+  await wrapper.get('.sync-preview .primary-button').trigger('click')
+  await flushPromises()
+
+  expect(createKnowledgeJob).toHaveBeenCalledWith('sage-learning', 'notes', 'ksync-1')
   expect(wrapper.text()).toContain('Sage Learning / notes')
   expect(wrapper.text()).toContain('解析中 · 1/2')
+  wrapper.unmount()
+})
+
+it('does not create a job when the selected source directory is current', async () => {
+  vi.mocked(previewKnowledgeSync).mockResolvedValueOnce({
+    ...syncPlan,
+    plan_id: 'ksync-current',
+    added_count: 0,
+    modified_count: 0,
+    total_count: 0,
+    changes: [],
+  })
+  const wrapper = await mountKnowledge()
+
+  await wrapper.get('button.primary-button').trigger('click')
+  const input = wrapper.get('input[aria-label="来源相对目录"]')
+  await input.setValue('notes')
+  input.element.closest('form')?.dispatchEvent(new Event('submit'))
+  await flushPromises()
+
+  expect(wrapper.get('.sync-preview').text()).toContain('当前目录已是最新')
+  expect(createKnowledgeJob).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('shows dead-letter errors and retries one failed sync item', async () => {
+  const failedItem = {
+    item_id: 'kitem-1', job_id: 'kjob-failed', relative_path: 'notes/broken.md',
+    source_revision: 'sha256:broken', change_kind: 'modified' as const,
+    status: 'dead_letter', attempts: 3, max_attempts: 3, proposal_id: null,
+    error: 'parser unavailable', next_attempt_at: null, updated_at: '',
+  }
+  vi.mocked(fetchKnowledgeJobs).mockResolvedValue([{
+    job_id: 'kjob-failed', workspace_id: 'knowledge-local',
+    source_root_id: 'sage-learning', source_kind: 'obsidian', source_label: 'Sage Learning',
+    relative_directory: 'notes', pipeline_version: 'markdown-v1',
+    status: 'completed_with_errors', cancel_requested: false, total_items: 1,
+    processed_items: 1, succeeded_items: 0, skipped_items: 0, failed_items: 1,
+    cancelled_items: 0, latest_sequence: 4, created_at: '', started_at: '',
+    completed_at: '', updated_at: '', sync_plan_id: 'ksync-failed', items: [failedItem],
+  }])
+  vi.mocked(retryKnowledgeJobItem).mockResolvedValue({
+    ...failedItem,
+    status: 'retry_wait',
+    attempts: 0,
+    error: null,
+  })
+  const wrapper = await mountKnowledge()
+
+  await wrapper.findAll('.stage-tabs button')[2].trigger('click')
+  expect(wrapper.text()).toContain('parser unavailable')
+  const retry = wrapper.get('.failed-items button')
+  expect(retry.text()).toContain('重试 修改：notes/broken.md')
+  await retry.trigger('click')
+  await flushPromises()
+
+  expect(retryKnowledgeJobItem).toHaveBeenCalledWith('kjob-failed', 'kitem-1')
   wrapper.unmount()
 })
 

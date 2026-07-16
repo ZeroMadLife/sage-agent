@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlertTriangle,
   BookOpenText,
@@ -42,6 +42,7 @@ import {
   fetchKnowledgeProposals,
   fetchKnowledgeSummary,
   ingestKnowledgeSource,
+  previewKnowledgeSync,
   proposeKnowledgeRollback,
   rebuildKnowledgeGraph,
   rebuildKnowledgeIndex,
@@ -67,6 +68,7 @@ import type {
   KnowledgeMigrationResult,
   KnowledgePage,
   KnowledgeProposal,
+  KnowledgeSyncPlan,
   KnowledgeWorkspaceSummary,
 } from '../types/api'
 
@@ -85,6 +87,7 @@ const autoApplied = ref<KnowledgeProposal[]>([])
 const indexSummary = ref<KnowledgeIndexSummary | null>(null)
 const migrationPlan = ref<KnowledgeMigrationPlan | null>(null)
 const migrationResult = ref<KnowledgeMigrationResult | null>(null)
+const syncPlan = ref<KnowledgeSyncPlan | null>(null)
 const neighborhood = ref<KnowledgeGraphNeighborhood | null>(null)
 const selectedNodeId = ref<string | null>(null)
 const mode = ref<WorkspaceMode>('graph')
@@ -118,6 +121,7 @@ const tabs: Array<{ id: WorkspaceMode; label: string; icon: typeof Network }> = 
 const kindLabels: Record<KnowledgeGraphNodeKind, string> = {
   page: '页面', source: '来源', project: '项目', concept: '概念', decision: '决策', tool: '工具',
 }
+const changeKindLabels = { added: '新增', modified: '修改', deleted: '删除' } as const
 
 const compactLibrary = computed(() => viewportWidth.value < 1360)
 const selectedNode = computed<KnowledgeGraphNode | null>(() =>
@@ -219,7 +223,13 @@ async function refreshWorkspace() {
 async function refreshJobs() {
   if (!jobsAvailable.value || activeJobs.value.length === 0) return
   try {
-    jobs.value = await fetchKnowledgeJobs()
+    const activeIds = new Set(activeJobs.value.map((job) => job.job_id))
+    const nextJobs = await fetchKnowledgeJobs()
+    const finished = nextJobs.some(
+      (job) => activeIds.has(job.job_id) && isTerminal(job.status),
+    )
+    jobs.value = nextJobs
+    if (finished) await refreshWorkspace()
   } catch (reason) {
     error.value = explain(reason)
   }
@@ -314,21 +324,45 @@ async function ingest() {
 
 async function createBatch() {
   if (!selectedRoot.value || !jobsAvailable.value) return
+  const directory = relativeDirectory.value.trim() || '.'
+  if (
+    !syncPlan.value
+    || syncPlan.value.source_root_id !== selectedRoot.value
+    || syncPlan.value.relative_directory !== directory
+  ) {
+    await previewBatch()
+    return
+  }
+  if (syncPlan.value.total_count === 0) return
   setBusy('batch', true)
   error.value = ''
   try {
-    const job = await createKnowledgeJob(
-      selectedRoot.value,
-      relativeDirectory.value.trim() || '.',
-    )
+    const job = await createKnowledgeJob(selectedRoot.value, directory, syncPlan.value.plan_id)
     jobs.value = [job, ...jobs.value]
     mode.value = 'activity'
     importOpen.value = false
-    notice.value = `已创建目录任务：${job.relative_directory}`
+    notice.value = `已开始同步 ${syncPlan.value.total_count} 项变更；删除项只生成可审核 tombstone。`
+    syncPlan.value = null
   } catch (reason) {
     error.value = explain(reason)
   } finally {
     setBusy('batch', false)
+  }
+}
+
+async function previewBatch() {
+  if (!selectedRoot.value || !jobsAvailable.value) return
+  setBusy('preview', true)
+  error.value = ''
+  try {
+    syncPlan.value = await previewKnowledgeSync(
+      selectedRoot.value,
+      relativeDirectory.value.trim() || '.',
+    )
+  } catch (reason) {
+    error.value = explain(reason)
+  } finally {
+    setBusy('preview', false)
   }
 }
 
@@ -430,6 +464,10 @@ function jobStatus(status: string) {
   } as Record<string, string>)[status] ?? status
 }
 
+function changeKindLabel(kind: keyof typeof changeKindLabels) {
+  return changeKindLabels[kind]
+}
+
 function jobPercent(job: KnowledgeJob) {
   return job.total_items ? Math.round((job.processed_items / job.total_items) * 100) : 0
 }
@@ -445,6 +483,10 @@ function updateViewport() {
   viewportWidth.value = window.innerWidth
   if (!compactLibrary.value) libraryOpen.value = false
 }
+
+watch([selectedRoot, relativeDirectory], () => {
+  syncPlan.value = null
+})
 
 onMounted(() => {
   window.addEventListener('resize', updateViewport)
@@ -682,6 +724,11 @@ onBeforeUnmount(() => {
               <span><strong>{{ indexSummary.status === 'ready' ? 'Hybrid 索引就绪' : '索引已降级' }}</strong><small>{{ indexSummary.indexed_revision_count }}/{{ indexSummary.revision_count }} revisions · {{ indexSummary.active_chunk_count }} chunks</small></span>
               <code>{{ indexSummary.embedding_model }}@{{ indexSummary.embedding_revision }}</code>
             </div>
+            <div class="projection-status" aria-label="知识投影状态">
+              <span><BookOpenText :size="14" /><strong>Wiki</strong>{{ pages.length }} 页</span>
+              <span><Database :size="14" /><strong>Index</strong>{{ indexSummary?.status === 'ready' ? '已同步' : '需重建' }}</span>
+              <span :data-stale="graph?.snapshot.stale"><Network :size="14" /><strong>Graph</strong>{{ graph?.snapshot.stale ? '需重建' : '已同步' }}</span>
+            </div>
             <p v-if="!jobsAvailable" class="inline-warning">持久任务尚未启用；单文件导入仍可使用。</p>
             <div class="job-list">
               <article v-for="job in jobs" :key="job.job_id">
@@ -691,9 +738,10 @@ onBeforeUnmount(() => {
                   <span>成功 {{ job.succeeded_items }}</span><span>跳过 {{ job.skipped_items }}</span><span>失败 {{ job.failed_items }}</span>
                   <button v-if="!isTerminal(job.status)" type="button" :disabled="busy[`cancel:${job.job_id}`]" @click="cancelJob(job)"><Square :size="13" />停止</button>
                 </footer>
-                <div v-if="job.items.some((item) => item.status === 'failed')" class="failed-items">
-                  <button v-for="item in job.items.filter((entry) => entry.status === 'failed')" :key="item.item_id" type="button" @click="retryItem(job, item.item_id)">
-                    <RefreshCw :size="13" />重试 {{ item.relative_path }}
+                <div v-if="job.items.some((item) => item.status === 'dead_letter')" class="failed-items">
+                  <button v-for="item in job.items.filter((entry) => entry.status === 'dead_letter')" :key="item.item_id" type="button" :disabled="busy[`retry:${item.item_id}`]" @click="retryItem(job, item.item_id)">
+                    <RefreshCw :size="13" />
+                    <span><strong>重试 {{ changeKindLabel(item.change_kind) }}：{{ item.relative_path }}</strong><small>{{ item.error || '处理失败，可重新执行该项。' }}</small></span>
                   </button>
                 </div>
               </article>
@@ -794,11 +842,37 @@ onBeforeUnmount(() => {
           <input v-model="relativePath" type="text" aria-label="来源相对路径" placeholder="例如 docs/architecture.md" />
           <button type="submit" class="primary-button" :disabled="busy.ingest || !selectedRoot || !relativePath.trim()">{{ busy.ingest ? '解析中' : '解析文件' }}</button>
         </form>
-        <form @submit.prevent="createBatch">
+        <form @submit.prevent="previewBatch">
           <FolderOpen :size="20" />
-          <div><strong>整个目录</strong><p>创建可恢复的后台任务，自动发现新增和变更内容。</p></div>
+          <div><strong>整个目录</strong><p>先比较上次水位，只同步新增、修改和删除记录。</p></div>
           <input v-model="relativeDirectory" type="text" aria-label="来源相对目录" placeholder=". 或 notes/project" />
-          <button type="submit" class="secondary-button" :disabled="busy.batch || !selectedRoot || !jobsAvailable">{{ busy.batch ? '扫描中' : '创建同步任务' }}</button>
+          <button type="submit" class="secondary-button" :disabled="busy.preview || busy.batch || !selectedRoot || !jobsAvailable">{{ busy.preview ? '检查中' : '检查更新' }}</button>
+          <div v-if="syncPlan" class="sync-preview" aria-live="polite">
+            <header>
+              <strong v-if="syncPlan.total_count">发现 {{ syncPlan.total_count }} 项变更</strong>
+              <strong v-else><Check :size="15" />当前目录已是最新</strong>
+              <code>watermark {{ syncPlan.base_watermark }} → {{ syncPlan.target_watermark }}</code>
+            </header>
+            <div v-if="syncPlan.total_count" class="sync-counts">
+              <span>新增 {{ syncPlan.added_count }}</span>
+              <span>修改 {{ syncPlan.modified_count }}</span>
+              <span>删除 {{ syncPlan.deleted_count }}</span>
+            </div>
+            <ul v-if="syncPlan.changes.length">
+              <li v-for="change in syncPlan.changes.slice(0, 12)" :key="`${change.change_kind}:${change.relative_path}`">
+                <em :data-kind="change.change_kind">{{ changeKindLabel(change.change_kind) }}</em>
+                <code>{{ change.relative_path }}</code>
+              </li>
+            </ul>
+            <small v-if="syncPlan.has_more || syncPlan.changes.length > 12">其余变更将在后台任务中继续处理。</small>
+            <button
+              v-if="syncPlan.total_count"
+              type="button"
+              class="primary-button"
+              :disabled="busy.batch"
+              @click="createBatch"
+            >{{ busy.batch ? '正在启动' : `同步 ${syncPlan.total_count} 项更新` }}</button>
+          </div>
         </form>
       </div>
       <footer><span><Database :size="14" />{{ selectedSource?.label || '未选择来源' }}</span><p>浏览器直接上传、多模态 Vision 与飞书来源将在后续连接器中开放。</p></footer>
@@ -817,10 +891,11 @@ onBeforeUnmount(() => {
 .knowledge-stage { min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }.stage-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:50px; padding:0 14px; border-bottom:1px solid var(--sage-border); }.stage-tabs { display:flex; align-self:stretch; min-width:0; }.stage-tabs button { min-height:49px; padding:0 12px; border:0; border-bottom:2px solid transparent; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-sm); white-space:nowrap; }.stage-tabs button.active { border-color:var(--sage-brand); color:var(--sage-text); font-weight:650; }.graph-filters,.graph-filters label,.graph-filters summary { display:flex; align-items:center; }.graph-filters { gap:6px; }.graph-filters>label,.graph-filters summary { gap:5px; min-height:32px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-xs); }.graph-filters select { border:0; outline:0; color:inherit; background:transparent; }.graph-filters details { position:relative; }.graph-filters summary { cursor:pointer; list-style:none; }.kind-menu { position:absolute; z-index:15; top:38px; right:0; display:grid; width:150px; padding:8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); }.kind-menu label { min-height:30px; border:0; padding:0 4px; }.kind-menu input { accent-color:var(--sage-brand); }
 .graph-stage { position:relative; display:grid; grid-template-rows:60px minmax(0,1fr); height:calc(100% - 50px); min-height:0; }.graph-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 18px; border-bottom:1px solid var(--sage-border); }.graph-heading h1,.list-stage h1 { margin:0; font-size:18px; letter-spacing:0; }.graph-heading>div>span { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.graph-legend { display:flex; gap:10px; color:var(--sage-text-muted); font-size:11px; }.graph-legend span { display:flex; align-items:center; gap:4px; }.graph-legend i { width:7px; height:7px; border-radius:50%; background:#3b82f6; }.graph-legend i.concept { background:#8b5cf6; }.graph-legend i.source { background:#f59e42; }.graph-legend i.tool { background:#22a6b3; }
 .stage-state { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:7px; height:100%; color:var(--sage-text-muted); text-align:center; }.stage-state strong { color:var(--sage-text); font-size:var(--sage-font-md); }.stage-state span { max-width:440px; font-size:var(--sage-font-sm); }.stage-state.empty { min-height:260px; padding:24px; }.stage-state.empty .primary-button { margin-top:8px; }.list-stage { height:calc(100% - 50px); min-height:0; overflow:auto; padding:22px 24px 42px; }.list-stage>header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:18px; border-bottom:1px solid var(--sage-border); }.list-stage>header p { margin:4px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); }.list-stage>header>strong { color:var(--sage-text-muted); font-size:24px; }.wiki-list article { display:grid; grid-template-columns:minmax(0,1fr) auto 34px; align-items:center; gap:16px; min-height:68px; border-bottom:1px solid var(--sage-border); }.wiki-main { display:grid; grid-template-columns:22px minmax(0,1fr); align-items:center; gap:9px; min-width:0; padding:7px 0; border:0; color:var(--sage-text-secondary); text-align:left; background:transparent; }.wiki-main span,.wiki-main strong,.wiki-main code { display:block; min-width:0; }.wiki-main strong { overflow:hidden; color:var(--sage-text); font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.wiki-main code { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.wiki-list article>div { display:flex; flex-direction:column; align-items:flex-end; color:var(--sage-text-muted); font-size:11px; }.empty-row { padding:28px 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); text-align:center; }
-.index-line,.migration-line { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:11px; margin:16px 0; padding:12px 14px; border-left:3px solid var(--sage-source); background:var(--sage-source-bg); }.index-line>span,.index-line strong,.index-line small,.migration-line>span,.migration-line strong,.migration-line small { display:block; min-width:0; }.index-line small,.migration-line small { margin-top:2px; color:var(--sage-text-muted); font-size:11px; }.index-line code { color:var(--sage-text-muted); font-size:10px; }.inline-warning,.inline-success { color:var(--sage-review-strong); font-size:var(--sage-font-sm); }.inline-success { color:var(--sage-success); }.job-list>article { padding:15px 0; border-bottom:1px solid var(--sage-border); }.job-list article>header,.job-list article>footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }.job-list article>header span,.job-list article>header strong,.job-list article>header small { display:block; min-width:0; }.job-list article>header strong { font-size:var(--sage-font-sm); }.job-list article>header small,.job-list article>header code,.job-list article>footer { color:var(--sage-text-muted); font-size:11px; }.job-progress { height:5px; margin:10px 0; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress i { display:block; height:100%; background:var(--sage-brand); }.job-list article>footer { justify-content:flex-start; }.job-list article>footer button { display:inline-flex; align-items:center; gap:4px; margin-left:auto; border:0; color:var(--sage-danger); background:transparent; }.failed-items { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }.failed-items button { display:flex; align-items:center; gap:4px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-danger); background:var(--sage-surface); font-size:11px; }
+.index-line,.migration-line { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:11px; margin:16px 0; padding:12px 14px; border-left:3px solid var(--sage-source); background:var(--sage-source-bg); }.index-line>span,.index-line strong,.index-line small,.migration-line>span,.migration-line strong,.migration-line small { display:block; min-width:0; }.index-line small,.migration-line small { margin-top:2px; color:var(--sage-text-muted); font-size:11px; }.index-line code { color:var(--sage-text-muted); font-size:10px; }.projection-status { display:flex; flex-wrap:wrap; gap:8px; margin:-6px 0 8px; }.projection-status span { display:inline-flex; align-items:center; gap:4px; min-height:28px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:var(--sage-surface-muted); font-size:10px; }.projection-status strong { color:var(--sage-text-secondary); }.projection-status span[data-stale="true"] { border-color:var(--sage-review); color:var(--sage-review-strong); background:var(--sage-review-bg); }.inline-warning,.inline-success { color:var(--sage-review-strong); font-size:var(--sage-font-sm); }.inline-success { color:var(--sage-success); }.job-list>article { padding:15px 0; border-bottom:1px solid var(--sage-border); }.job-list article>header,.job-list article>footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }.job-list article>header span,.job-list article>header strong,.job-list article>header small { display:block; min-width:0; }.job-list article>header strong { font-size:var(--sage-font-sm); }.job-list article>header small,.job-list article>header code,.job-list article>footer { color:var(--sage-text-muted); font-size:11px; }.job-progress { height:5px; margin:10px 0; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress i { display:block; height:100%; background:var(--sage-brand); }.job-list article>footer { justify-content:flex-start; }.job-list article>footer button { display:inline-flex; align-items:center; gap:4px; margin-left:auto; border:0; color:var(--sage-danger); background:transparent; }.failed-items { display:grid; gap:6px; margin-top:8px; }.failed-items button { display:flex; align-items:flex-start; gap:7px; width:100%; padding:8px; border:1px solid var(--sage-danger); border-radius:var(--sage-radius-sm); color:var(--sage-danger); text-align:left; background:var(--sage-danger-bg); font-size:11px; }.failed-items button span,.failed-items button strong,.failed-items button small { display:block; min-width:0; }.failed-items button strong { overflow-wrap:anywhere; }.failed-items button small { margin-top:2px; color:var(--sage-text-muted); line-height:1.4; }
 .attention-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:28px; margin-top:18px; }.attention-grid section>h2 { display:flex; justify-content:space-between; margin:0 0 8px; font-size:var(--sage-font-md); }.attention-grid section>h2 span { color:var(--sage-text-muted); }.proposal-row,.insight-row { border-bottom:1px solid var(--sage-border); padding:12px 0; }.proposal-row>header { display:flex; justify-content:space-between; gap:10px; }.proposal-row>header span,.proposal-row strong,.proposal-row code { display:block; min-width:0; }.proposal-row strong { font-size:var(--sage-font-sm); }.proposal-row code { margin-top:3px; color:var(--sage-text-muted); font-size:10px; }.proposal-row em { color:var(--sage-review-strong); font-size:10px; font-style:normal; }.proposal-row pre { max-height:130px; overflow:auto; margin:9px 0; padding:9px; border:1px solid var(--sage-border); color:var(--sage-text-secondary); background:var(--sage-surface-muted); font-family:var(--sage-font-mono); font-size:10px; white-space:pre-wrap; }.proposal-row footer { display:flex; justify-content:flex-end; gap:7px; }.proposal-row footer button,.auto-applied button { display:inline-flex; align-items:center; gap:4px; min-height:30px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-xs); }.proposal-row footer .approve { border-color:var(--sage-brand); color:var(--sage-brand-strong); }.proposal-row footer .reject { color:var(--sage-danger); }.insight-row { display:grid; grid-template-columns:18px minmax(0,1fr); color:var(--sage-source); }.insight-row[data-severity="high"] { color:var(--sage-danger); }.insight-row strong { display:block; color:var(--sage-text); font-size:var(--sage-font-sm); }.insight-row p { margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); line-height:1.5; }.auto-applied { margin-top:26px; border-top:1px solid var(--sage-border); }.auto-applied summary { padding:14px 0; color:var(--sage-text-secondary); cursor:pointer; font-size:var(--sage-font-sm); }.auto-applied article { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:54px; border-top:1px solid var(--sage-border); }.auto-applied article span,.auto-applied strong,.auto-applied code { display:block; min-width:0; }.auto-applied strong { font-size:var(--sage-font-sm); }.auto-applied code { color:var(--sage-text-muted); font-size:10px; }
 .workspace-footer { display:flex; align-items:center; gap:18px; min-width:0; padding:0 14px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface); font-size:11px; }.workspace-footer span { display:flex; align-items:center; gap:5px; white-space:nowrap; }.workspace-footer i { width:7px; height:7px; border-radius:50%; background:var(--sage-success); }.workspace-footer i.active { background:var(--sage-review); }.footer-spacer { flex:1; }
 .panel-backdrop,.modal-backdrop { position:fixed; z-index:54; inset:0; background:var(--sage-overlay); }.modal-backdrop { z-index:80; display:grid; place-items:center; padding:20px; }.import-dialog { width:min(680px,100%); max-height:min(720px,calc(100dvh - 40px)); overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); }.import-dialog>header,.import-dialog>header>div { display:flex; align-items:flex-start; }.import-dialog>header { justify-content:space-between; gap:14px; padding:18px 20px; border-bottom:1px solid var(--sage-border); }.import-dialog>header>div { gap:11px; }.import-dialog>header>div>span { display:grid; place-items:center; width:34px; height:34px; border-radius:var(--sage-radius); color:var(--sage-brand-strong); background:var(--sage-brand-bg); }.import-dialog h2 { margin:0; font-size:18px; }.import-dialog header p { margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.field-label { display:grid; gap:6px; margin:16px 20px; color:var(--sage-text-secondary); font-size:var(--sage-font-xs); }.field-label select,.import-options input { min-width:0; height:38px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); padding:0 10px; outline:0; color:var(--sage-text); background:var(--sage-surface); }.field-label select:focus,.import-options input:focus { border-color:var(--sage-source); }.import-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:0 20px 20px; }.import-options form { display:grid; grid-template-rows:auto auto auto auto; align-content:start; gap:10px; padding:15px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); }.import-options form>svg { color:var(--sage-source); }.import-options strong { font-size:var(--sage-font-md); }.import-options p { min-height:38px; margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); line-height:1.5; }.import-dialog>footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface-muted); font-size:11px; }.import-dialog>footer span { display:flex; align-items:center; gap:5px; }.import-dialog>footer p { margin:0; text-align:right; }
+.sync-preview { display:grid; gap:9px; min-width:0; padding:11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-muted); }.sync-preview>header { display:flex; align-items:center; justify-content:space-between; gap:8px; }.sync-preview>header strong { display:flex; align-items:center; gap:5px; font-size:var(--sage-font-sm); }.sync-preview>header code,.sync-preview>small { color:var(--sage-text-muted); font-size:10px; }.sync-counts { display:flex; flex-wrap:wrap; gap:6px; }.sync-counts span { padding:3px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:10px; }.sync-preview ul { max-height:150px; overflow:auto; margin:0; padding:0; list-style:none; }.sync-preview li { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:7px; min-height:28px; border-top:1px solid var(--sage-border); }.sync-preview li em { color:var(--sage-source); font-size:10px; font-style:normal; }.sync-preview li em[data-kind="deleted"] { color:var(--sage-danger); }.sync-preview li em[data-kind="modified"] { color:var(--sage-review-strong); }.sync-preview li code { overflow:hidden; color:var(--sage-text-secondary); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.sync-preview>.primary-button { width:100%; }
 .spinning { animation:spin .9s linear infinite; }@keyframes spin { to { transform:rotate(360deg); } }
 @media (max-width:1359px) {
   .workspace-body,.workspace-body.is-loading { grid-template-columns:minmax(0,1fr); }.knowledge-library.compact { position:absolute; z-index:55; inset:0 auto 0 0; width:min(280px,calc(100vw - 40px)); display:none; box-shadow:var(--sage-shadow-drawer); }.knowledge-library.compact.open { display:flex; }
