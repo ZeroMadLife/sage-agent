@@ -78,6 +78,29 @@ def test_batch_job_progress_rest_and_websocket_replay(tmp_path: Path) -> None:
     (vault / "nested" / "two.md").write_text("# Two\n", encoding="utf-8")
 
     with TestClient(app) as client:
+        initial_sources = client.get("/api/v1/knowledge/sources")
+        assert initial_sources.status_code == 200
+        assert initial_sources.headers["cache-control"] == "no-store"
+        assert initial_sources.json() == {
+            "sources": [
+                {
+                    "root_id": "vault",
+                    "kind": "obsidian",
+                    "label": "Vault",
+                    "adapter_id": "filesystem",
+                    "adapter_version": "1",
+                    "status": "idle",
+                    "watermark": 0,
+                    "last_error_code": None,
+                    "last_error_message": None,
+                    "last_scan_started_at": None,
+                    "last_scan_completed_at": None,
+                }
+            ]
+        }
+        assert str(vault) not in initial_sources.text
+        assert "checkpoint" not in initial_sources.text
+        assert "cursor" not in initial_sources.text
         created = client.post(
             "/api/v1/knowledge/jobs",
             json={"source_root_id": "vault", "relative_directory": "."},
@@ -88,6 +111,10 @@ def test_batch_job_progress_rest_and_websocket_replay(tmp_path: Path) -> None:
         assert completed["total_items"] == 2
         assert completed["succeeded_items"] == 2
         assert str(vault) not in created.text
+        settled_source = client.get("/api/v1/knowledge/sources").json()["sources"][0]
+        assert settled_source["status"] == "idle"
+        assert settled_source["watermark"] == 1
+        assert settled_source["last_scan_completed_at"] is not None
         compact = client.get(
             f"/api/v1/knowledge/jobs/{job_id}",
             params={"include_items": "false"},

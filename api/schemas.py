@@ -171,6 +171,32 @@ class KnowledgeWorkspaceSummary(BaseModel):
     source_roots: list[KnowledgeSourceRootSummary]
 
 
+class KnowledgeSourceStatusResponse(KnowledgeSourceRootSummary):
+    """Browser-safe connector state without paths, credentials, or cursors."""
+
+    adapter_id: str
+    adapter_version: str
+    status: Literal[
+        "idle",
+        "scanning",
+        "planned",
+        "running",
+        "retryable",
+        "cancelled",
+        "conflict",
+        "failed",
+    ]
+    watermark: int = Field(ge=0)
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    last_scan_started_at: str | None = None
+    last_scan_completed_at: str | None = None
+
+
+class KnowledgeSourcesResponse(BaseModel):
+    sources: list[KnowledgeSourceStatusResponse]
+
+
 class KnowledgeIndexResponse(BaseModel):
     status: Literal["ready", "degraded"]
     backend: str

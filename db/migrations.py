@@ -15,6 +15,7 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
     async with target.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         await _upgrade_knowledge_sync_columns(connection)
+        await _upgrade_knowledge_source_adapter_columns(connection)
         await connection.execute(
             text(
                 "CREATE TABLE IF NOT EXISTS schema_migrations "
@@ -71,6 +72,16 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
                 ")"
             )
         )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260716_v7_5_4_source_connectors', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260716_v7_5_4_source_connectors'"
+                ")"
+            )
+        )
 
 
 async def _upgrade_knowledge_sync_columns(connection: AsyncConnection) -> None:
@@ -106,6 +117,51 @@ async def _upgrade_knowledge_sync_columns(connection: AsyncConnection) -> None:
                 "ADD COLUMN change_kind VARCHAR(24) NOT NULL DEFAULT 'added'"
             )
         )
+
+
+async def _upgrade_knowledge_source_adapter_columns(connection: AsyncConnection) -> None:
+    """Add connector binding and checkpoint state to V7.5.3 databases."""
+
+    sync_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("knowledge_source_sync")
+        }
+    )
+    sync_definitions = {
+        "adapter_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "adapter_version": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "adapter_checkpoint": "VARCHAR(512)",
+        "resume_cursor": "VARCHAR(2048)",
+        "scan_status": "VARCHAR(32) NOT NULL DEFAULT 'idle'",
+        "last_error_code": "VARCHAR(64)",
+        "last_error_message": "VARCHAR(1000)",
+        "last_scan_started_at": "TIMESTAMP",
+        "last_scan_completed_at": "TIMESTAMP",
+    }
+    for column, definition in sync_definitions.items():
+        if column not in sync_columns:
+            await connection.execute(
+                text(f"ALTER TABLE knowledge_source_sync ADD COLUMN {column} {definition}")
+            )
+
+    plan_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("knowledge_sync_plans")
+        }
+    )
+    plan_definitions = {
+        "adapter_id": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "adapter_version": "VARCHAR(64) NOT NULL DEFAULT ''",
+        "base_checkpoint": "VARCHAR(512)",
+        "target_checkpoint": "VARCHAR(512)",
+    }
+    for column, definition in plan_definitions.items():
+        if column not in plan_columns:
+            await connection.execute(
+                text(f"ALTER TABLE knowledge_sync_plans ADD COLUMN {column} {definition}")
+            )
 
 
 if __name__ == "__main__":

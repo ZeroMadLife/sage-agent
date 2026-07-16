@@ -64,6 +64,8 @@ from api.schemas import (
     KnowledgeRollbackRequest,
     KnowledgeSearchRequest,
     KnowledgeSourceRootSummary,
+    KnowledgeSourcesResponse,
+    KnowledgeSourceStatusResponse,
     KnowledgeSourceUnderstandingResponse,
     KnowledgeSyncChangeResponse,
     KnowledgeSyncPlanRequest,
@@ -120,6 +122,7 @@ from core.knowledge.jobs import (
     KnowledgeSyncPlan,
 )
 from core.knowledge.parsing import ParseArtifact
+from core.knowledge.sources import default_source_adapter_registry, fetch_source_by_key
 
 router = APIRouter()
 _MAX_DIFF_CHARS = 200_000
@@ -145,6 +148,45 @@ async def get_knowledge_summary(request: Request, response: Response) -> Knowled
             )
             for item in summary.source_roots
         ],
+    )
+
+
+@router.get("/api/v1/knowledge/sources", response_model=KnowledgeSourcesResponse)
+async def get_knowledge_sources(
+    request: Request,
+    response: Response,
+) -> KnowledgeSourcesResponse:
+    service = _require_job_service(request)
+    await service.prepare()
+    configured = service.store.source_roots
+    states = await service.repository.list_source_sync_states(service.workspace_id)
+    response.headers["Cache-Control"] = "no-store"
+    return KnowledgeSourcesResponse(
+        sources=[
+            KnowledgeSourceStatusResponse(
+                root_id=item.source_root_id,
+                kind=configured[item.source_root_id].kind,  # type: ignore[arg-type]
+                label=configured[item.source_root_id].label,
+                adapter_id=item.adapter_id,
+                adapter_version=item.adapter_version,
+                status=item.scan_status,  # type: ignore[arg-type]
+                watermark=item.watermark,
+                last_error_code=item.last_error_code,
+                last_error_message=item.last_error_message,
+                last_scan_started_at=(
+                    item.last_scan_started_at.isoformat()
+                    if item.last_scan_started_at
+                    else None
+                ),
+                last_scan_completed_at=(
+                    item.last_scan_completed_at.isoformat()
+                    if item.last_scan_completed_at
+                    else None
+                ),
+            )
+            for item in states
+            if item.source_root_id in configured
+        ]
     )
 
 
@@ -485,8 +527,21 @@ async def ingest_knowledge_source(
 ) -> KnowledgeProposalResponse:
     store = _require_store(request)
     try:
-        proposal = store.ingest(payload.source_root_id, payload.relative_path)
-        proposal = store.evaluate_and_apply_policy(proposal.proposal_id)
+        source = store.source_roots[payload.source_root_id]
+        service = getattr(request.app.state, "knowledge_job_service", None)
+        registry = (
+            service.source_adapters
+            if isinstance(service, KnowledgeJobService)
+            else default_source_adapter_registry()
+        )
+        artifact = await fetch_source_by_key(registry, source, payload.relative_path)
+        loaded = await asyncio.to_thread(store.load_artifact, payload.source_root_id, artifact)
+        document = await asyncio.to_thread(store.parser_registry.parse, loaded.parse_request())
+        prepared = await asyncio.to_thread(store.prepare_parsed_source, loaded, document)
+        proposal = await asyncio.to_thread(store.ingest_prepared, prepared)
+        proposal = await asyncio.to_thread(
+            store.evaluate_and_apply_policy, proposal.proposal_id
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="knowledge source root not found") from exc
     except FileNotFoundError as exc:

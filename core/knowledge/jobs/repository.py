@@ -31,6 +31,7 @@ from .types import (
     KnowledgeJob,
     KnowledgeJobEvent,
     KnowledgeJobItem,
+    KnowledgeSourceSyncState,
     KnowledgeSyncChange,
     KnowledgeSyncPlan,
     ScannedKnowledgeFile,
@@ -60,6 +61,8 @@ class KnowledgeJobRepository:
         root_id: str,
         source_kind: str,
         source_label: str,
+        adapter_id: str = "",
+        adapter_version: str = "",
     ) -> str:
         source_id = _stable_id("ksrc", f"{workspace_id}\0{root_id}")
         async with self._session_factory() as session, session.begin():
@@ -82,8 +85,22 @@ class KnowledgeJobRepository:
             else:
                 source.kind = source_kind
                 source.label = source_label
-            if await session.get(KnowledgeSourceSyncRecord, source_id) is None:
-                session.add(KnowledgeSourceSyncRecord(source_id=source_id))
+            sync = await session.get(KnowledgeSourceSyncRecord, source_id)
+            if sync is None:
+                session.add(
+                    KnowledgeSourceSyncRecord(
+                        source_id=source_id,
+                        adapter_id=adapter_id,
+                        adapter_version=adapter_version,
+                    )
+                )
+            else:
+                if sync.adapter_id and sync.adapter_id != adapter_id:
+                    raise KnowledgeJobConflictError(
+                        "knowledge source adapter binding cannot be changed"
+                    )
+                sync.adapter_id = adapter_id
+                sync.adapter_version = adapter_version
         return source_id
 
     async def create_job(
@@ -146,9 +163,16 @@ class KnowledgeJobRepository:
                     sync = KnowledgeSourceSyncRecord(source_id=plan.source_id)
                     session.add(sync)
                     await session.flush()
-                if plan.status != "planned" or sync.watermark != plan.base_watermark:
+                if (
+                    plan.status != "planned"
+                    or sync.watermark != plan.base_watermark
+                    or sync.adapter_id != plan.adapter_id
+                    or sync.adapter_version != plan.adapter_version
+                    or sync.adapter_checkpoint != plan.base_checkpoint
+                ):
                     raise KnowledgeJobConflictError("knowledge sync plan is stale")
                 plan.status = "running"
+                sync.scan_status = "running"
             job = KnowledgeIngestJobRecord(
                 id=job_id,
                 workspace_id=workspace_id,
@@ -211,6 +235,99 @@ class KnowledgeJobRepository:
                 str(sync.manifest_hash) if sync is not None else "",
             )
 
+    async def get_source_sync_state(self, source_id: str) -> KnowledgeSourceSyncState:
+        async with self._session_factory() as session:
+            source = await session.get(KnowledgeSourceRecord, source_id)
+            sync = await session.get(KnowledgeSourceSyncRecord, source_id)
+            if source is None or sync is None:
+                raise KnowledgeJobNotFoundError(source_id)
+            return _source_sync_state_view(source, sync)
+
+    async def list_source_sync_states(
+        self,
+        workspace_id: str,
+    ) -> list[KnowledgeSourceSyncState]:
+        async with self._session_factory() as session:
+            sources = (
+                await session.scalars(
+                    select(KnowledgeSourceRecord)
+                    .where(KnowledgeSourceRecord.workspace_id == workspace_id)
+                    .order_by(KnowledgeSourceRecord.label, KnowledgeSourceRecord.root_id)
+                )
+            ).all()
+            states: list[KnowledgeSourceSyncState] = []
+            for source in sources:
+                sync = await session.get(KnowledgeSourceSyncRecord, source.id)
+                if sync is not None:
+                    states.append(_source_sync_state_view(source, sync))
+            return states
+
+    async def begin_source_scan(
+        self,
+        source_id: str,
+        *,
+        adapter_id: str,
+        adapter_version: str,
+    ) -> KnowledgeSourceSyncState:
+        async with self._session_factory() as session, session.begin():
+            source = await session.get(KnowledgeSourceRecord, source_id)
+            sync = await session.scalar(
+                select(KnowledgeSourceSyncRecord)
+                .where(KnowledgeSourceSyncRecord.source_id == source_id)
+                .with_for_update()
+            )
+            if source is None or sync is None:
+                raise KnowledgeJobNotFoundError(source_id)
+            if sync.adapter_id != adapter_id:
+                raise KnowledgeJobConflictError("knowledge source adapter binding changed")
+            sync.adapter_version = adapter_version
+            sync.resume_cursor = None
+            sync.scan_status = "scanning"
+            sync.last_error_code = None
+            sync.last_error_message = None
+            sync.last_scan_started_at = _now()
+            return _source_sync_state_view(source, sync)
+
+    async def record_source_scan_page(
+        self,
+        source_id: str,
+        *,
+        adapter_id: str,
+        adapter_version: str,
+        resume_cursor: str | None,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            sync = await session.scalar(
+                select(KnowledgeSourceSyncRecord)
+                .where(KnowledgeSourceSyncRecord.source_id == source_id)
+                .with_for_update()
+            )
+            if sync is None:
+                raise KnowledgeJobNotFoundError(source_id)
+            if sync.adapter_id != adapter_id or sync.adapter_version != adapter_version:
+                raise KnowledgeJobConflictError("knowledge source adapter binding changed")
+            sync.resume_cursor = resume_cursor
+            sync.scan_status = "scanning"
+
+    async def record_source_scan_failure(
+        self,
+        source_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> None:
+        async with self._session_factory() as session, session.begin():
+            sync = await session.scalar(
+                select(KnowledgeSourceSyncRecord)
+                .where(KnowledgeSourceSyncRecord.source_id == source_id)
+                .with_for_update()
+            )
+            if sync is None:
+                raise KnowledgeJobNotFoundError(source_id)
+            sync.scan_status = "failed"
+            sync.last_error_code = error_code[:64]
+            sync.last_error_message = error_message[:1000]
+
     async def create_sync_plan(
         self,
         *,
@@ -219,6 +336,10 @@ class KnowledgeJobRepository:
         source_root_id: str,
         relative_directory: str,
         pipeline_version: str,
+        adapter_id: str,
+        adapter_version: str,
+        base_checkpoint: str | None,
+        target_checkpoint: str,
         base_watermark: int,
         manifest_hash: str,
         changes: Sequence[KnowledgeSyncChange],
@@ -231,6 +352,10 @@ class KnowledgeJobRepository:
                 source_root_id=source_root_id,
                 relative_directory=relative_directory,
                 pipeline_version=pipeline_version,
+                adapter_id=adapter_id,
+                adapter_version=adapter_version,
+                base_checkpoint=base_checkpoint,
+                target_checkpoint=target_checkpoint,
                 base_watermark=base_watermark,
                 manifest_hash=manifest_hash,
                 changes=changes,
@@ -244,6 +369,10 @@ class KnowledgeJobRepository:
         source_root_id: str,
         relative_directory: str,
         pipeline_version: str,
+        adapter_id: str,
+        adapter_version: str,
+        base_checkpoint: str | None,
+        target_checkpoint: str,
         base_watermark: int,
         manifest_hash: str,
         changes: Sequence[KnowledgeSyncChange],
@@ -255,6 +384,10 @@ class KnowledgeJobRepository:
             pipeline_version=pipeline_version,
             base_watermark=base_watermark,
             changes=changes,
+            adapter_id=adapter_id,
+            adapter_version=adapter_version,
+            base_checkpoint=base_checkpoint,
+            target_checkpoint=target_checkpoint,
         )
         changes_json = json.dumps(
             [
@@ -283,8 +416,14 @@ class KnowledgeJobRepository:
                 await session.flush()
             existing = await session.get(KnowledgeSyncPlanRecord, plan_id)
             if existing is not None:
+                sync.resume_cursor = None
+                sync.scan_status = existing.status
                 return _sync_plan_view(existing, source_root_id=source_root_id)
-            if sync.watermark != base_watermark:
+            if (
+                sync.watermark != base_watermark
+                or sync.adapter_id != adapter_id
+                or sync.adapter_checkpoint != base_checkpoint
+            ):
                 raise KnowledgeJobConflictError("knowledge source changed while planning sync")
             session.add(
                 KnowledgeSyncPlanRecord(
@@ -293,13 +432,19 @@ class KnowledgeJobRepository:
                     source_id=source_id,
                     relative_directory=relative_directory,
                     pipeline_version=pipeline_version,
+                    adapter_id=adapter_id,
+                    adapter_version=adapter_version,
+                    base_checkpoint=base_checkpoint,
+                    target_checkpoint=target_checkpoint,
                     base_watermark=base_watermark,
-                    target_watermark=base_watermark + 1,
+                    target_watermark=base_watermark + (1 if changes else 0),
                     manifest_hash=manifest_hash,
                     changes_json=changes_json,
                     status="planned",
                 )
             )
+            sync.resume_cursor = None
+            sync.scan_status = "planned"
             await session.flush()
             plan = await session.get(KnowledgeSyncPlanRecord, plan_id)
             if plan is None:
@@ -899,8 +1044,14 @@ class KnowledgeJobRepository:
             session.add(sync)
             await session.flush()
         if job.status == "completed":
-            if sync.watermark != plan.base_watermark:
+            if (
+                sync.watermark != plan.base_watermark
+                or sync.adapter_id != plan.adapter_id
+                or sync.adapter_version != plan.adapter_version
+                or sync.adapter_checkpoint != plan.base_checkpoint
+            ):
                 plan.status = "conflict"
+                sync.scan_status = "conflict"
                 job.status = "completed_with_errors"
                 return
             items = (
@@ -934,13 +1085,21 @@ class KnowledgeJobRepository:
                     existing.last_job_id = job.id
             sync.watermark = plan.target_watermark
             sync.manifest_hash = plan.manifest_hash
+            sync.adapter_checkpoint = plan.target_checkpoint
+            sync.resume_cursor = None
+            sync.scan_status = "idle"
+            sync.last_error_code = None
+            sync.last_error_message = None
+            sync.last_scan_completed_at = _now()
             sync.last_plan_id = plan.id
             sync.last_job_id = job.id
             plan.status = "completed"
         elif job.status == "cancelled":
             plan.status = "cancelled"
+            sync.scan_status = "cancelled"
         else:
             plan.status = "retryable"
+            sync.scan_status = "retryable"
 
     async def _append_event(
         self,
@@ -1037,12 +1196,38 @@ def _sync_plan_view(
         source_root_id=source_root_id,
         relative_directory=plan.relative_directory,
         pipeline_version=plan.pipeline_version,
+        adapter_id=plan.adapter_id,
+        adapter_version=plan.adapter_version,
+        base_checkpoint=plan.base_checkpoint,
+        target_checkpoint=plan.target_checkpoint,
         base_watermark=plan.base_watermark,
         target_watermark=plan.target_watermark,
         manifest_hash=plan.manifest_hash,
         status=plan.status,
         changes=changes,
         created_at=_as_utc(plan.created_at),
+    )
+
+
+def _source_sync_state_view(
+    source: KnowledgeSourceRecord,
+    sync: KnowledgeSourceSyncRecord,
+) -> KnowledgeSourceSyncState:
+    return KnowledgeSourceSyncState(
+        source_root_id=source.root_id,
+        adapter_id=sync.adapter_id,
+        adapter_version=sync.adapter_version,
+        watermark=sync.watermark,
+        adapter_checkpoint=sync.adapter_checkpoint,
+        scan_status=sync.scan_status,
+        last_error_code=sync.last_error_code,
+        last_error_message=sync.last_error_message,
+        last_scan_started_at=(
+            _as_utc(sync.last_scan_started_at) if sync.last_scan_started_at else None
+        ),
+        last_scan_completed_at=(
+            _as_utc(sync.last_scan_completed_at) if sync.last_scan_completed_at else None
+        ),
     )
 
 

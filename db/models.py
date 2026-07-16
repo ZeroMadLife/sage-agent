@@ -333,6 +333,19 @@ class KnowledgeSourceSyncRecord(Base):
     )
     watermark: Mapped[int] = mapped_column(Integer, default=0)
     manifest_hash: Mapped[str] = mapped_column(String(64), default="")
+    adapter_id: Mapped[str] = mapped_column(String(64), default="")
+    adapter_version: Mapped[str] = mapped_column(String(64), default="")
+    adapter_checkpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    resume_cursor: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+    scan_status: Mapped[str] = mapped_column(String(32), default="idle", index=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    last_scan_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_scan_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_plan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     last_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -354,6 +367,10 @@ class KnowledgeSyncPlanRecord(Base):
     )
     relative_directory: Mapped[str] = mapped_column(String(1024), default=".")
     pipeline_version: Mapped[str] = mapped_column(String(64))
+    adapter_id: Mapped[str] = mapped_column(String(64), default="")
+    adapter_version: Mapped[str] = mapped_column(String(64), default="")
+    base_checkpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    target_checkpoint: Mapped[str | None] = mapped_column(String(512), nullable=True)
     base_watermark: Mapped[int] = mapped_column(Integer, default=0)
     target_watermark: Mapped[int] = mapped_column(Integer, default=1)
     manifest_hash: Mapped[str] = mapped_column(String(64))

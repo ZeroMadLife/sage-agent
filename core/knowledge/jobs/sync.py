@@ -90,6 +90,10 @@ def build_plan_id(
     pipeline_version: str,
     base_watermark: int,
     changes: Sequence[KnowledgeSyncChange],
+    adapter_id: str = "",
+    adapter_version: str = "",
+    base_checkpoint: str | None = None,
+    target_checkpoint: str | None = None,
 ) -> tuple[str, str]:
     """Return a stable plan id and immutable plan-content hash."""
 
@@ -109,6 +113,10 @@ def build_plan_id(
             "source_root_id": source_root_id,
             "relative_directory": _normalize_directory(relative_directory),
             "pipeline_version": pipeline_version,
+            "adapter_id": adapter_id,
+            "adapter_version": adapter_version,
+            "base_checkpoint": base_checkpoint,
+            "target_checkpoint": target_checkpoint,
             "base_watermark": base_watermark,
             "changes": payload,
         },

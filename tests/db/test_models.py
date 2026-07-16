@@ -98,6 +98,18 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
             .scalars()
             .all()
         )
+        sync_columns = await connection.run_sync(
+            lambda sync_connection: {
+                str(column["name"])
+                for column in inspect(sync_connection).get_columns("knowledge_source_sync")
+            }
+        )
+        plan_columns = await connection.run_sync(
+            lambda sync_connection: {
+                str(column["name"])
+                for column in inspect(sync_connection).get_columns("knowledge_sync_plans")
+            }
+        )
 
     await engine.dispose()
 
@@ -107,6 +119,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "20260714_v7_model_providers",
         "20260715_v7_2_knowledge_jobs",
         "20260716_v7_5_3_knowledge_sync",
+        "20260716_v7_5_4_source_connectors",
     ]
     assert {
         "cloud_model_providers",
@@ -122,6 +135,23 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "knowledge_source_sync",
         "knowledge_sync_plans",
     } <= tables
+    assert {
+        "adapter_id",
+        "adapter_version",
+        "adapter_checkpoint",
+        "resume_cursor",
+        "scan_status",
+        "last_error_code",
+        "last_error_message",
+        "last_scan_started_at",
+        "last_scan_completed_at",
+    } <= sync_columns
+    assert {
+        "adapter_id",
+        "adapter_version",
+        "base_checkpoint",
+        "target_checkpoint",
+    } <= plan_columns
 
 
 async def test_init_db_upgrades_legacy_knowledge_job_tables_in_place() -> None:

@@ -34,12 +34,30 @@ class KnowledgeSyncPlan:
     source_root_id: str
     relative_directory: str
     pipeline_version: str
+    adapter_id: str
+    adapter_version: str
+    base_checkpoint: str | None
+    target_checkpoint: str | None
     base_watermark: int
     target_watermark: int
     manifest_hash: str
     status: str
     changes: tuple[KnowledgeSyncChange, ...]
     created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSourceSyncState:
+    source_root_id: str
+    adapter_id: str
+    adapter_version: str
+    watermark: int
+    adapter_checkpoint: str | None
+    scan_status: str
+    last_error_code: str | None
+    last_error_message: str | None
+    last_scan_started_at: datetime | None
+    last_scan_completed_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

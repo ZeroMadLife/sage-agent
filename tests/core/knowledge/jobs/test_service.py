@@ -61,7 +61,7 @@ async def _finish(service: KnowledgeJobService, job_id: str, *, limit: int = 20)
     raise AssertionError("knowledge job did not reach a terminal state")
 
 
-async def test_batch_import_persists_progress_and_skips_duplicate_revision(
+async def test_batch_import_persists_progress_and_completes_no_change_sync(
     knowledge_store: tuple[KnowledgeStore, Path],
     job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
 ) -> None:
@@ -111,8 +111,14 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     repeated = await service.create_batch("vault")
     assert await _finish(service, repeated.job_id) == "completed"
     deduplicated = await service.repository.get_job(repeated.job_id)
-    assert deduplicated.skipped_items == 3
+    assert deduplicated.total_items == 0
+    assert deduplicated.skipped_items == 0
     assert deduplicated.succeeded_items == 0
+    repeated_state = await service.repository.get_source_sync_state(
+        service._source_ids["vault"]
+    )
+    assert repeated_state.watermark == 1
+    assert repeated_state.scan_status == "idle"
 
 
 async def test_incremental_sync_detects_rename_and_creates_reviewable_tombstone(
@@ -143,6 +149,7 @@ async def test_incremental_sync_detects_rename_and_creates_reviewable_tombstone(
 
     no_change = await service.preview_sync("vault")
     assert no_change.base_watermark == 1
+    assert no_change.target_watermark == 1
     assert no_change.changes == ()
 
     changing.write_text("# Changing\n\nSecond incremental revision.\n", encoding="utf-8")
@@ -230,12 +237,12 @@ async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
     note = vault / "retry.md"
     note.write_text("# Retry\n\nStable source.\n", encoding="utf-8")
     service = await _service(knowledge_store, job_infrastructure)
-    original_load = store.load_source
+    original_load = store.load_artifact
 
-    def fail_transiently(_: str, __: str) -> None:
+    def fail_transiently(_: str, __: object) -> None:
         raise RuntimeError("temporary parser outage")
 
-    monkeypatch.setattr(store, "load_source", fail_transiently)
+    monkeypatch.setattr(store, "load_artifact", fail_transiently)
 
     job = await service.create_batch("vault")
     assert await _finish(service, job.job_id) == "completed_with_errors"
@@ -244,18 +251,26 @@ async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
     failed_plan = await service.preview_sync("vault")
     assert failed_plan.base_watermark == 0
     assert len(failed_plan.changes) == 1
+    failed_state = await service.repository.get_source_sync_state(service._source_ids["vault"])
+    assert failed_state.adapter_checkpoint is None
+    assert failed_state.scan_status == "retryable"
     [failed] = await service.repository.list_items(job.job_id)
     assert failed.status == "dead_letter"
     assert failed.attempts == 3
     assert "knowledge ingestion failed" in (failed.error or "")
 
-    monkeypatch.setattr(store, "load_source", original_load)
+    monkeypatch.setattr(store, "load_artifact", original_load)
     await service.retry_item(job.job_id, failed.item_id)
     assert await _finish(service, job.job_id) == "completed"
     assert (await service.repository.get_sync_plan(job.sync_plan_id)).status == "completed"
     settled = await service.preview_sync("vault")
     assert settled.base_watermark == 1
     assert settled.changes == ()
+    settled_state = await service.repository.get_source_sync_state(
+        service._source_ids["vault"]
+    )
+    assert settled_state.adapter_checkpoint == settled.target_checkpoint
+    assert settled_state.scan_status == "planned"
     [retried] = await service.repository.list_items(job.job_id)
     assert retried.status == "completed"
     assert retried.attempts == 1

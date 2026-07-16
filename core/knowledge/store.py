@@ -18,6 +18,10 @@ from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path, PurePosixPath
 from threading import RLock
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.knowledge.sources import ImmutableSourceArtifact
 
 from core.knowledge.evolution import (
     EvidenceLearning,
@@ -549,6 +553,42 @@ class KnowledgeStore:
             source_revision=source_revision,
             media_type=media_type,
             payload=payload,
+        )
+
+    def load_artifact(
+        self,
+        source_root_id: str,
+        artifact: ImmutableSourceArtifact,
+    ) -> LoadedKnowledgeSource:
+        """Validate provider bytes and convert them into the canonical parser input."""
+
+        self.initialize()
+        root = self.source_roots.get(source_root_id)
+        if root is None:
+            raise KeyError(source_root_id)
+        normalized = _relative_source_path(artifact.source_key)
+        media_type, max_bytes = _source_format(normalized)
+        if artifact.media_type != media_type or len(artifact.content) > max_bytes:
+            raise KnowledgeConflictError("source adapter returned an invalid artifact")
+        digest = hashlib.sha256(artifact.content).hexdigest()
+        revision = f"sha256:{digest}"
+        if revision != artifact.source_revision:
+            raise KnowledgeConflictError("source adapter returned a stale artifact")
+        _scan_source_secrets(artifact.content, media_type)
+        source_id = (
+            "src_"
+            + hashlib.sha256(
+                f"{source_root_id}\0{normalized.as_posix()}".encode()
+            ).hexdigest()[:32]
+        )
+        return LoadedKnowledgeSource(
+            source_root_id=source_root_id,
+            source_kind=root.kind,
+            relative_path=normalized.as_posix(),
+            source_id=source_id,
+            source_revision=revision,
+            media_type=media_type,
+            payload=artifact.content,
         )
 
     def prepare_parsed_source(
