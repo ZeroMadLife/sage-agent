@@ -97,10 +97,10 @@ from core.harness.context_adapter import (
     context_status_event,
 )
 from core.harness.knowledge_adapter import CodingKnowledgePort
-from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
+from core.harness.sandbox_factory import create_coding_sandbox
 from core.harness.subagent_adapter import CodingSubagentExecutor
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 
@@ -113,7 +113,10 @@ def _require_enabled_runtime_profile(value: object, request: Request) -> Runtime
     if profile == "deerflow_v2" and not bool(request.app.state.coding_deerflow_v2_enabled):
         raise HTTPException(status_code=422, detail="deerflow_v2 runtime profile is disabled")
     app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
-    if profile == "deerflow_v2" and app_env not in {"development", "test"}:
+    sandbox_provider = str(
+        getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
+    ).strip().lower()
+    if profile == "deerflow_v2" and app_env not in {"development", "test"} and sandbox_provider == "local_workspace":
         raise HTTPException(
             status_code=422,
             detail="deerflow_v2 requires an isolated sandbox outside development/test",
@@ -338,10 +341,11 @@ async def _deerflow_timeline_events(
                 servers=mcp_servers,
             )
         workspace_id = workspace_id_from_path(runtime.workspace.root)
-        sandbox = LocalWorkspaceSandbox(
+        sandbox = create_coding_sandbox(
             runtime.workspace,
             thread_id=runtime.session_id,
             app_env=app_env,
+            provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
             allow_host_shell=True,
             allow_writes=True,
         )
@@ -516,6 +520,9 @@ async def create_coding_session(
         owner_user_id=account.user_id if account is not None else None,
         knowledge_store=_coding_knowledge_store(request),
         runtime_profile=runtime_profile,
+        sandbox_provider=str(
+            getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
+        ),
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -671,6 +678,12 @@ async def resume_coding_session(
         usage_store=request.app.state.coding_usage_store,
         knowledge_store=_coding_knowledge_store(request),
         runtime_profile=runtime_profile,
+        sandbox_provider=str(
+            persisted.get(
+                "sandbox_provider",
+                getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
+            )
+        ),
     )
     sessions[session_id] = runtime
     return CodingSessionResponse(
