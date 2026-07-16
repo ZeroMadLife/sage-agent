@@ -243,21 +243,25 @@ class McpManager:
             servers = list(self._snapshot.servers)
             discovered: list[McpToolDescriptor] = []
             statuses: dict[str, McpServerStatus] = {}
-            for server in servers:
+
+            async def discover_server(
+                server: McpServerConfig,
+            ) -> tuple[McpServerStatus, tuple[McpToolDescriptor, ...]]:
                 if server.status == "unconfigured":
-                    statuses[server.name] = "unconfigured"
-                    continue
-                statuses[server.name] = "connecting"
+                    return "unconfigured", ()
                 try:
                     found = await asyncio.wait_for(
                         self._transport.discover(server, scope),
                         timeout=self._discovery_timeout,
                     )
-                    normalized = self._validate_server_tools(server, found)
-                    discovered.extend(normalized)
-                    statuses[server.name] = "connected"
+                    return "connected", self._validate_server_tools(server, found)
                 except Exception:
-                    statuses[server.name] = "error"
+                    return "error", ()
+
+            results = await asyncio.gather(*(discover_server(server) for server in servers))
+            for server, (status, tools) in zip(servers, results, strict=True):
+                statuses[server.name] = status
+                discovered.extend(tools)
             tools_by_server: dict[str, list[str]] = {}
             for tool in discovered:
                 tools_by_server.setdefault(tool.server_name, []).append(tool.name)

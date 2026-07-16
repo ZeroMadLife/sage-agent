@@ -548,7 +548,24 @@ async def update_coding_session_metadata(
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.archived is True:
+        await _close_coding_mcp_scope(request, session_id)
     return CodingSessionSummary(**summary)
+
+
+async def _close_coding_mcp_scope(request: Request, session_id: str) -> None:
+    """Best-effort release of stateful MCP subprocesses for an archived chat."""
+    manager = getattr(request.app.state, "coding_mcp_manager", None)
+    runtime = request.app.state.coding_sessions.get(session_id)
+    if not isinstance(manager, McpManager) or not isinstance(runtime, CodingRuntime):
+        return
+    scope = McpScope(
+        owner_id=runtime.owner_user_id or "local",
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
+        thread_id=runtime.session_id,
+    )
+    with suppress(Exception):
+        await manager.close_scope(scope)
 
 
 @router.post("/api/v1/coding/session/{session_id}/resume")

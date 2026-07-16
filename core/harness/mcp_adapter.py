@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, ToolException
 from sage_harness import (
     McpCatalogPort,
     McpConfigSnapshot,
@@ -21,10 +21,12 @@ from sage_harness import (
 
 from core.coding.run_coordinator import RunEvent
 from core.config.settings import Settings
+from core.harness.mcp_session_pool import McpClientSession, ScopedMcpSessionPool
 from core.mcp_client import build_config_from_settings
 from mcp_servers.registry import McpConfig
 
 McpClientFactory = Callable[[dict[str, Any]], Any]
+McpToolLoader = Callable[[McpClientSession, str], Awaitable[Sequence[BaseTool]]]
 
 
 class ConfiguredMcpCatalog(McpCatalogPort):
@@ -59,10 +61,15 @@ class LangChainMcpTransport:
         *,
         revision: str,
         client_factory: McpClientFactory | None = None,
+        session_pool: ScopedMcpSessionPool | None = None,
+        tool_loader: McpToolLoader | None = None,
     ) -> None:
         self._connections = {name: dict(connection) for name, connection in config.items()}
         self._revision = revision
-        self._client_factory = client_factory or _default_mcp_client
+        self._client_factory = client_factory
+        self._session_pool = session_pool or ScopedMcpSessionPool()
+        self._tool_loader = tool_loader or _load_tools_from_session
+        self._server_configs: dict[str, McpServerConfig] = {}
         self._tools: dict[
             tuple[str, tuple[str, str, str], str],
             dict[str, BaseTool],
@@ -76,8 +83,18 @@ class LangChainMcpTransport:
         connection = self._connections.get(server.name)
         if connection is None:
             raise ValueError("MCP server connection is unavailable")
-        client = self._client_factory({server.name: connection})
-        discovered = await client.get_tools(server_name=server.name)
+        self._server_configs[server.name] = server
+        if self._client_factory is not None:
+            client = self._client_factory({server.name: connection})
+            discovered = await client.get_tools(server_name=server.name)
+        else:
+            session = await self._session_pool.get_session(
+                revision=self._revision,
+                server_name=server.name,
+                scope=scope,
+                connection=connection,
+            )
+            discovered = await self._tool_loader(session, server.name)
         key = (self._revision, scope.key, server.name)
         tools_by_id: dict[str, BaseTool] = {}
         descriptors: list[McpToolDescriptor] = []
@@ -111,22 +128,51 @@ class LangChainMcpTransport:
     ) -> object:
         key = (self._revision, scope.key, tool.server_name)
         discovered = self._tools.get(key)
+        if self._client_factory is None and not self._session_pool.has_session(
+            revision=self._revision,
+            server_name=tool.server_name,
+            scope=scope,
+        ):
+            self._tools.pop(key, None)
+            discovered = None
         if discovered is None or tool.tool_id not in discovered:
-            raise RuntimeError("MCP tool is stale or was not discovered for this scope")
-        return await discovered[tool.tool_id].ainvoke(dict(arguments))
+            server = self._server_configs.get(tool.server_name)
+            if server is None:
+                raise RuntimeError("MCP tool is stale or was not discovered for this scope")
+            await self.discover(server, scope)
+            discovered = self._tools.get(key)
+        if discovered is None or tool.tool_id not in discovered:
+            raise RuntimeError("MCP tool is unavailable after reconnecting")
+        try:
+            return await discovered[tool.tool_id].ainvoke(dict(arguments))
+        except ToolException:
+            # A server-declared tool error is data, not proof that the transport
+            # died; do not reconnect or risk replaying a side-effecting call.
+            raise
+        except Exception:
+            await self._session_pool.close_session(
+                revision=self._revision,
+                server_name=tool.server_name,
+                scope=scope,
+            )
+            self._tools.pop(key, None)
+            raise
 
     async def close_scope(self, scope: McpScope) -> None:
         keys = [key for key in self._tools if key[1] == scope.key]
         for key in keys:
             self._tools.pop(key, None)
+        await self._session_pool.close_scope(scope)
 
     async def invalidate_revision(self, revision: str) -> None:
         keys = [key for key in self._tools if key[0] == revision]
         for key in keys:
             self._tools.pop(key, None)
+        await self._session_pool.invalidate_revision(revision)
 
     async def aclose(self) -> None:
         self._tools.clear()
+        await self._session_pool.aclose()
 
 
 def build_configured_mcp_catalog(
@@ -222,6 +268,19 @@ def _default_mcp_client(connections: dict[str, Any]) -> Any:
     from langchain_mcp_adapters.client import MultiServerMCPClient
 
     return MultiServerMCPClient(connections, tool_name_prefix=True)
+
+
+async def _load_tools_from_session(
+    session: McpClientSession,
+    server_name: str,
+) -> Sequence[BaseTool]:
+    from langchain_mcp_adapters.tools import load_mcp_tools
+
+    return await load_mcp_tools(
+        cast(Any, session),
+        server_name=server_name,
+        tool_name_prefix=True,
+    )
 
 
 def _tool_schema(tool: BaseTool) -> dict[str, object]:

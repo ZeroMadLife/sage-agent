@@ -192,3 +192,50 @@ def test_invalid_unprefixed_tool_fails_closed_for_the_server() -> None:
 
     assert catalog.tools == ()
     assert catalog.servers[0].status == "error"
+
+
+def test_configured_servers_are_discovered_concurrently_without_reordering() -> None:
+    class ParallelTransport(FakeTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.active = 0
+            self.peak = 0
+            self.both_started = asyncio.Event()
+
+        async def discover(
+            self,
+            server: McpServerConfig,
+            scope: McpScope,
+        ) -> Sequence[McpToolDescriptor]:
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+            if self.active == 2:
+                self.both_started.set()
+            await self.both_started.wait()
+            try:
+                return await super().discover(server, scope)
+            finally:
+                self.active -= 1
+
+    async def run() -> tuple[ParallelTransport, object]:
+        transport = ParallelTransport()
+        manager = McpManager(
+            McpConfigSnapshot(
+                revision="config-r1",
+                servers=(
+                    McpServerConfig(name="first", transport="stdio"),
+                    McpServerConfig(name="second", transport="stdio"),
+                ),
+            ),
+            transport,
+            discovery_timeout_seconds=0.5,
+        )
+        catalog = await manager.catalog(McpScope("owner", "workspace", "thread"))
+        await manager.aclose()
+        return transport, catalog
+
+    transport, catalog = asyncio.run(run())
+
+    assert transport.peak == 2
+    assert [server.name for server in catalog.servers] == ["first", "second"]
+    assert [server.status for server in catalog.servers] == ["connected", "connected"]
