@@ -80,6 +80,7 @@ class SkillRef(TypedDict, total=False):
     path: str
     description: str
     loaded_at: int
+    revision: str
 
 
 class MemoryRef(TypedDict, total=False):
@@ -241,11 +242,13 @@ def _normalize_skill(entry: Mapping[str, object]) -> SkillRef:
         raise ValueError("Skill references require a path")
     description = entry.get("description")
     loaded_at = entry.get("loaded_at")
+    revision = str(entry.get("revision") or "")[:64]
     return {
         "name": str(entry.get("name") or ""),
         "path": path,
         "description": " ".join(description.split())[:500] if isinstance(description, str) else "",
         "loaded_at": loaded_at if isinstance(loaded_at, int) else 0,
+        "revision": revision,
     }
 
 

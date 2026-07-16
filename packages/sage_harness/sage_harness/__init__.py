@@ -62,6 +62,12 @@ from sage_harness.sandbox import (
     SandboxPort,
     SandboxResult,
 )
+from sage_harness.skills import (
+    SkillActivation,
+    SkillActivationMiddleware,
+    SkillCatalog,
+    parse_skill_activation,
+)
 from sage_harness.state import SageThreadState
 
 __all__ = [
@@ -107,6 +113,9 @@ __all__ = [
     "SandboxPolicyError",
     "SandboxPort",
     "SandboxResult",
+    "SkillActivation",
+    "SkillActivationMiddleware",
+    "SkillCatalog",
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",
@@ -117,6 +126,7 @@ __all__ = [
     "load_graph_message_compaction_plan",
     "normalize_stream_item",
     "open_sqlite_checkpointer",
+    "parse_skill_activation",
     "render_deferred_tool_index",
     "thread_config",
 ]

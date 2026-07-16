@@ -115,7 +115,7 @@ def _normalize_durable_context(value: object) -> dict[str, object]:
     skills = _record_list(
         value.get("skill_context"),
         limit=_MAX_SKILLS,
-        allowed_fields=frozenset({"name", "path", "description", "loaded_at"}),
+        allowed_fields=frozenset({"name", "path", "description", "loaded_at", "revision"}),
     )
     if skills:
         result["skill_context"] = skills

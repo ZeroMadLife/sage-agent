@@ -16,6 +16,8 @@ from sage_harness import (
     HarnessRunManager,
     HarnessRunRequest,
     SandboxDescriptor,
+    SkillActivationMiddleware,
+    SkillCatalog,
     create_sage_agent,
     load_graph_message_compaction_plan,
     render_deferred_tool_index,
@@ -38,6 +40,7 @@ class SageHarnessRuntimeAdapter:
         tools: Sequence[BaseTool] = (),
         system_prompt: str | None = None,
         deferred_setup: DeferredToolSetup | None = None,
+        skill_catalog: SkillCatalog | None = None,
     ) -> None:
         self.checkpointer = checkpointer
         registry = build_default_registry()
@@ -59,6 +62,14 @@ class SageHarnessRuntimeAdapter:
             deferred_prompt = render_deferred_tool_index(deferred_setup)
             effective_prompt = "\n\n".join(
                 part for part in (system_prompt, deferred_prompt) if part
+            )
+        if skill_catalog is not None:
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "skill_activation",
+                    lambda config: SkillActivationMiddleware(skill_catalog),
+                ),
+                before="input_sanitization",
             )
         self.graph = create_sage_agent(
             model=model,

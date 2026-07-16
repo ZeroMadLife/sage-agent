@@ -21,6 +21,7 @@ from sage_harness.middleware.registry import (
     MiddlewareSpec,
     build_default_registry,
 )
+from sage_harness.skills import SkillActivationMiddleware
 
 __all__ = [
     "DeferredToolFilterMiddleware",
@@ -33,6 +34,7 @@ __all__ = [
     "ProviderCallError",
     "ProviderErrorMiddleware",
     "RemoteContentSanitizationMiddleware",
+    "SkillActivationMiddleware",
     "TerminalResponseMiddleware",
     "ThreadContextMiddleware",
     "TokenBudgetMiddleware",

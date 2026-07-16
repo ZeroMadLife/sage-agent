@@ -359,6 +359,7 @@ async def _deerflow_timeline_events(
                 tools=tool_bundle.tools,
                 system_prompt=build_deerflow_system_prompt(runtime),
                 deferred_setup=tool_bundle.deferred_setup,
+                skill_catalog=runtime.skill_registry,
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None
