@@ -8,6 +8,44 @@ export type HarnessOperationRef = {
   id: string
 }
 
+export type HarnessResourceRef = {
+  type: 'knowledge_page' | 'knowledge_source' | 'coding_workspace'
+  id: string
+  revision?: string
+  label?: string
+}
+
+export type HarnessSelectionRef = {
+  type: 'graph_node' | 'knowledge_page' | 'knowledge_source' | 'coding_file'
+  id: string
+  revision?: string
+  label?: string
+}
+
+export type HarnessSurfaceContext = {
+  surface: HarnessSurfaceId
+  workspaceId: string
+  resource: HarnessResourceRef | null
+  selection: HarnessSelectionRef | null
+  graphRevision?: string
+  operationRefs: HarnessOperationRef[]
+}
+
+export type HarnessCapability =
+  | 'chat'
+  | 'retrieval'
+  | 'knowledge_read'
+  | 'knowledge_write'
+  | 'coding_read'
+  | 'coding_write'
+
+export type HarnessSurfaceAdapter<TInput> = {
+  id: HarnessSurfaceId
+  definitionId: string
+  capabilities: HarnessCapability[]
+  buildContext: (input: TInput) => HarnessSurfaceContext
+}
+
 export type HarnessStageDefinition = {
   id: string
   label: string

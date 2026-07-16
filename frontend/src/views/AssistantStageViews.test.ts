@@ -209,6 +209,9 @@ it('renders the versioned graph workspace without a duplicate RAG question form'
   expect(wrapper.text()).toContain('成为全栈 AI 应用工程师')
   expect(wrapper.text()).toContain('2 个节点 · 1 条证据连接 · 1 个社区')
   expect(wrapper.get('.graph-stub').text()).toContain('真实图谱 2')
+  expect(wrapper.find('[aria-label="Knowledge 主画布"]').exists()).toBe(true)
+  expect(wrapper.get('.workbench-dock [role="tab"][aria-selected="true"]').text()).toContain('对话')
+  expect(wrapper.text()).toContain('尚未选择知识内容')
   expect(wrapper.find('input[aria-label="知识库问题"]').exists()).toBe(false)
   wrapper.unmount()
 })
@@ -220,6 +223,8 @@ it('loads revision-bound evidence when a graph node is selected', async () => {
   await flushPromises()
 
   expect(fetchKnowledgeGraphNeighborhood).toHaveBeenCalledWith('node-page')
+  expect(wrapper.get('[aria-label="当前对话上下文"]').text()).toContain('Agent Harness')
+  await wrapper.findAll('.workbench-dock [role="tab"]')[1].trigger('click')
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')
   wrapper.unmount()
 })
