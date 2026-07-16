@@ -19,7 +19,10 @@ def test_harness_is_an_independent_python_312_package() -> None:
 
     assert project["name"] == "sage-harness"
     assert project["requires-python"] == ">=3.12"
-    assert project["dependencies"] == []
+    assert project["dependencies"] == [
+        "langchain==1.2.15",
+        "langgraph==1.1.9",
+    ]
     assert version("sage-harness") == project["version"]
     assert sage_harness.__name__ == "sage_harness"
 

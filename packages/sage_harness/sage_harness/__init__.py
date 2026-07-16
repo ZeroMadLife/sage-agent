@@ -16,6 +16,7 @@ from sage_harness.ports import (
     ToolExecutionPort,
     ToolExecutionResult,
 )
+from sage_harness.state import SageThreadState
 
 __all__ = [
     "ApprovalDecision",
@@ -29,6 +30,7 @@ __all__ = [
     "KnowledgePort",
     "MemoryPort",
     "MemoryReference",
+    "SageThreadState",
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",
