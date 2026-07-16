@@ -9,20 +9,14 @@ describe('CodingMessageTurn', () => {
         message: {
           role: 'assistant',
           content: '完成',
-          activities: [{ kind: 'model', label: '请求模型响应', status: 'done' }],
+          activities: [{ kind: 'tool', label: '读取 README', status: 'done' }],
         },
         renderedContent: '<p>完成</p>',
-      },
-      global: {
-        stubs: {
-          CodingExecutionLog: true,
-          CodingToolActivity: true,
-        },
       },
     })
 
     expect(wrapper.get('[aria-label="Sage"]').attributes('aria-label')).toBe('Sage')
-    expect(wrapper.findComponent({ name: 'CodingExecutionLog' }).exists()).toBe(true)
+    expect(wrapper.get('.execution-log').text()).toContain('已完成')
     expect(wrapper.text()).toContain('Sage')
   })
 
@@ -73,19 +67,21 @@ describe('CodingMessageTurn', () => {
     expect(wrapper.findComponent({ name: 'CodingToolActivity' }).exists()).toBe(false)
   })
 
-  it('keeps execution metadata inside the assistant message body', () => {
+  it('keeps expandable execution metadata inside the assistant message body', async () => {
     const wrapper = mount(CodingMessageTurn, {
       props: {
         message: {
           role: 'assistant',
           content: '',
-          activities: [{ kind: 'model', label: '请求模型响应', status: 'running' }],
+          activities: [{ kind: 'retry', label: '重试模型请求', status: 'running' }],
         },
         renderedContent: '',
       },
     })
 
-    expect(wrapper.get('.message-body').findComponent({ name: 'CodingExecutionLog' }).exists()).toBe(true)
+    expect(wrapper.get('.message-body').find('.execution-log').exists()).toBe(true)
+    await wrapper.get('.execution-log-header').trigger('click')
+    expect(wrapper.get('.message-body').text()).toContain('重试模型请求')
   })
 
   it('does not render an empty assistant shell before any visible response exists', () => {

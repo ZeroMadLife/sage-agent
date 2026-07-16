@@ -7,32 +7,16 @@ import type {
   CodingContextSnapshot,
   MemoryProposal,
 } from '../types/api'
+import type {
+  ChatMessageViewModel,
+  ExecutionActivityViewModel,
+  ToolActivityViewModel,
+} from '../harness/chatTypes'
 import type { Ref } from 'vue'
 
-export type ToolActivity = {
-  tool: string
-  args: Record<string, unknown>
-  status: 'running' | 'done' | 'error'
-  content: string
-  durationMs?: number
-}
-
-export type ExecutionActivity = {
-  kind: 'model' | 'tool' | 'approval' | 'retry'
-  label: string
-  detail?: string
-  status: 'running' | 'done' | 'error'
-}
-
-export type ChatMessage = {
-  id?: string
-  run_id?: string
-  role: 'user' | 'assistant'
-  content: string
-  tools?: ToolActivity[]
-  activities?: ExecutionActivity[]
-  isThinking?: boolean
-}
+export type ToolActivity = ToolActivityViewModel
+export type ExecutionActivity = ExecutionActivityViewModel
+export type ChatMessage = ChatMessageViewModel
 
 export type PlanReviewState = {
   review_id: string
