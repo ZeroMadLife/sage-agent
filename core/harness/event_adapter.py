@@ -141,6 +141,16 @@ class HarnessEventAdapter:
                     source_event_id=source_event_id,
                 ),
             )
+        if event_type == "context_usage_updated":
+            event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
+            return (
+                self._event(
+                    "context",
+                    "completed",
+                    event_payload,
+                    source_event_id=source_event_id,
+                ),
+            )
         safe = {str(key): _bounded_value(value) for key, value in payload.items()}
         return (
             self._event(

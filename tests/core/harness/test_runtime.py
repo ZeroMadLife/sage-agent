@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from sage_harness.runtime.checkpoint import open_sqlite_checkpointer
 from sage_harness.runtime.events import HarnessStreamItem
 
+from core.harness.context_adapter import build_deerflow_system_prompt, context_status_event
 from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import build_deerflow_coding_tools
@@ -165,6 +166,22 @@ def test_event_adapter_projects_agent_started_event() -> None:
     assert events[0].kind == "agent"
     assert events[0].status == "running"
     assert events[0].payload["agent_run_id"] == "agent_1"
+
+
+def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> None:
+    from core.coding.runtime import CodingRuntime
+
+    runtime = CodingRuntime(
+        session_id="s1",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    runtime.session["history"] = [{"role": "user", "content": "继续实现 harness"}]
+    prompt = build_deerflow_system_prompt(runtime)
+    assert "untrusted reference" in prompt
+    assert "继续实现 harness" in prompt
+    assert context_status_event(runtime, "r1") is None
 
 
 def test_runtime_adapter_streams_read_tool_result(tmp_path: Path) -> None:

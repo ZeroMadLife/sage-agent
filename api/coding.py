@@ -89,6 +89,7 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.context_adapter import build_deerflow_system_prompt, context_status_event
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import build_deerflow_coding_tools
 
@@ -240,6 +241,7 @@ async def _deerflow_timeline_events(
         model=runtime.model,
         checkpointer=checkpointer,
         tools=build_deerflow_coding_tools(runtime, run_id=run_id),
+        system_prompt=build_deerflow_system_prompt(runtime),
     )
     runtime.append_harness_message(role="user", content=content, run_id=run_id)
     yield RunEvent(
@@ -248,6 +250,9 @@ async def _deerflow_timeline_events(
         payload={"type": "user", "content": content, "run_id": run_id},
         event_id=f"harness:{run_id}:user",
     )
+    context_event = context_status_event(runtime, run_id)
+    if context_event is not None:
+        yield context_event
     response_parts: list[str] = []
     async for event in adapter.stream_turn(
         session_id=runtime.session_id,
