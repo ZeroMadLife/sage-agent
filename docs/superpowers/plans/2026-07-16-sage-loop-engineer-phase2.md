@@ -2,7 +2,7 @@
 
 > 日期：2026-07-16
 >
-> 状态：执行中；`SHADOW_WRITE` 已部署，PR canary 代码已实现、待认证实跑
+> 状态：执行中；`SHADOW_WRITE` 已部署，Claude 真实链路已烟测，PR canary 待 GitHub 认证实跑
 >
 > 设计依据：`docs/superpowers/specs/2026-07-16-sage-loop-engineer-phase2-design.md`
 
@@ -17,7 +17,8 @@
 - 已完成小版本 1-3：mode/SQLite 迁移、dirty path 避让、Scanner/Fixer、diff policy；
 - 小版本 4 已完成固定 Vitest/build 验证与 quota 证据，前后截图仍待补；
 - 小版本 5-6 的 GitHub Draft PR 与 cc-connect Claude Reviewer 已实现并通过 fake 纵向测试；
-- 当前部署保持 `SHADOW_WRITE`，`gh` 尚未认证，因此不会 push、创建 PR 或启动 Claude；
+- Claude Reviewer 已在前台与 launchd daemon 各完成一次真实 `PASS` 烟测，临时 evidence 均已清理；
+- 当前部署保持 `SHADOW_WRITE`，小时任务不启动 Reviewer；`gh` 尚未认证，因此不会 push 或创建 PR；
 - 小版本 4 截图、小版本 5 Issue、小版本 6 自动返工、小版本 7-8 rollout 仍待完成；
 - 实现分支为 `codex/loop-phase2`，基于 Phase 1 PR head 叠加，未修改根目录用户工作。
 
@@ -155,7 +156,7 @@
 ### 环境变更
 
 - 新增 cc-connect 项目 `sage-loop-review`；
-- work_dir 指向 Controller 管理的 review worktree；
+- work_dir 指向 Controller 管理的私有 evidence 根目录；
 - Claude Code 使用 `plan` 模式、固定系统 Prompt 和独立 session key；
 - 不修改现有 `sage-review` 知识库项目。
 
@@ -168,8 +169,8 @@
 ### 实现内容
 
 - PR 创建后通过 cc-connect 触发一次性审查；
-- Reviewer 读取 diff、验证日志和截图，返回 `PASS/REQUEST_CHANGES/BLOCK`；
-- Controller 校验 Reviewer 未改 tracked 文件；
+- Reviewer 当前只读取 `shadow.patch` 与 `validation.json`，截图在视觉证据小版本补齐后接入；
+- Reviewer 返回 `PASS/REQUEST_CHANGES/BLOCK`，Controller 校验 evidence 目录摘要未变化；
 - 最多一次 Codex 返工和一次复审；
 - 第二次失败保留 Draft，停止自动循环。
 

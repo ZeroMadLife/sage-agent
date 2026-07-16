@@ -24,6 +24,12 @@ Codex 网关。运行时继续使用 `--ignore-user-config`，并关闭插件、
 `PR_CANARY` 还要求 `gh auth status` 能访问私有仓库，并要求 cc-connect 内部项目
 `sage-loop-review` 可用；凭据只由各 CLI 自己读取，不进入模型 Prompt、日志或 SQLite。
 
+`sage-loop-review` 不绑定主飞书会话：使用 `plan` 模式，work_dir 固定为
+`~/.local/state/sage-loop/reports`，只允许 `Read/Grep/Glob`，显式禁止 Shell、写文件、联网和
+GitHub。每轮使用独立 synthetic relay session，`relay.visibility=none`。本机 cc-connect 1.4.1
+要求每个项目至少有一个 platform，因此该项目只挂无外部注册/轮询的本机随机回调适配器；
+不得复用现有 `sage-review` 的飞书应用或 YOLO 权限。
+
 默认目录：
 
 - 状态：`~/.local/state/sage-loop/`
