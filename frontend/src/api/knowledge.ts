@@ -3,7 +3,14 @@ import type {
   KnowledgeJob,
   KnowledgeJobEvent,
   KnowledgeJobItem,
+  KnowledgeGraph,
+  KnowledgeGraphCommunities,
+  KnowledgeGraphInsights,
+  KnowledgeGraphNeighborhood,
+  KnowledgeGraphNode,
+  KnowledgeGraphSnapshot,
   KnowledgeIndexSummary,
+  KnowledgeLearningGoal,
   KnowledgeMigrationPlan,
   KnowledgeMigrationResult,
   KnowledgeProposal,
@@ -35,6 +42,45 @@ export function fetchKnowledgeIndex(): Promise<KnowledgeIndexSummary> {
 
 export function rebuildKnowledgeIndex(): Promise<KnowledgeIndexSummary> {
   return request('/api/v1/knowledge/index/rebuild', { method: 'POST' })
+}
+
+export function fetchKnowledgeGraph(): Promise<KnowledgeGraph> {
+  return request('/api/v1/knowledge/graph?limit=1000&edge_limit=2000')
+}
+
+export function rebuildKnowledgeGraph(): Promise<KnowledgeGraphSnapshot> {
+  return request('/api/v1/knowledge/graph/rebuild', { method: 'POST' })
+}
+
+export function fetchKnowledgeGraphCommunities(): Promise<KnowledgeGraphCommunities> {
+  return request('/api/v1/knowledge/graph/communities')
+}
+
+export function fetchKnowledgeGraphInsights(): Promise<KnowledgeGraphInsights> {
+  return request('/api/v1/knowledge/graph/insights?limit=500')
+}
+
+export function fetchKnowledgeLearningGoal(): Promise<KnowledgeLearningGoal> {
+  return request('/api/v1/knowledge/goal')
+}
+
+export function fetchKnowledgeGraphNode(nodeId: string): Promise<{
+  snapshot: KnowledgeGraphSnapshot
+  node: KnowledgeGraphNode
+}> {
+  return request(`/api/v1/knowledge/graph/nodes/${encodeURIComponent(nodeId)}`)
+}
+
+export function fetchKnowledgeGraphNeighborhood(
+  nodeId: string,
+  limit = 100,
+): Promise<KnowledgeGraphNeighborhood> {
+  const url = new URL(
+    `/api/v1/knowledge/graph/nodes/${encodeURIComponent(nodeId)}/neighbors`,
+    API_BASE_URL,
+  )
+  url.searchParams.set('limit', String(limit))
+  return request(`${url.pathname}${url.search}`)
 }
 
 export function searchKnowledge(

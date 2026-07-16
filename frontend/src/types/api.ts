@@ -213,6 +213,178 @@ export type KnowledgeIndexSummary = {
   error_count: number
 }
 
+export type KnowledgeGraphNodeKind =
+  | 'page'
+  | 'source'
+  | 'project'
+  | 'concept'
+  | 'decision'
+  | 'tool'
+
+export type KnowledgeGraphSnapshot = {
+  graph_revision: string
+  workspace_id: string
+  wiki_watermark: string
+  projector_id: string
+  projector_version: string
+  config_hash: string
+  status: 'building' | 'ready' | 'error'
+  node_count: number
+  edge_count: number
+  warning_count: number
+  error: string | null
+  created_at: string
+  completed_at: string | null
+  stale: boolean
+}
+
+export type KnowledgeGraphEvidence = {
+  citation_id: string
+  chunk_id: string
+  page_id: string
+  page_revision: string
+  source_id: string
+  source_revision: string
+}
+
+export type KnowledgeGraphNode = {
+  node_id: string
+  kind: KnowledgeGraphNodeKind
+  label: string
+  page_id: string | null
+  page_revision: string | null
+  source_id: string | null
+  source_revision: string | null
+  properties: Record<string, unknown>
+}
+
+export type KnowledgeGraphEdge = {
+  edge_id: string
+  source_node_id: string
+  target_node_id: string
+  kind: 'WIKILINK' | 'EVIDENCED_BY' | 'SHARES_SOURCE'
+  directed: boolean
+  weight: number
+  confidence: number
+  extractor_id: string
+  extractor_version: string
+  properties: Record<string, unknown>
+  evidence: KnowledgeGraphEvidence[]
+}
+
+export type KnowledgeGraph = {
+  snapshot: KnowledgeGraphSnapshot
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+  offset: number
+  next_offset: number | null
+  has_more: boolean
+}
+
+export type KnowledgeLearningCapability = {
+  capability_id: string
+  label: string
+  description: string
+  keywords: string[]
+  weight: number
+  required: boolean
+}
+
+export type KnowledgeLearningGoal = {
+  schema_version: number
+  goal_id: string
+  title: string
+  description: string
+  capabilities: KnowledgeLearningCapability[]
+  goal_revision: string
+  git_commit: string
+  structured: boolean
+}
+
+export type KnowledgeGraphAnalysisSnapshot = {
+  analysis_revision: string
+  workspace_id: string
+  graph_revision: string
+  goal_revision: string
+  algorithm_id: string
+  algorithm_version: string
+  seed: number
+  resolution: number
+  threshold: number
+  status: 'building' | 'ready' | 'error'
+  community_count: number
+  insight_count: number
+  error: string | null
+  created_at: string
+  completed_at: string | null
+}
+
+export type KnowledgeGraphCommunity = {
+  community_id: string
+  label: string
+  node_count: number
+  edge_count: number
+  cohesion: number
+  properties: Record<string, unknown>
+}
+
+export type KnowledgeGraphNodeMetric = {
+  node_id: string
+  community_id: string
+  degree: number
+  weighted_degree: number
+  bridge_score: number
+}
+
+export type KnowledgeGraphCommunities = {
+  analysis: KnowledgeGraphAnalysisSnapshot
+  communities: KnowledgeGraphCommunity[]
+  node_metrics: KnowledgeGraphNodeMetric[]
+}
+
+export type KnowledgeGoalAlignment = {
+  capability_id: string
+  label: string
+  coverage: number
+  status: 'covered' | 'learning' | 'gap'
+  matched_keywords: string[]
+  missing_keywords: string[]
+  matched_node_ids: string[]
+}
+
+export type KnowledgeGraphInsightKind =
+  | 'missing_concept'
+  | 'isolated_node'
+  | 'bridge_node'
+  | 'sparse_community'
+  | 'capability_gap'
+
+export type KnowledgeGraphInsight = {
+  insight_id: string
+  kind: KnowledgeGraphInsightKind
+  severity: 'low' | 'medium' | 'high'
+  title: string
+  description: string
+  node_id: string | null
+  community_id: string | null
+  capability_id: string | null
+  properties: Record<string, unknown>
+}
+
+export type KnowledgeGraphInsights = {
+  analysis: KnowledgeGraphAnalysisSnapshot
+  goal: KnowledgeLearningGoal
+  alignments: KnowledgeGoalAlignment[]
+  insights: KnowledgeGraphInsight[]
+}
+
+export type KnowledgeGraphNeighborhood = {
+  snapshot: KnowledgeGraphSnapshot
+  center: KnowledgeGraphNode
+  nodes: KnowledgeGraphNode[]
+  edges: KnowledgeGraphEdge[]
+}
+
 export type KnowledgeEvidence = {
   citation_id: string
   rank: number
