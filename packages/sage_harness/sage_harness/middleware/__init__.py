@@ -1,5 +1,6 @@
 """Middleware primitives and deterministic registry for the Sage harness."""
 
+from sage_harness.deferred_tools import DeferredToolFilterMiddleware
 from sage_harness.middleware.builtin import (
     InputSanitizationMiddleware,
     MissingRunContextError,
@@ -20,6 +21,7 @@ from sage_harness.middleware.registry import (
 )
 
 __all__ = [
+    "DeferredToolFilterMiddleware",
     "DurableContextMiddleware",
     "InputSanitizationMiddleware",
     "MiddlewareRegistry",

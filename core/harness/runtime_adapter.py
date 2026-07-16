@@ -9,13 +9,17 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sage_harness import (
+    DeferredToolFilterMiddleware,
+    DeferredToolSetup,
     GraphMessageCompactionRequest,
     HarnessRunContext,
     HarnessRunManager,
     HarnessRunRequest,
     create_sage_agent,
     load_graph_message_compaction_plan,
+    render_deferred_tool_index,
 )
+from sage_harness.middleware import MiddlewareSpec, build_default_registry
 from sage_harness.runtime.manager import StreamableGraph
 
 from core.coding.run_coordinator import RunEvent
@@ -32,12 +36,34 @@ class SageHarnessRuntimeAdapter:
         checkpointer: BaseCheckpointSaver[Any],
         tools: Sequence[BaseTool] = (),
         system_prompt: str | None = None,
+        deferred_setup: DeferredToolSetup | None = None,
     ) -> None:
         self.checkpointer = checkpointer
+        registry = build_default_registry()
+        effective_prompt = system_prompt
+        if deferred_setup is not None and deferred_setup.enabled:
+            catalog_hash = deferred_setup.catalog_hash
+            if catalog_hash is None:
+                raise ValueError("Enabled deferred tool setup requires a catalog hash")
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "deferred_tool_filter",
+                    lambda config: DeferredToolFilterMiddleware(
+                        deferred_setup.deferred_names,
+                        catalog_hash,
+                    ),
+                ),
+                before="tool_error",
+            )
+            deferred_prompt = render_deferred_tool_index(deferred_setup)
+            effective_prompt = "\n\n".join(
+                part for part in (system_prompt, deferred_prompt) if part
+            )
         self.graph = create_sage_agent(
             model=model,
             tools=tools,
-            system_prompt=system_prompt,
+            system_prompt=effective_prompt,
+            registry=registry,
             checkpointer=checkpointer,
         )
         self.manager = HarnessRunManager(cast(StreamableGraph, self.graph))

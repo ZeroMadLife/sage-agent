@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, ToolMessage
 from sage_harness.runtime.checkpoint import open_sqlite_checkpointer, thread_config
 from sage_harness.runtime.events import HarnessStreamItem
 
@@ -23,7 +23,10 @@ from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
-from core.harness.tools_adapter import build_deerflow_coding_tools
+from core.harness.tools_adapter import (
+    build_deerflow_coding_tool_bundle,
+    build_deerflow_coding_tools,
+)
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 
 
@@ -49,6 +52,25 @@ class RecordingBindableFakeModel(BindableFakeMessagesListChatModel):
         return super()._generate(messages, *args, **kwargs)
 
 
+class ToolBindingFakeModel(BindableFakeMessagesListChatModel):
+    """Record the exact schemas visible to each model call."""
+
+    seen_tool_names: ClassVar[list[set[str]]]
+
+    def __init__(self, responses):  # type: ignore[no-untyped-def]
+        super().__init__(responses=responses)
+        type(self).seen_tool_names = []
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        type(self).seen_tool_names.append(
+            {
+                str(getattr(item, "name", "") or item.get("name", ""))
+                for item in tools
+            }
+        )
+        return super().bind_tools(tools, tool_choice=tool_choice, **kwargs)
+
+
 def test_event_adapter_exposes_ai_delta_and_tool_result_without_private_state() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
     ai = AIMessage(content="公开回答", id="ai-1")
@@ -63,6 +85,72 @@ def test_event_adapter_exposes_ai_delta_and_tool_result_without_private_state() 
     assert tool_events[0].payload["type"] == "tool_result"
     assert tool_events[0].payload["tool_call_id"] == "call-1"
     assert "analysis" not in str(ai_events[0].payload)
+
+
+def test_event_adapter_projects_provider_message_chunks_as_text_deltas() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    chunk = AIMessageChunk(content="流式正文", id="chunk-1")
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (chunk, {}), "source-chunk"))
+
+    assert len(events) == 1
+    assert events[0].payload["type"] == "text_delta"
+    assert events[0].payload["delta"] == "流式正文"
+
+
+def test_event_adapter_deduplicates_model_and_executor_tool_events() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    chunk = AIMessageChunk(
+        content="",
+        tool_calls=[
+            {
+                "name": "todo_list",
+                "args": {},
+                "id": "call-todo",
+                "type": "tool_call",
+            }
+        ],
+    )
+
+    model_call = adapter.adapt(
+        HarnessStreamItem(1, "messages", (chunk, {}), "source-model")
+    )
+    duplicate_custom_call = adapter.adapt(
+        HarnessStreamItem(
+            2,
+            "custom",
+            {"type": "tool_call", "tool": "todo_list", "args": {}},
+            "source-custom-call",
+        )
+    )
+    custom_result = adapter.adapt(
+        HarnessStreamItem(
+            3,
+            "custom",
+            {"type": "tool_result", "tool": "todo_list", "content": "Task ledger: empty"},
+            "source-custom-result",
+        )
+    )
+    duplicate_message_result = adapter.adapt(
+        HarnessStreamItem(
+            4,
+            "messages",
+            (
+                ToolMessage(
+                    content="Task ledger: empty",
+                    tool_call_id="call-todo",
+                    name="todo_list",
+                ),
+                {},
+            ),
+            "source-message-result",
+        )
+    )
+
+    assert [event.payload["type"] for event in model_call] == ["tool_call"]
+    assert duplicate_custom_call == ()
+    assert [event.payload["type"] for event in custom_result] == ["tool_result"]
+    assert duplicate_message_result == ()
 
 
 def test_event_adapter_splits_ai_tool_calls_into_public_rows() -> None:
@@ -179,6 +267,231 @@ def test_deerflow_tools_reuse_sage_workspace_registry(tmp_path: Path) -> None:
     }
     listing = next(tool for tool in tools if tool.name == "list_files")
     assert "README.md" in str(asyncio.run(listing.ainvoke({"path": "."})))
+
+
+def test_runtime_adapter_promotes_deferred_tool_before_execution(tmp_path: Path) -> None:
+    async def run() -> tuple[list[dict[str, object]], dict[str, object]]:
+        async with open_sqlite_checkpointer(tmp_path / "deferred-checkpoints.sqlite3") as saver:
+            runtime = CodingRuntime(
+                session_id="s-deferred",
+                workspace_root=tmp_path,
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                runtime_profile="deerflow_v2",
+            )
+            model = ToolBindingFakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "tool_search",
+                                "args": {"query": "select:todo_list"},
+                                "id": "call-search",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "todo_list",
+                                "args": {},
+                                "id": "call-todo",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="No tasks are pending."),
+                ]
+            )
+            bundle = build_deerflow_coding_tool_bundle(runtime, run_id="r-deferred")
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                tools=bundle.tools,
+                deferred_setup=bundle.deferred_setup,
+            )
+            payloads = [
+                event.payload
+                async for event in adapter.stream_turn(
+                    session_id="s-deferred",
+                    run_id="r-deferred",
+                    workspace_id="w-deferred",
+                    workspace_path=str(tmp_path),
+                    content="List my task ledger",
+                )
+            ]
+            checkpoint = await saver.aget_tuple(thread_config("s-deferred"))
+            assert checkpoint is not None
+            return payloads, dict(checkpoint.checkpoint["channel_values"])
+
+    payloads, state = asyncio.run(run())
+
+    assert "tool_search" in ToolBindingFakeModel.seen_tool_names[0]
+    assert "todo_list" not in ToolBindingFakeModel.seen_tool_names[0]
+    assert "todo_list" in ToolBindingFakeModel.seen_tool_names[1]
+    search_result = next(
+        item
+        for item in payloads
+        if item.get("type") == "tool_result" and item.get("tool") == "tool_search"
+    )
+    assert "todo_list" in str(search_result["content"])
+    assert any(
+        item.get("type") == "tool_result" and item.get("tool") == "todo_list"
+        for item in payloads
+    )
+    promoted = state["promoted_tools"]
+    assert isinstance(promoted, dict)
+    bundle_hash = promoted["catalog_hash"]
+    assert promoted == {"catalog_hash": bundle_hash, "names": ["todo_list"]}
+    assert isinstance(bundle_hash, str) and len(bundle_hash) == 16
+
+
+def test_runtime_adapter_blocks_unpromoted_deferred_tool_call(tmp_path: Path) -> None:
+    async def run() -> list[dict[str, object]]:
+        async with open_sqlite_checkpointer(tmp_path / "blocked-checkpoints.sqlite3") as saver:
+            runtime = CodingRuntime(
+                session_id="s-blocked",
+                workspace_root=tmp_path,
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                runtime_profile="deerflow_v2",
+            )
+            runtime.todo_ledger.add("must remain private until promoted")
+            model = ToolBindingFakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "todo_list",
+                                "args": {},
+                                "id": "call-forged",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="I must discover that tool first."),
+                ]
+            )
+            bundle = build_deerflow_coding_tool_bundle(runtime, run_id="r-blocked")
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                tools=bundle.tools,
+                deferred_setup=bundle.deferred_setup,
+            )
+            return [
+                event.payload
+                async for event in adapter.stream_turn(
+                    session_id="s-blocked",
+                    run_id="r-blocked",
+                    workspace_id="w-blocked",
+                    workspace_path=str(tmp_path),
+                    content="List tasks without discovery",
+                )
+            ]
+
+    payloads = asyncio.run(run())
+
+    blocked = next(
+        item
+        for item in payloads
+        if item.get("type") == "tool_result" and item.get("tool") == "todo_list"
+    )
+    assert "has not been promoted" in str(blocked["content"])
+    assert "must remain private" not in str(blocked["content"])
+
+
+def test_deferred_promotion_survives_graph_rebuild_for_next_turn(tmp_path: Path) -> None:
+    async def run() -> tuple[set[str], list[dict[str, object]]]:
+        async with open_sqlite_checkpointer(tmp_path / "resume-checkpoints.sqlite3") as saver:
+            runtime = CodingRuntime(
+                session_id="s-resume",
+                workspace_root=tmp_path,
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                runtime_profile="deerflow_v2",
+            )
+            first_model = ToolBindingFakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "tool_search",
+                                "args": {"query": "select:todo_list"},
+                                "id": "call-search",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Tool ready."),
+                ]
+            )
+            first_bundle = build_deerflow_coding_tool_bundle(runtime, run_id="r-first")
+            first_adapter = SageHarnessRuntimeAdapter(
+                model=first_model,
+                checkpointer=saver,
+                tools=first_bundle.tools,
+                deferred_setup=first_bundle.deferred_setup,
+            )
+            _ = [
+                event
+                async for event in first_adapter.stream_turn(
+                    session_id="s-resume",
+                    run_id="r-first",
+                    workspace_id="w-resume",
+                    workspace_path=str(tmp_path),
+                    content="Discover todo tools",
+                )
+            ]
+
+            second_model = ToolBindingFakeModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "todo_list",
+                                "args": {},
+                                "id": "call-todo",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="No tasks are pending."),
+                ]
+            )
+            second_bundle = build_deerflow_coding_tool_bundle(runtime, run_id="r-second")
+            assert second_bundle.deferred_setup.catalog_hash == first_bundle.deferred_setup.catalog_hash
+            second_adapter = SageHarnessRuntimeAdapter(
+                model=second_model,
+                checkpointer=saver,
+                tools=second_bundle.tools,
+                deferred_setup=second_bundle.deferred_setup,
+            )
+            payloads = [
+                event.payload
+                async for event in second_adapter.stream_turn(
+                    session_id="s-resume",
+                    run_id="r-second",
+                    workspace_id="w-resume",
+                    workspace_path=str(tmp_path),
+                    content="Use the tool now",
+                )
+            ]
+            return ToolBindingFakeModel.seen_tool_names[0], payloads
+
+    first_visible, payloads = asyncio.run(run())
+
+    assert "todo_list" in first_visible
+    assert any(
+        item.get("type") == "tool_result" and item.get("tool") == "todo_list"
+        for item in payloads
+    )
 
 
 def test_event_adapter_projects_agent_started_event() -> None:

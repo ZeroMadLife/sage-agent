@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any
@@ -23,6 +24,9 @@ class HarnessEventAdapter:
             raise ValueError("session_id and run_id are required")
         self.session_id = session_id
         self.run_id = run_id
+        self._seen_model_tool_calls: set[str] = set()
+        self._pending_model_calls_by_tool: dict[str, int] = {}
+        self._custom_tool_results: set[str] = set()
 
     def adapt(self, item: HarnessStreamItem) -> tuple[RunEvent, ...]:
         """Return zero or more Sage events for one graph stream item."""
@@ -50,7 +54,14 @@ class HarnessEventAdapter:
                     if not isinstance(call, Mapping):
                         continue
                     name = str(call.get("name", ""))
+                    tool_call_id = str(call.get("id", ""))
                     args = call.get("args", {})
+                    if not name or not tool_call_id or tool_call_id in self._seen_model_tool_calls:
+                        continue
+                    self._seen_model_tool_calls.add(tool_call_id)
+                    self._pending_model_calls_by_tool[name] = (
+                        self._pending_model_calls_by_tool.get(name, 0) + 1
+                    )
                     events.append(
                         self._event(
                             "tool",
@@ -59,7 +70,7 @@ class HarnessEventAdapter:
                                 "type": "tool_call",
                                 "tool": name,
                                 "args": args if isinstance(args, Mapping) else {},
-                                "tool_call_id": str(call.get("id", "")),
+                                "tool_call_id": tool_call_id,
                                 "message_id": projected.get("id", ""),
                             },
                             source_event_id=f"{source_event_id}:call:{index}",
@@ -82,6 +93,10 @@ class HarnessEventAdapter:
                 )
             return ()
         if message_type == "tool":
+            signature = _tool_result_signature(str(projected.get("name", "")), content)
+            if signature in self._custom_tool_results:
+                self._custom_tool_results.remove(signature)
+                return ()
             events = [
                 self._event(
                     "tool",
@@ -165,6 +180,22 @@ class HarnessEventAdapter:
             "agent_completed",
         }:
             event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
+            if event_type == "tool_call":
+                tool_name = str(event_payload.get("tool", ""))
+                pending = self._pending_model_calls_by_tool.get(tool_name, 0)
+                if pending > 0:
+                    if pending == 1:
+                        self._pending_model_calls_by_tool.pop(tool_name, None)
+                    else:
+                        self._pending_model_calls_by_tool[tool_name] = pending - 1
+                    return ()
+            elif event_type == "tool_result":
+                self._custom_tool_results.add(
+                    _tool_result_signature(
+                        str(payload.get("tool", "")),
+                        payload.get("content", ""),
+                    )
+                )
             return (
                 self._event(
                     (
@@ -289,6 +320,11 @@ def _bounded_value(value: Any) -> Any:
     if isinstance(value, int | float | bool) or value is None:
         return value
     return str(value)[:4000]
+
+
+def _tool_result_signature(tool_name: str, content: object) -> str:
+    payload = f"{tool_name}\0{content}"
+    return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
 
 
 __all__ = ["HarnessEventAdapter"]

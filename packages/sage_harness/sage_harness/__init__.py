@@ -2,6 +2,13 @@
 
 from sage_harness.agents import create_sage_agent
 from sage_harness.config import HarnessConfig, HarnessRunContext
+from sage_harness.deferred_tools import (
+    DeferredToolCatalog,
+    DeferredToolFilterMiddleware,
+    DeferredToolSetup,
+    assemble_deferred_tools,
+    render_deferred_tool_index,
+)
 from sage_harness.ports import (
     ApprovalDecision,
     ApprovalPort,
@@ -44,6 +51,9 @@ __all__ = [
     "ApprovalPort",
     "ApprovalRequest",
     "CheckpointPort",
+    "DeferredToolCatalog",
+    "DeferredToolFilterMiddleware",
+    "DeferredToolSetup",
     "GraphMessageCompactionError",
     "GraphMessageCompactionPlan",
     "GraphMessageCompactionRequest",
@@ -68,11 +78,13 @@ __all__ = [
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",
+    "assemble_deferred_tools",
     "build_graph_message_compaction_plan",
     "build_memory_checkpointer",
     "create_sage_agent",
     "load_graph_message_compaction_plan",
     "normalize_stream_item",
     "open_sqlite_checkpointer",
+    "render_deferred_tool_index",
     "thread_config",
 ]

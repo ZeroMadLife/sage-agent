@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 StreamMode = Literal["messages", "updates", "values", "custom"]
 
@@ -47,7 +47,12 @@ def message_payload(message: Any) -> dict[str, Any]:
     """Project a LangChain message to public metadata and bounded content."""
     if not isinstance(message, BaseMessage):
         return {"type": "unknown", "content": _bounded_text(message)}
-    message_type = str(getattr(message, "type", "message"))
+    if isinstance(message, AIMessage):
+        message_type = "ai"
+    elif isinstance(message, ToolMessage):
+        message_type = "tool"
+    else:
+        message_type = str(getattr(message, "type", "message"))
     content = getattr(message, "content", "")
     projected: dict[str, Any] = {
         "type": message_type,

@@ -11,6 +11,7 @@ from sage_harness.state import (
     merge_delegations,
     merge_goal,
     merge_memory_refs,
+    merge_promoted_tools,
     merge_sandbox,
     merge_skill_context,
     merge_thread_data,
@@ -66,6 +67,21 @@ def test_artifacts_and_memory_refs_deduplicate_by_stable_id() -> None:
         [{"memory_id": "m1", "summary": "old"}],
         [{"memory_id": "m1", "summary": "new"}, {"memory_id": "m2"}],
     ) == [{"memory_id": "m1", "summary": "new"}, {"memory_id": "m2"}]
+
+
+def test_promoted_tools_union_within_catalog_and_reset_on_schema_drift() -> None:
+    first = {"catalog_hash": "catalog-a", "names": ["todo_list"]}
+
+    assert merge_promoted_tools(first, {"catalog_hash": "catalog-a", "names": ["todo_add"]}) == {
+        "catalog_hash": "catalog-a",
+        "names": ["todo_list", "todo_add"],
+    }
+    assert merge_promoted_tools(first, {"catalog_hash": "catalog-b", "names": ["todo_add"]}) == {
+        "catalog_hash": "catalog-b",
+        "names": ["todo_add"],
+    }
+    with pytest.raises(ValueError, match="catalog_hash"):
+        merge_promoted_tools(first, {"catalog_hash": "", "names": []})
 
 
 def test_terminal_goal_and_delegation_cannot_be_downgraded() -> None:

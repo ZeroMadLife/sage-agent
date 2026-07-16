@@ -39,6 +39,13 @@ const steps = computed<CodingRunAuditStep[]>(() => {
 
 const discoverySteps = computed(() => steps.value.filter((step) => step.tool === 'tool_search'))
 const executionSteps = computed(() => steps.value.filter((step) => step.tool !== 'tool_search'))
+const discoverySummary = computed(() => {
+  if (discoverySteps.value.some((step) => step.status !== 'completed')) return '执行中'
+  const informative = discoverySteps.value
+    .map((step) => stepResultSummary(step))
+    .filter((summary) => summary && summary !== '执行完成')
+  return informative.at(-1) || '已完成'
+})
 
 const currentStep = computed(() => [...steps.value].reverse().find((step) => (
   step.status === 'running' || step.status === 'waiting'
@@ -208,6 +215,12 @@ function stepResultSummary(step: CodingRunAuditStep) {
   if (/no matching deferred tools found/i.test(preview)) return '无匹配工具'
   try {
     const parsed: unknown = JSON.parse(preview)
+    if (
+      parsed !== null
+      && typeof parsed === 'object'
+      && !Array.isArray(parsed)
+      && (parsed as { status?: unknown }).status === 'no_match'
+    ) return '无匹配工具'
     if (!Array.isArray(parsed)) return step.result_summary
     const tools = parsed as Array<{ name?: unknown }>
     const names = tools
@@ -262,7 +275,7 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
         <li v-if="discoverySteps.length" class="trace-discovery">
           <Search :size="13" />
           <strong>工具探索 · {{ discoverySteps.length }} 次</strong>
-          <span>{{ discoverySteps.every((step) => step.status === 'completed') ? '已完成' : '执行中' }}</span>
+          <span>{{ discoverySummary }}</span>
         </li>
         <li v-for="(step, index) in executionSteps" :key="stepKey(step, index)" class="trace-step" :class="step.status">
           <header class="step-header">

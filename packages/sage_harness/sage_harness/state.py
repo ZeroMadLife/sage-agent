@@ -17,6 +17,7 @@ MAX_ARTIFACTS = 100
 MAX_DELEGATIONS = 50
 MAX_SKILL_CONTEXT = 8
 MAX_MEMORY_REFS = 32
+MAX_PROMOTED_TOOLS = 64
 
 
 class ThreadDataState(TypedDict, total=False):
@@ -98,6 +99,13 @@ class ApprovalContext(TypedDict, total=False):
     args_digest: str
     status: ApprovalStatus
     decided_by: str
+
+
+class PromotedTools(TypedDict):
+    """Deferred tool names authorized for one exact catalog revision."""
+
+    catalog_hash: str
+    names: list[str]
 
 
 def merge_thread_data(
@@ -322,6 +330,39 @@ def merge_approval_context(
     return {**existing, **new}
 
 
+def merge_promoted_tools(
+    existing: PromotedTools | None,
+    new: PromotedTools | None,
+) -> PromotedTools | None:
+    """Union promotions for one catalog and discard stale catalog revisions."""
+    if not new:
+        return existing
+
+    catalog_hash = str(new.get("catalog_hash", "")).strip()
+    if not catalog_hash:
+        raise ValueError("Promoted tools require a catalog_hash")
+    names = [
+        name
+        for name in dict.fromkeys(str(item).strip() for item in new.get("names", []))
+        if name
+    ]
+    if existing is None or existing.get("catalog_hash") != catalog_hash:
+        return {"catalog_hash": catalog_hash, "names": names[-MAX_PROMOTED_TOOLS:]}
+
+    merged = list(
+        dict.fromkeys(
+            [
+                *(str(item).strip() for item in existing.get("names", [])),
+                *names,
+            ]
+        )
+    )
+    return {
+        "catalog_hash": catalog_hash,
+        "names": [name for name in merged if name][-MAX_PROMOTED_TOOLS:],
+    }
+
+
 class SageThreadState(AgentState):
     """Checkpoint-safe state shared by Sage's future harness surfaces."""
 
@@ -335,6 +376,7 @@ class SageThreadState(AgentState):
     skill_context: Annotated[NotRequired[list[SkillRef] | None], merge_skill_context]
     memory_refs: Annotated[NotRequired[list[MemoryRef] | None], merge_memory_refs]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
+    promoted_tools: Annotated[NotRequired[PromotedTools | None], merge_promoted_tools]
     summary_text: NotRequired[str | None]
     budget_run_id: NotRequired[str]
     run_token_usage: NotRequired[int]
@@ -348,6 +390,7 @@ __all__ = [
     "GoalState",
     "GoalStatus",
     "MemoryRef",
+    "PromotedTools",
     "SageThreadState",
     "SandboxState",
     "SkillRef",
@@ -358,6 +401,7 @@ __all__ = [
     "merge_delegations",
     "merge_goal",
     "merge_memory_refs",
+    "merge_promoted_tools",
     "merge_sandbox",
     "merge_skill_context",
     "merge_thread_data",

@@ -99,7 +99,7 @@ from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
-from core.harness.tools_adapter import build_deerflow_coding_tools
+from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
@@ -314,16 +314,18 @@ async def _deerflow_timeline_events(
                 run_id=run_id,
             )
         workspace_id = workspace_id_from_path(runtime.workspace.root)
+        tool_bundle = build_deerflow_coding_tool_bundle(
+            runtime,
+            run_id=run_id,
+            knowledge_port=CodingKnowledgePort(runtime),
+            memory_port=CodingMemoryPort(runtime),
+        )
         adapter = SageHarnessRuntimeAdapter(
             model=runtime.model,
             checkpointer=checkpointer,
-            tools=build_deerflow_coding_tools(
-                runtime,
-                run_id=run_id,
-                knowledge_port=CodingKnowledgePort(runtime),
-                memory_port=CodingMemoryPort(runtime),
-            ),
+            tools=tool_bundle.tools,
             system_prompt=build_deerflow_system_prompt(runtime),
+            deferred_setup=tool_bundle.deferred_setup,
         )
         graph_compaction: dict[str, object] | None = None
         compaction_result = prepared.compaction_result if prepared is not None else None

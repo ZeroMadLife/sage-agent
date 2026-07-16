@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
-from sage_harness import KnowledgePort, MemoryPort
+from sage_harness import (
+    DeferredToolSetup,
+    KnowledgePort,
+    MemoryPort,
+    assemble_deferred_tools,
+)
 
 from core.coding.engine.events import ToolResultEvent, event_to_dict
 from core.coding.runtime import CodingRuntime
@@ -18,6 +24,14 @@ _DEERFLOW_TOOLS = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class CodingToolBundle:
+    """Executable graph tools plus model-visibility policy for one turn."""
+
+    tools: tuple[BaseTool, ...]
+    deferred_setup: DeferredToolSetup
+
+
 def build_deerflow_coding_tools(
     runtime: CodingRuntime,
     *,
@@ -25,55 +39,60 @@ def build_deerflow_coding_tools(
     knowledge_port: KnowledgePort | None = None,
     memory_port: MemoryPort | None = None,
 ) -> list[BaseTool]:
-    """Build LangChain tools through Sage's existing executor and approval gate."""
-    tools: list[BaseTool] = []
+    """Build the established resident tool slice without deferred discovery."""
+    return list(
+        build_deerflow_coding_tool_bundle(
+            runtime,
+            run_id=run_id,
+            knowledge_port=knowledge_port,
+            memory_port=memory_port,
+            enable_deferred_tools=False,
+        ).tools
+    )
+
+
+def build_deerflow_coding_tool_bundle(
+    runtime: CodingRuntime,
+    *,
+    run_id: str,
+    knowledge_port: KnowledgePort | None = None,
+    memory_port: MemoryPort | None = None,
+    enable_deferred_tools: bool = True,
+) -> CodingToolBundle:
+    """Build V2 tools while preserving Sage execution and approval boundaries."""
+    resident_tools: list[BaseTool] = []
+    deferred_tools: list[BaseTool] = []
     from core.coding.tools.registry import registered_tool_definitions
 
     definitions = registered_tool_definitions()
     tool_names = set(_DEERFLOW_TOOLS)
     if knowledge_port is not None and knowledge_port.available:
         tool_names.add("knowledge_learn")
+    if enable_deferred_tools:
+        tool_names.update(
+            name
+            for name, registered in runtime.tools.items()
+            if registered.deferred
+            and name not in _DEERFLOW_TOOLS
+            and not (name == "remember" and memory_port is not None)
+        )
     for name in sorted(tool_names):
         registered = runtime.tools.get(name)
         definition = definitions.get(name)
         if registered is None or definition is None:
             continue
-
-        bound_name = name
-
-        async def invoke(_name: str = bound_name, **kwargs: Any) -> str:
-            executor = ToolExecutor(
-                tools=runtime.tools,
-                workspace=runtime.workspace,
-                permission_checker=runtime.permission_checker,
-                policy_checker=runtime.policy_checker,
-                approval_manager=runtime.approval_manager,
-                session_id=runtime.session_id,
-                should_stop=lambda: runtime.stop_requested,
-                run_id=run_id,
-            )
-            result = ""
-            writer = _stream_writer()
-            async for event in executor.execute({"name": _name, "args": dict(kwargs)}):
-                payload = event_to_dict(event)
-                if writer is not None:
-                    writer(payload)
-                if isinstance(event, ToolResultEvent):
-                    result = event.content
-                    if _name == "agent" and writer is not None:
-                        agent_event = _agent_started_event(result)
-                        if agent_event is not None:
-                            writer(agent_event)
-            return result or f"{_name} completed without a result"
-
-        tools.append(
-            StructuredTool.from_function(
-                coroutine=invoke,
-                name=name,
-                description=registered.description,
-                args_schema=definition.schema_model,
-            )
+        tool = _build_runtime_tool(
+            runtime,
+            run_id=run_id,
+            name=name,
+            args_schema=definition.schema_model,
         )
+        target = (
+            deferred_tools
+            if enable_deferred_tools and registered.deferred and name not in _DEERFLOW_TOOLS
+            else resident_tools
+        )
+        target.append(tool)
     if knowledge_port is not None:
         search_definition = definitions.get("knowledge_search")
         if search_definition is not None:
@@ -125,12 +144,13 @@ def build_deerflow_coding_tools(
                 }
                 return json.dumps(payload, ensure_ascii=False, indent=2)
 
-            tools.append(
+            resident_tools.append(
                 StructuredTool.from_function(
                     coroutine=search_knowledge,
                     name="knowledge_search",
                     description=search_definition.description,
                     args_schema=search_definition.schema_model,
+                    metadata={"category": "knowledge", "sage_source": "knowledge_port"},
                 )
             )
     if memory_port is not None:
@@ -161,18 +181,71 @@ def build_deerflow_coding_tools(
                     ensure_ascii=True,
                 )
 
-            tools.append(
-                StructuredTool.from_function(
-                    coroutine=propose_memory,
-                    name="remember",
-                    description=(
-                        "Propose a stable workspace convention or decision for user review. "
-                        "This tool never writes durable memory until the proposal is approved."
-                    ),
-                    args_schema=remember_definition.schema_model,
-                )
+            remember_tool = StructuredTool.from_function(
+                coroutine=propose_memory,
+                name="remember",
+                description=(
+                    "Propose a stable workspace convention or decision for user review. "
+                    "This tool never writes durable memory until the proposal is approved."
+                ),
+                args_schema=remember_definition.schema_model,
+                metadata={"category": "memory", "sage_source": "memory_port"},
             )
-    return tools
+            (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
+
+    graph_tools, deferred_setup = assemble_deferred_tools(
+        resident_tools,
+        deferred_tools,
+        enabled=enable_deferred_tools,
+    )
+    return CodingToolBundle(tuple(graph_tools), deferred_setup)
+
+
+def _build_runtime_tool(
+    runtime: CodingRuntime,
+    *,
+    run_id: str,
+    name: str,
+    args_schema: Any,
+) -> BaseTool:
+    registered = runtime.tools[name]
+
+    async def invoke(**kwargs: Any) -> str:
+        executor = ToolExecutor(
+            tools=runtime.tools,
+            workspace=runtime.workspace,
+            permission_checker=runtime.permission_checker,
+            policy_checker=runtime.policy_checker,
+            approval_manager=runtime.approval_manager,
+            session_id=runtime.session_id,
+            should_stop=lambda: runtime.stop_requested,
+            run_id=run_id,
+        )
+        result = ""
+        writer = _stream_writer()
+        async for event in executor.execute({"name": name, "args": dict(kwargs)}):
+            payload = event_to_dict(event)
+            if writer is not None:
+                writer(payload)
+            if isinstance(event, ToolResultEvent):
+                result = event.content
+                if name == "agent" and writer is not None:
+                    agent_event = _agent_started_event(result)
+                    if agent_event is not None:
+                        writer(agent_event)
+        return result or f"{name} completed without a result"
+
+    return StructuredTool.from_function(
+        coroutine=invoke,
+        name=name,
+        description=registered.description,
+        args_schema=args_schema,
+        metadata={
+            "category": registered.category,
+            "risky": registered.risky,
+            "sage_source": "coding_registry",
+        },
+    )
 
 
 def _stream_writer() -> Callable[[Any], None] | None:
@@ -202,4 +275,8 @@ def _agent_started_event(content: str) -> dict[str, Any] | None:
     }
 
 
-__all__ = ["build_deerflow_coding_tools"]
+__all__ = [
+    "CodingToolBundle",
+    "build_deerflow_coding_tool_bundle",
+    "build_deerflow_coding_tools",
+]

@@ -113,6 +113,30 @@ describe('CodingRunTrace', () => {
     expect(wrapper.text()).not.toContain('调用 tool_search')
   })
 
+  it('renders the v2 deferred catalog no-match result', async () => {
+    const noMatchAudit: CodingRunAuditSummary = {
+      ...audit,
+      steps: [{
+        tool: 'tool_search',
+        status: 'completed',
+        action_summary: '调用 tool_search',
+        result_summary: '执行完成',
+        duration_ms: 12,
+        arguments_preview: '{"query":"missing"}',
+        result_preview: '{"status":"no_match","query":"missing"}',
+        arguments_truncated: false,
+        result_truncated: false,
+      }],
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: { runId: 'run-no-match', tools: [], audit: noMatchAudit },
+    })
+
+    await wrapper.get('summary').trigger('click')
+
+    expect(wrapper.text()).toContain('无匹配工具')
+  })
+
   it('shows the current action while active and keeps secret-shaped fallback data redacted', async () => {
     const wrapper = mount(CodingRunTrace, {
       props: {
