@@ -302,6 +302,69 @@ class KnowledgeSourceRecord(Base):
     )
 
 
+class KnowledgeSourceManifestRecord(Base):
+    """Last committed fingerprint for one source path."""
+
+    __tablename__ = "knowledge_source_manifests"
+    __table_args__ = (
+        UniqueConstraint("source_id", "relative_path", name="knowledge_manifest_source_path_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_roots.id", ondelete="CASCADE"), index=True
+    )
+    relative_path: Mapped[str] = mapped_column(String(1024))
+    source_revision: Mapped[str] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(24), default="present", index=True)
+    last_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KnowledgeSourceSyncRecord(Base):
+    """Monotonic committed scan watermark for one source root."""
+
+    __tablename__ = "knowledge_source_sync"
+
+    source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_roots.id", ondelete="CASCADE"), primary_key=True
+    )
+    watermark: Mapped[int] = mapped_column(Integer, default=0)
+    manifest_hash: Mapped[str] = mapped_column(String(64), default="")
+    last_plan_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    last_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KnowledgeSyncPlanRecord(Base):
+    """Immutable, replayable diff between two source manifests."""
+
+    __tablename__ = "knowledge_sync_plans"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_workspaces.id", ondelete="CASCADE"), index=True
+    )
+    source_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_source_roots.id", ondelete="CASCADE"), index=True
+    )
+    relative_directory: Mapped[str] = mapped_column(String(1024), default=".")
+    pipeline_version: Mapped[str] = mapped_column(String(64))
+    base_watermark: Mapped[int] = mapped_column(Integer, default=0)
+    target_watermark: Mapped[int] = mapped_column(Integer, default=1)
+    manifest_hash: Mapped[str] = mapped_column(String(64))
+    changes_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="planned", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
 class KnowledgeIngestJobRecord(Base):
     """PostgreSQL-authoritative state for one batch import."""
 
@@ -313,6 +376,9 @@ class KnowledgeIngestJobRecord(Base):
     )
     source_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("knowledge_source_roots.id", ondelete="CASCADE"), index=True
+    )
+    sync_plan_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("knowledge_sync_plans.id", ondelete="SET NULL"), unique=True, nullable=True
     )
     relative_directory: Mapped[str] = mapped_column(String(1024), default=".")
     pipeline_version: Mapped[str] = mapped_column(String(64))
@@ -350,6 +416,7 @@ class KnowledgeIngestItemRecord(Base):
     )
     relative_path: Mapped[str] = mapped_column(String(1024))
     source_revision: Mapped[str] = mapped_column(String(80))
+    change_kind: Mapped[str] = mapped_column(String(24), default="added")
     idempotency_key: Mapped[str] = mapped_column(String(64), index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)

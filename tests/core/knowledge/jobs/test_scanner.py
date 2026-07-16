@@ -7,7 +7,14 @@ from pathlib import Path
 import pytest
 
 from core.knowledge import KnowledgeStore
-from core.knowledge.jobs import KnowledgeScanError, scan_knowledge_directory
+from core.knowledge.jobs import (
+    KnowledgeScanError,
+    ScannedKnowledgeFile,
+    build_manifest_hash,
+    build_plan_id,
+    build_sync_changes,
+    scan_knowledge_directory,
+)
 
 
 def test_scans_one_thousand_markdown_files_deterministically(
@@ -103,3 +110,64 @@ def test_scans_supported_markdown_html_and_pdf_files(
         "note.md",
         "page.html",
     ]
+
+
+def test_manifest_diff_is_deterministic_and_bounds_deletions_to_scan_scope() -> None:
+    scanned = [
+        ScannedKnowledgeFile("notes/added.md", "sha256:added", "scan-added"),
+        ScannedKnowledgeFile("notes/changed.md", "sha256:new", "scan-changed"),
+    ]
+    manifest = {
+        "notes/changed.md": ("sha256:old", "present"),
+        "notes/deleted.md": ("sha256:deleted", "present"),
+        "outside/keep.md": ("sha256:outside", "present"),
+        "notes/already-deleted.md": ("sha256:tombstone", "deleted"),
+    }
+
+    first = build_sync_changes(
+        scanned,
+        manifest,
+        workspace_id="workspace-1",
+        source_root_id="vault",
+        relative_directory="notes",
+        pipeline_version="pipeline-v1",
+    )
+    repeated = build_sync_changes(
+        list(reversed(scanned)),
+        manifest,
+        workspace_id="workspace-1",
+        source_root_id="vault",
+        relative_directory="notes",
+        pipeline_version="pipeline-v1",
+    )
+
+    assert first == repeated
+    assert [(item.relative_path, item.change_kind) for item in first] == [
+        ("notes/added.md", "added"),
+        ("notes/changed.md", "modified"),
+        ("notes/deleted.md", "deleted"),
+    ]
+    assert all(item.relative_path != "outside/keep.md" for item in first)
+    first_id = build_plan_id(
+        workspace_id="workspace-1",
+        source_root_id="vault",
+        relative_directory="notes",
+        pipeline_version="pipeline-v1",
+        base_watermark=3,
+        changes=first,
+    )
+    repeated_id = build_plan_id(
+        workspace_id="workspace-1",
+        source_root_id="vault",
+        relative_directory="notes",
+        pipeline_version="pipeline-v1",
+        base_watermark=3,
+        changes=repeated,
+    )
+    assert first_id == repeated_id
+    assert len(first_id[0]) <= 36
+
+    manifest_hash = build_manifest_hash(manifest, first)
+    repeated_hash = build_manifest_hash(manifest, repeated)
+    assert manifest_hash == repeated_hash
+    assert manifest_hash != build_manifest_hash(manifest, ())

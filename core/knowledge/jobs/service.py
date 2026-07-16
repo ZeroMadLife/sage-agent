@@ -23,7 +23,14 @@ from core.knowledge.parsing import (
 from .queue import RedisKnowledgeJobQueue
 from .repository import KnowledgeJobConflictError, KnowledgeJobRepository
 from .scanner import read_source_revision, scan_knowledge_directory
-from .types import KnowledgeJob, KnowledgeJobItem, QueueMessage
+from .sync import build_manifest_hash, build_sync_changes
+from .types import (
+    KnowledgeJob,
+    KnowledgeJobItem,
+    KnowledgeSyncPlan,
+    QueueMessage,
+    ScannedKnowledgeFile,
+)
 
 PIPELINE_VERSION = "p2.2-b5-autonomy-policy-v1"
 logger = logging.getLogger(__name__)
@@ -96,15 +103,76 @@ class KnowledgeJobService:
         self._task = None
 
     async def create_batch(
-        self, source_root_id: str, relative_directory: str = "."
+        self,
+        source_root_id: str,
+        relative_directory: str = ".",
+        *,
+        sync_plan_id: str | None = None,
     ) -> KnowledgeJob:
+        await self.prepare()
+        normalized_directory = relative_directory.strip() or "."
+        if sync_plan_id is None:
+            plan = await self.preview_sync(source_root_id, normalized_directory)
+        else:
+            plan = await self.repository.get_sync_plan(sync_plan_id)
+            if (
+                plan.source_root_id != source_root_id
+                or plan.relative_directory != normalized_directory
+            ):
+                raise KnowledgeJobConflictError(
+                    "knowledge sync plan does not match the requested source scope"
+                )
+        source_id = self._source_ids[source_root_id]
+        if sync_plan_id is None and not plan.changes and plan.base_watermark > 0:
+            # Preserve the historical batch contract: a repeated scan emits
+            # skipped items backed by the cross-job idempotency table.
+            repeated = await asyncio.to_thread(
+                scan_knowledge_directory,
+                self.store,
+                source_root_id,
+                relative_directory,
+                workspace_id=self.workspace_id,
+                pipeline_version=PIPELINE_VERSION,
+            )
+            return await self.repository.create_job(
+                workspace_id=self.workspace_id,
+                source_id=source_id,
+                relative_directory=normalized_directory,
+                pipeline_version=PIPELINE_VERSION,
+                files=repeated,
+            )
+        files = [
+            ScannedKnowledgeFile(
+                relative_path=item.relative_path,
+                source_revision=item.source_revision or item.previous_revision or "",
+                idempotency_key=item.idempotency_key,
+                change_kind=item.change_kind,
+            )
+            for item in plan.changes
+        ]
+        job = await self.repository.create_job(
+            workspace_id=self.workspace_id,
+            source_id=source_id,
+            relative_directory=normalized_directory,
+            pipeline_version=PIPELINE_VERSION,
+            files=files,
+            sync_plan_id=plan.plan_id,
+        )
+        await self.enqueue_ready()
+        return job
+
+    async def preview_sync(
+        self, source_root_id: str, relative_directory: str = "."
+    ) -> KnowledgeSyncPlan:
+        """Persist and return a deterministic diff without executing it."""
+
         await self.prepare()
         if source_root_id not in self._source_ids:
             await self._register_sources(self.store.source_roots)
         source_id = self._source_ids.get(source_root_id)
         if source_id is None:
             raise KeyError(source_root_id)
-        files = await asyncio.to_thread(
+        scanned = await asyncio.to_thread(
             scan_knowledge_directory,
             self.store,
             source_root_id,
@@ -112,15 +180,27 @@ class KnowledgeJobService:
             workspace_id=self.workspace_id,
             pipeline_version=PIPELINE_VERSION,
         )
-        job = await self.repository.create_job(
+        base_watermark, previous_manifest, _manifest_hash = await self.repository.get_manifest(
+            source_id, relative_directory=relative_directory
+        )
+        changes = build_sync_changes(
+            scanned,
+            previous_manifest,
+            workspace_id=self.workspace_id,
+            source_root_id=source_root_id,
+            relative_directory=relative_directory,
+            pipeline_version=PIPELINE_VERSION,
+        )
+        return await self.repository.create_sync_plan(
             workspace_id=self.workspace_id,
             source_id=source_id,
+            source_root_id=source_root_id,
             relative_directory=relative_directory.strip() or ".",
             pipeline_version=PIPELINE_VERSION,
-            files=files,
+            base_watermark=base_watermark,
+            manifest_hash=build_manifest_hash(previous_manifest, changes),
+            changes=changes,
         )
-        await self.enqueue_ready()
-        return job
 
     async def cancel_job(self, job_id: str) -> KnowledgeJob:
         return await self.repository.cancel_job(job_id)
@@ -205,6 +285,20 @@ class KnowledgeJobService:
             if claim.outcome == "busy":
                 raise KnowledgeJobConflictError("idempotent source revision is busy")
             job = await self.repository.get_job(item.job_id)
+            if item.change_kind == "deleted":
+                await self.repository.start_applying(item.item_id, worker_id=self.worker_id)
+                proposal = await asyncio.to_thread(
+                    self.store.propose_source_retraction,
+                    job.source_root_id,
+                    item.relative_path,
+                    item.source_revision,
+                )
+                await self.repository.complete_item(
+                    item.item_id,
+                    worker_id=self.worker_id,
+                    proposal_id=proposal.proposal_id,
+                )
+                return
             current_revision = await asyncio.to_thread(
                 read_source_revision,
                 self.store,

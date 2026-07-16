@@ -462,6 +462,64 @@ class KnowledgeStore:
     def ingest(self, source_root_id: str, relative_path: str) -> KnowledgeProposal:
         return self.ingest_prepared(self.prepare_ingest(source_root_id, relative_path))
 
+    def propose_source_retraction(
+        self,
+        source_root_id: str,
+        relative_path: str,
+        expected_source_revision: str,
+    ) -> KnowledgeProposal:
+        """Create one reviewable tombstone when a previously indexed source disappears."""
+
+        self.initialize()
+        normalized = _relative_source_path(relative_path)
+        if not expected_source_revision.startswith("sha256:"):
+            raise KnowledgeConflictError("deleted source revision is invalid")
+        source_id = (
+            "src_"
+            + hashlib.sha256(f"{source_root_id}\0{normalized.as_posix()}".encode()).hexdigest()[:32]
+        )
+        with self._connect() as connection:
+            source = connection.execute(
+                "SELECT * FROM knowledge_sources WHERE source_id=? AND source_root_id=?",
+                (source_id, source_root_id),
+            ).fetchone()
+            if source is None:
+                raise KeyError(relative_path)
+            if str(source["current_revision"]) != expected_source_revision:
+                raise KnowledgeConflictError("source revision changed; create a new batch")
+            original_row = connection.execute(
+                """
+                SELECT * FROM knowledge_proposals
+                WHERE source_id=? AND source_root_id=? AND source_relative_path=?
+                  AND source_revision=? AND change_kind='ingest'
+                  AND status='approved' AND projection_status='complete'
+                ORDER BY updated_at DESC, proposal_id DESC LIMIT 1
+                """,
+                (source_id, source_root_id, normalized.as_posix(), expected_source_revision),
+            ).fetchone()
+            if original_row is None:
+                raise KeyError(relative_path)
+            existing = connection.execute(
+                """
+                SELECT * FROM knowledge_proposals
+                WHERE source_id=? AND change_kind='retraction'
+                  AND status IN ('pending', 'approved')
+                ORDER BY updated_at DESC, proposal_id DESC LIMIT 1
+                """,
+                (f"retraction:{original_row['proposal_id']}",),
+            ).fetchone()
+            if existing is not None:
+                return _proposal(existing)
+            original = _proposal(original_row)
+            page = connection.execute(
+                "SELECT current_revision FROM knowledge_pages WHERE page_id=?",
+                (original.page_id,),
+            ).fetchone()
+            if page is None:
+                raise KeyError(relative_path)
+            expected_page_revision = str(page["current_revision"])
+        return self._propose_retraction(original, expected_page_revision)
+
     def prepare_ingest(self, source_root_id: str, relative_path: str) -> PreparedKnowledgeSource:
         source = self.load_source(source_root_id, relative_path)
         document = self.parser_registry.parse(source.parse_request())

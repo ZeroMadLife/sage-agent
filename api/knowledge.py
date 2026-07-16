@@ -65,6 +65,9 @@ from api.schemas import (
     KnowledgeSearchRequest,
     KnowledgeSourceRootSummary,
     KnowledgeSourceUnderstandingResponse,
+    KnowledgeSyncChangeResponse,
+    KnowledgeSyncPlanRequest,
+    KnowledgeSyncPlanResponse,
     KnowledgeSynthesisSourceResponse,
     KnowledgeTransitionRequest,
     KnowledgeUnderstandingCitationResponse,
@@ -114,6 +117,7 @@ from core.knowledge.jobs import (
     KnowledgeJobNotFoundError,
     KnowledgeJobService,
     KnowledgeScanError,
+    KnowledgeSyncPlan,
 )
 from core.knowledge.parsing import ParseArtifact
 
@@ -504,14 +508,41 @@ async def create_knowledge_job(
 ) -> KnowledgeJobResponse:
     service = _require_job_service(request)
     try:
-        job = await service.create_batch(payload.source_root_id, payload.relative_directory)
+        job = await service.create_batch(
+            payload.source_root_id,
+            payload.relative_directory,
+            sync_plan_id=payload.sync_plan_id,
+        )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="knowledge source root not found") from exc
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="knowledge source directory not found") from exc
     except KnowledgeScanError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KnowledgeJobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _job_response(job)
+
+
+@router.post(
+    "/api/v1/knowledge/sync/plan",
+    response_model=KnowledgeSyncPlanResponse,
+)
+async def preview_knowledge_sync(
+    payload: KnowledgeSyncPlanRequest, request: Request
+) -> KnowledgeSyncPlanResponse:
+    service = _require_job_service(request)
+    try:
+        plan = await service.preview_sync(payload.source_root_id, payload.relative_directory)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge source root not found") from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="knowledge source directory not found") from exc
+    except KnowledgeScanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KnowledgeJobConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _sync_plan_response(plan)
 
 
 @router.get("/api/v1/knowledge/jobs", response_model=KnowledgeJobsResponse)
@@ -862,6 +893,7 @@ def _job_response(
         started_at=job.started_at.isoformat() if job.started_at else None,
         completed_at=job.completed_at.isoformat() if job.completed_at else None,
         updated_at=job.updated_at.isoformat(),
+        sync_plan_id=job.sync_plan_id,
         items=[_job_item_response(item) for item in items or []],
     )
 
@@ -872,6 +904,7 @@ def _job_item_response(item: KnowledgeJobItem) -> KnowledgeJobItemResponse:
         job_id=item.job_id,
         relative_path=item.relative_path,
         source_revision=item.source_revision,
+        change_kind=item.change_kind,  # type: ignore[arg-type]
         status=item.status,
         attempts=item.attempts,
         max_attempts=item.max_attempts,
@@ -879,6 +912,37 @@ def _job_item_response(item: KnowledgeJobItem) -> KnowledgeJobItemResponse:
         error=item.error,
         next_attempt_at=(item.next_attempt_at.isoformat() if item.next_attempt_at else None),
         updated_at=item.updated_at.isoformat(),
+    )
+
+
+def _sync_plan_response(plan: KnowledgeSyncPlan) -> KnowledgeSyncPlanResponse:
+    visible_changes = plan.changes[:200]
+    return KnowledgeSyncPlanResponse(
+        plan_id=plan.plan_id,
+        workspace_id=plan.workspace_id,
+        source_root_id=plan.source_root_id,
+        relative_directory=plan.relative_directory,
+        pipeline_version=plan.pipeline_version,
+        base_watermark=plan.base_watermark,
+        target_watermark=plan.target_watermark,
+        manifest_hash=plan.manifest_hash,
+        status=plan.status,
+        added_count=sum(item.change_kind == "added" for item in plan.changes),
+        modified_count=sum(item.change_kind == "modified" for item in plan.changes),
+        deleted_count=sum(item.change_kind == "deleted" for item in plan.changes),
+        total_count=len(plan.changes),
+        has_more=len(plan.changes) > len(visible_changes),
+        changes=[
+            KnowledgeSyncChangeResponse(
+                relative_path=item.relative_path,
+                change_kind=item.change_kind,
+                previous_revision=item.previous_revision,
+                source_revision=item.source_revision,
+                idempotency_key=item.idempotency_key,
+            )
+            for item in visible_changes
+        ],
+        created_at=plan.created_at.isoformat(),
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Sequence
@@ -16,16 +17,22 @@ from db.models import (
     KnowledgeIngestItemRecord,
     KnowledgeIngestJobRecord,
     KnowledgeJobEventRecord,
+    KnowledgeSourceManifestRecord,
     KnowledgeSourceRecord,
+    KnowledgeSourceSyncRecord,
+    KnowledgeSyncPlanRecord,
     KnowledgeWorkspaceRecord,
 )
 
+from .sync import build_plan_id
 from .types import (
     TERMINAL_ITEM_STATUSES,
     IdempotencyClaim,
     KnowledgeJob,
     KnowledgeJobEvent,
     KnowledgeJobItem,
+    KnowledgeSyncChange,
+    KnowledgeSyncPlan,
     ScannedKnowledgeFile,
 )
 
@@ -43,6 +50,7 @@ class KnowledgeJobRepository:
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
+        self._source_locks: dict[str, asyncio.Lock] = {}
 
     async def ensure_workspace(
         self,
@@ -74,6 +82,8 @@ class KnowledgeJobRepository:
             else:
                 source.kind = source_kind
                 source.label = source_label
+            if await session.get(KnowledgeSourceSyncRecord, source_id) is None:
+                session.add(KnowledgeSourceSyncRecord(source_id=source_id))
         return source_id
 
     async def create_job(
@@ -85,13 +95,65 @@ class KnowledgeJobRepository:
         pipeline_version: str,
         files: Sequence[ScannedKnowledgeFile],
         max_attempts: int = 3,
+        sync_plan_id: str | None = None,
+    ) -> KnowledgeJob:
+        lock = self._source_locks.setdefault(source_id, asyncio.Lock())
+        async with lock:
+            return await self._create_job(
+                workspace_id=workspace_id,
+                source_id=source_id,
+                relative_directory=relative_directory,
+                pipeline_version=pipeline_version,
+                files=files,
+                max_attempts=max_attempts,
+                sync_plan_id=sync_plan_id,
+            )
+
+    async def _create_job(
+        self,
+        *,
+        workspace_id: str,
+        source_id: str,
+        relative_directory: str,
+        pipeline_version: str,
+        files: Sequence[ScannedKnowledgeFile],
+        max_attempts: int = 3,
+        sync_plan_id: str | None = None,
     ) -> KnowledgeJob:
         job_id = _random_id("kjob")
         async with self._session_factory() as session, session.begin():
+            if sync_plan_id is not None:
+                plan = await session.scalar(
+                    select(KnowledgeSyncPlanRecord)
+                    .where(KnowledgeSyncPlanRecord.id == sync_plan_id)
+                    .with_for_update()
+                )
+                if plan is None:
+                    raise KnowledgeJobConflictError("knowledge sync plan not found")
+                existing = await session.scalar(
+                    select(KnowledgeIngestJobRecord).where(
+                        KnowledgeIngestJobRecord.sync_plan_id == sync_plan_id
+                    )
+                )
+                if existing is not None:
+                    return await self._job_view(session, existing)
+                sync = await session.scalar(
+                    select(KnowledgeSourceSyncRecord)
+                    .where(KnowledgeSourceSyncRecord.source_id == plan.source_id)
+                    .with_for_update()
+                )
+                if sync is None:
+                    sync = KnowledgeSourceSyncRecord(source_id=plan.source_id)
+                    session.add(sync)
+                    await session.flush()
+                if plan.status != "planned" or sync.watermark != plan.base_watermark:
+                    raise KnowledgeJobConflictError("knowledge sync plan is stale")
+                plan.status = "running"
             job = KnowledgeIngestJobRecord(
                 id=job_id,
                 workspace_id=workspace_id,
                 source_id=source_id,
+                sync_plan_id=sync_plan_id,
                 relative_directory=relative_directory,
                 pipeline_version=pipeline_version,
                 total_items=len(files),
@@ -106,6 +168,7 @@ class KnowledgeJobRepository:
                         source_id=source_id,
                         relative_path=scanned.relative_path,
                         source_revision=scanned.source_revision,
+                        change_kind=scanned.change_kind,
                         idempotency_key=scanned.idempotency_key,
                         max_attempts=max_attempts,
                     )
@@ -118,12 +181,140 @@ class KnowledgeJobRepository:
                 detail={"total_items": len(files)},
             )
             if not files:
-                job.status = "completed"
-                job.completed_at = _now()
-                await self._append_event(session, job, kind="job", status="completed")
+                await self._refresh_job(session, job)
             await session.flush()
             result = await self._job_view(session, job)
         return result
+
+    async def get_manifest(
+        self, source_id: str, *, relative_directory: str = "."
+    ) -> tuple[int, dict[str, tuple[str, str]], str]:
+        """Return the committed manifest, watermark and canonical hash."""
+
+        del relative_directory  # The diff builder applies the bounded scope.
+        async with self._session_factory() as session:
+            sync = await session.get(KnowledgeSourceSyncRecord, source_id)
+            rows = (
+                await session.scalars(
+                    select(KnowledgeSourceManifestRecord).where(
+                        KnowledgeSourceManifestRecord.source_id == source_id
+                    )
+                )
+            ).all()
+            manifest = {
+                str(row.relative_path): (str(row.source_revision), str(row.status))
+                for row in rows
+            }
+            return (
+                int(sync.watermark) if sync is not None else 0,
+                manifest,
+                str(sync.manifest_hash) if sync is not None else "",
+            )
+
+    async def create_sync_plan(
+        self,
+        *,
+        workspace_id: str,
+        source_id: str,
+        source_root_id: str,
+        relative_directory: str,
+        pipeline_version: str,
+        base_watermark: int,
+        manifest_hash: str,
+        changes: Sequence[KnowledgeSyncChange],
+    ) -> KnowledgeSyncPlan:
+        lock = self._source_locks.setdefault(source_id, asyncio.Lock())
+        async with lock:
+            return await self._create_sync_plan(
+                workspace_id=workspace_id,
+                source_id=source_id,
+                source_root_id=source_root_id,
+                relative_directory=relative_directory,
+                pipeline_version=pipeline_version,
+                base_watermark=base_watermark,
+                manifest_hash=manifest_hash,
+                changes=changes,
+            )
+
+    async def _create_sync_plan(
+        self,
+        *,
+        workspace_id: str,
+        source_id: str,
+        source_root_id: str,
+        relative_directory: str,
+        pipeline_version: str,
+        base_watermark: int,
+        manifest_hash: str,
+        changes: Sequence[KnowledgeSyncChange],
+    ) -> KnowledgeSyncPlan:
+        plan_id, _plan_hash = build_plan_id(
+            workspace_id=workspace_id,
+            source_root_id=source_root_id,
+            relative_directory=relative_directory,
+            pipeline_version=pipeline_version,
+            base_watermark=base_watermark,
+            changes=changes,
+        )
+        changes_json = json.dumps(
+            [
+                {
+                    "relative_path": item.relative_path,
+                    "change_kind": item.change_kind,
+                    "previous_revision": item.previous_revision,
+                    "source_revision": item.source_revision,
+                    "idempotency_key": item.idempotency_key,
+                }
+                for item in changes
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        async with self._session_factory() as session, session.begin():
+            sync = await session.scalar(
+                select(KnowledgeSourceSyncRecord)
+                .where(KnowledgeSourceSyncRecord.source_id == source_id)
+                .with_for_update()
+            )
+            if sync is None:
+                sync = KnowledgeSourceSyncRecord(source_id=source_id)
+                session.add(sync)
+                await session.flush()
+            existing = await session.get(KnowledgeSyncPlanRecord, plan_id)
+            if existing is not None:
+                return _sync_plan_view(existing, source_root_id=source_root_id)
+            if sync.watermark != base_watermark:
+                raise KnowledgeJobConflictError("knowledge source changed while planning sync")
+            session.add(
+                KnowledgeSyncPlanRecord(
+                    id=plan_id,
+                    workspace_id=workspace_id,
+                    source_id=source_id,
+                    relative_directory=relative_directory,
+                    pipeline_version=pipeline_version,
+                    base_watermark=base_watermark,
+                    target_watermark=base_watermark + 1,
+                    manifest_hash=manifest_hash,
+                    changes_json=changes_json,
+                    status="planned",
+                )
+            )
+            await session.flush()
+            plan = await session.get(KnowledgeSyncPlanRecord, plan_id)
+            if plan is None:
+                raise KnowledgeJobConflictError("knowledge sync plan could not be persisted")
+            return _sync_plan_view(plan, source_root_id=source_root_id)
+
+    async def get_sync_plan(self, plan_id: str) -> KnowledgeSyncPlan:
+        async with self._session_factory() as session:
+            plan = await session.get(KnowledgeSyncPlanRecord, plan_id)
+            if plan is None:
+                raise KnowledgeJobNotFoundError(plan_id)
+            source = await session.get(KnowledgeSourceRecord, plan.source_id)
+            if source is None:
+                raise KnowledgeJobNotFoundError(plan.source_id)
+            return _sync_plan_view(plan, source_root_id=source.root_id)
 
     async def get_job(self, job_id: str) -> KnowledgeJob:
         async with self._session_factory() as session:
@@ -683,6 +874,73 @@ class KnowledgeJobRepository:
                     "total_items": job.total_items,
                 },
             )
+        if job.sync_plan_id and job.status in {"completed", "completed_with_errors", "cancelled"}:
+            await self._finalize_sync_plan(session, job)
+
+    async def _finalize_sync_plan(
+        self, session: AsyncSession, job: KnowledgeIngestJobRecord
+    ) -> None:
+        if not job.sync_plan_id:
+            return
+        plan = await session.scalar(
+            select(KnowledgeSyncPlanRecord)
+            .where(KnowledgeSyncPlanRecord.id == job.sync_plan_id)
+            .with_for_update()
+        )
+        if plan is None or plan.status in {"completed", "cancelled", "conflict"}:
+            return
+        sync = await session.scalar(
+            select(KnowledgeSourceSyncRecord)
+            .where(KnowledgeSourceSyncRecord.source_id == plan.source_id)
+            .with_for_update()
+        )
+        if sync is None:
+            sync = KnowledgeSourceSyncRecord(source_id=plan.source_id)
+            session.add(sync)
+            await session.flush()
+        if job.status == "completed":
+            if sync.watermark != plan.base_watermark:
+                plan.status = "conflict"
+                job.status = "completed_with_errors"
+                return
+            items = (
+                await session.scalars(
+                    select(KnowledgeIngestItemRecord).where(
+                        KnowledgeIngestItemRecord.job_id == job.id,
+                        KnowledgeIngestItemRecord.status.in_(("completed", "skipped")),
+                    )
+                )
+            ).all()
+            for item in items:
+                manifest_id = _stable_id(
+                    "kman", f"{item.source_id}\0{item.relative_path}"
+                )
+                existing = await session.get(KnowledgeSourceManifestRecord, manifest_id)
+                status = "deleted" if item.change_kind == "deleted" else "present"
+                if existing is None:
+                    session.add(
+                        KnowledgeSourceManifestRecord(
+                            id=manifest_id,
+                            source_id=item.source_id,
+                            relative_path=item.relative_path,
+                            source_revision=item.source_revision,
+                            status=status,
+                            last_job_id=job.id,
+                        )
+                    )
+                else:
+                    existing.source_revision = item.source_revision
+                    existing.status = status
+                    existing.last_job_id = job.id
+            sync.watermark = plan.target_watermark
+            sync.manifest_hash = plan.manifest_hash
+            sync.last_plan_id = plan.id
+            sync.last_job_id = job.id
+            plan.status = "completed"
+        elif job.status == "cancelled":
+            plan.status = "cancelled"
+        else:
+            plan.status = "retryable"
 
     async def _append_event(
         self,
@@ -732,6 +990,7 @@ class KnowledgeJobRepository:
             started_at=_as_utc(job.started_at) if job.started_at else None,
             completed_at=_as_utc(job.completed_at) if job.completed_at else None,
             updated_at=_as_utc(job.updated_at),
+            sync_plan_id=job.sync_plan_id,
         )
 
 
@@ -741,6 +1000,7 @@ def _item_view(item: KnowledgeIngestItemRecord) -> KnowledgeJobItem:
         job_id=item.job_id,
         relative_path=item.relative_path,
         source_revision=item.source_revision,
+        change_kind=item.change_kind,
         status=item.status,
         attempts=item.attempts,
         max_attempts=item.max_attempts,
@@ -748,6 +1008,41 @@ def _item_view(item: KnowledgeIngestItemRecord) -> KnowledgeJobItem:
         error=item.error,
         next_attempt_at=_as_utc(item.next_attempt_at) if item.next_attempt_at else None,
         updated_at=_as_utc(item.updated_at),
+    )
+
+
+def _sync_plan_view(
+    plan: KnowledgeSyncPlanRecord, *, source_root_id: str
+) -> KnowledgeSyncPlan:
+    raw_changes = json.loads(plan.changes_json)
+    changes = tuple(
+        KnowledgeSyncChange(
+            relative_path=str(item["relative_path"]),
+            change_kind=str(item["change_kind"]),  # type: ignore[arg-type]
+            previous_revision=(
+                str(item["previous_revision"])
+                if item.get("previous_revision") is not None
+                else None
+            ),
+            source_revision=(
+                str(item["source_revision"]) if item.get("source_revision") is not None else None
+            ),
+            idempotency_key=str(item["idempotency_key"]),
+        )
+        for item in raw_changes
+    )
+    return KnowledgeSyncPlan(
+        plan_id=plan.id,
+        workspace_id=plan.workspace_id,
+        source_root_id=source_root_id,
+        relative_directory=plan.relative_directory,
+        pipeline_version=plan.pipeline_version,
+        base_watermark=plan.base_watermark,
+        target_watermark=plan.target_watermark,
+        manifest_hash=plan.manifest_hash,
+        status=plan.status,
+        changes=changes,
+        created_at=_as_utc(plan.created_at),
     )
 
 

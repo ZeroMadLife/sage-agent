@@ -13,11 +13,14 @@ from .scanner import (
     scan_markdown_directory,
 )
 from .service import PIPELINE_VERSION, KnowledgeJobService
+from .sync import build_manifest_hash, build_plan_id, build_sync_changes
 from .types import (
     TERMINAL_JOB_STATUSES,
     KnowledgeJob,
     KnowledgeJobEvent,
     KnowledgeJobItem,
+    KnowledgeSyncChange,
+    KnowledgeSyncPlan,
     QueueMessage,
     ScannedKnowledgeFile,
 )
@@ -33,9 +36,14 @@ __all__ = [
     "KnowledgeJobRepository",
     "KnowledgeJobService",
     "KnowledgeScanError",
+    "KnowledgeSyncChange",
+    "KnowledgeSyncPlan",
     "QueueMessage",
     "RedisKnowledgeJobQueue",
     "ScannedKnowledgeFile",
+    "build_manifest_hash",
+    "build_plan_id",
+    "build_sync_changes",
     "read_source_revision",
     "scan_knowledge_directory",
     "scan_markdown_directory",

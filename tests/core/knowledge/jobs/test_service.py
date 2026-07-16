@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -10,7 +11,7 @@ from typing import Any
 import pytest
 from pypdf import PdfWriter
 
-from core.knowledge import KnowledgeStore
+from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from core.knowledge.jobs import (
     KnowledgeJobConflictError,
     KnowledgeJobRepository,
@@ -100,10 +101,11 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
         for item in await service.repository.list_items(first.job_id)
         if item.proposal_id is not None
     ]
+    artifacts = [service.store.get_parse_artifact(proposal_id) for proposal_id in proposals]
     assert {
-        service.store.get_parse_artifact(proposal_id).document.provenance.parser_id
-        for proposal_id in proposals
-        if service.store.get_parse_artifact(proposal_id) is not None
+        artifact.document.provenance.parser_id
+        for artifact in artifacts
+        if artifact is not None
     } == {"sage.markdown", "sage.html"}
 
     repeated = await service.create_batch("vault")
@@ -111,6 +113,112 @@ async def test_batch_import_persists_progress_and_skips_duplicate_revision(
     deduplicated = await service.repository.get_job(repeated.job_id)
     assert deduplicated.skipped_items == 3
     assert deduplicated.succeeded_items == 0
+
+
+async def test_incremental_sync_detects_rename_and_creates_reviewable_tombstone(
+    knowledge_store: tuple[KnowledgeStore, Path],
+    job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
+) -> None:
+    store, vault = knowledge_store
+    changing = vault / "changing.md"
+    renamed = vault / "old-name.md"
+    changing.write_text("# Changing\n\nFirst revision.\n", encoding="utf-8")
+    renamed.write_text("# Rename Me\n\nStable source.\n", encoding="utf-8")
+    service = await _service(knowledge_store, job_infrastructure)
+
+    planned, concurrent_replay = await asyncio.gather(
+        service.preview_sync("vault"),
+        service.preview_sync("vault"),
+    )
+    assert concurrent_replay.plan_id == planned.plan_id
+    initial, replayed_initial = await asyncio.gather(
+        service.create_batch("vault"),
+        service.create_batch("vault"),
+    )
+    assert replayed_initial.job_id == initial.job_id
+    assert await _finish(service, initial.job_id) == "completed"
+    assert initial.sync_plan_id is not None
+    assert (await service.repository.get_sync_plan(initial.sync_plan_id)).status == "completed"
+    store.rebuild_graph()
+
+    no_change = await service.preview_sync("vault")
+    assert no_change.base_watermark == 1
+    assert no_change.changes == ()
+
+    changing.write_text("# Changing\n\nSecond incremental revision.\n", encoding="utf-8")
+    renamed.unlink()
+    (vault / "new-name.md").write_text(
+        "# Rename Me\n\nStable source.\n", encoding="utf-8"
+    )
+    plan = await service.preview_sync("vault")
+    replay = await service.preview_sync("vault")
+
+    assert replay.plan_id == plan.plan_id
+    assert [(item.relative_path, item.change_kind) for item in plan.changes] == [
+        ("changing.md", "modified"),
+        ("new-name.md", "added"),
+        ("old-name.md", "deleted"),
+    ]
+
+    job = await service.create_batch("vault")
+    assert job.sync_plan_id == plan.plan_id
+    assert await _finish(service, job.job_id) == "completed"
+    items = await service.repository.list_items(job.job_id)
+    assert {item.change_kind for item in items} == {"added", "modified", "deleted"}
+    deleted = next(item for item in items if item.change_kind == "deleted")
+    assert deleted.proposal_id is not None
+    tombstone = store.get_proposal(deleted.proposal_id)
+    assert tombstone.change_kind == "retraction"
+    assert tombstone.status == "pending"
+
+    settled = await service.preview_sync("vault")
+    assert settled.base_watermark == 2
+    assert settled.changes == ()
+    graph_status = store.graph_status()
+    assert graph_status is not None
+    assert graph_status.stale is True
+    assert store.search("incremental")[0].chunk.source_revision.startswith("sha256:")
+
+
+async def test_deleted_source_is_retracted_only_after_review_and_reprojects_index_graph(
+    knowledge_store: tuple[KnowledgeStore, Path],
+    job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
+) -> None:
+    store, vault = knowledge_store
+    deleted = vault / "retire.md"
+    deleted.write_text(
+        "# Retire Source\n\nUnique retractable evidence phrase.\n",
+        encoding="utf-8",
+    )
+    service = await _service(knowledge_store, job_infrastructure)
+    initial = await service.create_batch("vault")
+    assert await _finish(service, initial.job_id) == "completed"
+    original_page = store.list_pages()[0]
+    original_graph = store.rebuild_graph()
+    assert store.search("retractable evidence")
+
+    deleted.unlink()
+    deletion = await service.create_batch("vault")
+    assert await _finish(service, deletion.job_id) == "completed"
+    [deleted_item] = await service.repository.list_items(deletion.job_id)
+    assert deleted_item.change_kind == "deleted"
+    assert deleted_item.proposal_id is not None
+    tombstone = store.get_proposal(deleted_item.proposal_id)
+    assert tombstone.status == "pending"
+    assert store.search("retractable evidence")
+    assert store.list_pages()[0].current_revision == original_page.current_revision
+
+    approved = store.approve(tombstone.proposal_id, tombstone.revision)
+    assert approved.projection_status == "complete"
+    assert store.search("retractable evidence") == ()
+    graph_status = store.graph_status()
+    assert graph_status is not None
+    assert graph_status.stale is True
+    rebuilt = store.rebuild_graph()
+    assert rebuilt.graph_revision != original_graph.graph_revision
+    retracted_page = store.list_pages()[0]
+    assert len(retracted_page.revisions) == 2
+    assert retracted_page.revisions[-1].change_kind == "retraction"
 
 
 async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
@@ -131,6 +239,11 @@ async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
 
     job = await service.create_batch("vault")
     assert await _finish(service, job.job_id) == "completed_with_errors"
+    assert job.sync_plan_id is not None
+    assert (await service.repository.get_sync_plan(job.sync_plan_id)).status == "retryable"
+    failed_plan = await service.preview_sync("vault")
+    assert failed_plan.base_watermark == 0
+    assert len(failed_plan.changes) == 1
     [failed] = await service.repository.list_items(job.job_id)
     assert failed.status == "dead_letter"
     assert failed.attempts == 3
@@ -139,9 +252,60 @@ async def test_item_retries_to_dead_letter_then_can_be_retried_individually(
     monkeypatch.setattr(store, "load_source", original_load)
     await service.retry_item(job.job_id, failed.item_id)
     assert await _finish(service, job.job_id) == "completed"
+    assert (await service.repository.get_sync_plan(job.sync_plan_id)).status == "completed"
+    settled = await service.preview_sync("vault")
+    assert settled.base_watermark == 1
+    assert settled.changes == ()
     [retried] = await service.repository.list_items(job.job_id)
     assert retried.status == "completed"
     assert retried.attempts == 1
+
+
+async def test_sync_manifests_and_watermarks_are_isolated_by_source_root(
+    tmp_path: Path,
+    job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
+) -> None:
+    first_root = tmp_path / "first-vault"
+    second_root = tmp_path / "second-vault"
+    workspace = tmp_path / "isolated-knowledge"
+    first_root.mkdir()
+    second_root.mkdir()
+    workspace.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    (first_root / "note.md").write_text("# First\n", encoding="utf-8")
+    (second_root / "note.md").write_text("# Second\n", encoding="utf-8")
+    store = KnowledgeStore(
+        workspace,
+        workspace / ".sage" / "knowledge.sqlite3",
+        {
+            "first": KnowledgeSourceRoot("first", "obsidian", "First", first_root),
+            "second": KnowledgeSourceRoot("second", "obsidian", "Second", second_root),
+        },
+    )
+    store.initialize()
+    service = await _service((store, first_root), job_infrastructure)
+
+    first_job = await service.create_batch("first")
+    assert await _finish(service, first_job.job_id) == "completed"
+    second_plan = await service.preview_sync("second")
+    assert second_plan.base_watermark == 0
+    assert [(item.relative_path, item.change_kind) for item in second_plan.changes] == [
+        ("note.md", "added")
+    ]
+
+    (first_root / "note.md").write_text("# First changed\n", encoding="utf-8")
+    first_delta = await service.preview_sync("first")
+    second_replay = await service.preview_sync("second")
+    assert first_delta.base_watermark == 1
+    assert first_delta.changes[0].change_kind == "modified"
+    assert second_replay.plan_id == second_plan.plan_id
+    assert second_replay.base_watermark == 0
 
 
 async def test_scanned_pdf_is_dead_lettered_once_with_requires_ocr_code(

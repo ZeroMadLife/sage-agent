@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 TERMINAL_ITEM_STATUSES = frozenset({"completed", "skipped", "cancelled", "dead_letter"})
 TERMINAL_JOB_STATUSES = frozenset({"completed", "completed_with_errors", "cancelled"})
@@ -14,6 +15,31 @@ class ScannedKnowledgeFile:
     relative_path: str
     source_revision: str
     idempotency_key: str
+    change_kind: Literal["added", "modified", "deleted"] = "added"
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSyncChange:
+    relative_path: str
+    change_kind: Literal["added", "modified", "deleted"]
+    previous_revision: str | None
+    source_revision: str | None
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSyncPlan:
+    plan_id: str
+    workspace_id: str
+    source_root_id: str
+    relative_directory: str
+    pipeline_version: str
+    base_watermark: int
+    target_watermark: int
+    manifest_hash: str
+    status: str
+    changes: tuple[KnowledgeSyncChange, ...]
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +64,7 @@ class KnowledgeJob:
     started_at: datetime | None
     completed_at: datetime | None
     updated_at: datetime
+    sync_plan_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +73,7 @@ class KnowledgeJobItem:
     job_id: str
     relative_path: str
     source_revision: str
+    change_kind: str
     status: str
     attempts: int
     max_attempts: int

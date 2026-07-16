@@ -2,8 +2,8 @@
 
 import asyncio
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy import inspect, text
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from db.database import engine as default_engine
 from db.models import Base
@@ -14,6 +14,7 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
     target = engine or default_engine
     async with target.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await _upgrade_knowledge_sync_columns(connection)
         await connection.execute(
             text(
                 "CREATE TABLE IF NOT EXISTS schema_migrations "
@@ -58,6 +59,51 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
                 "SELECT 1 FROM schema_migrations "
                 "WHERE revision = '20260715_v7_2_knowledge_jobs'"
                 ")"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260716_v7_5_3_knowledge_sync', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260716_v7_5_3_knowledge_sync'"
+                ")"
+            )
+        )
+
+
+async def _upgrade_knowledge_sync_columns(connection: AsyncConnection) -> None:
+    """Add V7.5.3 columns to databases created before source manifests existed."""
+
+    job_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("knowledge_ingest_jobs")
+        }
+    )
+    if "sync_plan_id" not in job_columns:
+        await connection.execute(
+            text("ALTER TABLE knowledge_ingest_jobs ADD COLUMN sync_plan_id VARCHAR(36)")
+        )
+        await connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS knowledge_job_sync_plan_key "
+                "ON knowledge_ingest_jobs (sync_plan_id)"
+            )
+        )
+
+    item_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("knowledge_ingest_items")
+        }
+    )
+    if "change_kind" not in item_columns:
+        await connection.execute(
+            text(
+                "ALTER TABLE knowledge_ingest_items "
+                "ADD COLUMN change_kind VARCHAR(24) NOT NULL DEFAULT 'added'"
             )
         )
 

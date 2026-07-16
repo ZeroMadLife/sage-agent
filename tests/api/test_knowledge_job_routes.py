@@ -142,3 +142,72 @@ def test_batch_job_cancel_and_validation_contracts(tmp_path: Path) -> None:
 
     asyncio.run(redis.aclose())
     asyncio.run(engine.dispose())
+
+
+def test_sync_plan_api_previews_incremental_changes_without_server_paths(
+    tmp_path: Path,
+) -> None:
+    app, vault, engine, redis = _app(tmp_path)
+    (vault / "guide.md").write_text("# Guide\n\nFirst.\n", encoding="utf-8")
+    (vault / "remove.md").write_text("# Remove\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        payload = {"source_root_id": "vault", "relative_directory": "."}
+        first = client.post("/api/v1/knowledge/sync/plan", json=payload)
+        replay = client.post("/api/v1/knowledge/sync/plan", json=payload)
+        assert first.status_code == 200
+        assert replay.json()["plan_id"] == first.json()["plan_id"]
+        assert first.json()["added_count"] == 2
+        assert first.json()["modified_count"] == 0
+        assert first.json()["deleted_count"] == 0
+        assert str(vault) not in first.text
+
+        created = client.post(
+            "/api/v1/knowledge/jobs",
+            json={**payload, "sync_plan_id": first.json()["plan_id"]},
+        )
+        completed = _wait_for_terminal(client, created.json()["job_id"])
+        assert completed["sync_plan_id"] == first.json()["plan_id"]
+
+        (vault / "guide.md").write_text("# Guide\n\nSecond.\n", encoding="utf-8")
+        (vault / "remove.md").unlink()
+        (vault / "added.md").write_text("# Added\n", encoding="utf-8")
+        delta = client.post("/api/v1/knowledge/sync/plan", json=payload)
+        assert delta.status_code == 200
+        assert delta.json()["base_watermark"] == 1
+        assert delta.json()["added_count"] == 1
+        assert delta.json()["modified_count"] == 1
+        assert delta.json()["deleted_count"] == 1
+        assert {
+            (item["relative_path"], item["change_kind"])
+            for item in delta.json()["changes"]
+        } == {
+            ("added.md", "added"),
+            ("guide.md", "modified"),
+            ("remove.md", "deleted"),
+        }
+
+    asyncio.run(redis.aclose())
+    asyncio.run(engine.dispose())
+
+
+def test_sync_plan_api_bounds_change_details_but_preserves_totals(tmp_path: Path) -> None:
+    app, vault, engine, redis = _app(tmp_path)
+    for index in range(205):
+        (vault / f"note-{index:03d}.md").write_text(f"# Note {index}\n", encoding="utf-8")
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/knowledge/sync/plan",
+            json={"source_root_id": "vault", "relative_directory": "."},
+        )
+
+    asyncio.run(redis.aclose())
+    asyncio.run(engine.dispose())
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total_count"] == 205
+    assert payload["added_count"] == 205
+    assert payload["has_more"] is True
+    assert len(payload["changes"]) == 200

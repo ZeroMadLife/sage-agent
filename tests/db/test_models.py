@@ -2,7 +2,7 @@
 
 import json
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
@@ -106,6 +106,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "20260713_v7_github_oauth",
         "20260714_v7_model_providers",
         "20260715_v7_2_knowledge_jobs",
+        "20260716_v7_5_3_knowledge_sync",
     ]
     assert {
         "cloud_model_providers",
@@ -117,4 +118,49 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "knowledge_ingest_items",
         "knowledge_ingest_idempotency",
         "knowledge_job_events",
+        "knowledge_source_manifests",
+        "knowledge_source_sync",
+        "knowledge_sync_plans",
     } <= tables
+
+
+async def test_init_db_upgrades_legacy_knowledge_job_tables_in_place() -> None:
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.execute(
+            text("CREATE TABLE knowledge_ingest_jobs (id VARCHAR(36) PRIMARY KEY)")
+        )
+        await connection.execute(
+            text("CREATE TABLE knowledge_ingest_items (id VARCHAR(36) PRIMARY KEY)")
+        )
+
+    await init_db(engine)
+    await init_db(engine)
+
+    async with engine.connect() as connection:
+        job_columns = await connection.run_sync(
+            lambda sync_connection: {
+                str(column["name"])
+                for column in inspect(sync_connection).get_columns("knowledge_ingest_jobs")
+            }
+        )
+        item_columns = await connection.run_sync(
+            lambda sync_connection: {
+                str(column["name"])
+                for column in inspect(sync_connection).get_columns("knowledge_ingest_items")
+            }
+        )
+        indexes = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_indexes(
+                "knowledge_ingest_jobs"
+            )
+        )
+
+    await engine.dispose()
+
+    assert "sync_plan_id" in job_columns
+    assert "change_kind" in item_columns
+    assert any(
+        index["name"] == "knowledge_job_sync_plan_key" and index["unique"]
+        for index in indexes
+    )

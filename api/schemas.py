@@ -256,6 +256,40 @@ class KnowledgeBatchIngestRequest(BaseModel):
 
     source_root_id: str = Field(min_length=1, max_length=64)
     relative_directory: str = Field(default=".", max_length=1024)
+    sync_plan_id: str | None = Field(default=None, min_length=1, max_length=36)
+
+
+class KnowledgeSyncPlanRequest(KnowledgeBatchIngestRequest):
+    """Preview a bounded source manifest diff without starting a worker."""
+
+    sync_plan_id: None = None
+
+
+class KnowledgeSyncChangeResponse(BaseModel):
+    relative_path: str
+    change_kind: Literal["added", "modified", "deleted"]
+    previous_revision: str | None = None
+    source_revision: str | None = None
+    idempotency_key: str
+
+
+class KnowledgeSyncPlanResponse(BaseModel):
+    plan_id: str
+    workspace_id: str
+    source_root_id: str
+    relative_directory: str
+    pipeline_version: str
+    base_watermark: int = Field(ge=0)
+    target_watermark: int = Field(ge=0)
+    manifest_hash: str
+    status: str
+    added_count: int = Field(ge=0)
+    modified_count: int = Field(ge=0)
+    deleted_count: int = Field(ge=0)
+    total_count: int = Field(ge=0)
+    has_more: bool
+    changes: list[KnowledgeSyncChangeResponse]
+    created_at: str
 
 
 class KnowledgeMigrationPlanItemResponse(BaseModel):
@@ -305,6 +339,7 @@ class KnowledgeJobItemResponse(BaseModel):
     job_id: str
     relative_path: str
     source_revision: str
+    change_kind: Literal["added", "modified", "deleted"] = "added"
     status: str
     attempts: int = Field(ge=0)
     max_attempts: int = Field(ge=1)
@@ -335,6 +370,7 @@ class KnowledgeJobResponse(BaseModel):
     started_at: str | None = None
     completed_at: str | None = None
     updated_at: str
+    sync_plan_id: str | None = None
     items: list[KnowledgeJobItemResponse] = Field(default_factory=list)
 
 
