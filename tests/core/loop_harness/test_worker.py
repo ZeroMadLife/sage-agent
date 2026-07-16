@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 
 import pytest
 
 from core.loop_harness.errors import LoopBlockedError
-from core.loop_harness.worker import CodexFixer, CodexWorker
+from core.loop_harness.worker import (
+    CodexFixer,
+    CodexWorker,
+    _build_prompt,
+    _controlled_codex_args,
+)
 
 
 def _fake_codex(tmp_path, payload: object):
@@ -38,6 +44,37 @@ def _valid_payload():
         "suggested_tier": "C",
         "confidence": 0.8,
     }
+
+
+def test_controlled_codex_args_pin_gateway_model_and_disable_expansive_features() -> None:
+    args = _controlled_codex_args()
+
+    assert "--ignore-user-config" not in args
+    assert 'model_provider="loop_gateway"' in args
+    assert 'model_providers.loop_gateway.base_url="https://api.honglin.asia"' in args
+    assert "gpt-5.6-luna" in args
+    assert 'model_reasoning_effort="low"' in args
+    pairs = set(pairwise(args))
+    for feature in ("plugins", "remote_plugin", "browser_use", "image_generation"):
+        assert ("--disable", feature) in pairs
+
+
+def test_scanner_prompt_has_bounded_inspection_budget(tmp_path) -> None:
+    prompt_path = tmp_path / "PROMPT.md"
+    prompt_path.write_text("rules", encoding="utf-8")
+
+    prompt = _build_prompt(
+        prompt_path=prompt_path,
+        run_id="loop-test",
+        base_sha="a" * 40,
+        scan_scope=("frontend/src/components/assistant",),
+        protected_paths_digest="b" * 64,
+        phase="SHADOW_SCAN",
+    )
+
+    assert '"max_files_read": 12' in prompt
+    assert '"max_tool_calls": 12' in prompt
+    assert "不要运行全量测试或构建" in prompt
 
 
 def test_worker_uses_temporary_output_and_parses_schema(tmp_path) -> None:

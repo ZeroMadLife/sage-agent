@@ -15,6 +15,10 @@ sage-loopctl enable --shadow-write
 sage-loopctl cleanup
 ```
 
+Scanner/Fixer 固定使用 Controller 声明的 `gpt-5.6-luna`、低推理强度和 Honglin
+Codex 网关。运行时继续使用 `--ignore-user-config`，并关闭插件、远程插件、浏览器和生图
+能力；只复用 `$CODEX_HOME/auth.json` 的现有登录状态，不读取个人配置来扩大权限。
+
 默认目录：
 
 - 状态：`~/.local/state/sage-loop/`

@@ -30,10 +30,22 @@ from core.loop_harness.validation import FrontendValidator
 from core.loop_harness.worker import CodexFixer, CodexWorker
 
 _SCAN_SCOPES = (
-    ("core/coding", "tests/core/coding"),
+    ("frontend/src/components/assistant",),
+    ("frontend/src/components/coding/chat",),
+    ("frontend/src/components/coding/composer",),
+    ("frontend/src/components/coding/files",),
+    ("frontend/src/components/coding/inspector",),
+    ("frontend/src/components/coding/settings",),
+    ("frontend/src/components/coding/sidebar",),
+    ("frontend/src/views",),
+    ("frontend/src/composables",),
+    ("core/coding/context", "tests/core/coding"),
+    ("core/coding/engine", "tests/core/coding"),
+    ("core/coding/memory", "tests/core/coding"),
+    ("core/coding/persistence", "tests/core/coding"),
+    ("core/coding/tool_executor", "tests/core/coding"),
     ("core/knowledge", "tests/core/knowledge"),
     ("api", "tests/api"),
-    ("frontend/src",),
     ("agents", "tests/agents"),
     ("mcp_servers", "tests/mcp_servers"),
 )

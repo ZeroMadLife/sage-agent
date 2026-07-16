@@ -14,7 +14,7 @@ from core.loop_harness.models import (
     ValidationStep,
     WorkerResult,
 )
-from core.loop_harness.runner import LoopRunner
+from core.loop_harness.runner import _SCAN_SCOPES, LoopRunner
 from core.loop_harness.state import LoopState
 
 
@@ -89,6 +89,12 @@ class FakeGit:
         assert destination.is_dir()
         assert base_sha == "a" * 40
         return "diff --git a/view.vue b/view.vue\n"
+
+
+def test_scan_scopes_start_with_bounded_frontend_components() -> None:
+    assert _SCAN_SCOPES[0] == ("frontend/src/components/assistant",)
+    assert ("frontend/src",) not in _SCAN_SCOPES
+    assert ("core/coding", "tests/core/coding") not in _SCAN_SCOPES
 
 
 class FakeWorker:

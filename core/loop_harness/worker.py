@@ -14,6 +14,9 @@ from core.loop_harness import POLICY_VERSION
 from core.loop_harness.errors import LoopBlockedError
 from core.loop_harness.models import FixerResult, WorkerResult, WorkerVerdict
 
+_LOOP_MODEL = "gpt-5.6-luna"
+_LOOP_PROVIDER_URL = "https://api.honglin.asia"
+
 
 class CodexWorker:
     def __init__(
@@ -79,6 +82,7 @@ class CodexWorker:
                     "--ephemeral",
                     "--ignore-user-config",
                     "--strict-config",
+                    *_controlled_codex_args(),
                     "--output-schema",
                     str(schema_path),
                     "--output-last-message",
@@ -157,6 +161,7 @@ class CodexFixer:
                     "--ephemeral",
                     "--ignore-user-config",
                     "--strict-config",
+                    *_controlled_codex_args(),
                     "--output-schema",
                     str(schema_path),
                     "--output-last-message",
@@ -200,6 +205,8 @@ def _build_prompt(
         "base_sha": base_sha,
         "policy_version": POLICY_VERSION,
         "scan_scope": list(scan_scope),
+        "max_files_read": 12,
+        "max_tool_calls": 12,
         "max_files": 0,
         "max_changed_lines": 0,
         "deadline_seconds": 10 * 60 if phase == "SHADOW_SCAN" else 40 * 60,
@@ -209,7 +216,9 @@ def _build_prompt(
     return (
         f"{policy_prompt}\n\n## Controller job envelope\n\n"
         f"```json\n{json.dumps(envelope, ensure_ascii=False, sort_keys=True)}\n```\n\n"
-        "只检查 scan_scope 及其直接相邻测试。不要编辑文件。最终只输出 JSON。\n"
+        "只检查 scan_scope。最多读取 12 个文件、调用 12 次工具；不要运行全量测试或构建。"
+        "优先静态核对组件与同目录测试，没有高置信证据就立即 NO_OP。"
+        "不要编辑文件，最终只输出 JSON。\n"
     )
 
 
@@ -324,3 +333,35 @@ def _sanitized_environment() -> dict[str, str]:
     environment = {key: os.environ[key] for key in allowed if key in os.environ}
     environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
     return environment
+
+
+def _controlled_codex_args() -> list[str]:
+    """Use the authenticated gateway without loading personal Codex config."""
+    args = [
+        "--config",
+        'model_provider="loop_gateway"',
+        "--config",
+        'model_providers.loop_gateway.name="Loop Gateway"',
+        "--config",
+        f'model_providers.loop_gateway.base_url="{_LOOP_PROVIDER_URL}"',
+        "--config",
+        'model_providers.loop_gateway.wire_api="responses"',
+        "--config",
+        "model_providers.loop_gateway.requires_openai_auth=true",
+        "--model",
+        _LOOP_MODEL,
+        "--config",
+        'model_reasoning_effort="low"',
+    ]
+    for feature in (
+        "plugins",
+        "remote_plugin",
+        "plugin_sharing",
+        "browser_use",
+        "browser_use_external",
+        "browser_use_full_cdp_access",
+        "in_app_browser",
+        "image_generation",
+    ):
+        args.extend(("--disable", feature))
+    return args
