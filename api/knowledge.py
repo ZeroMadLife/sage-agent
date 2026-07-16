@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Literal
+import hashlib
+from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -19,6 +20,14 @@ from fastapi import (
 from api.schemas import (
     KnowledgeBatchIngestRequest,
     KnowledgeEvidenceResponse,
+    KnowledgeGraphEdgeResponse,
+    KnowledgeGraphEvidenceResponse,
+    KnowledgeGraphNeighborhoodResponse,
+    KnowledgeGraphNodeDetailResponse,
+    KnowledgeGraphNodeResponse,
+    KnowledgeGraphResponse,
+    KnowledgeGraphSnapshotResponse,
+    KnowledgeGraphStatusResponse,
     KnowledgeIndexResponse,
     KnowledgeIngestRequest,
     KnowledgeJobEventResponse,
@@ -57,6 +66,12 @@ from api.schemas import (
 from core.knowledge import (
     KnowledgeConflictError,
     KnowledgeEvidenceError,
+    KnowledgeGraphEdge,
+    KnowledgeGraphError,
+    KnowledgeGraphNeighborhood,
+    KnowledgeGraphNode,
+    KnowledgeGraphOverview,
+    KnowledgeGraphSnapshot,
     KnowledgeIndexSummary,
     KnowledgeMigrationPlan,
     KnowledgeMigrationResult,
@@ -119,6 +134,133 @@ async def get_knowledge_index(request: Request, response: Response) -> Knowledge
 async def rebuild_knowledge_index(request: Request) -> KnowledgeIndexResponse:
     store = _require_store(request)
     return _index_response(await asyncio.to_thread(store.rebuild_index))
+
+
+@router.get("/api/v1/knowledge/graph/status", response_model=KnowledgeGraphStatusResponse)
+async def get_knowledge_graph_status(
+    request: Request, response: Response
+) -> KnowledgeGraphStatusResponse:
+    snapshot = _require_store(request).graph_status()
+    response.headers["Cache-Control"] = "no-store"
+    return KnowledgeGraphStatusResponse(
+        status=snapshot.status if snapshot is not None else "unbuilt",  # type: ignore[arg-type]
+        snapshot=_graph_snapshot_response(snapshot) if snapshot is not None else None,
+    )
+
+
+@router.post(
+    "/api/v1/knowledge/graph/rebuild",
+    response_model=KnowledgeGraphSnapshotResponse,
+)
+async def rebuild_knowledge_graph(
+    request: Request,
+    response: Response,
+    force: bool = Query(default=False),
+) -> KnowledgeGraphSnapshotResponse:
+    try:
+        snapshot = await asyncio.to_thread(_require_store(request).rebuild_graph, force=force)
+    except KnowledgeGraphError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _graph_snapshot_response(snapshot)
+
+
+@router.get("/api/v1/knowledge/graph", response_model=KnowledgeGraphResponse)
+async def get_knowledge_graph(
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+    q: str = Query(default="", max_length=200),
+    kind: Annotated[
+        list[Literal["page", "source", "project", "concept", "decision", "tool"]]
+        | None,
+        Query(),
+    ] = None,
+    offset: int = Query(default=0, ge=0, le=100_000),
+    limit: int = Query(default=500, ge=1, le=1_000),
+    edge_limit: int = Query(default=1_000, ge=1, le=2_000),
+) -> Any:
+    try:
+        overview = await asyncio.to_thread(
+            _require_store(request).graph_overview,
+            graph_revision=graph_revision,
+            query=q,
+            kinds=tuple(kind or ()),
+            offset=offset,
+            limit=limit,
+            edge_limit=edge_limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph revision not found") from exc
+    except KnowledgeGraphError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    etag = _graph_etag(
+        overview.snapshot.graph_revision,
+        q,
+        ",".join(kind or ()),
+        str(offset),
+        str(limit),
+        str(edge_limit),
+    )
+    headers = {"Cache-Control": "private, no-cache", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    for name, value in headers.items():
+        response.headers[name] = value
+    return _graph_overview_response(overview)
+
+
+@router.get(
+    "/api/v1/knowledge/graph/nodes/{node_id}",
+    response_model=KnowledgeGraphNodeDetailResponse,
+)
+async def get_knowledge_graph_node(
+    node_id: str,
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+) -> KnowledgeGraphNodeDetailResponse:
+    try:
+        snapshot, node = await asyncio.to_thread(
+            _require_store(request).graph_node,
+            node_id,
+            graph_revision=graph_revision,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph node not found") from exc
+    except KnowledgeGraphError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "private, no-cache"
+    return KnowledgeGraphNodeDetailResponse(
+        snapshot=_graph_snapshot_response(snapshot),
+        node=_graph_node_response(node),
+    )
+
+
+@router.get(
+    "/api/v1/knowledge/graph/nodes/{node_id}/neighbors",
+    response_model=KnowledgeGraphNeighborhoodResponse,
+)
+async def get_knowledge_graph_neighbors(
+    node_id: str,
+    request: Request,
+    response: Response,
+    graph_revision: str | None = Query(default=None, min_length=1, max_length=96),
+    limit: int = Query(default=100, ge=1, le=500),
+) -> KnowledgeGraphNeighborhoodResponse:
+    try:
+        neighborhood = await asyncio.to_thread(
+            _require_store(request).graph_neighborhood,
+            node_id,
+            graph_revision=graph_revision,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="knowledge graph node not found") from exc
+    except KnowledgeGraphError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "private, no-cache"
+    return _graph_neighborhood_response(neighborhood)
 
 
 @router.post("/api/v1/knowledge/search", response_model=KnowledgeRetrievalResponse)
@@ -664,6 +806,99 @@ def _index_response(summary: KnowledgeIndexSummary) -> KnowledgeIndexResponse:
         total_chunk_count=summary.total_chunk_count,
         error_count=summary.error_count,
     )
+
+
+def _graph_snapshot_response(
+    snapshot: KnowledgeGraphSnapshot,
+) -> KnowledgeGraphSnapshotResponse:
+    return KnowledgeGraphSnapshotResponse.model_validate(
+        {
+            "graph_revision": snapshot.graph_revision,
+            "workspace_id": snapshot.workspace_id,
+            "wiki_watermark": snapshot.wiki_watermark,
+            "projector_id": snapshot.projector_id,
+            "projector_version": snapshot.projector_version,
+            "config_hash": snapshot.config_hash,
+            "status": snapshot.status,
+            "node_count": snapshot.node_count,
+            "edge_count": snapshot.edge_count,
+            "warning_count": snapshot.warning_count,
+            "error": snapshot.error,
+            "created_at": snapshot.created_at,
+            "completed_at": snapshot.completed_at,
+            "stale": snapshot.stale,
+        }
+    )
+
+
+def _graph_node_response(node: KnowledgeGraphNode) -> KnowledgeGraphNodeResponse:
+    return KnowledgeGraphNodeResponse.model_validate(
+        {
+            "node_id": node.node_id,
+            "kind": node.kind,
+            "label": node.label,
+            "page_id": node.page_id,
+            "page_revision": node.page_revision,
+            "source_id": node.source_id,
+            "source_revision": node.source_revision,
+            "properties": node.properties,
+        }
+    )
+
+
+def _graph_edge_response(edge: KnowledgeGraphEdge) -> KnowledgeGraphEdgeResponse:
+    return KnowledgeGraphEdgeResponse.model_validate(
+        {
+            "edge_id": edge.edge_id,
+            "source_node_id": edge.source_node_id,
+            "target_node_id": edge.target_node_id,
+            "kind": edge.kind,
+            "directed": edge.directed,
+            "weight": edge.weight,
+            "confidence": edge.confidence,
+            "extractor_id": edge.extractor_id,
+            "extractor_version": edge.extractor_version,
+            "properties": edge.properties,
+            "evidence": [
+                KnowledgeGraphEvidenceResponse(
+                    citation_id=item.citation_id,
+                    chunk_id=item.chunk_id,
+                    page_id=item.page_id,
+                    page_revision=item.page_revision,
+                    source_id=item.source_id,
+                    source_revision=item.source_revision,
+                )
+                for item in edge.evidence
+            ],
+        }
+    )
+
+
+def _graph_overview_response(overview: KnowledgeGraphOverview) -> KnowledgeGraphResponse:
+    return KnowledgeGraphResponse(
+        snapshot=_graph_snapshot_response(overview.snapshot),
+        nodes=[_graph_node_response(node) for node in overview.nodes],
+        edges=[_graph_edge_response(edge) for edge in overview.edges],
+        offset=overview.offset,
+        next_offset=overview.next_offset,
+        has_more=overview.has_more,
+    )
+
+
+def _graph_neighborhood_response(
+    neighborhood: KnowledgeGraphNeighborhood,
+) -> KnowledgeGraphNeighborhoodResponse:
+    return KnowledgeGraphNeighborhoodResponse(
+        snapshot=_graph_snapshot_response(neighborhood.snapshot),
+        center=_graph_node_response(neighborhood.center),
+        nodes=[_graph_node_response(node) for node in neighborhood.nodes],
+        edges=[_graph_edge_response(edge) for edge in neighborhood.edges],
+    )
+
+
+def _graph_etag(*parts: str) -> str:
+    payload = "\0".join(parts).encode("utf-8")
+    return f'"{hashlib.sha256(payload).hexdigest()}"'
 
 
 def _retrieval_response(bundle: KnowledgeRetrievalBundle) -> KnowledgeRetrievalResponse:

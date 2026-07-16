@@ -25,6 +25,14 @@ from core.knowledge.evolution import (
     deserialize_evidence_learning,
     serialize_evidence_learning,
 )
+from core.knowledge.graph import (
+    KnowledgeGraphError,
+    KnowledgeGraphNeighborhood,
+    KnowledgeGraphNode,
+    KnowledgeGraphOverview,
+    KnowledgeGraphSnapshot,
+    LocalKnowledgeGraph,
+)
 from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
@@ -75,7 +83,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -389,12 +397,16 @@ class KnowledgeStore:
         source_roots: Mapping[str, KnowledgeSourceRoot],
         parser_registry: ParserRegistry | None = None,
         knowledge_index: LocalKnowledgeIndex | None = None,
+        knowledge_graph: LocalKnowledgeGraph | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
         self.source_roots = self._validate_source_roots(source_roots)
         self.parser_registry = parser_registry or default_parser_registry()
         self.knowledge_index = knowledge_index or LocalKnowledgeIndex()
+        self.knowledge_graph = knowledge_graph or LocalKnowledgeGraph(
+            workspace_id=self.knowledge_index.workspace_id
+        )
         self._lock = RLock()
         self._initialized = False
 
@@ -1640,6 +1652,93 @@ class KnowledgeStore:
             connection.commit()
         return self.index_summary()
 
+    def graph_status(self) -> KnowledgeGraphSnapshot | None:
+        self.initialize()
+        with self._connect() as connection:
+            return self.knowledge_graph.status(connection)
+
+    def rebuild_graph(self, *, force: bool = False) -> KnowledgeGraphSnapshot:
+        """Rebuild one immutable graph projection from current Wiki revisions."""
+
+        self.initialize()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                snapshot = self.knowledge_graph.rebuild(connection, force=force)
+            except KnowledgeGraphError:
+                connection.commit()
+                raise
+            connection.commit()
+        return snapshot
+
+    def graph_overview(
+        self,
+        *,
+        graph_revision: str | None = None,
+        query: str = "",
+        kinds: tuple[str, ...] = (),
+        offset: int = 0,
+        limit: int = 500,
+        edge_limit: int = 1_000,
+    ) -> KnowledgeGraphOverview:
+        self.initialize()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                overview = self.knowledge_graph.overview(
+                    connection,
+                    graph_revision=graph_revision,
+                    query=query,
+                    kinds=kinds,
+                    offset=offset,
+                    limit=limit,
+                    edge_limit=edge_limit,
+                )
+            except KnowledgeGraphError:
+                connection.commit()
+                raise
+            connection.commit()
+        return overview
+
+    def graph_node(
+        self, node_id: str, *, graph_revision: str | None = None
+    ) -> tuple[KnowledgeGraphSnapshot, KnowledgeGraphNode]:
+        self.initialize()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                result = self.knowledge_graph.node(
+                    connection, node_id, graph_revision=graph_revision
+                )
+            except KnowledgeGraphError:
+                connection.commit()
+                raise
+            connection.commit()
+        return result
+
+    def graph_neighborhood(
+        self,
+        node_id: str,
+        *,
+        graph_revision: str | None = None,
+        limit: int = 100,
+    ) -> KnowledgeGraphNeighborhood:
+        self.initialize()
+        with self._lock, self._exclusive_lock(), self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                result = self.knowledge_graph.neighborhood(
+                    connection,
+                    node_id,
+                    graph_revision=graph_revision,
+                    limit=limit,
+                )
+            except KnowledgeGraphError:
+                connection.commit()
+                raise
+            connection.commit()
+        return result
+
     def search(
         self,
         query: str,
@@ -2109,7 +2208,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, 4, 5, 6, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {
@@ -2123,6 +2222,7 @@ class KnowledgeStore:
             self._backfill_source_understandings(connection)
             self.knowledge_index.ensure_schema(connection)
             self.knowledge_index.backfill(connection)
+            self.knowledge_graph.ensure_schema(connection)
             connection.execute(f"PRAGMA user_version={_SCHEMA_VERSION}")
             connection.commit()
 

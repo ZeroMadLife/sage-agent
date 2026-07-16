@@ -1,6 +1,16 @@
 """Auditable personal knowledge workspace primitives."""
 
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
+from core.knowledge.graph import (
+    KnowledgeGraphEdge,
+    KnowledgeGraphError,
+    KnowledgeGraphEvidence,
+    KnowledgeGraphNeighborhood,
+    KnowledgeGraphNode,
+    KnowledgeGraphOverview,
+    KnowledgeGraphSnapshot,
+    LocalKnowledgeGraph,
+)
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
     KnowledgeMigrationPlan,
@@ -47,6 +57,13 @@ __all__ = [
     "KnowledgeEvent",
     "KnowledgeEvidence",
     "KnowledgeEvidenceError",
+    "KnowledgeGraphEdge",
+    "KnowledgeGraphError",
+    "KnowledgeGraphEvidence",
+    "KnowledgeGraphNeighborhood",
+    "KnowledgeGraphNode",
+    "KnowledgeGraphOverview",
+    "KnowledgeGraphSnapshot",
     "KnowledgeIndexSummary",
     "KnowledgeMigrationItem",
     "KnowledgeMigrationPlan",
@@ -63,6 +80,7 @@ __all__ = [
     "KnowledgeStore",
     "KnowledgeSummary",
     "LoadedKnowledgeSource",
+    "LocalKnowledgeGraph",
     "PreparedKnowledgeSource",
     "SourceSection",
     "SourceUnderstanding",

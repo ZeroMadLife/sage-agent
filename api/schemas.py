@@ -526,6 +526,83 @@ class KnowledgePagesResponse(BaseModel):
     pages: list[KnowledgePageResponse]
 
 
+class KnowledgeGraphSnapshotResponse(BaseModel):
+    graph_revision: str
+    workspace_id: str
+    wiki_watermark: str
+    projector_id: str
+    projector_version: str
+    config_hash: str
+    status: Literal["building", "ready", "error"]
+    node_count: int = Field(ge=0)
+    edge_count: int = Field(ge=0)
+    warning_count: int = Field(ge=0)
+    error: str | None = None
+    created_at: str
+    completed_at: str | None = None
+    stale: bool = False
+
+
+class KnowledgeGraphEvidenceResponse(BaseModel):
+    citation_id: str
+    chunk_id: str
+    page_id: str
+    page_revision: str
+    source_id: str
+    source_revision: str
+
+
+class KnowledgeGraphNodeResponse(BaseModel):
+    node_id: str
+    kind: Literal["page", "source", "project", "concept", "decision", "tool"]
+    label: str
+    page_id: str | None = None
+    page_revision: str | None = None
+    source_id: str | None = None
+    source_revision: str | None = None
+    properties: dict[str, Any]
+
+
+class KnowledgeGraphEdgeResponse(BaseModel):
+    edge_id: str
+    source_node_id: str
+    target_node_id: str
+    kind: Literal["WIKILINK", "EVIDENCED_BY", "SHARES_SOURCE"]
+    directed: bool
+    weight: float = Field(gt=0)
+    confidence: float = Field(ge=0, le=1)
+    extractor_id: str
+    extractor_version: str
+    properties: dict[str, Any]
+    evidence: list[KnowledgeGraphEvidenceResponse]
+
+
+class KnowledgeGraphResponse(BaseModel):
+    snapshot: KnowledgeGraphSnapshotResponse
+    nodes: list[KnowledgeGraphNodeResponse]
+    edges: list[KnowledgeGraphEdgeResponse]
+    offset: int = Field(ge=0)
+    next_offset: int | None = Field(default=None, ge=0)
+    has_more: bool
+
+
+class KnowledgeGraphNodeDetailResponse(BaseModel):
+    snapshot: KnowledgeGraphSnapshotResponse
+    node: KnowledgeGraphNodeResponse
+
+
+class KnowledgeGraphNeighborhoodResponse(BaseModel):
+    snapshot: KnowledgeGraphSnapshotResponse
+    center: KnowledgeGraphNodeResponse
+    nodes: list[KnowledgeGraphNodeResponse]
+    edges: list[KnowledgeGraphEdgeResponse]
+
+
+class KnowledgeGraphStatusResponse(BaseModel):
+    status: Literal["unbuilt", "building", "ready", "error"]
+    snapshot: KnowledgeGraphSnapshotResponse | None = None
+
+
 class KnowledgeRollbackRequest(BaseModel):
     target_revision_id: str = Field(min_length=1, max_length=128)
     expected_page_revision: str = Field(min_length=1, max_length=128)

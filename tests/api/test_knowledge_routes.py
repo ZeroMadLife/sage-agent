@@ -60,6 +60,68 @@ def test_unconfigured_knowledge_is_explicitly_unavailable(tmp_path: Path) -> Non
     assert response.json() == {"detail": "knowledge workspace is not configured"}
 
 
+def test_versioned_knowledge_graph_api_etag_and_neighborhood(tmp_path: Path) -> None:
+    app, vault, _knowledge = _app(tmp_path)
+    (vault / "retrieval.md").write_text(
+        "# Hybrid Retrieval\n\nRRF combines retrieval results.\n", encoding="utf-8"
+    )
+    (vault / "harness.md").write_text(
+        "# Agent Harness\n\nSee [[Hybrid Retrieval]] and [[Recovery]].\n",
+        encoding="utf-8",
+    )
+    client = TestClient(app)
+
+    status_response = client.get("/api/v1/knowledge/graph/status")
+    assert status_response.status_code == 200
+    assert status_response.json() == {"status": "unbuilt", "snapshot": None}
+    for relative_path in ("retrieval.md", "harness.md"):
+        ingested = client.post(
+            "/api/v1/knowledge/ingest",
+            json={"source_root_id": "sage-learning", "relative_path": relative_path},
+        )
+        assert ingested.status_code == 201
+
+    graph = client.get("/api/v1/knowledge/graph")
+    assert graph.status_code == 200
+    assert graph.headers["cache-control"] == "private, no-cache"
+    assert graph.headers["etag"].startswith('"')
+    payload = graph.json()
+    assert payload["snapshot"]["status"] == "ready"
+    assert payload["snapshot"]["wiki_watermark"].startswith("kwm_")
+    assert payload["snapshot"]["graph_revision"].startswith("kgraph_")
+    assert payload["snapshot"]["warning_count"] == 0
+    assert any(edge["kind"] == "WIKILINK" for edge in payload["edges"])
+    assert all(edge["evidence"] for edge in payload["edges"])
+
+    unchanged = client.get(
+        "/api/v1/knowledge/graph", headers={"If-None-Match": graph.headers["etag"]}
+    )
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+
+    concepts = client.get("/api/v1/knowledge/graph", params={"kind": "concept"})
+    assert concepts.status_code == 200
+    assert [node["label"] for node in concepts.json()["nodes"]] == ["Recovery"]
+    assert concepts.json()["edges"] == []
+
+    center = next(node for node in payload["nodes"] if node["label"] == "Agent Harness")
+    detail = client.get(f"/api/v1/knowledge/graph/nodes/{center['node_id']}")
+    assert detail.status_code == 200
+    assert detail.json()["node"] == center
+    neighbors = client.get(
+        f"/api/v1/knowledge/graph/nodes/{center['node_id']}/neighbors",
+        params={"limit": 2},
+    )
+    assert neighbors.status_code == 200
+    assert neighbors.json()["center"]["node_id"] == center["node_id"]
+    assert len(neighbors.json()["edges"]) == 2
+
+    missing = client.get(
+        "/api/v1/knowledge/graph", params={"graph_revision": "kgraph_missing"}
+    )
+    assert missing.status_code == 404
+
+
 def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None:
     app, vault, knowledge = _app(tmp_path)
     note = vault / "harness.md"

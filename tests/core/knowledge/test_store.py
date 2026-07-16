@@ -176,7 +176,7 @@ def test_v1_metadata_database_migrates_to_v6_without_rewriting_existing_rows(
             "SELECT proposal_id, parse_artifact_id FROM knowledge_proposals "
             "WHERE proposal_id='legacy'"
         ).fetchone()
-    assert version == 7
+    assert version == 8
     assert "parse_artifact_id" in columns
     assert artifact_table is not None
     assert policy_table is not None
@@ -206,7 +206,7 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
     assert understanding is not None
     assert "可追溯的旧解析产物" in understanding.summary
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 8
         assert connection.execute(
             "SELECT COUNT(*) FROM knowledge_source_understandings"
         ).fetchone()[0] == 1
