@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, override
 
 from langchain.agents.middleware import AgentMiddleware
@@ -126,9 +126,13 @@ class ThreadContextMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext
         context = runtime.context
         if not isinstance(context, HarnessRunContext):
             raise MissingRunContextError("HarnessRunContext is required")
+        surface_metadata = context.metadata.get("surface_context")
+        if not isinstance(surface_metadata, Mapping):
+            surface_metadata = {}
         return {
             "thread_data": {"workspace_path": context.workspace_path},
             "surface_context": {
+                **{str(key): value for key, value in surface_metadata.items()},
                 "thread_id": context.thread_id,
                 "run_id": context.run_id,
                 "workspace_id": context.workspace_id,

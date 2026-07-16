@@ -90,7 +90,11 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.harness import RuntimeProfile, normalize_runtime_profile
-from core.harness.context_adapter import build_deerflow_system_prompt, context_status_event
+from core.harness.context_adapter import (
+    build_deerflow_durable_context,
+    build_deerflow_system_prompt,
+    context_status_event,
+)
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import build_deerflow_coding_tools
@@ -242,6 +246,7 @@ async def _deerflow_timeline_events(
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
     workspace_id = workspace_id_from_path(runtime.workspace.root)
+    durable_context = build_deerflow_durable_context(runtime)
     adapter = SageHarnessRuntimeAdapter(
         model=runtime.model,
         checkpointer=checkpointer,
@@ -255,7 +260,7 @@ async def _deerflow_timeline_events(
         payload={"type": "user", "content": content, "run_id": run_id},
         event_id=f"harness:{run_id}:user",
     )
-    context_event = context_status_event(runtime, run_id)
+    context_event = context_status_event(runtime, run_id, durable_context)
     if context_event is not None:
         yield context_event
     if mcp_catalog is not None:
@@ -272,6 +277,7 @@ async def _deerflow_timeline_events(
         workspace_path=str(runtime.workspace.root),
         content=content,
         surface_context=surface_context,
+        durable_context=durable_context,
     ):
         if event.payload.get("type") == "text_delta":
             delta = str(event.payload.get("delta", ""))

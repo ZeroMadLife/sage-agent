@@ -12,6 +12,7 @@ from sage_harness.middleware.builtin import (
     ToolErrorMiddleware,
     neutralize_untrusted_text,
 )
+from sage_harness.middleware.durable_context import DurableContextMiddleware
 from sage_harness.middleware.registry import (
     MiddlewareRegistry,
     MiddlewareSpec,
@@ -19,6 +20,7 @@ from sage_harness.middleware.registry import (
 )
 
 __all__ = [
+    "DurableContextMiddleware",
     "InputSanitizationMiddleware",
     "MiddlewareRegistry",
     "MiddlewareSpec",

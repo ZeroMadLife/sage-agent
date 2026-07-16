@@ -17,6 +17,7 @@ def test_default_middleware_order_is_stable() -> None:
     assert registry.names == (
         "input_sanitization",
         "thread_context",
+        "durable_context",
         "provider_error",
         "tool_error",
         "model_call_limit",
@@ -26,6 +27,7 @@ def test_default_middleware_order_is_stable() -> None:
     assert [middleware.name for middleware in registry.build(HarnessConfig())] == [
         "InputSanitizationMiddleware",
         "ThreadContextMiddleware",
+        "DurableContextMiddleware",
         "ProviderErrorMiddleware",
         "ToolErrorMiddleware",
         "ModelCallLimitMiddleware",

@@ -44,6 +44,7 @@ class SageHarnessRuntimeAdapter:
         content: str,
         surface: str = "coding",
         surface_context: Mapping[str, Any] | None = None,
+        durable_context: Mapping[str, Any] | None = None,
     ) -> AsyncIterator[RunEvent]:
         """Yield only public graph events; the host adds the terminal event."""
         context = HarnessRunContext(
@@ -52,7 +53,10 @@ class SageHarnessRuntimeAdapter:
             workspace_id=workspace_id,
             workspace_path=workspace_path,
             surface=surface,
-            metadata=dict(surface_context or {}),
+            metadata={
+                "surface_context": dict(surface_context or {}),
+                "durable_context": dict(durable_context or {}),
+            },
         )
         request = HarnessRunRequest(
             thread_id=session_id,

@@ -47,7 +47,7 @@ class TodoItem(TypedDict, total=False):
 
     id: str
     title: str
-    status: Literal["pending", "in_progress", "completed", "cancelled"]
+    status: Literal["pending", "in_progress", "completed", "blocked", "cancelled"]
 
 
 class GoalState(TypedDict, total=False):

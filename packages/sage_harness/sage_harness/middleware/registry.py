@@ -17,6 +17,7 @@ from sage_harness.middleware.builtin import (
     TokenBudgetMiddleware,
     ToolErrorMiddleware,
 )
+from sage_harness.middleware.durable_context import DurableContextMiddleware
 
 Middleware = AgentMiddleware[Any, Any, Any]
 MiddlewareFactory = Callable[[HarnessConfig], Middleware]
@@ -82,6 +83,7 @@ def build_default_registry() -> MiddlewareRegistry:
         [
             MiddlewareSpec("input_sanitization", lambda config: InputSanitizationMiddleware()),
             MiddlewareSpec("thread_context", lambda config: ThreadContextMiddleware()),
+            MiddlewareSpec("durable_context", lambda config: DurableContextMiddleware()),
             MiddlewareSpec("provider_error", lambda config: ProviderErrorMiddleware()),
             MiddlewareSpec("tool_error", lambda config: ToolErrorMiddleware()),
             MiddlewareSpec(
