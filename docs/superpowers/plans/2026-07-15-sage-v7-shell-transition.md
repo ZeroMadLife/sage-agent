@@ -1,7 +1,7 @@
 # Sage V7-P1.1 共享 Shell 与 Composer 形变实施计划
 
-> 目标分支：`codex/feat-v7-shell-transition`  
-> 集成分支：`dev/sage-v7`  
+> 目标分支：`codex/feat-v7-shell-transition`
+> 集成分支：`dev/sage-v7`
 > 对应规格：`docs/superpowers/specs/2026-07-15-sage-v7-shell-transition-design.md`
 
 ## 交付切片 1：锁定现有契约

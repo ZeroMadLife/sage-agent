@@ -1,8 +1,8 @@
 # Sage V7.2 可审核知识沉淀设计
 
-> 日期：2026-07-15  
-> 集成分支：`dev/sage-v7`  
-> 短期分支：`codex/feat-v7-2-auditable-knowledge`  
+> 日期：2026-07-15
+> 集成分支：`dev/sage-v7`
+> 短期分支：`codex/feat-v7-2-auditable-knowledge`
 > 知识仓库：`git@github.com:ZeroMadLife/Sage-knowledge.git`
 
 ## 1. 目标
