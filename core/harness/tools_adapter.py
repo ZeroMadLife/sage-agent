@@ -274,11 +274,13 @@ def _build_runtime_tool(
                     requirement.description,
                     requirement.pattern_key,
                     approval_id=approval_id,
+                    run_id=run_id,
                 )
                 if entry.result is None:
                     decision = interrupt(
                         {
                             "type": "approval_required",
+                            "runtime_profile": "deerflow_v2",
                             "approval_id": entry.approval_id,
                             "tool": requirement.tool,
                             "args": requirement.args,

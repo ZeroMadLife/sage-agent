@@ -73,6 +73,54 @@ async def test_closing_subscription_does_not_cancel_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_suspend_and_resume_existing_run_preserves_one_start_event(
+    tmp_path: Path,
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    first = RunCoordinator(journal, owner_id="first-owner")
+    release = asyncio.Event()
+
+    async def blocked():
+        yield RunEvent(
+            kind="approval",
+            status="blocked",
+            payload={
+                "type": "approval_required",
+                "runtime_profile": "deerflow_v2",
+                "approval_id": "appr-1",
+                "tool": "write_file",
+                "tool_call_id": "call-1",
+                "args_digest": "a" * 64,
+            },
+        )
+        await release.wait()
+
+    task = await first.start_run("run-1", blocked())
+    while journal.recoverable_approval("run-1") is None:
+        await asyncio.sleep(0)
+    assert await first.suspend_for_restart("run-1") is True
+    assert task.cancelled()
+    assert journal.active_run_id() is None
+
+    second = RunCoordinator(
+        SessionEventJournal(tmp_path, "session-1"),
+        owner_id="second-owner",
+    )
+    with pytest.raises(ActiveRunConflictError, match="resumable approval"):
+        await second.start_run("run-2", _events())
+    resumed = await second.start_existing_run(
+        "run-1",
+        _events(RunEvent(kind="assistant", status="completed", payload={"content": "done"})),
+    )
+    await resumed
+
+    events = journal.replay(after=0, limit=20).items
+    assert [event.payload.get("event") for event in events].count("run_started") == 1
+    assert events[-1].kind == "terminal"
+    assert events[-1].status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_only_one_active_run_per_session(tmp_path: Path) -> None:
     coordinator = RunCoordinator(SessionEventJournal(tmp_path, "session-1"))
     release = asyncio.Event()

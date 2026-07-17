@@ -186,6 +186,8 @@ async def _runtime_timeline_events(
     harness_checkpointer: Any | None = None,
     mcp_catalog: McpCatalogPort | None = None,
     app_env: str = "development",
+    resume_value: object | None = None,
+    resume_attempt: int = 0,
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
     if runtime.runtime_profile == "deerflow_v2":
@@ -199,6 +201,8 @@ async def _runtime_timeline_events(
             checkpointer=harness_checkpointer,
             mcp_catalog=mcp_catalog,
             app_env=app_env,
+            resume_value=resume_value,
+            resume_attempt=resume_attempt,
         ):
             yield graph_event
         return
@@ -267,23 +271,28 @@ async def _deerflow_timeline_events(
     checkpointer: Any,
     mcp_catalog: McpCatalogPort | None,
     app_env: str = "development",
+    resume_value: object | None = None,
+    resume_attempt: int = 0,
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
     async with runtime.harness_turn(run_id):
-        prepared = await runtime.prepare_harness_context(
-            user_message=content,
-            run_id=run_id,
-        )
-        runtime.append_harness_message(role="user", content=content, run_id=run_id)
-        yield RunEvent(
-            kind="user",
-            status="completed",
-            payload={"type": "user", "content": content, "run_id": run_id},
-            event_id=f"harness:{run_id}:user",
-        )
+        is_resume = resume_value is not None
+        prepared = None
+        if not is_resume:
+            prepared = await runtime.prepare_harness_context(
+                user_message=content,
+                run_id=run_id,
+            )
+            runtime.append_harness_message(role="user", content=content, run_id=run_id)
+            yield RunEvent(
+                kind="user",
+                status="completed",
+                payload={"type": "user", "content": content, "run_id": run_id},
+                event_id=f"harness:{run_id}:user",
+            )
 
         durable_context = build_deerflow_durable_context(runtime)
-        context_event = context_status_event(runtime, run_id, durable_context)
+        context_event = None if is_resume else context_status_event(runtime, run_id, durable_context)
         if prepared is not None:
             for raw_event in prepared.events:
                 payload = raw_event.model_dump()
@@ -333,7 +342,7 @@ async def _deerflow_timeline_events(
             mcp_snapshot = await mcp_catalog.load_tools(mcp_scope)
             mcp_tools = mcp_snapshot.tools
             mcp_servers = mcp_snapshot.catalog.servers
-        if mcp_catalog is not None:
+        if mcp_catalog is not None and not is_resume:
             yield await mcp_catalog_event(
                 mcp_catalog,
                 session_id=runtime.session_id,
@@ -389,9 +398,9 @@ async def _deerflow_timeline_events(
                     "summary_text": summary_text,
                 }
             response_parts: list[str] = []
-            resume_attempt = 0
-            resume = False
-            resume_value: object | None = None
+            current_resume_attempt = resume_attempt
+            resume = is_resume
+            current_resume_value = resume_value
             while True:
                 approval_to_resume: str | None = None
                 async for event in adapter.stream_turn(
@@ -405,8 +414,8 @@ async def _deerflow_timeline_events(
                     graph_compaction=graph_compaction if not resume else None,
                     sandbox=sandbox.descriptor,
                     resume=resume,
-                    resume_value=resume_value,
-                    resume_attempt=resume_attempt,
+                    resume_value=current_resume_value,
+                    resume_attempt=current_resume_attempt,
                 ):
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
@@ -431,8 +440,8 @@ async def _deerflow_timeline_events(
                         approval_to_resume,
                     )
                 resume = True
-                resume_attempt += 1
-                resume_value = {
+                current_resume_attempt += 1
+                current_resume_value = {
                     "approval_id": approval_to_resume,
                     "choice": choice,
                 }
@@ -735,6 +744,9 @@ async def resume_coding_session(
         ),
     )
     sessions[session_id] = runtime
+    pending_approval = coordinator.journal.recoverable_approval()
+    if pending_approval is not None:
+        runtime.approval_manager.restore_pending(pending_approval)
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(persisted_workspace),
@@ -1109,11 +1121,93 @@ async def coding_approval_respond(
     payload: CodingApprovalRespondRequest,
     request: Request,
 ) -> dict[str, bool]:
-    """Resolve a pending tool approval."""
+    """Resolve a pending tool approval and resume a recovered graph run."""
     runtime = _require_runtime(request, session_id)
+    coordinator = request.app.state.coding_run_registry.get(session_id)
+    run_id = runtime.approval_manager.run_id_for(session_id, payload.approval_id)
+    resume_plan: tuple[str, str, dict[str, Any], int] | None = None
+    durable_approval: dict[str, Any] | None = None
+    if (
+        run_id is not None
+        and coordinator.active_run_id is None
+        and runtime.runtime_profile == "deerflow_v2"
+    ):
+        durable_approval = coordinator.journal.recoverable_approval(run_id)
+        if (
+            durable_approval is None
+            or durable_approval.get("approval_id") != payload.approval_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Durable approval checkpoint is unavailable",
+            )
+        resume_context = coordinator.journal.run_resume_context(run_id)
+        if resume_context is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Durable approval run context is unavailable",
+            )
+        content, surface_context = resume_context
+        resume_plan = (
+            run_id,
+            content,
+            surface_context,
+            max(1, int(durable_approval.get("resume_attempt", 1))),
+        )
     ok = runtime.approval_manager.resolve(session_id, payload.approval_id, payload.choice)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Unknown approval: {payload.approval_id}")
+    if resume_plan is not None:
+        resolved_choice = await runtime.approval_manager.wait_for(
+            session_id,
+            payload.approval_id,
+        )
+        if resolved_choice is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Approval resolution is unavailable",
+            )
+        resumed_run_id, content, surface_context, resume_attempt = resume_plan
+        stream = _runtime_timeline_events(
+            runtime,
+            content=content,
+            skill_prompt=None,
+            command="",
+            arguments="",
+            run_id=resumed_run_id,
+            surface_context=surface_context,
+            harness_checkpointer=getattr(
+                request.app.state,
+                "sage_harness_checkpointer",
+                None,
+            ),
+            mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
+            app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
+            resume_value={
+                "approval_id": payload.approval_id,
+                "choice": resolved_choice,
+            },
+            resume_attempt=resume_attempt,
+        )
+        try:
+            task = await coordinator.start_existing_run(resumed_run_id, stream)
+        except ActiveRunConflictError:
+            await stream.aclose()
+            if coordinator.active_run_id != resumed_run_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another coding run became active",
+                ) from None
+        except Exception:
+            runtime.approval_manager.consume_resolution(
+                session_id,
+                payload.approval_id,
+            )
+            if durable_approval is not None:
+                runtime.approval_manager.restore_pending(durable_approval)
+            raise
+        else:
+            task.add_done_callback(_observe_server_task)
     return {"ok": True}
 
 

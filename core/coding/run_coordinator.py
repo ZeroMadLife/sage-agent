@@ -65,6 +65,7 @@ class RunCoordinator:
         self._active_run_id: str | None = None
         self._active_task: asyncio.Task[None] | None = None
         self._active_fencing_token: int | None = None
+        self._suspend_on_cancel: set[str] = set()
         self._subscribers: set[asyncio.Queue[SessionEvent]] = set()
         self._last_broadcast_sequence = 0
 
@@ -87,6 +88,15 @@ class RunCoordinator:
             if self._active_run_id is not None:
                 raise ActiveRunConflictError(
                     f"session already has active run {self._active_run_id}"
+                )
+            recoverable_approval = await asyncio.to_thread(
+                self.journal.recoverable_approval
+            )
+            if recoverable_approval is not None:
+                blocked_run_id = str(recoverable_approval.get("run_id", "unknown"))
+                await _close_unowned_stream(event_stream)
+                raise ActiveRunConflictError(
+                    f"session has resumable approval for run {blocked_run_id}"
                 )
             begin_task = asyncio.create_task(
                 self._begin_run(run_id, surface_context=frozen_surface_context)
@@ -148,6 +158,62 @@ class RunCoordinator:
             self._broadcast(stored.event)
             return stored
 
+    async def start_existing_run(
+        self,
+        run_id: str,
+        event_stream: AsyncIterator[RunEvent | Mapping[str, Any]],
+    ) -> asyncio.Task[None]:
+        """Resume an existing nonterminal run without duplicating run_started."""
+        async with self._state_lock:
+            if self._active_run_id is not None:
+                raise ActiveRunConflictError(
+                    f"session already has active run {self._active_run_id}"
+                )
+            begin_task = asyncio.create_task(
+                asyncio.to_thread(
+                    self.journal.resume_run,
+                    run_id,
+                    owner_id=self.owner_id,
+                    owner_pid=self.owner_pid,
+                )
+            )
+            try:
+                await asyncio.shield(begin_task)
+            except asyncio.CancelledError:
+                try:
+                    await _wait_through_cancellation(begin_task)
+                except Exception:
+                    pass
+                else:
+                    fencing_token = begin_task.result()
+                    release_task = asyncio.create_task(
+                        asyncio.to_thread(
+                            self.journal.release_run_lease,
+                            run_id,
+                            owner_id=self.owner_id,
+                            fencing_token=fencing_token,
+                        )
+                    )
+                    await _wait_through_cancellation(release_task)
+                close_task = asyncio.create_task(_close_unowned_stream(event_stream))
+                await _wait_through_cancellation(close_task)
+                raise
+            except SessionRunLeaseConflictError as exc:
+                await _close_unowned_stream(event_stream)
+                raise ActiveRunConflictError(str(exc)) from exc
+            except Exception:
+                await _close_unowned_stream(event_stream)
+                raise
+            fencing_token = begin_task.result()
+            self._active_run_id = run_id
+            self._active_fencing_token = fencing_token
+            task = asyncio.create_task(
+                self._consume(run_id, fencing_token, event_stream),
+                name=f"sage-run-resume-{run_id}",
+            )
+            self._active_task = task
+            return task
+
     async def cancel(self, run_id: str) -> bool:
         """Cancel the matching active task; subscribers are unaffected."""
         async with self._state_lock:
@@ -171,6 +237,24 @@ class RunCoordinator:
                 self._active_run_id = None
                 self._active_task = None
                 self._active_fencing_token = None
+        return True
+
+    async def suspend_for_restart(self, run_id: str) -> bool:
+        """Stop an app-owned task while preserving its resumable checkpoint."""
+        async with self._state_lock:
+            if self._active_run_id != run_id or self._active_task is None:
+                return False
+            task = self._active_task
+            self._suspend_on_cancel.add(run_id)
+            task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        async with self._state_lock:
+            if self._active_task is task:
+                self._active_run_id = None
+                self._active_task = None
+                self._active_fencing_token = None
+            self._suspend_on_cancel.discard(run_id)
         return True
 
     async def subscribe(self, *, after: int = 0) -> AsyncIterator[SessionEvent]:
@@ -236,6 +320,11 @@ class RunCoordinator:
                 recovered.append(lease_event.run_id)
         run_ids = await asyncio.to_thread(self.journal.unfinished_run_ids)
         for run_id in run_ids:
+            recoverable_approval = await asyncio.to_thread(
+                self.journal.recoverable_approval, run_id
+            )
+            if recoverable_approval is not None:
+                continue
             event = RunEvent(
                 kind="terminal",
                 status="interrupted",
@@ -276,17 +365,28 @@ class RunCoordinator:
                     fencing_token=fencing_token,
                 )
         except asyncio.CancelledError:
-            cleanup_task = asyncio.create_task(
-                self._persist(
-                    run_id=run_id,
-                    event=RunEvent(
-                        kind="terminal",
-                        status="cancelled",
-                        payload={"event": "run_cancelled"},
-                    ),
-                    fencing_token=fencing_token,
+            cleanup_task: asyncio.Task[Any]
+            if run_id in self._suspend_on_cancel:
+                cleanup_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self.journal.release_run_lease,
+                        run_id,
+                        owner_id=self.owner_id,
+                        fencing_token=fencing_token,
+                    )
                 )
-            )
+            else:
+                cleanup_task = asyncio.create_task(
+                    self._persist(
+                        run_id=run_id,
+                        event=RunEvent(
+                            kind="terminal",
+                            status="cancelled",
+                            payload={"event": "run_cancelled"},
+                        ),
+                        fencing_token=fencing_token,
+                    )
+                )
             await _wait_through_cancellation(cleanup_task)
             raise
         except Exception as exc:
@@ -301,11 +401,14 @@ class RunCoordinator:
             )
             raise
         finally:
+            with suppress(Exception):
+                await _close_unowned_stream(event_stream)
             async with self._state_lock:
                 if self._active_run_id == run_id:
                     self._active_run_id = None
                     self._active_task = None
                     self._active_fencing_token = None
+                self._suspend_on_cancel.discard(run_id)
 
     async def _persist(
         self, *, run_id: str, event: RunEvent, fencing_token: int | None = None
@@ -350,7 +453,13 @@ class RunCoordinator:
 
 
 async def _wait_through_cancellation(
-    task: asyncio.Task[BeginRunResult] | asyncio.Task[SessionEvent] | asyncio.Task[None],
+    task: (
+        asyncio.Task[BeginRunResult]
+        | asyncio.Task[SessionEvent]
+        | asyncio.Task[bool]
+        | asyncio.Task[int]
+        | asyncio.Task[None]
+    ),
 ) -> None:
     while not task.done():
         try:

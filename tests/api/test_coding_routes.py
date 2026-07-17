@@ -434,6 +434,72 @@ def test_enabled_deerflow_profile_reuses_approval_endpoint_for_write_tool(tmp_pa
     assert any(item.get("type") == "final" for item in payloads)
 
 
+def test_deerflow_approval_survives_app_restart_and_resumes_same_run(
+    tmp_path: Path,
+) -> None:
+    model = DeerflowApprovalFakeModel()
+
+    def model_factory():
+        return model
+
+    first_app = create_app(
+        coding_model_factory=model_factory,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(first_app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "重启后继续写文件"})
+            approval = None
+            while approval is None:
+                event = websocket.receive_json()
+                if event["payload"].get("type") == "approval_required":
+                    approval = event["payload"]
+        journal = first_app.state.coding_run_registry.get(session_id).journal
+        run_id = str(approval["run_id"])
+
+    assert journal.active_run_id() is None
+    assert journal.recoverable_approval(run_id)["approval_id"] == approval["approval_id"]
+    assert not any(
+        item.kind == "terminal" for item in journal.replay(after=0, limit=100).items
+    )
+
+    restarted = create_app(
+        coding_model_factory=model_factory,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(restarted) as client:
+        resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+        pending = client.get(f"/api/v1/coding/{session_id}/approval/pending")
+        approved = client.post(
+            f"/api/v1/coding/{session_id}/approval/respond",
+            json={"approval_id": approval["approval_id"], "choice": "once"},
+        )
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            events = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    break
+
+    assert resumed.status_code == 200
+    assert pending.status_code == 200
+    assert pending.json()["approval_id"] == approval["approval_id"]
+    assert approved.status_code == 200
+    assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "ok"
+    assert [item["payload"].get("event") for item in events].count("run_started") == 1
+    assert any(item["payload"].get("type") == "approval_granted" for item in events)
+    assert any(item["payload"].get("type") == "final" for item in events)
+
+
 def test_enabled_deerflow_profile_resumes_graph_after_approval_denial(
     tmp_path: Path,
 ) -> None:

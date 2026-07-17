@@ -6,6 +6,7 @@ import asyncio
 import re
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
@@ -77,6 +78,7 @@ class ApprovalManager:
         self._session_approved: dict[str, set[str]] = {}
         self._graph_approval_ids: set[tuple[str, str]] = set()
         self._resolved: dict[tuple[str, str], ApprovalChoice] = {}
+        self._run_ids: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
 
     def submit(
@@ -87,6 +89,7 @@ class ApprovalManager:
         description: str,
         pattern_key: str,
         approval_id: str | None = None,
+        run_id: str | None = None,
     ) -> ApprovalEntry:
         """Create and enqueue a pending approval."""
         with self._lock:
@@ -110,6 +113,8 @@ class ApprovalManager:
                     entry.event.set()
                     return entry
                 self._graph_approval_ids.add(resolved_key)
+                if run_id:
+                    self._run_ids[resolved_key] = run_id
             entry = ApprovalEntry(
                 approval_id=approval_id or f"appr_{uuid4().hex[:12]}",
                 session_id=session_id,
@@ -120,6 +125,26 @@ class ApprovalManager:
             )
             self._queues.setdefault(session_id, []).append(entry)
         return entry
+
+    def restore_pending(self, payload: Mapping[str, Any]) -> ApprovalEntry:
+        """Rehydrate one graph approval after process restart."""
+        required = ("session_id", "approval_id", "tool", "description", "pattern_key")
+        if any(not str(payload.get(key, "")).strip() for key in required):
+            raise ValueError("durable approval payload is incomplete")
+        return self.submit(
+            str(payload["session_id"]),
+            str(payload["tool"]),
+            dict(payload.get("args", {})) if isinstance(payload.get("args"), Mapping) else {},
+            str(payload["description"]),
+            str(payload["pattern_key"]),
+            approval_id=str(payload["approval_id"]),
+            run_id=str(payload.get("run_id", "")) or None,
+        )
+
+    def run_id_for(self, session_id: str, approval_id: str) -> str | None:
+        """Return the graph run bound to one approval."""
+        with self._lock:
+            return self._run_ids.get((session_id, approval_id))
 
     def resolve(self, session_id: str, approval_id: str, choice: ApprovalChoice) -> bool:
         """Resolve a pending approval and wake the waiting tool execution."""
@@ -166,6 +191,7 @@ class ApprovalManager:
             key = (session_id, approval_id)
             choice = self._resolved.pop(key, None)
             self._graph_approval_ids.discard(key)
+            self._run_ids.pop(key, None)
             return choice
 
     def cancel_session(self, session_id: str) -> None:

@@ -43,6 +43,140 @@ def test_replay_survives_restart_with_stable_ids_and_sequences(tmp_path: Path) -
     assert page.has_more is False
 
 
+def test_resume_run_reacquires_lease_without_duplicate_start(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    begun = journal.begin_run("run-1", owner_id="old-owner", owner_pid=os.getpid())
+    journal.append(
+        run_id="run-1",
+        kind="user",
+        status="completed",
+        payload={"type": "user", "content": "continue"},
+        lease_owner_id="old-owner",
+        fencing_token=begun.fencing_token,
+    )
+    assert journal.release_run_lease(
+        "run-1",
+        owner_id="old-owner",
+        fencing_token=begun.fencing_token,
+    )
+
+    token = journal.resume_run(
+        "run-1",
+        owner_id="new-owner",
+        owner_pid=os.getpid(),
+    )
+
+    events = journal.replay(after=0, limit=20).items
+    assert token > begun.fencing_token
+    assert journal.active_run_id() == "run-1"
+    assert [event.payload.get("event") for event in events].count("run_started") == 1
+    assert journal.release_run_lease(
+        "run-1",
+        owner_id="new-owner",
+        fencing_token=token,
+    )
+
+
+def test_recoverable_approval_only_returns_checkpoint_backed_interrupt(
+    tmp_path: Path,
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    begun = journal.begin_run(
+        "run-1",
+        owner_id="owner-1",
+        owner_pid=os.getpid(),
+        surface_context={"surface": "knowledge"},
+    )
+    journal.append(
+        run_id="run-1",
+        kind="user",
+        status="completed",
+        payload={"type": "user", "content": "write note"},
+        lease_owner_id="owner-1",
+        fencing_token=begun.fencing_token,
+    )
+    journal.append(
+        run_id="run-1",
+        kind="approval",
+        status="blocked",
+        payload={
+            "type": "approval_required",
+            "runtime_profile": "deerflow_v2",
+            "approval_id": "appr-1",
+            "tool": "write_file",
+            "args": {"path": "note.txt"},
+            "description": "write_file requires approval.",
+            "pattern_key": "tool:write_file",
+            "tool_call_id": "call-1",
+            "args_digest": "a" * 64,
+        },
+        lease_owner_id="owner-1",
+        fencing_token=begun.fencing_token,
+    )
+
+    approval = journal.recoverable_approval("run-1")
+
+    assert approval is not None
+    assert approval["approval_id"] == "appr-1"
+    assert approval["run_id"] == "run-1"
+    assert approval["resume_attempt"] == 1
+    assert journal.run_resume_context("run-1") == (
+        "write note",
+        {"surface": "knowledge"},
+    )
+
+    journal.append(
+        run_id="run-1",
+        kind="tool",
+        status="completed",
+        payload={"type": "tool_result", "tool_call_id": "call-1"},
+        lease_owner_id="owner-1",
+        fencing_token=begun.fencing_token,
+    )
+    assert journal.recoverable_approval("run-1") is None
+
+
+def test_legacy_approval_is_not_treated_as_checkpoint_recoverable(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.append(
+        run_id="run-legacy",
+        kind="approval",
+        status="blocked",
+        payload={
+            "type": "approval_required",
+            "approval_id": "legacy-approval",
+            "tool": "run_shell",
+        },
+    )
+
+    assert journal.recoverable_approval("run-legacy") is None
+
+
+def test_terminal_run_never_exposes_stale_recoverable_approval(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.append(
+        run_id="run-terminal",
+        kind="approval",
+        status="blocked",
+        payload={
+            "type": "approval_required",
+            "runtime_profile": "deerflow_v2",
+            "approval_id": "appr-terminal",
+            "tool": "write_file",
+            "tool_call_id": "call-terminal",
+            "args_digest": "b" * 64,
+        },
+    )
+    journal.append_terminal_once(
+        run_id="run-terminal",
+        status="cancelled",
+        payload={"event": "run_cancelled"},
+    )
+
+    assert journal.recoverable_approval("run-terminal") is None
+    assert journal.recoverable_approval() is None
+
+
 def test_replay_paginates_at_boundaries(tmp_path: Path) -> None:
     journal = SessionEventJournal(tmp_path, "session-1")
     for index in range(5):

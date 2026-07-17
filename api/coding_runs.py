@@ -43,7 +43,7 @@ class CodingRunRegistry:
             return coordinator
 
     async def shutdown(self) -> None:
-        """Cancel app-owned tasks and await their durable terminal cleanup."""
+        """Stop app-owned tasks while preserving checkpoint-backed approvals."""
         active = [
             (coordinator, coordinator.active_run_id)
             for coordinator in self._coordinators.values()
@@ -51,9 +51,18 @@ class CodingRunRegistry:
         ]
         await asyncio.gather(
             *(
-                coordinator.cancel(run_id)
+                self._shutdown_run(coordinator, run_id)
                 for coordinator, run_id in active
                 if run_id is not None
             ),
             return_exceptions=True,
         )
+
+    async def _shutdown_run(self, coordinator: RunCoordinator, run_id: str) -> bool:
+        pending = await asyncio.to_thread(
+            coordinator.journal.recoverable_approval,
+            run_id,
+        )
+        if pending is not None:
+            return await coordinator.suspend_for_restart(run_id)
+        return await coordinator.cancel(run_id)
