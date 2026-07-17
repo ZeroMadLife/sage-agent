@@ -22,7 +22,7 @@ const navigation = ref<HTMLElement | null>(null)
 
 const items = [
   { label: '今天', target: '/assistant', icon: Home },
-  { label: '历史对话', target: '/coding', icon: History },
+  { label: '主对话', target: '/coding', icon: History },
   { label: '知识库', target: '/knowledge', icon: BookOpenText },
   { label: '成长记录', target: '/evolution', icon: Sprout },
   { label: '公开主页', target: '/public', icon: Share2 },

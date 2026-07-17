@@ -4,6 +4,7 @@ import { Focus, Minus, Plus, X } from 'lucide-vue-next'
 import Graph from 'graphology'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
 import type Sigma from 'sigma'
+import type { NodeHoverDrawingFunction } from 'sigma/rendering'
 import type {
   KnowledgeGraph,
   KnowledgeGraphCommunities,
@@ -46,6 +47,45 @@ let hoveredNodeId: string | null = null
 let dimNodeColor = 'rgba(126, 132, 142, 0.2)'
 let dimEdgeColor = 'rgba(126, 132, 142, 0.08)'
 let focusEdgeColor = '#58c78b'
+let hoverSurfaceColor = '#25282d'
+let hoverBorderColor = '#4a5059'
+let hoverTextColor = '#f3f4f6'
+
+const drawSageNodeHover: NodeHoverDrawingFunction = (context, data, settings) => {
+  const label = typeof data.label === 'string' ? data.label : ''
+  const fontSize = settings.labelSize
+  const paddingX = 8
+  const boxHeight = fontSize + 10
+  const labelX = data.x + data.size + 7
+
+  context.save()
+  context.font = `${settings.labelWeight} ${fontSize}px ${settings.labelFont}`
+  context.lineWidth = 1
+  context.shadowBlur = 12
+  context.shadowColor = 'rgba(0, 0, 0, 0.28)'
+
+  context.beginPath()
+  context.arc(data.x, data.y, data.size + 3, 0, Math.PI * 2)
+  context.fillStyle = hoverSurfaceColor
+  context.fill()
+  context.strokeStyle = data.color
+  context.stroke()
+
+  if (label) {
+    const boxWidth = Math.ceil(context.measureText(label).width) + paddingX * 2
+    const boxY = data.y - boxHeight / 2
+    context.beginPath()
+    context.roundRect(labelX, boxY, boxWidth, boxHeight, 5)
+    context.fillStyle = hoverSurfaceColor
+    context.fill()
+    context.shadowBlur = 0
+    context.strokeStyle = hoverBorderColor
+    context.stroke()
+    context.fillStyle = hoverTextColor
+    context.fillText(label, labelX + paddingX, data.y + fontSize / 3)
+  }
+  context.restore()
+}
 
 const typeColors: Record<KnowledgeGraphNodeKind, string> = {
   page: '#3b82f6',
@@ -274,9 +314,14 @@ async function mountRenderer(requestId: number) {
   const darkTheme = document.documentElement.dataset.theme === 'dark'
   const mutedEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.035)' : 'rgba(113, 122, 137, 0.04)'
   const linkedEdgeColor = darkTheme ? 'rgba(111, 148, 205, 0.055)' : 'rgba(72, 114, 177, 0.06)'
-  dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.2)' : 'rgba(113, 122, 137, 0.2)'
+  dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.09)' : 'rgba(113, 122, 137, 0.12)'
   dimEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.08)' : 'rgba(113, 122, 137, 0.08)'
   focusEdgeColor = brandColor
+  hoverSurfaceColor = rootStyles.getPropertyValue('--sage-surface-raised').trim()
+    || (darkTheme ? '#25282d' : '#ffffff')
+  hoverBorderColor = rootStyles.getPropertyValue('--sage-border-strong').trim()
+    || (darkTheme ? '#4a5059' : '#c7ccd4')
+  hoverTextColor = labelColor
   props.graph.nodes.filter(isNodeVisible).forEach((node, index) => {
     const position = positions.get(node.node_id)
       ?? seedPositions.get(node.node_id)
@@ -342,8 +387,12 @@ async function mountRenderer(requestId: number) {
   try {
     renderer = new SigmaRenderer(graph, container.value, {
       allowInvalidContainer: false,
+      defaultDrawNodeHover: drawSageNodeHover,
       defaultEdgeColor: mutedEdgeColor,
       defaultEdgeType: 'line',
+      hideLabelsOnMove: true,
+      inertiaDuration: 320,
+      inertiaRatio: 1.8,
       labelColor: { color: labelColor },
       labelDensity: 0.05,
       labelFont,
@@ -351,8 +400,11 @@ async function mountRenderer(requestId: number) {
       labelRenderedSizeThreshold: 100,
       labelSize: 12,
       labelWeight: '500',
+      maxCameraRatio: 4,
+      minCameraRatio: 0.16,
       renderEdgeLabels: false,
       stagePadding: 52,
+      zoomDuration: 260,
       zIndex: true,
     })
     sigmaGraph = graph
@@ -413,12 +465,15 @@ function updateRendererSize() {
 function updateSelection() {
   if (!sigmaGraph || !renderer) return
   applyPresentation()
+  const camera = renderer.getCamera()
   if (props.selectedNodeId && sigmaGraph.hasNode(props.selectedNodeId)) {
     const position = renderer.getNodeDisplayData(props.selectedNodeId)
-    if (position) renderer.getCamera().animate(
-      { x: position.x, y: position.y, ratio: 0.42 },
-      { duration: 320 },
+    if (position) camera.animate(
+      { x: position.x, y: position.y, ratio: Math.min(camera.getState().ratio, 0.72) },
+      { duration: 460, easing: 'quadraticInOut' },
     )
+  } else {
+    camera.animatedReset({ duration: 360, easing: 'quadraticInOut' })
   }
 }
 
@@ -534,7 +589,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .graph-surface { position:relative; min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }
-.sigma-container { position:absolute; inset:0; }.graph-controls { position:absolute; right:16px; bottom:16px; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(10px); }.graph-controls button { display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-bottom:1px solid var(--sage-border); color:var(--sage-text-secondary); background:transparent; }.graph-controls button:last-child { border-bottom:0; }.graph-controls button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.graph-error { position:absolute; top:16px; left:50%; margin:0; padding:8px 11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-danger); background:var(--sage-surface); transform:translateX(-50%); }
+.sigma-container { position:absolute; inset:0; cursor:grab; }.sigma-container:active { cursor:grabbing; }.graph-controls { position:absolute; right:16px; bottom:16px; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(10px); }.graph-controls button { display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-bottom:1px solid var(--sage-border); color:var(--sage-text-secondary); background:transparent; }.graph-controls button:last-child { border-bottom:0; }.graph-controls button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.graph-error { position:absolute; top:16px; left:50%; margin:0; padding:8px 11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-danger); background:var(--sage-surface); transform:translateX(-50%); }
 .graph-focus-summary { position:absolute; left:16px; bottom:16px; display:grid; grid-template-columns:10px minmax(0,1fr) 28px; align-items:center; gap:10px; width:min(390px,calc(100% - 82px)); min-height:54px; padding:8px 8px 8px 12px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); color:var(--sage-text); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(12px); }.graph-focus-summary>i { width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 4px color-mix(in srgb,currentColor 12%,transparent); }.graph-focus-summary span,.graph-focus-summary strong,.graph-focus-summary small { display:block; min-width:0; }.graph-focus-summary strong { overflow:hidden; font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary small { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:var(--sage-radius); color:var(--sage-text-muted); background:transparent; }.graph-focus-summary button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }
 .graph-global-summary { position:absolute; left:16px; bottom:16px; display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:color-mix(in srgb,var(--sage-surface) 90%,transparent); font-size:11px; backdrop-filter:blur(8px); }.graph-global-summary strong { color:var(--sage-text-secondary); font-size:11px; }
 .graph-legend-panel { position:absolute; top:14px; left:14px; display:flex; flex-wrap:wrap; gap:5px; width:min(520px,calc(100% - 100px)); pointer-events:none; }.graph-legend-panel span { display:grid; grid-template-columns:8px minmax(0,auto) auto; align-items:center; gap:5px; min-width:0; height:26px; padding:0 7px; border:1px solid color-mix(in srgb,var(--sage-border) 76%,transparent); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:color-mix(in srgb,var(--sage-surface) 84%,transparent); font-size:10px; backdrop-filter:blur(8px); }.graph-legend-panel i { width:7px; height:7px; border-radius:50%; }.graph-legend-panel b { max-width:105px; overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }.graph-legend-panel small { color:var(--sage-text-muted); font-size:9px; }

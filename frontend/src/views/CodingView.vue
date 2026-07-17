@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Eye, EyeOff, FileText, History, House, ScrollText, Settings, Waypoints, X } from 'lucide-vue-next'
+import { Eye, EyeOff, FileText, History, House, ScrollText, Settings, X } from 'lucide-vue-next'
 import {
   CodingApprovalCard,
   CodingComposer,
   CodingDiffDrawer,
   CodingFilesDrawer,
   CodingGitBadge,
+  CodingHarnessWorkbench,
   CodingMessageTurn,
   CodingPlanApproval,
   CodingPlanPreview,
@@ -15,7 +16,7 @@ import {
   CodingSidebar,
   CodingThinkingIndicator,
 } from '../components/coding'
-import { ChatTimeline, HarnessRunStatus } from '../components/harness'
+import { ChatHarnessLayout, ChatTimeline } from '../components/harness'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { useCodingStore } from '../stores/coding'
 import { useMarkdown } from '../composables/useMarkdown'
@@ -28,7 +29,7 @@ const router = useRouter()
 const showPlanPreview = ref(false)
 const filesDrawerVisible = ref(false)
 const leftOpen = ref(false)
-const harnessPathVisible = ref(false)
+const selectedHarnessRunId = ref('')
 const deepLinkError = ref('')
 const leftToggleRef = ref<HTMLButtonElement | null>(null)
 const leftSheetRef = ref<HTMLElement | null>(null)
@@ -60,8 +61,13 @@ const currentSessionTitle = computed(() => currentSession.value?.title || '未�
 const currentRunStatus = computed(() => store.activeRun || store.isThinking ? '运行中' : '已就绪')
 const harnessProjection = computed(() => projectLatestCodingHarness(
   store.visibleTimeline,
-  store.activeRun?.run_id || '',
+  selectedHarnessRunId.value || store.activeRun?.run_id || '',
 ))
+const harnessToolCallCount = computed(() => store.visibleTimeline.filter((event) => (
+  event.run_id === harnessProjection.value.runId
+  && event.kind === 'tool'
+  && event.payload.type === 'tool_call'
+)).length)
 const mainInert = computed(() => leftOpen.value)
 const drawerError = ref('')
 
@@ -117,8 +123,13 @@ const optimisticAttachedToTurn = computed(() => {
 })
 
 watch(() => store.activeRun?.run_id || '', (runId, previousRunId) => {
-  if (runId && runId !== previousRunId) harnessPathVisible.value = true
+  if (runId && runId !== previousRunId) selectedHarnessRunId.value = runId
 })
+watch(() => store.sessionId, () => { selectedHarnessRunId.value = '' })
+
+function selectHarnessRun(runId: string) {
+  if (runId) selectedHarnessRunId.value = runId
+}
 
 const outputSignature = computed(() => JSON.stringify({
   session: store.sessionId,
@@ -364,93 +375,110 @@ onBeforeUnmount(() => {
         <CodingSidebar @navigate="navigateSession" @new-session="startNewSession" @archive-current="archiveCurrentSession" @settings="openSettings" @close="closeLeftSheet" />
       </aside>
 
-      <main class="pane-center" :class="{ 'is-inert': mainInert, 'has-harness-path': harnessPathVisible && harnessProjection.runId }" :inert="mainInert || undefined" :aria-hidden="mainInert ? 'true' : undefined">
-        <header class="session-titlebar">
-          <div class="session-title-copy"><strong :title="currentSessionTitle">{{ currentSessionTitle }}</strong><span :class="{ running: store.activeRun || store.isThinking }">{{ currentRunStatus }}</span></div>
-          <div class="titlebar-actions">
-            <button ref="leftToggleRef" class="header-icon session-history-toggle" type="button" title="打开会话历史" aria-label="打开会话" @click="openLeftSheet"><History :size="16" /></button>
-            <button class="header-icon process-toggle" type="button" :title="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-label="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-pressed="showToolProcess" @click="showToolProcess = !showToolProcess"><Eye v-if="showToolProcess" :size="16" /><EyeOff v-else :size="16" /></button>
-            <button class="header-icon harness-toggle" type="button" :disabled="!harnessProjection.runId" :title="harnessPathVisible ? '隐藏 Harness 运行路径' : '显示 Harness 运行路径'" :aria-label="harnessPathVisible ? '隐藏 Harness 运行路径' : '显示 Harness 运行路径'" :aria-pressed="harnessPathVisible" @click="harnessPathVisible = !harnessPathVisible"><Waypoints :size="16" /></button>
-            <RouterLink class="home-link" to="/assistant" aria-label="返回今天" title="返回今天"><House :size="16" /></RouterLink>
-            <button class="files-toggle" type="button" aria-label="打开文件" title="打开文件" @click="openFilesDrawer"><FileText :size="16" /></button>
-            <CodingGitBadge />
-            <button class="header-icon" type="button" title="打开设置" aria-label="打开设置" @click="openSettings"><Settings :size="16" /></button>
-          </div>
-        </header>
-        <section v-if="harnessPathVisible && harnessProjection.runId" class="harness-path-panel">
-          <HarnessRunStatus :projection="harnessProjection" />
-        </section>
-        <ChatTimeline
-          class="message-area"
-          :output-signature="outputSignature"
-          :message-count="store.messages.length"
-          :session-key="store.sessionId"
-          :timeline-ready="store.timelineInitialized"
-          :scroll-anchor="store.scrollAnchor"
-          :has-more="store.timelineHasMore"
-          :loading="store.timelineLoading"
-          :is-empty="store.messages.length === 0"
-          :load-older="store.loadOlderTimeline"
-          @anchor-change="store.setScrollAnchor"
-        >
-          <template #empty>
-            <div class="empty-state">
-            <strong>Sage 已就绪</strong><span>输入编码任务，或使用 /review 开始审查。</span>
-            </div>
+      <main class="pane-center" :class="{ 'is-inert': mainInert }" :inert="mainInert || undefined" :aria-hidden="mainInert ? 'true' : undefined">
+        <ChatHarnessLayout class="coding-harness-layout" surface-label="Coding" chat-label="主对话" :show-details="false">
+          <template #canvas>
+            <section class="harness-workbench-pane">
+              <header class="session-titlebar">
+                <div class="session-title-copy"><strong :title="currentSessionTitle">{{ currentSessionTitle }}</strong><span :class="{ running: store.activeRun || store.isThinking }">{{ currentRunStatus }}</span></div>
+                <div class="titlebar-actions">
+                  <button ref="leftToggleRef" class="header-icon session-history-toggle" type="button" title="打开会话历史" aria-label="打开会话" @click="openLeftSheet"><History :size="16" /></button>
+                  <button class="header-icon process-toggle" type="button" :title="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-label="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-pressed="showToolProcess" @click="showToolProcess = !showToolProcess"><Eye v-if="showToolProcess" :size="16" /><EyeOff v-else :size="16" /></button>
+                  <RouterLink class="home-link" to="/assistant" aria-label="返回今天" title="返回今天"><House :size="16" /></RouterLink>
+                  <button class="files-toggle" type="button" aria-label="打开文件" title="打开文件" @click="openFilesDrawer"><FileText :size="16" /></button>
+                  <CodingGitBadge />
+                  <button class="header-icon" type="button" title="打开设置" aria-label="打开设置" @click="openSettings"><Settings :size="16" /></button>
+                </div>
+              </header>
+              <CodingHarnessWorkbench
+                :projection="harnessProjection"
+                :session-title="currentSessionTitle"
+                :tool-call-count="harnessToolCallCount"
+              />
+            </section>
           </template>
-          <CodingMessageTurn
-            v-for="(msg, index) in store.legacyMessages"
-            :key="`legacy:${index}:${msg.role}:${msg.content}`"
-            :message="{ ...msg, id: `legacy:${index}` }"
-            :rendered-content="render(msg.content)"
-            :show-process="showToolProcess"
-          />
-          <template v-for="turn in store.turns" :key="turn.id">
-            <div class="timeline-turn" :data-timeline-turn-id="turn.id">
-              <CodingMessageTurn
-                v-if="isActiveTurn(turn.run_id) && !turnHasUser(turn.run_id) && store.optimisticMessage"
-                :message="store.optimisticMessage"
-                :rendered-content="render(store.optimisticMessage.content)"
-                :show-process="showToolProcess"
-              />
-              <CodingMessageTurn v-for="msg in userMessagesForRun(turn.run_id)" :key="msg.id" :message="msg" :rendered-content="render(msg.content)" :show-process="showToolProcess" />
-              <div v-if="showThinkingIndicator && isActiveTurn(turn.run_id) && !runHasAssistantReply(turn.run_id)" class="active-run-status">
-                <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
-              </div>
-              <CodingApprovalCard v-if="isActiveTurn(turn.run_id) && store.pendingApproval" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
-              <CodingRunTrace
-                v-if="shouldShowRunTrace(turn.run_id, turn.tools.length, turn.approvals.length)"
-                :run-id="turn.run_id"
-                :tools="turn.tools"
-                :audit="auditForRun(turn.run_id)"
-                :active="isActiveTurn(turn.run_id)"
-                :pending-tool="pendingToolForRun(turn.run_id)"
-              />
-              <CodingMessageTurn
-                v-for="msg in assistantMessagesForRun(turn.run_id)"
-                :key="msg.id"
-                :message="msg"
-                :rendered-content="render(msg.content)"
-                :show-process="false"
-                :diff-file-count="store.diffInfoByRun[turn.run_id]?.file_count || 0"
-                @view-diff="store.openRunDiff(turn.run_id)"
-              />
-            </div>
+
+          <template #chat>
+            <section class="coding-chat-pane">
+              <ChatTimeline
+                class="message-area"
+                :output-signature="outputSignature"
+                :message-count="store.messages.length"
+                :session-key="store.sessionId"
+                :timeline-ready="store.timelineInitialized"
+                :scroll-anchor="store.scrollAnchor"
+                :has-more="store.timelineHasMore"
+                :loading="store.timelineLoading"
+                :is-empty="store.messages.length === 0"
+                :load-older="store.loadOlderTimeline"
+                @anchor-change="store.setScrollAnchor"
+              >
+                <template #empty>
+                  <div class="empty-state"><strong>Sage 已就绪</strong><span>输入编码任务，或使用 /review 开始审查。</span></div>
+                </template>
+                <CodingMessageTurn
+                  v-for="(msg, index) in store.legacyMessages"
+                  :key="`legacy:${index}:${msg.role}:${msg.content}`"
+                  :message="{ ...msg, id: `legacy:${index}` }"
+                  :rendered-content="render(msg.content)"
+                  :show-process="showToolProcess"
+                />
+                <template v-for="turn in store.turns" :key="turn.id">
+                  <div
+                    class="timeline-turn"
+                    :class="{ 'is-harness-selected': harnessProjection.runId === turn.run_id }"
+                    :data-timeline-turn-id="turn.id"
+                    :data-harness-selected="harnessProjection.runId === turn.run_id"
+                    @click="selectHarnessRun(turn.run_id)"
+                    @focusin="selectHarnessRun(turn.run_id)"
+                  >
+                    <CodingMessageTurn
+                      v-if="isActiveTurn(turn.run_id) && !turnHasUser(turn.run_id) && store.optimisticMessage"
+                      :message="store.optimisticMessage"
+                      :rendered-content="render(store.optimisticMessage.content)"
+                      :show-process="showToolProcess"
+                    />
+                    <CodingMessageTurn v-for="msg in userMessagesForRun(turn.run_id)" :key="msg.id" :message="msg" :rendered-content="render(msg.content)" :show-process="showToolProcess" />
+                    <div v-if="showThinkingIndicator && isActiveTurn(turn.run_id) && !runHasAssistantReply(turn.run_id)" class="active-run-status">
+                      <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
+                    </div>
+                    <CodingApprovalCard v-if="isActiveTurn(turn.run_id) && store.pendingApproval" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
+                    <CodingRunTrace
+                      v-if="shouldShowRunTrace(turn.run_id, turn.tools.length, turn.approvals.length)"
+                      :run-id="turn.run_id"
+                      :tools="turn.tools"
+                      :audit="auditForRun(turn.run_id)"
+                      :active="isActiveTurn(turn.run_id)"
+                      :pending-tool="pendingToolForRun(turn.run_id)"
+                    />
+                    <CodingMessageTurn
+                      v-for="msg in assistantMessagesForRun(turn.run_id)"
+                      :key="msg.id"
+                      :message="msg"
+                      :rendered-content="render(msg.content)"
+                      :show-process="false"
+                      :diff-file-count="store.diffInfoByRun[turn.run_id]?.file_count || 0"
+                      @view-diff="store.openRunDiff(turn.run_id)"
+                    />
+                  </div>
+                </template>
+                <CodingMessageTurn
+                  v-if="store.optimisticMessage && !optimisticAttachedToTurn"
+                  :message="store.optimisticMessage"
+                  :rendered-content="render(store.optimisticMessage.content)"
+                  :show-process="showToolProcess"
+                />
+                <CodingApprovalCard v-if="store.pendingApproval && !store.activeRun" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
+                <div v-if="showThinkingIndicator && !store.activeRun" class="active-run-status">
+                  <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
+                </div>
+                <CodingPlanApproval v-if="store.planReview" />
+                <p v-if="store.errorMessage || deepLinkError" class="error-text" role="alert">{{ store.errorMessage || deepLinkError }}</p>
+              </ChatTimeline>
+              <CodingComposer />
+            </section>
           </template>
-          <CodingMessageTurn
-            v-if="store.optimisticMessage && !optimisticAttachedToTurn"
-            :message="store.optimisticMessage"
-            :rendered-content="render(store.optimisticMessage.content)"
-            :show-process="showToolProcess"
-          />
-          <CodingApprovalCard v-if="store.pendingApproval && !store.activeRun" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
-          <div v-if="showThinkingIndicator && !store.activeRun" class="active-run-status">
-            <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
-          </div>
-          <CodingPlanApproval v-if="store.planReview" />
-          <p v-if="store.errorMessage || deepLinkError" class="error-text" role="alert">{{ store.errorMessage || deepLinkError }}</p>
-        </ChatTimeline>
-        <CodingComposer />
+        </ChatHarnessLayout>
       </main>
     </div>
 
@@ -465,11 +493,11 @@ onBeforeUnmount(() => {
 .is-inert { pointer-events:none; }
 .header-icon { display:grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; }.header-icon:hover,.header-icon[aria-pressed="true"] { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }
 .plan-banner { grid-row:1; display:flex; align-items:center; gap:8px; min-height:34px; padding:0 12px; border-bottom:1px solid #cddcf2; color:#244b82; background:#eff5fd; font-size:var(--sage-font-sm); }.plan-banner span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.plan-banner button { margin-left:auto; min-height:24px; border:1px solid #adc5e7; border-radius:5px; color:#1d4ed8; background:#fff; font-size:var(--sage-font-xs); }
-.chat-shell { grid-row:2; position:relative; min-height:0; height:100%; overflow:hidden; }.pane-left,.pane-center { min-height:0; }.pane-left { position:absolute; z-index:32; inset:0 auto 0 0; width:min(340px,100%); overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); animation:session-drawer-in .18s ease-out; }.pane-center { position:relative; display:grid; grid-template-rows:56px minmax(0,1fr) auto; width:100%; height:100%; min-width:0; min-height:0; background:#fff; }.session-titlebar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; padding:0 clamp(16px,4vw,52px); border-bottom:1px solid #edf0f3; }.session-title-copy { display:flex; align-items:center; gap:9px; min-width:0; }.session-title-copy strong { min-width:0; overflow:hidden; color:#283342; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.session-title-copy span { display:inline-flex; align-items:center; flex:none; color:#748091; font-size:var(--sage-font-xs); }.session-title-copy span::before { width:6px; height:6px; margin-right:5px; border-radius:50%; background:#a7afb9; content:''; }.session-title-copy span.running { color:#137333; }.session-title-copy span.running::before { background:#16a34a; }.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:0; }.files-toggle,.home-link { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; text-decoration:none; }.files-toggle:hover,.home-link:hover { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }
-.pane-center.has-harness-path { grid-template-rows:48px minmax(138px,auto) minmax(0,1fr) auto; }
-.harness-path-panel { min-height:0; max-height:260px; overflow:auto; border-bottom:1px solid var(--sage-border); background:var(--sage-surface-raised); }
-.harness-path-panel :deep(.harness-run-status) { padding-top:14px; padding-bottom:16px; }
-.harness-path-panel :deep(.stage-path) { margin-top:18px; }
+.chat-shell { grid-row:2; position:relative; min-height:0; height:100%; overflow:hidden; }.pane-left,.pane-center { min-height:0; }.pane-left { position:absolute; z-index:32; inset:0 auto 0 0; width:min(340px,100%); overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); animation:session-drawer-in .18s ease-out; }.pane-center { position:relative; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.coding-harness-layout { width:100%; height:100%; }.harness-workbench-pane { display:grid; grid-template-rows:48px minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; }.coding-chat-pane { --chat-content-max:100%; display:grid; grid-template-rows:minmax(0,1fr) auto; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.session-titlebar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; padding:0 clamp(16px,3vw,36px); border-bottom:1px solid #edf0f3; }.session-title-copy { display:flex; align-items:center; gap:9px; min-width:0; }.session-title-copy strong { min-width:0; overflow:hidden; color:#283342; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.session-title-copy span { display:inline-flex; align-items:center; flex:none; color:#748091; font-size:var(--sage-font-xs); }.session-title-copy span::before { width:6px; height:6px; margin-right:5px; border-radius:50%; background:#a7afb9; content:''; }.session-title-copy span.running { color:#137333; }.session-title-copy span.running::before { background:#16a34a; }.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:6px; min-width:0; }.files-toggle,.home-link { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; text-decoration:none; }.files-toggle:hover,.home-link:hover { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }
+.coding-chat-pane .message-area { padding:16px 14px 20px; }
+.coding-chat-pane :deep(.composer) { padding-right:12px; padding-left:12px; }
+.timeline-turn { position:relative; margin-left:-6px; padding-left:6px; border-left:2px solid transparent; }
+.timeline-turn.is-harness-selected { border-left-color:color-mix(in srgb,var(--sage-success) 68%,transparent); }
 .active-run-status { display:flex; width:100%; max-width:1120px; padding-left:42px; }
 .active-run-status :deep(.thinking-indicator) { margin:0 0 12px; }
 .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; min-height:100%; color:#8a939e; text-align:center; }.empty-state strong { color:#4b5563; font-size:var(--sage-font-md); }.empty-state span { font-size:var(--sage-font-sm); }
@@ -484,11 +512,9 @@ onBeforeUnmount(() => {
 @media (max-width:1179px) { .pane-left { border-color:var(--sage-border); box-shadow:var(--sage-shadow-drawer); }.session-backdrop { background:rgb(17 18 20 / 42%); }.sheet-close { border-color:var(--sage-border); color:var(--sage-text-secondary); background:var(--sage-surface); } }
 
 /* Hermes-inspired workbench proportions, implemented with Sage tokens and controls. */
-.pane-center { grid-template-rows:48px minmax(0,1fr) auto; }
 .session-titlebar { padding-right:clamp(18px,5vw,64px); padding-left:clamp(18px,5vw,64px); }
 @media (max-width:767px) {
   .session-titlebar { padding-right:10px; padding-left:56px; }
-  .pane-center.has-harness-path { grid-template-rows:48px minmax(120px,38vh) minmax(0,1fr) auto; }
 }
 @media (max-width:1100px) {
   .home-link,.titlebar-actions :deep(.git-badge) { display:none; }
