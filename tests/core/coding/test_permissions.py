@@ -226,6 +226,7 @@ def test_policy_rejects_shell_search_at_command_start_but_allows_pipe_tail(
         "find . -name '*.py'",
         "cat app.py",
         "rg alpha src | head -5",
+        "rg 'alpha|beta' src | tail -5",
         "grep -R alpha . && ls -la",
     ],
 )
@@ -246,6 +247,7 @@ def test_policy_rejects_commands_whose_only_purpose_is_workspace_read(
     "command",
     [
         "pytest -q | tail -5",
+        "ls -la | tail -n +2 | wc -l",
         "python3 --version; pwd; ls -la",
         "echo 'Hello'; pwd; ls -la",
         "npm run build && ls -la",

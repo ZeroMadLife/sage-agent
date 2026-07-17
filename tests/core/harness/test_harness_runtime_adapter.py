@@ -1336,6 +1336,66 @@ def test_runtime_adapter_streams_read_tool_result(tmp_path: Path) -> None:
     assert any(item.get("type") == "text_delta" for item in payloads)
 
 
+def test_runtime_adapter_runs_shell_pipeline_with_computed_result(tmp_path: Path) -> None:
+    async def run() -> list[dict[str, object]]:
+        async with open_sqlite_checkpointer(tmp_path / "checkpoints.sqlite3") as saver:
+            from core.coding.runtime import CodingRuntime
+
+            runtime = CodingRuntime(
+                session_id="s-shell-pipeline",
+                workspace_root=tmp_path,
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                permission_mode="auto",
+            )
+            model = BindableFakeMessagesListChatModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "run_shell",
+                                "args": {
+                                    "command": "ls -la | tail -n +2 | wc -l",
+                                    "timeout": 20,
+                                },
+                                "id": "call-shell-pipeline",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Counted the directory entries."),
+                ]
+            )
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                tools=build_deerflow_coding_tools(runtime, run_id="r-shell-pipeline"),
+            )
+            events = [
+                event.payload
+                async for event in adapter.stream_turn(
+                    session_id="s-shell-pipeline",
+                    run_id="r-shell-pipeline",
+                    workspace_id="w-shell-pipeline",
+                    workspace_path=str(tmp_path),
+                    content="Count the directory entries with the requested shell pipeline",
+                )
+            ]
+            return events
+
+    payloads = asyncio.run(run())
+    tool_result = next(
+        item
+        for item in payloads
+        if item.get("type") == "tool_result" and item.get("tool") == "run_shell"
+    )
+    assert tool_result.get("is_error") is False
+    assert tool_result.get("policy_reason") in {None, ""}
+    assert "exit_code: 0" in str(tool_result.get("content"))
+    assert any(item.get("type") == "text_delta" for item in payloads)
+
+
 def test_runtime_adapter_streams_proposal_only_memory_tool(tmp_path: Path) -> None:
     async def run() -> tuple[list[dict[str, object]], CodingRuntime]:
         async with open_sqlite_checkpointer(tmp_path / "memory-checkpoints.sqlite3") as saver:

@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.coding.context import WorkspaceContext
 from core.coding.tools.base import RegisteredTool
 
-SHELL_LIST_OPERATOR_RE = re.compile(r"(?:;|&&|\|\||\n)+")
-SHELL_READ_COMMAND_RE = re.compile(r"^\s*(?:cat|less|head|grep|rg|find|ls)(?:\s|$)")
+SHELL_OPERATOR_RE = re.compile(r"^[;&|]+$")
+SHELL_READ_COMMANDS = frozenset(
+    {"cat", "find", "grep", "head", "less", "ls", "rg", "tail"}
+)
 
 
 @dataclass(frozen=True)
@@ -79,7 +82,25 @@ class ToolPolicyChecker:
 
 
 def _is_ordinary_shell_read(command: str) -> bool:
-    """Return true only when every shell-list segment is a workspace read."""
-    segments = [segment.strip() for segment in SHELL_LIST_OPERATOR_RE.split(command)]
-    meaningful = [segment for segment in segments if segment]
-    return bool(meaningful) and all(SHELL_READ_COMMAND_RE.match(segment) for segment in meaningful)
+    """Return true only when every shell command is a direct workspace read."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    command_names: list[str] = []
+    expecting_command = True
+    for token in tokens:
+        if SHELL_OPERATOR_RE.fullmatch(token):
+            expecting_command = True
+            continue
+        if expecting_command:
+            command_names.append(token.rsplit("/", 1)[-1])
+            expecting_command = False
+
+    return bool(command_names) and all(
+        name in SHELL_READ_COMMANDS for name in command_names
+    )
