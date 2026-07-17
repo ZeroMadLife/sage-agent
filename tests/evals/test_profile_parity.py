@@ -3,13 +3,30 @@
 from __future__ import annotations
 
 from pathlib import Path
+from time import monotonic, sleep
+from typing import Any
 
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 
 from api.main import create_app
-from evals.coding.profile_parity import ProfileParityReport, project_profile_timeline
+from core.coding.context import (
+    CompactionCheckpoint,
+    CompactionResult,
+    CompactionSummary,
+    PreparedContext,
+)
+from core.coding.context.budget import ContextUsage
+from core.coding.engine.events import (
+    ContextCompactionCompletedEvent,
+    ContextCompactionStartedEvent,
+)
+from evals.coding.profile_parity import (
+    ProfileParityReport,
+    RuntimeProfile,
+    project_profile_timeline,
+)
 from tests.core.coding.scripted_api_client import ScriptedApiClient
 
 
@@ -265,6 +282,93 @@ class BindableFakeMessagesListChatModel(FakeMessagesListChatModel):
         return self
 
 
+class AppliedParityContextController:
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+
+    @staticmethod
+    def _usage() -> ContextUsage:
+        return ContextUsage(
+            used_tokens=100,
+            effective_limit_tokens=1_000,
+            usage_ratio=0.1,
+            level="normal",
+            estimated=False,
+        )
+
+    async def on_turn_start(
+        self,
+        history: list[dict[str, Any]],
+        user_message: str,
+        run_id: str,
+        **kwargs: Any,
+    ) -> PreparedContext:
+        del user_message, kwargs
+        summary = CompactionSummary(
+            goal="保留历史摘要并继续当前读取任务",
+            source_transcript_range=(1, max(1, len(history))),
+        )
+        checkpoint = CompactionCheckpoint(
+            compaction_id="compact-parity",
+            transcript_start=1,
+            transcript_end=max(1, len(history)),
+            summary=summary,
+            summary_hash="parity-summary-hash",
+        )
+        projected = [
+            {
+                "role": "system",
+                "kind": "compact_summary",
+                "content": summary.render_for_prompt(),
+            }
+        ]
+        result = CompactionResult(
+            applied=True,
+            projected_history=projected,
+            checkpoint=checkpoint,
+            before_tokens=2_000,
+            after_tokens=100,
+            archived_items=len(history),
+            compaction_id="compact-parity",
+            trigger="auto",
+        )
+        return PreparedContext.create(
+            projected_history=projected,
+            usage=self._usage(),
+            allow_model_request=True,
+            compaction_result=result,
+            events=(
+                ContextCompactionStartedEvent(
+                    session_id=self.session_id,
+                    run_id=run_id,
+                    compaction_id="compact-parity",
+                    trigger="auto",
+                    before_tokens=2_000,
+                ),
+                ContextCompactionCompletedEvent(
+                    session_id=self.session_id,
+                    run_id=run_id,
+                    compaction_id="compact-parity",
+                    before_tokens=2_000,
+                    after_tokens=100,
+                    archived_items=len(history),
+                ),
+            ),
+        )
+
+    def before_model_request(
+        self,
+        history: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> PreparedContext:
+        del kwargs
+        return PreparedContext.create(
+            projected_history=history,
+            usage=self._usage(),
+            allow_model_request=True,
+        )
+
+
 def _native_tool_call(
     name: str,
     args: dict[str, object],
@@ -335,6 +439,68 @@ def _run_scripted_approval_scenario(
                     assert response.status_code == 200
                 if event["kind"] == "terminal":
                     return events, workspace
+
+
+def _run_compaction_scenario(
+    tmp_path: Path,
+    profile: str,
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    workspace = tmp_path / f"compaction-{profile}"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("# Sage\n", encoding="utf-8")
+    old_turns = 7
+    legacy_responses = [
+        f"<final>历史回答 {index}</final>" for index in range(old_turns)
+    ] + [
+        '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+        "<final>压缩历史后确认项目名是 Sage。</final>",
+    ]
+    v2_responses = [
+        AIMessage(content=f"历史回答 {index}") for index in range(old_turns)
+    ] + [
+        _native_tool_call("read_file", {"path": "README.md"}, "call-compact-read"),
+        AIMessage(content="压缩历史后确认项目名是 Sage。"),
+    ]
+
+    def model_factory():  # type: ignore[no-untyped-def]
+        if profile == "legacy":
+            return ScriptedApiClient(list(legacy_responses))
+        return BindableFakeMessagesListChatModel(responses=list(v2_responses))
+
+    app = create_app(
+        coding_model_factory=model_factory,
+        coding_workspace_root=workspace,
+        coding_storage_root=workspace / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": profile},
+        ).json()["session_id"]
+        runtime = app.state.coding_sessions[session_id]
+        coordinator = app.state.coding_run_registry.get(session_id)
+
+        def wait_until_idle() -> None:
+            deadline = monotonic() + 2
+            while coordinator.active_run_id is not None and monotonic() < deadline:
+                sleep(0.001)
+            assert coordinator.active_run_id is None
+
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            for index in range(old_turns):
+                websocket.send_json({"content": f"历史问题 {index}"})
+                while websocket.receive_json()["kind"] != "terminal":
+                    pass
+                wait_until_idle()
+            runtime.context_controller = AppliedParityContextController(session_id)
+            websocket.send_json({"content": "压缩历史后读取 README"})
+            events: list[dict[str, object]] = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    return events, dict(runtime.session.get("context_state", {}))
 
 
 def _final_contains(events: list[dict[str, object]], expected: str) -> bool:
@@ -657,9 +823,8 @@ def test_legacy_and_v2_session_approval_is_reused_for_two_edits(tmp_path: Path) 
         workspaces.append(workspace)
 
     results = []
-    for profile, events, workspace in zip(
-        ("legacy", "deerflow_v2"), timelines, workspaces, strict=True
-    ):
+    profiles: tuple[RuntimeProfile, ...] = ("legacy", "deerflow_v2")
+    for profile, events, workspace in zip(profiles, timelines, workspaces, strict=True):
         files_updated = all(
             (workspace / filename).read_text(encoding="utf-8") == "value = 2\n"
             for filename in ("first.py", "second.py")
@@ -681,6 +846,44 @@ def test_legacy_and_v2_session_approval_is_reused_for_two_edits(tmp_path: Path) 
     assert all(result.tool_calls == 4 for result in report.results)
     assert all(result.tool_errors == 0 for result in report.results)
     assert [_event_count(events, "approval_required") for events in timelines] == [1, 1]
+    assert report.metrics("legacy").tool_call_success_rate == 1.0
+    assert report.metrics("deerflow_v2").tool_call_success_rate == 1.0
+
+
+def test_legacy_and_v2_continue_tool_loop_after_auto_compaction(tmp_path: Path) -> None:
+    legacy_events, legacy_state = _run_compaction_scenario(tmp_path, "legacy")
+    v2_events, v2_state = _run_compaction_scenario(tmp_path, "deerflow_v2")
+    report = ProfileParityReport(
+        results=[
+            project_profile_timeline(
+                "auto-compaction-tool-loop",
+                "legacy",
+                legacy_events,
+                assertions_passed=(
+                    _final_contains(legacy_events, "Sage")
+                    and legacy_state.get("checkpoint_id") == "compact-parity"
+                    and _event_count(legacy_events, "context_compaction_completed") == 1
+                ),
+            ),
+            project_profile_timeline(
+                "auto-compaction-tool-loop",
+                "deerflow_v2",
+                v2_events,
+                assertions_passed=(
+                    _final_contains(v2_events, "Sage")
+                    and v2_state.get("checkpoint_id") == "compact-parity"
+                    and _event_count(v2_events, "context_compaction_completed") == 1
+                    and _event_count(v2_events, "graph_context_compacted") == 1
+                ),
+            ),
+        ]
+    )
+
+    assert report.regressions() == ()
+    assert all(result.passed for result in report.results), report.to_dict()
+    assert all(result.streamed for result in report.results)
+    assert all(result.tool_calls == 1 for result in report.results)
+    assert all(result.tool_errors == 0 for result in report.results)
     assert report.metrics("legacy").tool_call_success_rate == 1.0
     assert report.metrics("deerflow_v2").tool_call_success_rate == 1.0
 
@@ -722,8 +925,14 @@ def test_report_surfaces_a_v2_regression_without_hiding_legacy_success() -> None
     report = ProfileParityReport(results=[legacy, failed_v2])
 
     assert report.regressions() == ("read",)
-    assert report.to_dict()["profiles"]["legacy"]["task_completion_rate"] == 1.0
-    assert report.to_dict()["profiles"]["deerflow_v2"]["task_completion_rate"] == 0.0
+    profile_metrics = report.to_dict()["profiles"]
+    assert isinstance(profile_metrics, dict)
+    legacy_metrics = profile_metrics["legacy"]
+    v2_metrics = profile_metrics["deerflow_v2"]
+    assert isinstance(legacy_metrics, dict)
+    assert isinstance(v2_metrics, dict)
+    assert legacy_metrics["task_completion_rate"] == 1.0
+    assert v2_metrics["task_completion_rate"] == 0.0
 
 
 def test_expected_policy_denial_is_compliant_but_unexpected_denial_is_not() -> None:
