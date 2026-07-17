@@ -18,7 +18,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
-from langchain_openai import ChatOpenAI
+from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field
 
 from core.skill import Skill, build_travel_planning_skill
@@ -75,7 +75,7 @@ class AgentRuntime:
 
     def __init__(
         self,
-        llm: ChatOpenAI,
+        llm: BaseChatModel,
         skill: Skill | None = None,
         tools: dict[str, Any] | None = None,
         max_iterations: int = 5,

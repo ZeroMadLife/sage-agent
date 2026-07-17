@@ -10,6 +10,22 @@ def test_settings_loads_from_env() -> None:
     assert settings.qweather_api_key == "test-weather-key"
 
 
+def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.knowledge_external_parsing_enabled is False
+    assert settings.knowledge_external_allowed_source_ids == ""
+    assert settings.knowledge_mineru_enabled is True
+    assert settings.knowledge_qwen_vl_enabled is False
+
+
+def test_sandbox_configuration_defaults_to_local_development() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_coding_sandbox_provider == "local_workspace"
+    assert settings.sage_coding_sandbox_image == "python:3.11-slim"
+
+
 def test_settings_has_amap_base_url() -> None:
     """Amap API base URL has a default value."""
     settings = Settings()
@@ -34,6 +50,32 @@ def test_settings_has_access_codes(monkeypatch) -> None:
     assert settings.app_access_codes == "tour2026,friend01"
 
 
+def test_production_cloud_settings_fail_closed_without_secrets() -> None:
+    """A production process must not silently start with placeholder credentials."""
+    import pytest
+
+    settings = Settings(app_env="production", app_secret_key="change-me-in-production")
+
+    with pytest.raises(RuntimeError, match="APP_SECRET_KEY"):
+        settings.validate_cloud_production_secrets()
+
+
+def test_production_cloud_settings_accept_distinct_configured_secrets() -> None:
+    settings = Settings(
+        app_env="production",
+        app_secret_key="application-secret-that-is-not-a-placeholder",
+        github_oauth_client_id="client-id",
+        github_oauth_client_secret="github-client-secret-that-is-long-enough-value",
+        github_oauth_transaction_secret="transaction-secret-that-is-long-enough",
+        github_token_encryption_secret="token-secret-that-is-long-enough-value",
+        model_provider_encryption_secret="provider-secret-that-is-long-enough-value",
+        cloud_frontend_url="https://sage.example",
+        github_oauth_redirect_uri="https://sage.example/api/v1/cloud/auth/github/callback",
+    )
+
+    settings.validate_cloud_production_secrets()
+
+
 def test_resolve_llm_doubao(monkeypatch) -> None:
     """resolve_llm 正确解析 doubao provider。"""
     monkeypatch.setenv("DOUBAO_API_KEY", "test-doubao-key")
@@ -48,9 +90,9 @@ def test_resolve_llm_deepseek(monkeypatch) -> None:
     """resolve_llm 正确解析 deepseek provider。"""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-ds-key")
     settings = Settings()
-    result = settings.resolve_llm("deepseek:deepseek-chat")
+    result = settings.resolve_llm("deepseek:deepseek-v4-flash")
     assert result["api_key"] == "test-ds-key"
-    assert result["model"] == "deepseek-chat"
+    assert result["model"] == "deepseek-v4-flash"
     assert "deepseek.com" in result["base_url"]
 
 
@@ -73,9 +115,10 @@ def test_resolve_llm_raises_on_unknown_provider() -> None:
         settings.resolve_llm("unknown:model")
 
 
-def test_resolve_llm_raises_on_missing_key() -> None:
+def test_resolve_llm_raises_on_missing_key(monkeypatch) -> None:
     """provider 的 key 未配置时抛出 ValueError。"""
-    settings = Settings()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
     import pytest
 
     with pytest.raises(ValueError, match="API key 未配置"):

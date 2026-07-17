@@ -4,14 +4,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from core.memory.extractor import MemoryManager
-from core.memory.long_term import LongTermMemory, MemoryFact
+from core.memory.extractor import LongTermMemoryPort, MemoryFact, MemoryManager
 
 
 @pytest.fixture
 def mock_long_term() -> MagicMock:
     """Create a long-term memory test double."""
-    long_term = MagicMock(spec=LongTermMemory)
+    long_term = MagicMock(spec=LongTermMemoryPort)
     long_term.search = MagicMock(
         return_value=[
             MemoryFact(content="用户喜欢海鲜", score=0.95, fact_id="1"),
@@ -85,7 +84,7 @@ def test_retrieve_for_planning_returns_prompt_text(
 
 def test_retrieve_for_planning_returns_empty_on_no_memory() -> None:
     """No memory produces no prompt injection."""
-    long_term = MagicMock(spec=LongTermMemory)
+    long_term = MagicMock(spec=LongTermMemoryPort)
     long_term.search = MagicMock(return_value=[])
     long_term.format_facts_for_prompt = MagicMock(return_value="")
     manager = MemoryManager(long_term=long_term)

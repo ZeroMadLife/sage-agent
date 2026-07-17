@@ -1,5 +1,8 @@
 """MCP Server registry config tests."""
 
+import sys
+from pathlib import Path
+
 from mcp_servers.registry import build_mcp_config
 
 
@@ -23,10 +26,11 @@ def test_amap_config_has_command_and_env() -> None:
         scenic_data_path="data/mock/scenic_spots.json",
     )
     amap = config["amap"]
-    assert amap["command"] == "python"
+    assert amap["command"] == sys.executable
     assert "-m" in amap["args"]
     assert "mcp_servers.amap.server" in amap["args"]
     assert amap["env"]["AMAP_API_KEY"] == "test-amap"
+    assert Path(amap["cwd"]).resolve() == Path(__file__).resolve().parents[2]
 
 
 def test_weather_config_has_correct_module() -> None:

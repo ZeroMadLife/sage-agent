@@ -5,6 +5,12 @@ from collections.abc import Iterator
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
 
+from core.config.settings import get_settings
+
+# A local editor backup with stale pre-v5 imports. Keep the user file intact
+# while preventing pytest from treating it as a repository test module.
+collect_ignore = ["core/coding/test_tool_executor 2.py"]
+
 
 @pytest.fixture(autouse=True)
 def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
@@ -21,12 +27,28 @@ def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
         "POSTGRES_DB": "test",
         "REDIS_HOST": "localhost",
         "REDIS_PORT": "6379",
-        "QDRANT_HOST": "localhost",
-        "QDRANT_PORT": "6333",
         "LLM_MODEL": "doubao:Doubao-Seed-2.0-pro",
-        "LLM_LIGHT_MODEL": "deepseek:deepseek-chat",
+        "LLM_LIGHT_MODEL": "deepseek:deepseek-v4-flash",
         "APP_ENV": "test",
+        # Most existing tests exercise the compatibility runtime explicitly.
+        # Rollout/default-profile tests opt in at the app-factory boundary.
+        "SAGE_DEERFLOW_V2_ENABLED": "false",
+        "SAGE_CODING_DEFAULT_RUNTIME_PROFILE": "deerflow_v2",
+        # Developer-local Knowledge Workspace settings must never make API
+        # tests read or mutate a real vault/repository.
+        "KNOWLEDGE_WORKSPACE_ROOT": "",
+        "KNOWLEDGE_DATABASE_PATH": "",
+        "KNOWLEDGE_SOURCE_ROOT": "",
+        "KNOWLEDGE_JOBS_ENABLED": "false",
+        "KNOWLEDGE_EXTERNAL_PARSING_ENABLED": "false",
+        "KNOWLEDGE_EXTERNAL_ALLOWED_SOURCE_IDS": "",
+        "KNOWLEDGE_QWEN_VL_ENABLED": "false",
+        "KNOWLEDGE_QWEN_VL_API_KEY": "",
     }
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
-    yield
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()

@@ -1,16 +1,17 @@
 """Supervisor routing helpers for multi-agent orchestration."""
 
 import logging
-from typing import Any
 
 from langgraph.graph import END
+
+from core.state import TravelState
 
 logger = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 3
 
 
-def should_replan(state: dict[str, Any]) -> str:
+def should_replan(state: TravelState) -> str:
     """Route budget results back to planning or end the graph."""
     over_budget = bool(state.get("over_budget", False))
     iteration_count = int(state.get("iteration_count", 0))

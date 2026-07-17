@@ -65,8 +65,18 @@ docker-compose.override.yml
 graphify-out/
 graphify-out-*/
 .coding/
+.sage/usage.sqlite3
+.sage/usage.sqlite3-wal
+.sage/usage.sqlite3-shm
+.superpowers/
+
+# Benchmark 报告产物（informational，不提交）
+evals/coding/results/
 
 # 本地参考/研究材料（不属于 Sage 源码）
 Kimi_Agent_多智能体协作平台/
 multiagent_project.agent.final/
 multiagent_project.agent.final.footnote.docx
+.ustht/
+.playwright-cli/
+.zcode/

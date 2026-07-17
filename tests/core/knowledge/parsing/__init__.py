@@ -1,0 +1,1 @@
+"""Knowledge parsing contract tests."""

@@ -7,9 +7,10 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.coding.context import WorkspaceContext
+from core.coding.tool_executor.approval import check_dangerous_command
 from core.coding.tools.base import RegisteredTool
 
-ApprovalPolicy = Literal["auto", "ask", "never"]
+PermissionMode = Literal["default", "accept_edits", "auto", "plan"]
 ApprovalCallback = Callable[[str, dict[str, Any]], bool]
 
 
@@ -39,17 +40,19 @@ class PermissionChecker:
 
     def __init__(
         self,
-        approval_policy: ApprovalPolicy = "auto",
+        permission_mode: str = "default",
         write_scope: Sequence[str] | None = None,
         plan_mode: bool = False,
         read_only: bool = False,
         approval_callback: ApprovalCallback | None = None,
+        approval_policy: str = "",
     ) -> None:
-        self.approval_policy = approval_policy
+        self.permission_mode = permission_mode
         self.write_scope = tuple(write_scope or ())
         self.plan_mode = plan_mode
         self.read_only = read_only
         self.approval_callback = approval_callback
+        self.approval_policy = approval_policy
 
     def check(
         self,
@@ -58,7 +61,8 @@ class PermissionChecker:
         workspace: WorkspaceContext,
     ) -> PermissionDecision:
         """Return whether the tool call is permitted."""
-        if self.plan_mode:
+        # Plan mode: only read-only tools
+        if self.permission_mode == "plan" or self.plan_mode:
             if tool.read_only:
                 return PermissionDecision.allow("plan_read_only")
             return PermissionDecision.deny(
@@ -77,12 +81,35 @@ class PermissionChecker:
             return PermissionDecision.allow("approval_not_required")
         if self.read_only:
             return PermissionDecision.deny("approval_denied", "read_only_block")
-        if self.approval_policy == "auto":
-            return PermissionDecision.allow("approval_auto")
+
+        # ``never`` is a hard security deny that overrides everything else.
         if self.approval_policy == "never":
             return PermissionDecision.deny("approval_denied", "approval_denied")
-        if self.approval_callback is not None and self.approval_callback(tool.name, args):
-            return PermissionDecision.allow("approval_prompt")
+
+        # Knowledge deposition changes durable user-owned state. Unlike ordinary
+        # coding edits, automatic mode must never treat it as implicitly approved.
+        if tool.name in {"knowledge_learn", "remember"}:
+            return PermissionDecision.allow("approval_required")
+
+        # Mode-specific decisions for risky tools (write_file, patch_file, run_shell).
+        if self.permission_mode == "auto":
+            if tool.name == "run_shell":
+                dangerous, _, _ = check_dangerous_command(str(args.get("command", "")))
+                if dangerous:
+                    return PermissionDecision.allow("approval_required")
+            return PermissionDecision.allow("approval_auto")
+        if self.permission_mode == "accept_edits":
+            # Auto-approve file edits, but ask for shell commands
+            if tool.name in {"write_file", "patch_file"}:
+                return PermissionDecision.allow("accept_edits_auto")
+            # run_shell and other risky tools still need approval
+            if self.approval_callback is None:
+                return PermissionDecision.allow("approval_required")
+        if self.permission_mode == "default" and self.approval_callback is None:
+            return PermissionDecision.allow("approval_required")
+        # Legacy fallback for old approval_policy callers (worker subagents)
+        if self.approval_policy == "auto":
+            return PermissionDecision.allow("approval_auto")
         if self.approval_callback is None:
             return PermissionDecision.allow("approval_required")
         return PermissionDecision.deny("approval_denied", "approval_denied")

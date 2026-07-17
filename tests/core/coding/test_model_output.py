@@ -30,6 +30,24 @@ def test_parse_xml_tool_payload_with_nested_text() -> None:
     }
 
 
+def test_parse_xml_tool_payload_with_named_parameters() -> None:
+    """The parser accepts the nested parameter shape emitted by XML-oriented models."""
+    raw = (
+        "<tool><name>write_file</name><parameters>"
+        '<parameter name="path">two_sum.py</parameter>'
+        '<parameter name="content">def two_sum():\n    return [0, 1]\n</parameter>'
+        "</parameters></tool>"
+    )
+
+    kind, payload = parse(raw)
+
+    assert kind == "tool"
+    assert payload == {
+        "name": "write_file",
+        "args": {"path": "two_sum.py", "content": "def two_sum():\n    return [0, 1]\n"},
+    }
+
+
 def test_parse_final_payload() -> None:
     """The parser extracts final answers from <final> tags."""
     kind, payload = parse("<final>Done</final>")

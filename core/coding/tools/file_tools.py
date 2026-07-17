@@ -7,7 +7,12 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from core.coding.context import IGNORED_PATH_NAMES, WorkspaceContext, clip
+from core.coding.context import (
+    IGNORED_PATH_NAMES,
+    PROTECTED_PATH_NAMES,
+    WorkspaceContext,
+    clip,
+)
 from core.coding.tools.base import ToolContext, ToolResult
 from core.coding.tools.registry import register_tool
 from core.coding.tools.schemas import (
@@ -38,7 +43,7 @@ def list_files(
     entries = [
         item
         for item in sorted(path.iterdir(), key=lambda item: (item.is_file(), item.name.lower()))
-        if item.name not in IGNORED_PATH_NAMES
+        if item.name not in IGNORED_PATH_NAMES and not workspace.is_protected(item)
     ]
     lines = [
         f"{'[D]' if entry.is_dir() else '[F]'} {entry.relative_to(workspace.root)}"
@@ -93,8 +98,26 @@ def search(
 
     if shutil.which("rg"):
         target = "." if path == workspace.root else str(path.relative_to(workspace.root))
+        protected_globs = [
+            item
+            for name in sorted(PROTECTED_PATH_NAMES)
+            for item in ("--glob", f"!**/{name}", "--glob", f"!**/{name}/**")
+        ]
         result = subprocess.run(
-            ["rg", "-n", "--smart-case", "--max-count", "200", pattern, target],
+            [
+                "rg",
+                "-n",
+                "--smart-case",
+                "--max-count",
+                "200",
+                "--glob",
+                "!**/.env",
+                "--glob",
+                "!**/.env.*",
+                *protected_globs,
+                pattern,
+                target,
+            ],
             cwd=workspace.root,
             capture_output=True,
             text=True,
@@ -104,7 +127,7 @@ def search(
         return ToolResult(content=clip(content))
 
     matches: list[str] = []
-    files = [path] if path.is_file() else _walk_search_files(path, workspace.root)
+    files = [path] if path.is_file() else _walk_search_files(path, workspace)
     for file_path in files:
         for number, line in enumerate(
             file_path.read_text(encoding="utf-8", errors="replace").splitlines(),
@@ -164,10 +187,14 @@ def patch_file(
     return ToolResult(content=f"patched {path.relative_to(workspace.root)}")
 
 
-def _walk_search_files(path: Path, root: Path) -> list[Path]:
+def _walk_search_files(path: Path, workspace: WorkspaceContext) -> list[Path]:
     return [
         item
         for item in path.rglob("*")
         if item.is_file()
-        and not any(part in IGNORED_PATH_NAMES for part in item.relative_to(root).parts)
+        and not any(
+            part in IGNORED_PATH_NAMES
+            for part in item.relative_to(workspace.root).parts
+        )
+        and not workspace.is_protected(item)
     ]

@@ -66,3 +66,4 @@ class ToolContext:
     runtime: Any | None = None
     todo_ledger: Any | None = None
     worker_manager: Any | None = None
+    knowledge_store: Any | None = None

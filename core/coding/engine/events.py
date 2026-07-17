@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
-from core.coding.context import now
+
+def _event_now() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class RunEventBase(BaseModel):
@@ -14,7 +17,7 @@ class RunEventBase(BaseModel):
 
     type: str
     run_id: str = ""
-    created_at: str = Field(default_factory=now)
+    created_at: str = Field(default_factory=_event_now)
 
 
 class TurnStartedEvent(RunEventBase):
@@ -98,6 +101,13 @@ class StepLimitEvent(RunEventBase):
     content: str
 
 
+class TextDeltaEvent(RunEventBase):
+    """A chunk of streamed model output text."""
+
+    type: Literal["text_delta"] = "text_delta"
+    delta: str = ""
+
+
 class CancelledEvent(RunEventBase):
     """The current run was cancelled."""
 
@@ -118,6 +128,110 @@ class TurnFinishedEvent(RunEventBase):
     type: Literal["turn_finished"] = "turn_finished"
 
 
+class RuntimeModeChangedEvent(RunEventBase):
+    """Runtime mode changed (plan/default) during tool execution."""
+
+    type: Literal["runtime_mode_changed"] = "runtime_mode_changed"
+    mode: str = "default"
+    topic: str = ""
+    plan_path: str = ""
+
+
+class PlanReadyForReviewEvent(RunEventBase):
+    """Plan is ready for user review before exiting plan mode."""
+
+    type: Literal["plan_ready_for_review"] = "plan_ready_for_review"
+    review_id: str = ""
+    plan_path: str = ""
+    summary: str = ""
+
+
+class RunFinishedEvent(RunEventBase):
+    """A run has reached a terminal state and its lease is released."""
+
+    type: Literal["run_finished"] = "run_finished"
+    status: str = "completed"
+    duration_ms: int = 0
+    tool_steps: int = 0
+
+
+class WorkspaceDiffReadyEvent(RunEventBase):
+    """Workspace diff artifact is ready after a run."""
+
+    type: Literal["workspace_diff_ready"] = "workspace_diff_ready"
+    changed_files: list[str] = Field(default_factory=list)
+    file_count: int = 0
+    truncated: bool = False
+
+
+class MemoryProposalReadyEvent(RunEventBase):
+    """Memory consolidation proposals are ready for user review."""
+
+    type: Literal["memory_proposal_ready"] = "memory_proposal_ready"
+    session_id: str
+    run_id: str
+    reflection_id: str
+    proposal_id: str
+    candidate_count: int = Field(ge=0)
+    base_revision: int = Field(ge=0)
+
+
+class ContextUsageUpdatedEvent(RunEventBase):
+    """The effective model context pressure changed."""
+
+    type: Literal["context_usage_updated"] = "context_usage_updated"
+    session_id: str
+    run_id: str
+    used_tokens: int = Field(ge=0)
+    model_limit_tokens: int = Field(gt=0)
+    output_reserve_tokens: int = Field(gt=0)
+    effective_limit_tokens: int = Field(gt=0)
+    usage_ratio: float = Field(ge=0)
+    level: Literal["normal", "budget", "snip", "compact", "high", "emergency"]
+    estimated: bool
+    compactable: bool
+
+
+class ContextCompactionStartedEvent(RunEventBase):
+    """A semantic context compaction attempt started."""
+
+    type: Literal["context_compaction_started"] = "context_compaction_started"
+    session_id: str
+    compaction_id: str
+    trigger: str
+    before_tokens: int = Field(ge=0)
+
+
+class ContextCompactionCompletedEvent(RunEventBase):
+    """A semantic context compaction attempt completed."""
+
+    type: Literal["context_compaction_completed"] = "context_compaction_completed"
+    session_id: str
+    compaction_id: str
+    before_tokens: int = Field(ge=0)
+    after_tokens: int = Field(ge=0)
+    archived_items: int = Field(ge=0)
+    saved_ratio: float = Field(default=0.0, ge=0, le=1)
+
+    def model_post_init(self, context: Any, /) -> None:
+        del context
+        ratio = 0.0
+        if self.before_tokens > 0:
+            ratio = min(1.0, max(0.0, (self.before_tokens - self.after_tokens) / self.before_tokens))
+        object.__setattr__(self, "saved_ratio", ratio)
+
+
+class ContextCompactionFailedEvent(RunEventBase):
+    """A semantic context compaction attempt failed without losing evidence."""
+
+    type: Literal["context_compaction_failed"] = "context_compaction_failed"
+    session_id: str
+    compaction_id: str
+    reason: str
+    preserved_original: bool = True
+    retryable: bool = False
+
+
 RunEvent: TypeAlias = (
     TurnStartedEvent
     | ModelRequestedEvent
@@ -129,9 +243,19 @@ RunEvent: TypeAlias = (
     | RetryEvent
     | FinalEvent
     | StepLimitEvent
+    | TextDeltaEvent
     | CancelledEvent
     | ErrorEvent
     | TurnFinishedEvent
+    | RuntimeModeChangedEvent
+    | PlanReadyForReviewEvent
+    | WorkspaceDiffReadyEvent
+    | MemoryProposalReadyEvent
+    | ContextUsageUpdatedEvent
+    | ContextCompactionStartedEvent
+    | ContextCompactionCompletedEvent
+    | ContextCompactionFailedEvent
+    | RunFinishedEvent
 )
 
 

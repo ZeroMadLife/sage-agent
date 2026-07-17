@@ -13,10 +13,70 @@ const emit = defineEmits<{
 }>()
 
 const showFullDiff = ref(false)
+const allowsSessionApproval = computed(
+  () => !['knowledge_learn', 'remember'].includes(props.approval.tool),
+)
 const diffPath = computed(() => {
   const path = props.approval.args.path
   return typeof path === 'string' && path.trim() ? path : props.approval.tool
 })
+
+const approvalDescription = computed(() => {
+  const descriptions: Record<string, string> = {
+    write_file: '写入文件前需要确认。',
+    patch_file: '修改文件前需要确认。',
+    run_shell: '执行 Shell 命令前需要确认。',
+    knowledge_learn: '保存本轮引用证据到知识库前需要确认。',
+    remember: '保存事实到长期工作区记忆前需要确认。',
+  }
+  return descriptions[props.approval.tool] || props.approval.description
+})
+
+const approvalSummary = computed(() => {
+  const content = props.approval.args.content
+  if (props.approval.tool === 'write_file' && typeof content === 'string') {
+    return `将写入 ${Math.max(1, content.split('\n').filter(Boolean).length)} 行到 ${diffPath.value}`
+  }
+  const command = props.approval.args.command
+  if (props.approval.tool === 'run_shell' && typeof command === 'string') {
+    return redactText(command)
+  }
+  if (props.approval.tool === 'knowledge_learn') {
+    const topic = typeof props.approval.args.topic === 'string'
+      ? props.approval.args.topic
+      : '本轮学习'
+    const citations = Array.isArray(props.approval.args.citation_ids)
+      ? props.approval.args.citation_ids.length
+      : 0
+    return `将“${topic}”与 ${citations} 条引用证据保存到知识库`
+  }
+  if (props.approval.tool === 'remember') {
+    const topic = typeof props.approval.args.topic === 'string'
+      ? props.approval.args.topic
+      : 'project-conventions'
+    const fact = typeof props.approval.args.fact === 'string'
+      ? props.approval.args.fact
+      : ''
+    return `保存到 ${topic}: ${fact}`
+  }
+  return JSON.stringify(compactArgs(props.approval.args), null, 2)
+})
+
+function compactArgs(args: Record<string, unknown>) {
+  return Object.fromEntries(
+    Object.entries(args).map(([key, value]) => [
+      key,
+      key === 'content' && typeof value === 'string' ? `${value.length} characters` : value,
+    ]),
+  )
+}
+
+function redactText(text: string) {
+  return text
+    .replace(/(authorization\s*:\s*)(?:bearer\s+|basic\s+)?[^\s'"\n]+/gi, '$1[REDACTED]')
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\s]+/gi, '$1=[REDACTED]')
+}
 </script>
 
 <template>
@@ -24,12 +84,12 @@ const diffPath = computed(() => {
     <div class="approval-main">
       <p class="eyebrow">需要确认</p>
       <h2>{{ approval.tool }}</h2>
-      <p class="description">{{ approval.description }}</p>
+      <p class="description">{{ approvalDescription }}</p>
       <div v-if="approval.diff_preview?.length" class="diff-preview">
         <div class="diff-preview-header">
           <span>{{ diffPath }}</span>
           <button class="view-diff" type="button" @click="showFullDiff = true">
-            <Maximize2 :size="13" /> View diff
+            <Maximize2 :size="13" /> 查看差异
           </button>
         </div>
         <div
@@ -43,17 +103,14 @@ const diffPath = computed(() => {
           <span>{{ line.text || ' ' }}</span>
         </div>
       </div>
-      <pre v-else>{{ JSON.stringify(approval.args, null, 2) }}</pre>
+      <pre v-else>{{ approvalSummary }}</pre>
     </div>
     <div class="actions">
-      <button class="deny" :disabled="busy" @click="emit('respond', 'deny')">Deny</button>
-      <button class="session" :disabled="busy" @click="emit('respond', 'session')">
-        Allow session
+      <button class="deny" :disabled="busy" @click="emit('respond', 'deny')">拒绝</button>
+      <button v-if="allowsSessionApproval" class="session" :disabled="busy" @click="emit('respond', 'session')">
+        本会话允许
       </button>
-      <button class="always" :disabled="busy" @click="emit('respond', 'always')">
-        Always
-      </button>
-      <button class="allow" :disabled="busy" @click="emit('respond', 'once')">Allow once</button>
+      <button class="allow" :disabled="busy" @click="emit('respond', 'once')">允许一次</button>
     </div>
 
     <div
@@ -90,42 +147,41 @@ const diffPath = computed(() => {
 
 <style scoped>
 .approval-card {
-  position: absolute;
-  right: 18px;
-  bottom: 96px;
-  left: 18px;
-  z-index: 5;
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 14px;
   align-items: end;
+  width: min(100%, 760px);
+  max-height: min(520px, calc(100vh - 132px));
+  margin: 0 0 12px;
   padding: 12px;
-  border: 1px solid #f59e0b;
-  border-radius: 8px;
-  background: #fffbeb;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  border: 1px solid color-mix(in srgb, var(--sage-warning) 56%, var(--sage-border));
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-warning-bg);
+  box-shadow: var(--sage-shadow-drawer);
 }
 
 .approval-main {
   min-width: 0;
+  overflow: auto;
 }
 
 .eyebrow {
   margin: 0 0 4px;
-  color: #92400e;
-  font-size: 11px;
+  color: var(--sage-warning);
+  font-size: var(--sage-font-xs);
   font-weight: 700;
 }
 
 h2 {
   margin: 0 0 4px;
-  color: #111827;
+  color: var(--sage-text);
   font-size: 14px;
 }
 
 .description {
   margin: 0 0 8px;
-  color: #374151;
+  color: var(--sage-text-secondary);
   font-size: 13px;
 }
 
@@ -133,9 +189,11 @@ pre {
   max-height: 110px;
   margin: 0;
   overflow: auto;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
   font-size: 12px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .actions {
@@ -143,12 +201,23 @@ pre {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 640px) {
+  .approval-card {
+    grid-template-columns: 1fr;
+  }
+
+  .actions {
+    justify-content: flex-start;
+  }
 }
 
 button {
   min-height: 32px;
   padding: 0 12px;
-  border-radius: 6px;
+  border-radius: var(--sage-radius);
   font-size: 12px;
   font-weight: 700;
   cursor: pointer;
@@ -160,30 +229,29 @@ button:disabled {
 }
 
 .deny {
-  border: 1px solid #d1d5db;
-  color: #374151;
-  background: #fff;
+  border: 1px solid var(--sage-border);
+  color: var(--sage-text-secondary);
+  background: var(--sage-surface);
 }
 
 .allow {
-  border: 1px solid #111827;
-  color: #fff;
-  background: #111827;
+  border: 1px solid var(--sage-review-strong);
+  color: var(--sage-bg);
+  background: var(--sage-review-strong);
 }
 
-.session,
-.always {
-  border: 1px solid #d1d5db;
-  color: #111827;
-  background: #fff;
+.session {
+  border: 1px solid var(--sage-border);
+  color: var(--sage-text);
+  background: var(--sage-surface);
 }
 
 .diff-preview {
   max-height: 150px;
   overflow: auto;
-  border: 1px solid #f0d9a4;
-  border-radius: 6px;
-  background: #fff;
+  border: 1px solid color-mix(in srgb, var(--sage-warning) 44%, var(--sage-border));
+  border-radius: var(--sage-radius);
+  background: var(--sage-surface);
   font-family: 'SF Mono', monospace;
   font-size: 12px;
 }
@@ -197,11 +265,11 @@ button:disabled {
   gap: 8px;
   justify-content: space-between;
   padding: 5px 6px;
-  border-bottom: 1px solid #f0d9a4;
-  background: #fffdf5;
-  color: #6b7280;
+  border-bottom: 1px solid color-mix(in srgb, var(--sage-warning) 44%, var(--sage-border));
+  background: var(--sage-surface-raised);
+  color: var(--sage-text-muted);
   font-family: Inter, system-ui, sans-serif;
-  font-size: 11px;
+  font-size: var(--sage-font-xs);
 }
 
 .view-diff,
@@ -215,9 +283,9 @@ button:disabled {
   gap: 4px;
   min-height: 24px;
   padding: 0 7px;
-  border: 1px solid #e5c77e;
-  color: #78350f;
-  background: #fffbeb;
+  border: 1px solid color-mix(in srgb, var(--sage-warning) 56%, var(--sage-border));
+  color: var(--sage-warning);
+  background: var(--sage-warning-bg);
 }
 
 .diff-line {
@@ -225,25 +293,27 @@ button:disabled {
   grid-template-columns: 18px 1fr;
   padding: 1px 6px;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .diff-prefix {
-  color: #6b7280;
+  color: var(--sage-text-muted);
   user-select: none;
 }
 
 .diff-add {
-  color: #047857;
-  background: #ecfdf5;
+  color: var(--sage-diff-add-text);
+  background: var(--sage-diff-add-bg);
 }
 
 .diff-remove {
-  color: #b91c1c;
-  background: #fef2f2;
+  color: var(--sage-diff-remove-text);
+  background: var(--sage-diff-remove-bg);
 }
 
 .diff-context {
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
 .diff-modal-backdrop {
@@ -254,7 +324,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(17, 24, 39, 0.36);
+  background: var(--sage-overlay);
 }
 
 .diff-modal {
@@ -262,10 +332,10 @@ button:disabled {
   grid-template-rows: auto 1fr;
   width: min(920px, 100%);
   max-height: min(760px, 88vh);
-  border: 1px solid #d1d5db;
-  border-radius: 8px;
-  background: #fff;
-  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius-lg);
+  background: var(--sage-surface);
+  box-shadow: var(--sage-shadow-drawer);
 }
 
 .diff-modal-header {
@@ -274,20 +344,20 @@ button:disabled {
   justify-content: space-between;
   gap: 16px;
   padding: 12px 14px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--sage-border);
 }
 
 .diff-modal-header p {
   margin: 0 0 3px;
-  color: #6b7280;
-  font-size: 11px;
+  color: var(--sage-text-muted);
+  font-size: var(--sage-font-xs);
   font-weight: 700;
   text-transform: uppercase;
 }
 
 .diff-modal-header h3 {
   margin: 0;
-  color: #111827;
+  color: var(--sage-text);
   font-size: 14px;
 }
 
@@ -295,13 +365,13 @@ button:disabled {
   width: 30px;
   min-height: 30px;
   padding: 0;
-  border: 1px solid #d1d5db;
-  background: #fff;
+  border: 1px solid var(--sage-border);
+  background: var(--sage-surface);
 }
 
 .diff-modal-body {
   overflow: auto;
-  background: #f9fafb;
+  background: var(--sage-surface-raised);
   font-family: 'SF Mono', monospace;
   font-size: 12px;
 }

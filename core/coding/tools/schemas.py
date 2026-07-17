@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 
 class ListFilesArgs(BaseModel):
@@ -218,6 +218,75 @@ class ToolSearchArgs(BaseModel):
     def query_not_empty(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("query must not be empty")
+        return value
+
+
+class KnowledgeSearchArgs(BaseModel):
+    """Arguments for evidence-only knowledge retrieval."""
+
+    query: str
+    top_k: int = Field(default=8, ge=1, le=20)
+    token_budget: int = Field(default=3000, ge=256, le=20000)
+
+    @field_validator("query")
+    @classmethod
+    def query_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must not be empty")
+        if len(value) > 2_000:
+            raise ValueError("query must not exceed 2000 characters")
+        return value
+
+
+class KnowledgeLearnArgs(BaseModel):
+    """Arguments for an extractive, citation-gated learning deposit."""
+
+    topic: str
+    citation_ids: list[str] = Field(min_length=1, max_length=8)
+
+    @field_validator("topic")
+    @classmethod
+    def topic_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("topic must not be empty")
+        if len(value) > 160:
+            raise ValueError("topic must not exceed 160 characters")
+        return value
+
+
+class RememberArgs(BaseModel):
+    """Arguments for remember."""
+
+    fact: str
+    topic: str = "project-conventions"
+
+    @field_validator("fact")
+    @classmethod
+    def fact_not_empty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("fact must not be empty")
+        return value
+
+    @field_validator("topic")
+    @classmethod
+    def topic_valid(cls, value: str) -> str:
+        if value not in {"project-conventions", "decisions"}:
+            raise ValueError("topic must be project-conventions or decisions")
+        return value
+
+
+class DreamArgs(BaseModel):
+    """Arguments for dream."""
+
+    topic: str | None = None
+
+    @field_validator("topic")
+    @classmethod
+    def topic_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        if value not in {"project-conventions", "decisions"}:
+            raise ValueError("topic must be project-conventions or decisions")
         return value
 
 

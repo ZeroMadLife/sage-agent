@@ -3,7 +3,7 @@
 # 目标：编译期发现类型错误，弥补Python动态类型的短板
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
@@ -19,13 +19,12 @@ warn_unreachable = true
 show_error_codes = true
 show_column_numbers = true
 pretty = true
+exclude = '(^|/)(api/coding 2|core/memory/mem0_factory 2)\.py$'
 
 # 第三方库无类型存根时不要报噪音
 [[tool.mypy.overrides]]
 module = [
     "mcp.*",
     "langchain_mcp_adapters.*",
-    "mem0.*",
-    "qdrant_client.*",
 ]
 ignore_missing_imports = true

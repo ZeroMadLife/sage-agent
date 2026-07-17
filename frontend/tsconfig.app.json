@@ -11,5 +11,13 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"],
+  "exclude": [
+    "src/stores/coding 2.ts",
+    "src/stores/coding 3.ts",
+    "src/stores/codingEvents 2.ts",
+    "src/types/api 2.ts",
+    "src/views/CodingView 2.vue",
+    "src/views/CodingView 3.vue"
+  ]
 }

@@ -26,7 +26,7 @@ class TravelState(TypedDict, total=False):
     dates: dict[str, str]
     preferences: list[str]
 
-    itinerary: Itinerary
+    itinerary: Itinerary | dict[str, Any]
     recommendations: list[dict[str, Any]]
     weather_info: dict[str, Any]
     budget_breakdown: BudgetBreakdown

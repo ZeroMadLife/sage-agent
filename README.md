@@ -10,8 +10,8 @@
 | 主界面 | Vue 3 三栏开发者控制台：Skills/MCP/模型、聊天与工具活动、文件树与预览 |
 | Agent Runtime | 参考 Pico v3：workspace、tools、policy gates、engine、context、todo、plan mode、worker、trace |
 | 领域示例 | `travel-planning`：ReAct 主 Agent + `generate_itinerary` LangGraph 工具 + 高德/和风/景点 MCP + 行程验证器 |
-| 技术栈 | FastAPI、WebSocket、Vue 3、TypeScript、Pinia、LangChain、LangGraph、MCP、Redis、PostgreSQL、Qdrant |
-| 语言 | Python 3.11+ / TypeScript |
+| 技术栈 | FastAPI、WebSocket、Vue 3、TypeScript、Pinia、LangChain、LangGraph、MCP、Redis、PostgreSQL/pgvector |
+| 语言 | Python 3.12+ / TypeScript |
 
 ## 为什么做 Sage
 
@@ -65,7 +65,7 @@ tour-agent/
 ├── api/                         # FastAPI app、Sage coding routes、保留的 travel routes
 ├── core/
 │   ├── coding/                  # Sage coding runtime、tools、engine、skills、session traces
-│   ├── memory/                  # Redis 短期记忆 + Mem0/Qdrant 长期记忆
+│   ├── memory/                  # 旅游兼容会话存储与 provider-neutral memory port
 │   ├── skill.py                 # travel-planning 领域 Skill 抽象
 │   └── verifier.py              # 行程验证器接口与实现
 ├── agents/                      # 旅游领域 ReAct runtime 和 LangGraph 行程工具
@@ -76,7 +76,7 @@ tour-agent/
 ├── tests/                       # 后端、前端、agent、API、coding runtime 测试
 ├── docs/                        # plans、reviews、specs、落地记录
 ├── .vscode/                     # VS Code 共享任务与 FastAPI debug 配置
-├── docker-compose.yml           # 本地 PostgreSQL + Redis + Qdrant
+├── docker-compose.yml           # 本地 PostgreSQL/pgvector + Redis
 ├── requirements.txt
 └── .env.example
 ```
@@ -119,7 +119,7 @@ git push -u origin codex/your-feature-name
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
 
-conda create -n sage-agent python=3.11 -y
+conda create -n sage-agent python=3.12 -y
 conda activate sage-agent
 
 python -m pip install --upgrade pip
@@ -132,7 +132,7 @@ cd ..
 cp .env.example .env
 ```
 
-如果你已经有 `tour-agent-phase1` 之类的 conda 环境，也可以继续用，只要依赖完整即可。
+LangChain/LangGraph 1.x 不能与旧 0.x 基线混装。已有 Python 3.11 或旧依赖环境请重新创建，不要在原环境上覆盖安装。
 
 ### 2. 配置 `.env`
 
@@ -172,7 +172,7 @@ bash scripts/dev.sh
 
 脚本会：
 
-- 自动执行 `docker compose up -d` 启动 PostgreSQL、Redis、Qdrant。
+- 自动执行 `docker compose up -d` 启动 PostgreSQL/pgvector 和 Redis。
 - 启动 FastAPI：`http://127.0.0.1:8000`
 - 启动 Vite：`http://127.0.0.1:5173`
 - 自动设置 `VITE_API_PROXY_TARGET=http://127.0.0.1:8000`，让 REST 和 WebSocket 都走 Vite proxy。
@@ -185,7 +185,36 @@ BACKEND_PORT=8010 bash scripts/dev.sh
 
 # 已经手动启动 docker compose 时
 SAGE_SKIP_DOCKER=1 bash scripts/dev.sh
+
+# 在 Git worktree 中复用主工作区的密钥文件（脚本只显示已配置的 Provider 名称）
+SAGE_ENV_FILE=/absolute/path/to/tour-agent/.env \
+  BACKEND_PORT=8017 FRONTEND_PORT=5187 SAGE_SKIP_DOCKER=1 \
+  bash scripts/dev.sh
+
+# 只检查环境文件和模型 Provider，不启动服务
+SAGE_ENV_FILE=/absolute/path/to/tour-agent/.env \
+  SAGE_DEV_CHECK_ONLY=1 bash scripts/dev.sh
 ```
+
+`SAGE_ENV_FILE` 只在当前进程中读取，不会复制密钥到 worktree，也不会把密钥写入日志或 Git。
+
+V7.2 本地知识库联调需要额外指定 Git Knowledge Repository 和白名单来源目录：
+
+```bash
+# 首次启用或升级版本时执行一次
+python -m db.migrations
+
+KNOWLEDGE_WORKSPACE_ROOT=/absolute/path/to/Sage-knowledge \
+KNOWLEDGE_SOURCE_ROOT=/absolute/path/to/Obsidian/sage-learning \
+KNOWLEDGE_SOURCE_ID=sage-learning \
+KNOWLEDGE_JOBS_ENABLED=true \
+SAGE_ENV_FILE=/absolute/path/to/tour-agent/.env \
+BACKEND_PORT=8022 FRONTEND_PORT=5192 SAGE_SKIP_DOCKER=1 \
+bash scripts/dev.sh
+```
+
+开启 `KNOWLEDGE_JOBS_ENABLED` 前先执行数据库 migration 并确保 Redis 可用。批量任务元数据以 PostgreSQL 为准，Redis Streams 只负责投递；进程重启会回收过期租约并补投未完成条目。网页只会提交白名单目录内的相对 Markdown 路径。Ingest 先生成 immutable raw snapshot 和 Wiki proposal，批准后才写 Wiki 与 Git commit；应用不会自动 push Knowledge Repository。
+本地 proposal 与 revision metadata 默认保存在 `Sage-knowledge/.sage/knowledge.sqlite3`，不会随 Sage feature worktree 删除。
 
 Windows 建议用 Git Bash 或 WSL 运行 `bash scripts/dev.sh`。如果必须用 CMD，请分别开两个窗口：
 
@@ -208,7 +237,7 @@ docker compose up -d
 docker compose ps
 ```
 
-确认 PostgreSQL、Redis、Qdrant 都是 `Up` 或 `healthy`。
+确认 PostgreSQL 和 Redis 都是 `Up` 或 `healthy`。
 
 ### 5. 手动启动后端
 

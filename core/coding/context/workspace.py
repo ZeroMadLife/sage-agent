@@ -8,11 +8,32 @@ from pathlib import Path
 from typing import Any
 
 MAX_TOOL_OUTPUT = 4000
+HIDDEN_CONTROL_DIR_NAMES = frozenset(
+    {
+        ".aws",
+        ".cc-connect",
+        ".claude",
+        ".coding",
+        ".codex",
+        ".git",
+        ".gnupg",
+        ".idea",
+        ".local",
+        ".pico",
+        ".playwright-cli",
+        ".sage",
+        ".ssh",
+        ".superpowers",
+        ".ustht",
+        ".vscode",
+        ".zcode",
+    }
+)
 IGNORED_PATH_NAMES = {
-    ".git",
-    ".coding",
-    ".pico",
+    *HIDDEN_CONTROL_DIR_NAMES,
     "__pycache__",
+    ".DS_Store",
+    ".coverage",
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
@@ -20,6 +41,19 @@ IGNORED_PATH_NAMES = {
     "venv",
     "node_modules",
 }
+PROTECTED_PATH_NAMES = frozenset(
+    {
+        *HIDDEN_CONTROL_DIR_NAMES,
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        "credentials",
+        "credentials.json",
+        "id_ed25519",
+        "id_rsa",
+    }
+)
+_SAFE_ENV_SUFFIXES = (".example", ".sample", ".template")
 
 
 def now() -> str:
@@ -47,7 +81,15 @@ class WorkspaceContext:
         self.root = Path(self.root).resolve()
 
     def path(self, raw_path: str | Path) -> Path:
-        """Resolve a user path and reject escapes outside the workspace root."""
+        """Resolve a user path and reject escapes or protected credentials."""
+        resolved = self.internal_path(raw_path)
+        relative = resolved.relative_to(self.root)
+        if self.is_protected(relative):
+            raise ValueError(f"path is protected by workspace policy: {raw_path}")
+        return resolved
+
+    def internal_path(self, raw_path: str | Path) -> Path:
+        """Resolve a trusted Sage-owned path while still rejecting escapes."""
         raw = Path(raw_path)
         candidate = raw if raw.is_absolute() else Path(self.root) / raw
         resolved = candidate.resolve()
@@ -56,6 +98,22 @@ class WorkspaceContext:
         except ValueError as exc:
             raise ValueError(f"path escapes workspace root: {raw_path}") from exc
         return resolved
+
+    def is_protected(self, raw_path: str | Path) -> bool:
+        """Return whether a workspace-relative path may contain credentials."""
+        raw = Path(raw_path)
+        if raw.is_absolute():
+            try:
+                raw = raw.resolve().relative_to(self.root)
+            except ValueError:
+                return True
+        parts = tuple(part.lower() for part in raw.parts if part not in {"", "."})
+        if not parts:
+            return False
+        if any(part in PROTECTED_PATH_NAMES for part in parts):
+            return True
+        name = parts[-1]
+        return name.startswith(".env") and not name.endswith(_SAFE_ENV_SUFFIXES)
 
     def relative(self, path: str | Path) -> str:
         """Return a workspace-relative path string."""

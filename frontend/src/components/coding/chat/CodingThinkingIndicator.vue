@@ -1,83 +1,77 @@
 <script setup lang="ts">
-defineProps<{
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import SageThinkingCharacter, { type SageCharacterState } from './SageThinkingCharacter.vue'
+
+const props = withDefaults(defineProps<{
   phase: string
-}>()
+  state?: SageCharacterState
+  title?: string
+  showElapsed?: boolean
+}>(), { state: 'thinking', title: '正在思考', showElapsed: true })
+
+const elapsedSeconds = ref(0)
+const elapsedLabel = computed(() => `${elapsedSeconds.value}s`)
+let timer: ReturnType<typeof setInterval> | undefined
+
+onMounted(() => {
+  if (props.showElapsed) timer = setInterval(() => { elapsedSeconds.value += 1 }, 1_000)
+})
+
+onBeforeUnmount(() => {
+  if (timer) clearInterval(timer)
+})
 </script>
 
 <template>
   <div class="thinking-indicator" role="status" aria-live="polite">
-    <span class="thinking-dots" aria-hidden="true">
-      <span class="dot"></span>
-      <span class="dot"></span>
-      <span class="dot"></span>
+    <span class="thinking-sheen" aria-hidden="true"></span>
+    <SageThinkingCharacter :state="state" :phase="phase" />
+    <span class="thinking-copy">
+      <span class="thinking-title"><strong>{{ title }}</strong><span v-if="showElapsed" class="thinking-time">{{ elapsedLabel }}</span></span>
+      <span class="thinking-phase">{{ phase }}</span>
     </span>
-    <span class="thinking-phase">{{ phase }}</span>
   </div>
 </template>
 
 <style scoped>
 .thinking-indicator {
-  display: inline-flex;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  width: fit-content;
   align-items: center;
-  gap: 8px;
-  max-width: 760px;
+  gap: 10px;
+  max-width: 100%;
   margin: 0 0 12px;
-  padding: 8px 14px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f9fafb;
+  padding: 4px 12px 4px 4px;
+  border: 0;
+  border-radius: var(--sage-radius);
+  background: linear-gradient(100deg, var(--sage-surface) 25%, color-mix(in srgb, var(--sage-warning-bg) 68%, var(--sage-surface)) 50%, var(--sage-surface) 75%);
+  background-size: 220% 100%;
   font-size: 13px;
-  color: #4b5563;
+  color: var(--sage-text-secondary);
 }
 
-.thinking-dots {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-}
+.thinking-indicator { animation: thinking-sheen 2.2s ease-in-out infinite; }
+.thinking-sheen { position:absolute; inset:0; pointer-events:none; background:linear-gradient(90deg, transparent, rgb(255 255 255 / 14%), transparent); transform:translateX(-100%); animation:thinking-sweep 1.9s ease-in-out infinite; }
+.thinking-copy { display:grid; gap:2px; min-width:0; }
+.thinking-title { display:flex; align-items:baseline; gap:7px; min-width:0; }
+.thinking-copy strong { color:var(--sage-text); font-size:12px; }
+.thinking-time { color:var(--sage-text-muted); font-family:var(--sage-font-mono); font-size:var(--sage-font-xs); }
 
-.thinking-dots .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #3b82f6;
-  opacity: 0.4;
-  animation: thinking-pulse 1.2s ease-in-out infinite;
-}
-
-.thinking-dots .dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.thinking-dots .dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes thinking-pulse {
-  0%,
-  80%,
-  100% {
-    opacity: 0.3;
-    transform: scale(0.8);
-  }
-  40% {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
+@keyframes thinking-sheen { 0%,100% { background-position: 100% 0; } 50% { background-position: 0 0; } }
+@keyframes thinking-sweep { 0% { transform:translateX(-100%); } 55%,100% { transform:translateX(100%); } }
 
 .thinking-phase {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color:var(--sage-text-muted);
+  font-size:var(--sage-font-xs);
 }
 
-@media (prefers-color-scheme: dark) {
-  .thinking-indicator {
-    border-color: #374151;
-    background: #1f2937;
-    color: #d1d5db;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .thinking-indicator, .thinking-sheen { animation: none; }
 }
+
 </style>

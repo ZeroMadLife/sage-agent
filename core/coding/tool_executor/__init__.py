@@ -7,9 +7,9 @@ from core.coding.tool_executor.approval import (
 )
 from core.coding.tool_executor.permissions import (
     ApprovalCallback,
-    ApprovalPolicy,
     PermissionChecker,
     PermissionDecision,
+    PermissionMode,
 )
 from core.coding.tool_executor.policy import ToolPolicyChecker, ToolPolicyDecision
 
@@ -17,9 +17,10 @@ __all__ = [
     "ApprovalCallback",
     "ApprovalEntry",
     "ApprovalManager",
-    "ApprovalPolicy",
+    "ApprovalRequirement",
     "PermissionChecker",
     "PermissionDecision",
+    "PermissionMode",
     "ToolExecutor",
     "ToolPolicyChecker",
     "ToolPolicyDecision",
@@ -33,4 +34,8 @@ def __getattr__(name: str) -> object:
         from core.coding.tool_executor.executor import ToolExecutor
 
         return ToolExecutor
+    if name == "ApprovalRequirement":
+        from core.coding.tool_executor.executor import ApprovalRequirement
+
+        return ApprovalRequirement
     raise AttributeError(name)

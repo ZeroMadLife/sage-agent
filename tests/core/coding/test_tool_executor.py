@@ -1,6 +1,10 @@
 """ToolExecutor pipeline tests."""
 
 from pathlib import Path
+from typing import Any
+
+import pytest
+from sage_harness import SandboxCapabilities, SandboxDescriptor, SandboxResult
 
 from core.coding.context import WorkspaceContext
 from core.coding.engine import (
@@ -12,7 +16,6 @@ from core.coding.engine import (
 )
 from core.coding.tool_executor import (
     ApprovalManager,
-    ApprovalPolicy,
     PermissionChecker,
     ToolExecutor,
     ToolPolicyChecker,
@@ -23,23 +26,57 @@ from core.coding.tools.registry import build_tool_registry
 def _executor(
     tmp_path: Path,
     *,
-    approval_policy: ApprovalPolicy = "auto",
+    approval_policy: str = "auto",
     approval_manager: ApprovalManager | None = None,
     session_id: str = "coding_1",
     should_stop: bool = False,
+    sandbox: Any | None = None,
 ) -> ToolExecutor:
     workspace = WorkspaceContext(root=tmp_path)
     tools = build_tool_registry(workspace)
+    # Map legacy approval_policy to permission_mode for backward compat in tests
+    mode = "auto" if approval_policy == "auto" else "default"
     return ToolExecutor(
         tools=tools,
         workspace=workspace,
-        permission_checker=PermissionChecker(approval_policy=approval_policy),
+        permission_checker=PermissionChecker(permission_mode=mode, approval_policy=approval_policy),
         policy_checker=ToolPolicyChecker(workspace),
         approval_manager=approval_manager,
         session_id=session_id,
         should_stop=lambda: should_stop,
         run_id="run_1",
+        sandbox=sandbox,
     )
+
+
+class RecordingSandbox:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.failure = failure
+        self._descriptor = SandboxDescriptor(
+            sandbox_id="test:sandbox",
+            provider="test",
+            workspace_id="workspace",
+            capabilities=SandboxCapabilities(
+                isolated=True,
+                host_access=False,
+                write_files=True,
+                shell=True,
+            ),
+        )
+
+    @property
+    def descriptor(self) -> SandboxDescriptor:
+        return self._descriptor
+
+    async def invoke(self, operation: str, arguments: dict[str, object]) -> SandboxResult:
+        self.calls.append((operation, arguments))
+        if self.failure is not None:
+            raise self.failure
+        return SandboxResult(operation=operation, content="sandbox-result")  # type: ignore[arg-type]
+
+    async def aclose(self) -> None:
+        return None
 
 
 async def test_unknown_tool_returns_error_event(tmp_path: Path) -> None:
@@ -112,6 +149,99 @@ async def test_auto_approval_path_executes_tool(tmp_path: Path) -> None:
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "approved"
 
 
+async def test_authorized_workspace_tool_is_delegated_to_the_sandbox(tmp_path: Path) -> None:
+    sandbox = RecordingSandbox()
+    executor = _executor(tmp_path, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "list_files", "args": {"path": "."}}
+        )
+    ]
+
+    assert [event.type for event in events] == ["tool_call", "tool_result"]
+    assert sandbox.calls == [("list_files", {"path": "."})]
+    assert events[-1].content == "sandbox-result"
+
+
+async def test_sandbox_provider_failure_is_normalized_without_leaking_details(
+    tmp_path: Path,
+) -> None:
+    sandbox = RecordingSandbox(failure=RuntimeError("private provider detail"))
+    executor = _executor(tmp_path, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "list_files", "args": {"path": "."}}
+        )
+    ]
+
+    result = events[-1]
+    assert isinstance(result, ToolResultEvent)
+    assert result.is_error is True
+    assert result.content == "sandbox operation failed"
+    assert "private provider detail" not in repr(events)
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        ("knowledge_learn", {"topic": "Harness lessons", "citation_ids": ["kcite_123"]}),
+        ("remember", {"topic": "project-conventions", "fact": "Keep revisions bound"}),
+    ],
+)
+async def test_durable_learning_requires_explicit_user_approval(
+    tmp_path: Path,
+    tool: str,
+    args: dict[str, object],
+) -> None:
+    """Durable learning pauses before execution even when content is model-selected."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_manager=manager)
+    stream = executor.execute(
+        {
+            "name": tool,
+            "args": args,
+        }
+    )
+
+    first = await anext(stream)
+
+    assert isinstance(first, ApprovalRequiredEvent)
+    assert first.tool == tool
+    await stream.aclose()
+
+
+async def test_invalid_write_arguments_fail_before_approval(tmp_path: Path) -> None:
+    """An incomplete write request never reaches the user approval queue."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_policy="ask", approval_manager=manager)
+    stream = executor.execute({"name": "write_file", "args": {"content": "missing path"}})
+
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert isinstance(first, ToolResultEvent)
+    assert first.is_error is True
+    assert "path" in first.content.lower()
+    assert manager.pending("coding_1") is None
+
+
+async def test_auto_mode_still_requires_approval_for_dangerous_shell(tmp_path: Path) -> None:
+    """Dangerous shell commands keep an approval boundary in automatic mode."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_manager=manager)
+    stream = executor.execute({"name": "run_shell", "args": {"command": "git reset --hard HEAD"}})
+
+    first = await anext(stream)
+    await stream.aclose()
+
+    assert isinstance(first, ApprovalRequiredEvent)
+    assert "reset" in first.description.lower()
+
+
 async def test_ask_approval_granted_then_executes_tool(tmp_path: Path) -> None:
     """Ask approval mode blocks, resumes, and then executes after approval."""
     manager = ApprovalManager()
@@ -133,6 +263,32 @@ async def test_ask_approval_granted_then_executes_tool(tmp_path: Path) -> None:
         "tool_result",
     ]
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "approved"
+
+
+async def test_session_approval_skips_the_next_matching_tool_prompt(tmp_path: Path) -> None:
+    """A session approval is reused for the same risky tool within the session."""
+    manager = ApprovalManager()
+    executor = _executor(tmp_path, approval_policy="ask", approval_manager=manager)
+    first_stream = executor.execute(
+        {"name": "write_file", "args": {"path": "first.txt", "content": "first"}}
+    )
+
+    first = await anext(first_stream)
+    assert isinstance(first, ApprovalRequiredEvent)
+    assert manager.resolve("coding_1", first.approval_id, "session") is True
+    _ = [event async for event in first_stream]
+
+    second_stream = executor.execute(
+        {"name": "write_file", "args": {"path": "second.txt", "content": "second"}}
+    )
+    events = [event async for event in second_stream]
+
+    assert [event.type for event in events] == [
+        "approval_granted",
+        "tool_call",
+        "tool_result",
+    ]
+    assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "second"
 
 
 async def test_ask_approval_denied_returns_error(tmp_path: Path) -> None:

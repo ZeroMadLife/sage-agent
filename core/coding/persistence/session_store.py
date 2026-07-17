@@ -8,6 +8,9 @@ import threading
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+from core.coding.context import now
+from core.harness import normalize_runtime_profile
+
 
 class CodingChatMessage(TypedDict):
     """Replayable chat message persisted in a coding session."""
@@ -48,8 +51,12 @@ class CodingSessionStore:
             raise ValueError("session file must contain a JSON object")
         return cast(dict[str, Any], data)
 
-    def list_sessions(self, limit: int = 30) -> list[dict[str, Any]]:
-        """Return session summaries ordered by most recently updated."""
+    def list_sessions(self, limit: int = 30, *, include_archived: bool = False) -> list[dict[str, Any]]:
+        """Return session summaries ordered by most recently updated.
+
+        Empty sessions (no history entries) are filtered out so the workbench
+        does not show stub sessions created on page load.
+        """
         summaries: list[dict[str, Any]] = []
         for path in self.root.glob("*.json"):
             try:
@@ -57,8 +64,43 @@ class CodingSessionStore:
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(data, dict):
-                summaries.append(_summarize_session(data))
-        return sorted(summaries, key=lambda item: item["updated_at"], reverse=True)[:limit]
+                try:
+                    summaries.append(_summarize_session(data))
+                except ValueError:
+                    # A future/invalid profile must not make all historical sessions
+                    # disappear; the session can be repaired or migrated explicitly.
+                    continue
+        summaries = [
+            s for s in summaries
+            if s["message_count"] > 0 and (include_archived or not s["archived"])
+        ]
+        summaries.sort(key=lambda item: item["updated_at"], reverse=True)
+        summaries.sort(key=lambda item: not item["pinned"])
+        return summaries[:limit]
+
+    def update_metadata(
+        self,
+        session_id: str,
+        *,
+        title: str | None = None,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, Any]:
+        """Atomically update user-visible session metadata and return its summary."""
+        with self._lock:
+            session = self.load(session_id)
+            if title is not None:
+                normalized = " ".join(title.split())
+                if not normalized or len(normalized) > 120:
+                    raise ValueError("title must contain 1-120 non-whitespace characters")
+                session["title_override"] = normalized
+            if pinned is not None:
+                session["pinned"] = bool(pinned)
+            if archived is not None:
+                session["archived"] = bool(archived)
+            session["updated_at"] = now()
+            self.save(session)
+            return _summarize_session(session)
 
     def messages(self, session_id: str) -> list[CodingChatMessage]:
         """Return replayable user/assistant chat messages for one session."""
@@ -75,6 +117,10 @@ class CodingSessionStore:
                 continue
             content = str(item.get("content", "")).strip()
             if not content:
+                continue
+            # Filter out old-style expanded skill prompts that were persisted as
+            # user messages before slash expansion was decoupled from history.
+            if role == "user" and content.startswith("你正在使用 Sage 的"):
                 continue
             messages.append(
                 {
@@ -100,11 +146,14 @@ def _summarize_session(data: dict[str, Any]) -> dict[str, Any]:
     mode = runtime_mode.get("mode", "default") if isinstance(runtime_mode, dict) else "default"
     return {
         "session_id": str(data.get("id", "")),
-        "title": _session_title(history, workspace_root),
+        "title": str(data.get("title_override") or _session_title(history, workspace_root)),
+        "pinned": bool(data.get("pinned", False)),
+        "archived": bool(data.get("archived", False)),
         "workspace_root": workspace_root,
         "created_at": str(data.get("created_at", "")),
         "updated_at": str(data.get("updated_at", "")),
         "runtime_mode": str(mode),
+        "runtime_profile": normalize_runtime_profile(data.get("runtime_profile")),
         "message_count": len(history) if isinstance(history, list) else 0,
     }
 
@@ -115,7 +164,10 @@ def _session_title(history: Any, workspace_root: str) -> str:
             if not isinstance(item, dict) or item.get("role") != "user":
                 continue
             content = str(item.get("content", "")).strip()
-            if content:
-                return content[:60]
-    name = Path(workspace_root).name
-    return name or "Sage session"
+            if not content:
+                continue
+            # Skip old-style expanded skill prompts persisted as user messages.
+            if content.startswith("你正在使用 Sage 的"):
+                continue
+            return content[:60]
+    return "新会话"

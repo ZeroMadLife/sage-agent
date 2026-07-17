@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ChevronRight, Folder, FileText } from 'lucide-vue-next'
+import { ChevronRight, Folder, FileText, X } from 'lucide-vue-next'
 import { useCodingStore } from '../../../stores/coding'
 
 const store = useCodingStore()
+const emit = defineEmits<{ close: [] }>()
 
 function navigateTo(path: string) {
   store.loadFiles(path)
@@ -27,7 +28,7 @@ function breadcrumbPath(index: number) {
 </script>
 
 <template>
-  <aside class="file-tree">
+  <aside class="file-tree" aria-label="工作区文件">
     <div class="tree-header">
       <div class="breadcrumb">
         <button class="crumb" @click="navigateTo('.')">root</button>
@@ -36,6 +37,7 @@ function breadcrumbPath(index: number) {
           <button class="crumb" @click="navigateTo(breadcrumbPath(i))">{{ part }}</button>
         </template>
       </div>
+      <button class="close-files" type="button" aria-label="关闭文件面板" title="关闭文件面板" @click="emit('close')"><X :size="15" /></button>
     </div>
 
     <div class="tree-list">
@@ -74,16 +76,21 @@ function breadcrumbPath(index: number) {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: #fafbfc;
-  border-left: 1px solid #e5e7eb;
+  background: var(--sage-surface);
+  border-left: 1px solid var(--sage-border);
 }
 
 .tree-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 10px 12px;
-  border-bottom: 1px solid #f0f1f3;
+  border-bottom: 1px solid var(--sage-border);
 }
 
 .breadcrumb {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -91,10 +98,13 @@ function breadcrumbPath(index: number) {
   font-size: 12px;
 }
 
+.close-files { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 1px solid var(--sage-border); border-radius: var(--sage-radius); color: var(--sage-text-secondary); background: var(--sage-surface); }
+.close-files:hover { background: var(--sage-surface-muted); }
+
 .crumb {
   border: 0;
   background: transparent;
-  color: #2563eb;
+  color: var(--sage-text-secondary);
   cursor: pointer;
   padding: 2px 4px;
   border-radius: 3px;
@@ -102,7 +112,7 @@ function breadcrumbPath(index: number) {
 }
 
 .crumb:hover {
-  background: #eff6ff;
+  background: var(--sage-surface-muted);
 }
 
 .tree-list {
@@ -123,15 +133,15 @@ function breadcrumbPath(index: number) {
   cursor: pointer;
   text-align: left;
   font-size: 13px;
-  color: #374151;
+  color: var(--sage-text-secondary);
 }
 
 .tree-entry:hover {
-  background: #f3f4f6;
+  background: var(--sage-surface-muted);
 }
 
 .tree-entry.active {
-  background: #dbeafe;
+  background: var(--sage-surface-muted);
 }
 
 .dir-icon {
@@ -146,7 +156,7 @@ function breadcrumbPath(index: number) {
 }
 
 .preview {
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--sage-border);
   max-height: 45%;
   display: flex;
   flex-direction: column;
@@ -159,8 +169,8 @@ function breadcrumbPath(index: number) {
   padding: 8px 12px;
   font-size: 12px;
   font-weight: 600;
-  color: #4b5563;
-  border-bottom: 1px solid #f0f1f3;
+  color: var(--sage-text-secondary);
+  border-bottom: 1px solid var(--sage-border);
 }
 
 .preview-content {
@@ -170,9 +180,9 @@ function breadcrumbPath(index: number) {
   padding: 10px 12px;
   font-size: 12px;
   line-height: 1.5;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--sage-font-mono);
   white-space: pre-wrap;
   word-break: break-word;
-  color: #1f2937;
+  color: var(--sage-text);
 }
 </style>

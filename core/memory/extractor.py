@@ -1,11 +1,36 @@
 """Memory extraction and retrieval coordinator."""
 
 import logging
-
-from core.memory.long_term import LongTermMemory, MemoryFact
+from dataclasses import dataclass
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 TRAVEL_PLANNING_MEMORY_SCOPE = "skill:travel-planning"
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryFact:
+    """Provider-neutral long-term memory fact."""
+
+    content: str
+    score: float = 0.0
+    fact_id: str = ""
+    created_at: str = ""
+
+
+class LongTermMemoryPort(Protocol):
+    """Minimal memory capability accepted by the legacy travel graph."""
+
+    async def extract_and_store(self, conversation: str, scope: str | None = None) -> None: ...
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        scope: str | None = None,
+    ) -> list[MemoryFact]: ...
+
+    def format_facts_for_prompt(self, facts: list[MemoryFact]) -> str: ...
 
 
 class MemoryManager:
@@ -13,7 +38,7 @@ class MemoryManager:
 
     def __init__(
         self,
-        long_term: LongTermMemory,
+        long_term: LongTermMemoryPort,
         default_scope: str = TRAVEL_PLANNING_MEMORY_SCOPE,
     ) -> None:
         self._long_term = long_term

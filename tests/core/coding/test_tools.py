@@ -2,12 +2,13 @@
 
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 
 from core.coding.context import WorkspaceContext
-from core.coding.tools.base import RegisteredTool, ToolResult
+from core.coding.tools.base import RegisteredTool, ToolContext, ToolResult
 from core.coding.tools.registry import (
     ToolDefinition,
     build_tool_registry,
@@ -15,6 +16,7 @@ from core.coding.tools.registry import (
     registered_tool_definitions,
 )
 from core.config.settings import Settings
+from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from models.itinerary import BudgetBreakdown, Itinerary, ItineraryDay
 
 
@@ -93,6 +95,37 @@ def test_write_file_rejects_workspace_escape(tmp_path: Path) -> None:
     assert not (tmp_path.parent / "outside.txt").exists()
 
 
+def test_file_tools_hide_and_reject_workspace_credentials(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    tools = build_tool_registry(workspace)
+    (tmp_path / ".env").write_text("API_KEY=must-not-leak\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("API_KEY=placeholder\n", encoding="utf-8")
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(
+        "control-marker = true\n", encoding="utf-8"
+    )
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "usage.sqlite3").write_text(
+        "usage-marker", encoding="utf-8"
+    )
+    (tmp_path / "README.md").write_text("public marker\n", encoding="utf-8")
+
+    listing = tools["list_files"].execute({"path": "."})
+    blocked = tools["read_file"].execute({"path": ".env"})
+    secret_search = tools["search"].execute({"path": ".", "pattern": "must-not-leak"})
+    control_search = tools["search"].execute({"path": ".", "pattern": "control-marker"})
+    public_search = tools["search"].execute({"path": ".", "pattern": "public marker"})
+
+    assert "[F] .env" not in listing.content.splitlines()
+    assert "[D] .codex" not in listing.content.splitlines()
+    assert "[D] .sage" not in listing.content.splitlines()
+    assert blocked.is_error is True
+    assert "protected by workspace policy" in blocked.content
+    assert "must-not-leak" not in secret_search.content
+    assert "control-marker" not in control_search.content
+    assert "README.md" in public_search.content
+
+
 def test_run_shell_uses_filtered_environment_and_reports_timeout(tmp_path: Path) -> None:
     """run_shell filters sensitive env vars and reports command timeout as an error."""
     workspace = _workspace(tmp_path)
@@ -148,6 +181,10 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
         "geocode",
         "search_nearby",
         "get_route",
+        "remember",
+        "dream",
+        "knowledge_search",
+        "knowledge_learn",
     }
     assert tools["read_file"].category == "file"
     assert tools["run_shell"].category == "shell"
@@ -157,6 +194,85 @@ def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: 
     assert tools["todo_add"].deferred is True
     assert tools["generate_itinerary"].deferred is True
     assert tools["get_weather"].category == "travel"
+    assert tools["knowledge_search"].category == "knowledge"
+    assert tools["knowledge_search"].requires_approval is False
+    assert tools["knowledge_learn"].risky is True
+    assert tools["knowledge_learn"].requires_approval is True
+    assert tools["remember"].risky is True
+    assert tools["remember"].requires_approval is True
+    assert tools["dream"].risky is False
+
+
+def test_knowledge_search_returns_revision_bound_evidence(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=knowledge,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    store = KnowledgeStore(
+        knowledge,
+        tmp_path / "knowledge.sqlite3",
+        {
+            "notes": KnowledgeSourceRoot(
+                root_id="notes",
+                kind="obsidian",
+                label="Notes",
+                path=vault,
+            )
+        },
+    )
+    (vault / "memory.md").write_text(
+        "# Memory\n\n长期记忆使用事实证据和动态 TTL。\n",
+        encoding="utf-8",
+    )
+    proposal = store.ingest("notes", "memory.md")
+    store.evaluate_and_apply_policy(proposal.proposal_id)
+    tools = build_tool_registry(
+        _workspace(tmp_path),
+        tool_context=ToolContext(knowledge_store=store),
+    )
+
+    result = tools["knowledge_search"].execute({"query": "长期记忆 TTL"})
+    payload = json.loads(result.content)
+
+    assert result.is_error is False
+    assert payload["status"] == "evidence_found"
+    assert payload["citations"][0]["citation_id"].startswith("kcite_")
+    assert payload["citations"][0]["page_revision"].startswith("krev_")
+    assert payload["citations"][0]["source_relative_path"] == "memory.md"
+    assert str(vault) not in result.content
+
+    deposited = tools["knowledge_learn"].execute(
+        {
+            "topic": "长期记忆策略",
+            "citation_ids": [payload["citations"][0]["citation_id"]],
+        }
+    )
+    deposit_payload = json.loads(deposited.content)
+    assert deposited.is_error is False
+    assert deposit_payload["status"] == "deposited"
+    assert deposit_payload["target_path"].startswith("wiki/learnings/")
+    assert deposit_payload["page_revision"].startswith("krev_")
+    assert deposit_payload["undo_available"] is True
+
+
+def test_knowledge_search_fails_closed_when_workspace_is_unconfigured(tmp_path: Path) -> None:
+    tools = build_tool_registry(_workspace(tmp_path))
+
+    result = tools["knowledge_search"].execute({"query": "Sage"})
+
+    assert result.is_error is True
+    assert json.loads(result.content)["status"] == "unavailable"
+    learning = tools["knowledge_learn"].execute(
+        {"topic": "Sage", "citation_ids": ["kcite_missing"]}
+    )
+    assert learning.is_error is True
 
 
 def test_registered_tool_definitions_are_decorator_backed() -> None:
