@@ -108,9 +108,10 @@ def test_resolve_llm_raises_on_unknown_provider() -> None:
         settings.resolve_llm("unknown:model")
 
 
-def test_resolve_llm_raises_on_missing_key() -> None:
+def test_resolve_llm_raises_on_missing_key(monkeypatch) -> None:
     """provider 的 key 未配置时抛出 ValueError。"""
-    settings = Settings()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
     import pytest
 
     with pytest.raises(ValueError, match="API key 未配置"):
