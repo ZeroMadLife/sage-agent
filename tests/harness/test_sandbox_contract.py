@@ -9,6 +9,7 @@ import pytest
 from sage_harness import SandboxCapabilities, SandboxPolicyError
 
 from core.coding.context import WorkspaceContext
+from core.harness.container_sandbox import ContainerWorkspaceSandbox
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 
 
@@ -122,3 +123,19 @@ def test_closed_local_sandbox_rejects_new_operations(tmp_path: Path) -> None:
 def test_isolated_capability_cannot_also_claim_host_access() -> None:
     with pytest.raises(ValueError, match="isolated sandbox"):
         SandboxCapabilities(isolated=True, host_access=True)
+
+
+def test_container_health_reports_missing_without_leaking_host_path(tmp_path: Path) -> None:
+    async def run() -> object:
+        sandbox = ContainerWorkspaceSandbox(
+            WorkspaceContext(tmp_path),
+            thread_id="health-missing",
+            docker_binary="sage-docker-does-not-exist",
+        )
+        return await sandbox.health()
+
+    health = asyncio.run(run())
+
+    assert health["status"] == "unavailable"
+    assert health["healthy"] is False
+    assert str(tmp_path) not in repr(health)

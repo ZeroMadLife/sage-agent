@@ -12,6 +12,7 @@ import hashlib
 import json
 import shlex
 import subprocess
+import threading
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -80,6 +81,7 @@ class ContainerWorkspaceSandbox:
         self._docker = docker_binary
         self._closed = False
         self._started = False
+        self._lifecycle_lock = threading.RLock()
         self._container_name = self._name(workspace, normalized_thread)
         workspace_id = workspace_id_from_path(workspace.root)
         thread_digest = hashlib.sha256(normalized_thread.encode()).hexdigest()[:12]
@@ -137,61 +139,162 @@ class ContainerWorkspaceSandbox:
         if self._started:
             await asyncio.to_thread(self._stop_container)
 
+    async def health(self) -> dict[str, object]:
+        """Return a sanitized provider health snapshot for diagnostics."""
+        return await asyncio.to_thread(self._health_sync)
+
+    @classmethod
+    def reconcile_stopped(cls, *, docker_binary: str = "docker") -> int:
+        """Remove Sage-owned containers that are no longer running.
+
+        Running containers are intentionally left alone: they may belong to a
+        live process or another API instance. A later session acquire will
+        inspect and reuse the deterministic container name. Only terminal
+        ``created``, ``exited`` and ``dead`` entries are safe to remove at
+        process startup.
+        """
+        removed = 0
+        try:
+            for status in ("created", "exited", "dead"):
+                completed = subprocess.run(
+                    [
+                        docker_binary,
+                        "ps",
+                        "-aq",
+                        "--filter",
+                        "label=com.sage.sandbox=true",
+                        "--filter",
+                        f"status={status}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    check=False,
+                )
+                if completed.returncode != 0:
+                    raise SandboxPolicyError(cls._docker_error(completed))
+                for container_id in completed.stdout.splitlines():
+                    container_id = container_id.strip()
+                    if not container_id:
+                        continue
+                    removed_result = subprocess.run(
+                        [docker_binary, "rm", "-f", container_id],
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                    )
+                    if removed_result.returncode == 0:
+                        removed += 1
+        except FileNotFoundError as exc:
+            raise SandboxPolicyError("docker executable is not available") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise SandboxPolicyError("sandbox reconciliation timed out") from exc
+        return removed
+
     def _ensure_started(self) -> None:
-        if self._started:
-            return
-        existing = self._docker_capture(
-            [
-                "ps",
-                "-q",
-                "--filter",
-                f"name=^{self._container_name}$",
-                "--filter",
-                "status=running",
-            ],
-            check=False,
-        ).strip()
-        if existing:
+        with self._lifecycle_lock:
+            if self._started:
+                return
+            existing = self._docker_capture(
+                [
+                    "ps",
+                    "-q",
+                    "--filter",
+                    f"name=^{self._container_name}$",
+                    "--filter",
+                    "status=running",
+                ],
+                check=False,
+            ).strip()
+            if existing:
+                self._started = True
+                return
+
+            stopped = self._docker_capture(
+                ["ps", "-aq", "--filter", f"name=^{self._container_name}$"],
+                check=False,
+            ).strip()
+            if stopped:
+                self._docker_capture(["rm", "-f", self._container_name], check=False)
+
+            self._workspace.root.mkdir(parents=True, exist_ok=True)
+            self._docker_capture(
+                [
+                    "run",
+                    "-d",
+                    "--name",
+                    self._container_name,
+                    "--label",
+                    "com.sage.sandbox=true",
+                    "--label",
+                    f"com.sage.sandbox_id={self._descriptor.sandbox_id}",
+                    "--network",
+                    "none",
+                    "--pids-limit",
+                    "256",
+                    "--memory",
+                    "1g",
+                    "--cpus",
+                    "2",
+                    "--read-only",
+                    "--tmpfs",
+                    "/tmp:rw,noexec,nosuid,size=64m",
+                    "--mount",
+                    f"type=bind,source={self._workspace.root},target={_CONTAINER_ROOT},readonly=false",
+                    self._image,
+                    "sleep",
+                    "infinity",
+                ]
+            )
             self._started = True
-            return
 
-        stopped = self._docker_capture(
-            ["ps", "-aq", "--filter", f"name=^{self._container_name}$"],
-            check=False,
-        ).strip()
-        if stopped:
-            self._docker_capture(["rm", "-f", self._container_name], check=False)
-
-        self._workspace.root.mkdir(parents=True, exist_ok=True)
-        self._docker_capture(
-            [
-                "run",
-                "-d",
-                "--name",
-                self._container_name,
-                "--label",
-                "com.sage.sandbox=true",
-                "--label",
-                f"com.sage.sandbox_id={self._descriptor.sandbox_id}",
-                "--network",
-                "none",
-                "--pids-limit",
-                "256",
-                "--memory",
-                "1g",
-                "--cpus",
-                "2",
-                "--read-only",
-                "--tmpfs",
-                "/tmp:rw,noexec,nosuid,size=64m",
-                "--mount",
-                f"type=bind,source={self._workspace.root},target={_CONTAINER_ROOT},readonly=false",
-                self._image,
-                "sleep",
-                "infinity",
-            ]
-        )
-        self._started = True
+    def _health_sync(self) -> dict[str, object]:
+        try:
+            completed = self._docker_run(
+                ["inspect", "--format", "{{json .}}", self._container_name],
+                timeout=60.0,
+                check=False,
+            )
+        except SandboxPolicyError as exc:
+            return {
+                "sandbox_id": self._descriptor.sandbox_id,
+                "provider": self._descriptor.provider,
+                "status": "unavailable",
+                "running": False,
+                "healthy": False,
+                "error": str(exc),
+            }
+        if completed.returncode != 0:
+            return {
+                "sandbox_id": self._descriptor.sandbox_id,
+                "provider": self._descriptor.provider,
+                "status": "missing",
+                "running": False,
+                "healthy": False,
+            }
+        try:
+            payload = json.loads(completed.stdout)
+            state = payload.get("State", {})
+            status = str(state.get("Status", "unknown"))
+            running = bool(state.get("Running", False))
+            image = str(payload.get("Config", {}).get("Image", ""))
+        except (TypeError, ValueError, AttributeError):
+            return {
+                "sandbox_id": self._descriptor.sandbox_id,
+                "provider": self._descriptor.provider,
+                "status": "invalid",
+                "running": False,
+                "healthy": False,
+            }
+        return {
+            "sandbox_id": self._descriptor.sandbox_id,
+            "provider": self._descriptor.provider,
+            "status": status,
+            "running": running,
+            "healthy": running and image == self._image,
+            "image": image,
+        }
 
     def _invoke_sync(self, operation: SandboxOperation, arguments: dict[str, Any]) -> tuple[str, bool]:
         if operation == "list_files":
@@ -345,8 +448,9 @@ class ContainerWorkspaceSandbox:
         return clip(f"exit_code: {completed.returncode}\n{output}"), completed.returncode != 0
 
     def _stop_container(self) -> None:
-        self._docker_capture(["rm", "-f", self._container_name], check=False)
-        self._started = False
+        with self._lifecycle_lock:
+            self._docker_capture(["rm", "-f", self._container_name], check=False)
+            self._started = False
 
     def _virtual_path(self, raw_path: str) -> str:
         resolved = self._workspace.path(raw_path)

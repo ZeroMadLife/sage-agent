@@ -262,6 +262,31 @@ def test_deerflow_profile_refuses_host_local_sandbox_in_production(tmp_path: Pat
     assert "isolated sandbox" in response.json()["detail"]
 
 
+def test_container_sandbox_reconciles_terminal_resources_on_app_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[str] = []
+
+    def fake_reconcile(provider: str) -> int:
+        calls.append(provider)
+        return 3
+
+    monkeypatch.setattr("api.main.reconcile_coding_sandboxes", fake_reconcile)
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="container",
+    )
+
+    with TestClient(app):
+        pass
+
+    assert calls == ["container"]
+    assert app.state.coding_sandbox_reconciled == 3
+
+
 def test_enabled_deerflow_profile_streams_public_answer_and_replays_history(tmp_path: Path) -> None:
     app = create_app(
         coding_model_factory=DeerflowFakeModel,

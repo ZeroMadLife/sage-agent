@@ -1,5 +1,6 @@
 """FastAPI app factory with two-tier Agent."""
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -28,6 +29,7 @@ from core.harness.mcp_adapter import (
     build_configured_mcp_catalog,
     build_configured_mcp_manager,
 )
+from core.harness.sandbox_factory import reconcile_coding_sandboxes
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
@@ -200,6 +202,18 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         checkpoint_stack = AsyncExitStack()
+        sandbox_provider = str(
+            getattr(app.state, "coding_sandbox_provider", "local_workspace")
+        ).strip().lower()
+        if sandbox_provider == "container":
+            try:
+                app.state.coding_sandbox_reconciled = await asyncio.to_thread(
+                    reconcile_coding_sandboxes,
+                    sandbox_provider,
+                )
+            except Exception as exc:
+                logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
+                raise
         if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
             app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
                 open_sqlite_checkpointer(

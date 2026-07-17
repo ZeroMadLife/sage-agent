@@ -55,3 +55,13 @@ def create_coding_sandbox(
 
 
 __all__ = ["SandboxProviderName", "create_coding_sandbox"]
+
+
+def reconcile_coding_sandboxes(provider: str, *, docker_binary: str = "docker") -> int:
+    """Reconcile terminal containers for the configured provider."""
+    if provider.strip().lower() != "container":
+        return 0
+    return ContainerWorkspaceSandbox.reconcile_stopped(docker_binary=docker_binary)
+
+
+__all__.append("reconcile_coding_sandboxes")

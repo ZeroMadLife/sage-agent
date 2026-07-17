@@ -7,7 +7,10 @@ from sage_harness import SandboxPolicyError
 
 from core.coding.context import WorkspaceContext
 from core.harness.container_sandbox import ContainerWorkspaceSandbox
-from core.harness.sandbox_factory import create_coding_sandbox
+from core.harness.sandbox_factory import (
+    create_coding_sandbox,
+    reconcile_coding_sandboxes,
+)
 
 
 def test_local_provider_is_selected_for_trusted_development(tmp_path: Path) -> None:
@@ -55,3 +58,12 @@ def test_unknown_provider_fails_closed(tmp_path: Path) -> None:
             app_env="development",
             provider="host",
         )
+
+
+def test_reconcile_is_noop_for_local_provider() -> None:
+    assert reconcile_coding_sandboxes("local_workspace") == 0
+
+
+def test_reconcile_fails_closed_when_docker_is_missing() -> None:
+    with pytest.raises(SandboxPolicyError, match="docker executable"):
+        reconcile_coding_sandboxes("container", docker_binary="sage-docker-does-not-exist")
