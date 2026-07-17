@@ -22,7 +22,12 @@ class ProfileScenarioResult:
     assertions_passed: bool
     streamed: bool
     tool_calls: int
+    tool_call_events: int
+    tool_results: int
+    paired_tool_events: int
     tool_errors: int
+    unpaired_tool_calls: int
+    unpaired_tool_results: int
     policy_compliant: bool
     first_token_ms: float | None
     duration_ms: float
@@ -45,6 +50,12 @@ class ProfileScenarioResult:
             return 1.0
         return max(0.0, (self.tool_calls - self.tool_errors) / self.tool_calls)
 
+    @property
+    def tool_event_pairing_rate(self) -> float:
+        if self.tool_calls == 0:
+            return 1.0
+        return self.paired_tool_events / self.tool_calls
+
     def to_dict(self) -> dict[str, object]:
         return {
             "scenario": self.scenario,
@@ -56,8 +67,14 @@ class ProfileScenarioResult:
             "assertions_passed": self.assertions_passed,
             "streamed": self.streamed,
             "tool_calls": self.tool_calls,
+            "tool_call_events": self.tool_call_events,
+            "tool_results": self.tool_results,
+            "paired_tool_events": self.paired_tool_events,
             "tool_errors": self.tool_errors,
+            "unpaired_tool_calls": self.unpaired_tool_calls,
+            "unpaired_tool_results": self.unpaired_tool_results,
             "tool_success_rate": round(self.tool_success_rate, 4),
+            "tool_event_pairing_rate": round(self.tool_event_pairing_rate, 4),
             "policy_compliant": self.policy_compliant,
             "first_token_ms": self.first_token_ms,
             "duration_ms": self.duration_ms,
@@ -71,6 +88,7 @@ class ProfileMetrics:
     task_completion_rate: float
     streaming_rate: float
     tool_call_success_rate: float
+    tool_event_pairing_rate: float
     policy_compliance_rate: float
     p50_first_token_ms: float | None
     p95_first_token_ms: float | None
@@ -84,6 +102,7 @@ class ProfileMetrics:
             "task_completion_rate": round(self.task_completion_rate, 4),
             "streaming_rate": round(self.streaming_rate, 4),
             "tool_call_success_rate": round(self.tool_call_success_rate, 4),
+            "tool_event_pairing_rate": round(self.tool_event_pairing_rate, 4),
             "policy_compliance_rate": round(self.policy_compliance_rate, 4),
             "p50_first_token_ms": self.p50_first_token_ms,
             "p95_first_token_ms": self.p95_first_token_ms,
@@ -108,6 +127,9 @@ class ProfileParityReport:
     def metrics(self, profile: RuntimeProfile) -> ProfileMetrics:
         selected = [result for result in self.results if result.runtime_profile == profile]
         tool_calls = sum(result.tool_calls for result in selected)
+        paired_tool_events = sum(
+            result.paired_tool_events for result in selected
+        )
         tool_errors = sum(result.tool_errors for result in selected)
         first_tokens = [
             result.first_token_ms
@@ -123,6 +145,9 @@ class ProfileParityReport:
                 _rate(max(0, tool_calls - tool_errors), tool_calls)
                 if tool_calls
                 else 1.0
+            ),
+            tool_event_pairing_rate=(
+                _rate(paired_tool_events, tool_calls) if tool_calls else 1.0
             ),
             policy_compliance_rate=_rate(
                 sum(result.policy_compliant for result in selected), len(selected)
@@ -165,6 +190,7 @@ class ProfileParityReport:
                 or (legacy.streamed and not deerflow.streamed)
                 or (legacy.policy_compliant and not deerflow.policy_compliant)
                 or deerflow.tool_success_rate < legacy.tool_success_rate
+                or deerflow.tool_event_pairing_rate < legacy.tool_event_pairing_rate
             ):
                 regressions.append(scenario)
         return tuple(regressions)
@@ -218,20 +244,28 @@ def project_profile_timeline(
         None,
     )
     first_text = _timestamp(first_text_event.get("timestamp")) if first_text_event else None
-    tool_calls = sum(payload.get("type") == "tool_call" for payload in payloads)
+    (
+        tool_call_events,
+        tool_results,
+        paired_tool_events,
+        unpaired_tool_results,
+    ) = _pair_tool_events(payloads)
+    tool_calls = tool_call_events + unpaired_tool_results
     tool_errors = sum(
         payload.get("type") == "tool_result" and bool(payload.get("is_error"))
         for payload in payloads
     )
     security_violation = any(
-        payload.get("type") == "security_violation" for payload in payloads
+        payload.get("type") == "security_violation"
+        or _has_text(payload.get("security_event_type"))
+        for payload in payloads
     )
     policy_denied = any(
         payload.get("type") == "policy_violation"
         or (
             payload.get("type") == "tool_result"
             and bool(payload.get("is_error"))
-            and str(payload.get("policy_reason", "")).strip() != ""
+            and _has_text(payload.get("policy_reason"))
         )
         for payload in payloads
     )
@@ -246,7 +280,12 @@ def project_profile_timeline(
         assertions_passed=assertions_passed,
         streamed=first_text_event is not None,
         tool_calls=tool_calls,
+        tool_call_events=tool_call_events,
+        tool_results=tool_results,
+        paired_tool_events=paired_tool_events,
         tool_errors=tool_errors,
+        unpaired_tool_calls=tool_call_events - paired_tool_events,
+        unpaired_tool_results=unpaired_tool_results,
         policy_compliant=policy_compliant,
         first_token_ms=_duration_ms(start, first_text),
         duration_ms=_duration_ms(start, terminal) or 0.0,
@@ -260,6 +299,38 @@ def _timestamp(value: object) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+
+
+def _has_text(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _pair_tool_events(
+    payloads: Sequence[Mapping[str, Any]],
+) -> tuple[int, int, int, int]:
+    pending_by_tool: dict[str, int] = {}
+    call_count = 0
+    result_count = 0
+    paired_count = 0
+    unpaired_result_count = 0
+    for payload in payloads:
+        event_type = payload.get("type")
+        tool = str(payload.get("tool", ""))
+        if event_type == "tool_call":
+            call_count += 1
+            pending_by_tool[tool] = pending_by_tool.get(tool, 0) + 1
+        elif event_type == "tool_result":
+            result_count += 1
+            pending = pending_by_tool.get(tool, 0)
+            if pending:
+                paired_count += 1
+                if pending == 1:
+                    pending_by_tool.pop(tool, None)
+                else:
+                    pending_by_tool[tool] = pending - 1
+            else:
+                unpaired_result_count += 1
+    return call_count, result_count, paired_count, unpaired_result_count
 
 
 def _duration_ms(start: datetime | None, end: datetime | None) -> float | None:
