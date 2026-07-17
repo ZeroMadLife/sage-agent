@@ -100,6 +100,52 @@ def test_event_adapter_namespaces_resume_events_for_idempotent_replay() -> None:
     assert initial_event.event_id != resumed_event.event_id
 
 
+def test_event_adapter_suppresses_checkpointed_tool_call_on_resume() -> None:
+    adapter = HarnessEventAdapter(
+        session_id="s1",
+        run_id="r1",
+        stream_namespace="resume-1",
+        seen_tool_call_ids=("call-approved",),
+    )
+    replayed_model_call = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "messages",
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "patch_file",
+                            "args": {"path": "app.py"},
+                            "id": "call-approved",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                {},
+            ),
+            "source-model-replay",
+        )
+    )
+    replayed_custom_call = adapter.adapt(
+        HarnessStreamItem(
+            2,
+            "custom",
+            {
+                "type": "tool_call",
+                "tool": "patch_file",
+                "tool_call_id": "call-approved",
+                "args": {"path": "app.py"},
+            },
+            "source-custom-replay",
+        )
+    )
+
+    assert replayed_model_call == ()
+    assert replayed_custom_call == ()
+
+
 def test_event_adapter_projects_provider_message_chunks_as_text_deltas() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
     chunk = AIMessageChunk(content="流式正文", id="chunk-1")

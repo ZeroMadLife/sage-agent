@@ -89,6 +89,76 @@ class DeerflowMissingPathRecoveryModel(FakeMessagesListChatModel):
         return self
 
 
+class LegacyFreshReadEditModel(ScriptedApiClient):
+    def __init__(self) -> None:
+        super().__init__([
+            (
+                '<tool>{"name":"patch_file","args":{"path":"app.py",'
+                '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
+            ),
+            '<tool>{"name":"read_file","args":{"path":"app.py"}}</tool>',
+            (
+                '<tool>{"name":"patch_file","args":{"path":"app.py",'
+                '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
+            ),
+            "<final>读取确认并获批后，已将 value 更新为 2。</final>",
+        ])
+
+
+class DeerflowFreshReadEditModel(FakeMessagesListChatModel):
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "patch_file",
+                            "args": {
+                                "path": "app.py",
+                                "old_text": "value = 1",
+                                "new_text": "value = 2",
+                            },
+                            "id": "call-blind-patch",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"path": "app.py"},
+                            "id": "call-read-app",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "patch_file",
+                            "args": {
+                                "path": "app.py",
+                                "old_text": "value = 1",
+                                "new_text": "value = 2",
+                            },
+                            "id": "call-approved-patch",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="读取确认并获批后，已将 value 更新为 2。"),
+            ]
+        )
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
 def _run_read_scenario(tmp_path: Path, profile: str) -> list[dict[str, object]]:
     workspace = tmp_path / profile
     workspace.mkdir()
@@ -144,6 +214,49 @@ def _run_missing_path_recovery_scenario(
                 events.append(event)
                 if event["kind"] == "terminal":
                     return events
+
+
+def _run_fresh_read_edit_scenario(
+    tmp_path: Path,
+    profile: str,
+) -> tuple[list[dict[str, object]], Path]:
+    workspace = tmp_path / f"fresh-read-edit-{profile}"
+    workspace.mkdir()
+    target = workspace / "app.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    app = create_app(
+        coding_model_factory=(
+            LegacyFreshReadEditModel
+            if profile == "legacy"
+            else DeerflowFreshReadEditModel
+        ),
+        coding_workspace_root=workspace,
+        coding_storage_root=workspace / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": profile, "approval_policy": "ask"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "把 app.py 的 value 从 1 改为 2"})
+            events: list[dict[str, object]] = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                payload = event.get("payload")
+                if isinstance(payload, dict) and payload.get("type") == "approval_required":
+                    approved = client.post(
+                        f"/api/v1/coding/{session_id}/approval/respond",
+                        json={
+                            "approval_id": payload["approval_id"],
+                            "choice": "once",
+                        },
+                    )
+                    assert approved.status_code == 200
+                if event["kind"] == "terminal":
+                    return events, target
 
 
 def _final_contains(events: list[dict[str, object]], expected: str) -> bool:
@@ -270,6 +383,62 @@ def test_legacy_and_v2_recover_from_a_failed_tool_call(tmp_path: Path) -> None:
     assert report.metrics("deerflow_v2").tool_call_success_rate == 0.5
     assert report.metrics("legacy").tool_event_pairing_rate == 0.5
     assert report.metrics("deerflow_v2").tool_event_pairing_rate == 1.0
+
+
+def test_legacy_and_v2_enforce_fresh_read_before_approved_edit(tmp_path: Path) -> None:
+    legacy_events, legacy_target = _run_fresh_read_edit_scenario(tmp_path, "legacy")
+    v2_events, v2_target = _run_fresh_read_edit_scenario(tmp_path, "deerflow_v2")
+    report = ProfileParityReport(
+        results=[
+            project_profile_timeline(
+                "fresh-read-approved-edit",
+                "legacy",
+                legacy_events,
+                assertions_passed=(
+                    legacy_target.read_text(encoding="utf-8") == "value = 2\n"
+                    and _final_contains(legacy_events, "value 更新为 2")
+                ),
+                expected_policy_denial=True,
+            ),
+            project_profile_timeline(
+                "fresh-read-approved-edit",
+                "deerflow_v2",
+                v2_events,
+                assertions_passed=(
+                    v2_target.read_text(encoding="utf-8") == "value = 2\n"
+                    and _final_contains(v2_events, "value 更新为 2")
+                ),
+                expected_policy_denial=True,
+            ),
+        ]
+    )
+
+    approvals = [
+        sum(
+            isinstance(payload := event.get("payload"), dict)
+            and payload.get("type") == "approval_required"
+            for event in events
+        )
+        for events in (legacy_events, v2_events)
+    ]
+    assert report.regressions() == ()
+    assert all(result.passed for result in report.results), report.to_dict()
+    tool_counts = [
+        (
+            result.tool_calls,
+            result.tool_call_events,
+            result.tool_results,
+            result.paired_tool_events,
+            result.unpaired_tool_calls,
+            result.unpaired_tool_results,
+        )
+        for result in report.results
+    ]
+    assert tool_counts == [(3, 2, 3, 2, 0, 1), (3, 3, 3, 3, 0, 0)], tool_counts
+    assert all(result.tool_errors == 1 for result in report.results)
+    assert approvals == [1, 1]
+    assert report.metrics("legacy").tool_call_success_rate == 2 / 3
+    assert report.metrics("deerflow_v2").tool_call_success_rate == 2 / 3
 
 
 def test_report_surfaces_a_v2_regression_without_hiding_legacy_success() -> None:

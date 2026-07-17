@@ -312,6 +312,8 @@ def _build_runtime_tool(
             approval_choice=approval_choice,
         ):
             payload = event_to_dict(event)
+            if payload.get("type") in {"tool_call", "tool_result"}:
+                payload["tool_call_id"] = tool_call_id
             if writer is not None:
                 writer(payload)
             if isinstance(event, ToolResultEvent):

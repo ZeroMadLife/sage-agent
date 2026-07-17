@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from sage_harness.runtime.events import (
@@ -25,6 +25,7 @@ class HarnessEventAdapter:
         session_id: str,
         run_id: str,
         stream_namespace: str = "initial",
+        seen_tool_call_ids: Iterable[str] = (),
     ) -> None:
         if not session_id.strip() or not run_id.strip():
             raise ValueError("session_id and run_id are required")
@@ -33,7 +34,9 @@ class HarnessEventAdapter:
         self.session_id = session_id
         self.run_id = run_id
         self.stream_namespace = stream_namespace
-        self._seen_model_tool_calls: set[str] = set()
+        self._seen_model_tool_calls = {
+            tool_call_id for tool_call_id in seen_tool_call_ids if tool_call_id
+        }
         self._pending_model_calls_by_tool: dict[str, int] = {}
         self._custom_tool_results: set[str] = set()
 
@@ -225,6 +228,7 @@ class HarnessEventAdapter:
                 event_payload.setdefault("agent_run_id", event_payload.get("child_run_id", ""))
             if event_type == "tool_call":
                 tool_name = str(event_payload.get("tool", ""))
+                tool_call_id = str(event_payload.get("tool_call_id", ""))
                 pending = self._pending_model_calls_by_tool.get(tool_name, 0)
                 if pending > 0:
                     if pending == 1:
@@ -232,6 +236,10 @@ class HarnessEventAdapter:
                     else:
                         self._pending_model_calls_by_tool[tool_name] = pending - 1
                     return ()
+                if tool_call_id and tool_call_id in self._seen_model_tool_calls:
+                    return ()
+                if tool_call_id:
+                    self._seen_model_tool_calls.add(tool_call_id)
             elif event_type == "tool_result":
                 self._custom_tool_results.add(
                     _tool_result_signature(

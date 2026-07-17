@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sage_harness import (
@@ -25,6 +26,7 @@ from sage_harness import (
     render_deferred_tool_index,
 )
 from sage_harness.middleware import MiddlewareSpec, build_default_registry
+from sage_harness.runtime.checkpoint import thread_config
 from sage_harness.runtime.manager import StreamableGraph
 
 from core.coding.run_coordinator import RunEvent
@@ -171,6 +173,11 @@ class SageHarnessRuntimeAdapter:
             session_id=session_id,
             run_id=run_id,
             stream_namespace=f"resume-{resume_attempt}" if resume else "initial",
+            seen_tool_call_ids=(
+                await _checkpoint_pending_tool_call_ids(self.checkpointer, session_id)
+                if resume
+                else ()
+            ),
         )
         async for item in self.manager.stream(request):
             if compaction_event is not None:
@@ -178,6 +185,41 @@ class SageHarnessRuntimeAdapter:
                 compaction_event = None
             for event in adapter.adapt(item):
                 yield event
+
+
+async def _checkpoint_pending_tool_call_ids(
+    checkpointer: BaseCheckpointSaver[Any],
+    thread_id: str,
+) -> tuple[str, ...]:
+    checkpoint = await checkpointer.aget_tuple(
+        cast(RunnableConfig, thread_config(thread_id))
+    )
+    if checkpoint is None:
+        return ()
+    channels: object = checkpoint.checkpoint.get("channel_values", {})
+    if not isinstance(channels, Mapping):
+        return ()
+    messages = channels.get("messages", ())
+    if not isinstance(messages, Sequence) or isinstance(messages, str | bytes):
+        return ()
+    pending_tool_call_ids: dict[str, None] = {}
+    for message in messages:
+        calls = getattr(message, "tool_calls", None)
+        if calls is None and isinstance(message, Mapping):
+            calls = message.get("tool_calls", ())
+        if not isinstance(calls, Sequence) or isinstance(calls, str | bytes):
+            calls = ()
+        for call in calls:
+            if isinstance(call, Mapping):
+                tool_call_id = str(call.get("id", "")).strip()
+                if tool_call_id:
+                    pending_tool_call_ids[tool_call_id] = None
+        result_call_id = getattr(message, "tool_call_id", None)
+        if result_call_id is None and isinstance(message, Mapping):
+            result_call_id = message.get("tool_call_id")
+        if isinstance(result_call_id, str) and result_call_id.strip():
+            pending_tool_call_ids.pop(result_call_id.strip(), None)
+    return tuple(pending_tool_call_ids)
 
 
 __all__ = ["SageHarnessRuntimeAdapter"]
