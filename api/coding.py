@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
 from inspect import signature
@@ -216,19 +217,65 @@ async def _runtime_timeline_events(
     if runtime.runtime_profile == "deerflow_v2":
         if harness_checkpointer is None:
             raise RuntimeError("deerflow_v2 checkpointer is not configured")
-        async for graph_event in _deerflow_timeline_events(
-            runtime,
-            content=content,
-            run_id=run_id,
-            surface_context=surface_context,
-            checkpointer=harness_checkpointer,
-            harness_config=harness_config,
-            mcp_catalog=mcp_catalog,
-            app_env=app_env,
-            resume_value=resume_value,
-            resume_attempt=resume_attempt,
-        ):
-            yield graph_event
+        evidence_started = False
+        evidence_finished = False
+        evidence_start_time = time.monotonic()
+        try:
+            await runtime.begin_harness_evidence(run_id)
+            evidence_started = True
+            async for graph_event in _deerflow_timeline_events(
+                runtime,
+                content=content,
+                run_id=run_id,
+                surface_context=surface_context,
+                checkpointer=harness_checkpointer,
+                harness_config=harness_config,
+                mcp_catalog=mcp_catalog,
+                app_env=app_env,
+                resume_value=resume_value,
+                resume_attempt=resume_attempt,
+            ):
+                if graph_event.kind == "terminal":
+                    diff_payload = await runtime.finish_harness_evidence(
+                        run_id,
+                        status=graph_event.status,
+                        duration_ms=int(
+                            (time.monotonic() - evidence_start_time) * 1000
+                        ),
+                    )
+                    evidence_finished = True
+                    yield RunEvent(
+                        kind="tool",
+                        status="completed",
+                        payload=diff_payload,
+                        event_id=f"harness:{run_id}:workspace-diff",
+                    )
+                else:
+                    await runtime.append_harness_evidence(
+                        run_id,
+                        graph_event.payload,
+                    )
+                yield graph_event
+        except asyncio.CancelledError:
+            if evidence_started and not evidence_finished:
+                await runtime.abort_harness_evidence(
+                    run_id,
+                    status="cancelled",
+                    duration_ms=int(
+                        (time.monotonic() - evidence_start_time) * 1000
+                    ),
+                )
+            raise
+        except Exception:
+            if evidence_started and not evidence_finished:
+                await runtime.abort_harness_evidence(
+                    run_id,
+                    status="error",
+                    duration_ms=int(
+                        (time.monotonic() - evidence_start_time) * 1000
+                    ),
+                )
+            raise
         return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)

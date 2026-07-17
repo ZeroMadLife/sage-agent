@@ -760,6 +760,108 @@ class CodingRuntime:
             self._save_session()
         return prepared
 
+    async def begin_harness_evidence(self, run_id: str) -> None:
+        """Start a V2 run trace and capture its bounded workspace baseline."""
+        await asyncio.to_thread(
+            self.run_store.start_run,
+            run_id,
+            self.session_id,
+        )
+        try:
+            await asyncio.to_thread(
+                self.diff_tracker.snapshot_before_run,
+                run_id,
+            )
+        except Exception:
+            self.diff_tracker.clear_baseline()
+            finished = event_to_dict(
+                RunFinishedEvent(
+                    run_id=run_id,
+                    status="error",
+                    duration_ms=0,
+                    tool_steps=0,
+                )
+            )
+            await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+            raise
+
+    async def append_harness_evidence(
+        self,
+        run_id: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Mirror a public V2 event into the existing bounded RunStore trace."""
+        event = {"run_id": run_id, **dict(payload)}
+        if not str(event.get("type", "")).strip():
+            return
+        await asyncio.to_thread(self.run_store.append_trace, run_id, event)
+
+    async def finish_harness_evidence(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+    ) -> dict[str, Any]:
+        """Persist V2 workspace diff and the RunStore-compatible terminal trace."""
+        diff_event = await self._capture_workspace_diff_event(run_id)
+        await asyncio.to_thread(self.run_store.append_trace, run_id, diff_event)
+        tool_steps = await asyncio.to_thread(
+            self.run_store.run_tool_count,
+            run_id,
+        )
+        finished = event_to_dict(
+            RunFinishedEvent(
+                run_id=run_id,
+                status=status,
+                duration_ms=max(0, duration_ms),
+                tool_steps=tool_steps,
+            )
+        )
+        await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+        return diff_event
+
+    async def abort_harness_evidence(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+    ) -> None:
+        """Close a V2 RunStore trace without inventing a partial workspace diff."""
+        self.diff_tracker.clear_baseline()
+        finished = event_to_dict(
+            RunFinishedEvent(
+                run_id=run_id,
+                status=status,
+                duration_ms=max(0, duration_ms),
+                tool_steps=await asyncio.to_thread(
+                    self.run_store.run_tool_count,
+                    run_id,
+                ),
+            )
+        )
+        await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+
+    async def _capture_workspace_diff_event(self, run_id: str) -> dict[str, Any]:
+        diff = await asyncio.to_thread(self.diff_tracker.snapshot_after_run, run_id)
+        await asyncio.to_thread(
+            self.diff_tracker.write_artifact,
+            diff,
+            self.run_store.evidence_root,
+        )
+        return {
+            "run_id": run_id,
+            **event_to_dict(
+                WorkspaceDiffReadyEvent(
+                    run_id=run_id,
+                    changed_files=[file.path for file in diff.changed_files],
+                    file_count=diff.file_count,
+                    truncated=diff.truncated,
+                )
+            ),
+        }
+
     @staticmethod
     def _history_to_transcript_item(enriched: dict[str, Any]) -> TranscriptItem:
         return TranscriptItem(
@@ -1053,8 +1155,15 @@ class CodingRuntime:
         prepared_events: list[dict[str, Any]] = []
         current_message_id = f"msg_{uuid.uuid4().hex}"
         try:
-            self.run_store.start_run(run_id, session_id=self.session_id)
-            self.diff_tracker.snapshot_before_run()
+            await asyncio.to_thread(
+                self.run_store.start_run,
+                run_id,
+                self.session_id,
+            )
+            await asyncio.to_thread(
+                self.diff_tracker.snapshot_before_run,
+                run_id,
+            )
             self.memory_manager.build_working_memory(
                 self.session, self.runtime_mode, self.permission_mode
             )
@@ -1236,17 +1345,7 @@ class CodingRuntime:
             # artifact from before/after snapshots and surface it as a
             # workspace_diff_ready event before run_finished.
             try:
-                diff = self.diff_tracker.snapshot_after_run(run_id)
-                self.diff_tracker.write_artifact(diff, self.run_store.evidence_root)
-                diff_event = event_to_dict(
-                    WorkspaceDiffReadyEvent(
-                        run_id=run_id,
-                        changed_files=[f.path for f in diff.changed_files],
-                        file_count=diff.file_count,
-                        truncated=diff.truncated,
-                    )
-                )
-                diff_event = {"run_id": run_id, **diff_event}
+                diff_event = await self._capture_workspace_diff_event(run_id)
                 self.run_store.append_trace(run_id, diff_event)
                 self.session_event_bus.emit("workspace_diff_ready", diff_event)
                 yield diff_event
@@ -1287,6 +1386,7 @@ class CodingRuntime:
             # yield is allowed inside finally for an async generator.
             with suppress(Exception):
                 await cast(Any, engine_stream).aclose()
+            self.diff_tracker.clear_baseline()
             with suppress(Exception):
                 self._persist_run_terminal(run_id, run_start_time)
             self.stop_requested = False

@@ -428,10 +428,26 @@ def test_enabled_deerflow_profile_reuses_approval_endpoint_for_write_tool(tmp_pa
                 payloads.append(event["payload"])
                 if event["kind"] == "terminal":
                     break
+        run_id = str(approval["run_id"])
+        diff_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{run_id}/diff"
+        )
+        runs_response = client.get(f"/api/v1/coding/{session_id}/runs")
 
     assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "ok"
     assert any(item.get("type") == "approval_granted" for item in payloads)
     assert any(item.get("type") == "final" for item in payloads)
+    diff_events = [
+        item for item in payloads if item.get("type") == "workspace_diff_ready"
+    ]
+    assert len(diff_events) == 1
+    assert diff_events[0]["changed_files"] == ["approved.txt"]
+    assert diff_response.status_code == 200
+    assert diff_response.json()["changed_files"][0]["path"] == "approved.txt"
+    assert runs_response.status_code == 200
+    run = next(item for item in runs_response.json()["runs"] if item["run_id"] == run_id)
+    assert run["status"] == "completed"
+    assert run["changed_files"] == ["approved.txt"]
 
 
 def test_deerflow_approval_survives_app_restart_and_resumes_same_run(
@@ -489,6 +505,10 @@ def test_deerflow_approval_survives_app_restart_and_resumes_same_run(
                 events.append(event)
                 if event["kind"] == "terminal":
                     break
+        diff_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{run_id}/diff"
+        )
+        runs_response = client.get(f"/api/v1/coding/{session_id}/runs")
 
     assert resumed.status_code == 200
     assert pending.status_code == 200
@@ -498,6 +518,19 @@ def test_deerflow_approval_survives_app_restart_and_resumes_same_run(
     assert [item["payload"].get("event") for item in events].count("run_started") == 1
     assert any(item["payload"].get("type") == "approval_granted" for item in events)
     assert any(item["payload"].get("type") == "final" for item in events)
+    diff_events = [
+        item["payload"]
+        for item in events
+        if item["payload"].get("type") == "workspace_diff_ready"
+    ]
+    assert len(diff_events) == 1
+    assert diff_events[0]["changed_files"] == ["approved.txt"]
+    assert diff_response.status_code == 200
+    assert diff_response.json()["changed_files"][0]["path"] == "approved.txt"
+    assert runs_response.status_code == 200
+    run = next(item for item in runs_response.json()["runs"] if item["run_id"] == run_id)
+    assert run["status"] == "completed"
+    assert run["changed_files"] == ["approved.txt"]
 
 
 def test_enabled_deerflow_profile_resumes_graph_after_approval_denial(

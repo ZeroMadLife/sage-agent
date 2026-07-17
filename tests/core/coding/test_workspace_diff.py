@@ -1,5 +1,6 @@
 """WorkspaceDiffTracker tests: bounded diff artifact for coding runs."""
 
+import subprocess
 from pathlib import Path
 
 from core.coding.context.workspace_diff import (
@@ -197,3 +198,69 @@ def test_truncated_uses_changed_count_not_total(tmp_path: Path) -> None:
 
     assert diff.truncated is False
     assert diff.file_count == 2
+
+
+def test_git_workspace_uses_index_and_excludes_ignored_untracked_tree(
+    tmp_path: Path,
+) -> None:
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main"],
+        cwd=tmp_path,
+        check=True,
+    )
+    (tmp_path / ".gitignore").write_text("ignored-cache/\n", encoding="utf-8")
+    tracked = tmp_path / "tracked.py"
+    tracked.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore", "tracked.py"],
+        cwd=tmp_path,
+        check=True,
+    )
+    ignored = tmp_path / "ignored-cache"
+    ignored.mkdir()
+    for index in range(100):
+        (ignored / f"entry-{index}.txt").write_text("ignored", encoding="utf-8")
+
+    tracker = WorkspaceDiffTracker(tmp_path)
+    tracker.snapshot_before_run("run_git")
+    tracked.write_text("value = 2\n", encoding="utf-8")
+    (tmp_path / "new.txt").write_text("visible\n", encoding="utf-8")
+    (ignored / "late.txt").write_text("still ignored", encoding="utf-8")
+
+    diff = tracker.snapshot_after_run("run_git")
+
+    assert {change.path for change in diff.changed_files} == {"new.txt", "tracked.py"}
+    assert diff.truncated is False
+
+
+def test_non_git_workspace_scan_is_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "core.coding.context.workspace_diff.MAX_SNAPSHOT_FILES",
+        2,
+    )
+    for index in range(5):
+        (tmp_path / f"file-{index}.txt").write_text(str(index), encoding="utf-8")
+    tracker = WorkspaceDiffTracker(tmp_path)
+    tracker.snapshot_before_run("run_bounded")
+    (tmp_path / "file-0.txt").write_text("changed", encoding="utf-8")
+
+    diff = tracker.snapshot_after_run("run_bounded")
+
+    assert diff.truncated is True
+    assert [change.path for change in diff.changed_files] == ["file-0.txt"]
+
+
+def test_workspace_diff_baseline_is_bound_to_run(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
+    tracker = WorkspaceDiffTracker(tmp_path)
+    tracker.snapshot_before_run("run_a")
+
+    try:
+        tracker.snapshot_after_run("run_b")
+    except RuntimeError as exc:
+        assert str(exc) == "workspace diff baseline belongs to another run"
+    else:
+        raise AssertionError("cross-run baseline must be rejected")

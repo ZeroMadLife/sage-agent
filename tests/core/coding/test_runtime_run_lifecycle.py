@@ -6,6 +6,7 @@ engine raises.
 """
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -277,7 +278,8 @@ async def test_pre_engine_failure_closes_run_and_releases_lease(
 ) -> None:
     runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
 
-    def fail_snapshot() -> None:
+    def fail_snapshot(run_id: str = "") -> None:
+        del run_id
         raise OSError("snapshot-secret")
 
     monkeypatch.setattr(runtime.diff_tracker, "snapshot_before_run", fail_snapshot)
@@ -293,6 +295,57 @@ async def test_pre_engine_failure_closes_run_and_releases_lease(
     assert events[1]["status"] == "error"
     assert runtime.run_store.run_status(events[0]["run_id"]) == "error"
     assert runtime.active_run_id is None
+
+
+async def test_workspace_snapshots_run_outside_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>done</final>"]))
+    loop_thread_id = threading.get_ident()
+    before_thread_id = 0
+    after_thread_id = 0
+    original_before = runtime.diff_tracker.snapshot_before_run
+    original_after = runtime.diff_tracker.snapshot_after_run
+
+    def capture_before(run_id: str = "") -> None:
+        nonlocal before_thread_id
+        before_thread_id = threading.get_ident()
+        original_before(run_id)
+
+    def capture_after(run_id: str):
+        nonlocal after_thread_id
+        after_thread_id = threading.get_ident()
+        return original_after(run_id)
+
+    monkeypatch.setattr(runtime.diff_tracker, "snapshot_before_run", capture_before)
+    monkeypatch.setattr(runtime.diff_tracker, "snapshot_after_run", capture_after)
+
+    events = [event async for event in runtime.run_turn("hello")]
+
+    assert any(event["type"] == "workspace_diff_ready" for event in events)
+    assert before_thread_id != loop_thread_id
+    assert after_thread_id != loop_thread_id
+
+
+async def test_harness_evidence_preparation_failure_closes_trace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
+
+    def fail_snapshot(run_id: str = "") -> None:
+        del run_id
+        raise OSError("snapshot-secret")
+
+    monkeypatch.setattr(runtime.diff_tracker, "snapshot_before_run", fail_snapshot)
+
+    with pytest.raises(OSError, match="snapshot-secret"):
+        await runtime.begin_harness_evidence("run_v2_prepare_failure")
+
+    detail = runtime.run_store.get_run("run_v2_prepare_failure")
+    assert [event["type"] for event in detail["events"]] == ["run_finished"]
+    assert runtime.run_store.run_status("run_v2_prepare_failure") == "error"
 
 
 async def test_engine_construction_failure_closes_run(
