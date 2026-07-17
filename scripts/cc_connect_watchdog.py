@@ -237,7 +237,9 @@ class Watchdog:
         daemon = self.runner(
             [self.config.cc_connect_bin, "daemon", "status"], None, 10
         )
-        daemon_ok = daemon.returncode == 0 and "Status: Running" in daemon.stdout
+        daemon_ok = daemon.returncode == 0 and re.search(
+            r"^\s*Status:\s+Running\s*$", daemon.stdout, re.MULTILINE
+        ) is not None
         socket_ok = self.socket_probe(self.config.api_socket)
         cron = self.runner([self.config.cc_connect_bin, "cron", "list"], None, 10)
         cron_ok = cron.returncode == 0 and all(
@@ -586,11 +588,6 @@ def install_command(args: argparse.Namespace) -> int:
         )
         if loaded.returncode != 0:
             raise RuntimeError("launchd bootstrap failed")
-        kicked = run_command(
-            ["/bin/launchctl", "kickstart", "-k", f"{domain}/{LABEL}"], None, 10
-        )
-        if kicked.returncode != 0:
-            raise RuntimeError("launchd kickstart failed")
 
     print(f"watchdog installed: {LABEL}")
     print(f"status: {launcher} status")

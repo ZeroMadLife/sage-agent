@@ -29,7 +29,7 @@ class FakeRunner:
         self.commands.append(command_tuple)
         if command_tuple[1:3] == ("daemon", "status"):
             if self.healthy:
-                return CommandResult(0, "Status: Running\n")
+                return CommandResult(0, "  Status:    Running\n")
             return CommandResult(1, "Status: Stopped\n")
         if command_tuple[1:3] == ("cron", "list"):
             return CommandResult(0, "✅ ae4eb665 task\n✅ 8f2f3158 digest\n")
@@ -180,16 +180,25 @@ def test_install_keeps_session_out_of_launcher_and_plist(
     cc_connect.write_text("#!/bin/sh\n", encoding="utf-8")
     cc_connect.chmod(0o700)
     session = "feishu:private-session"
+    commands: list[tuple[str, ...]] = []
 
     def fake_run(
         command: Sequence[str], input_text: str | None = None, timeout: int = 15
     ) -> CommandResult:
         del input_text, timeout
-        assert tuple(command)[1:3] == ("cron", "info")
-        return CommandResult(
-            0,
-            json.dumps({"project": "sage", "session_key": session}),
-        )
+        command_tuple = tuple(command)
+        commands.append(command_tuple)
+        if command_tuple[1:3] == ("cron", "info"):
+            return CommandResult(
+                0,
+                json.dumps({"project": "sage", "session_key": session}),
+            )
+        if command_tuple[:2] in {
+            ("/bin/launchctl", "bootout"),
+            ("/bin/launchctl", "bootstrap"),
+        }:
+            return CommandResult(0)
+        raise AssertionError(f"unexpected command: {command_tuple}")
 
     monkeypatch.setattr(watchdog_module, "run_command", fake_run)
     state_root = tmp_path / "state"
@@ -212,7 +221,6 @@ def test_install_keeps_session_out_of_launcher_and_plist(
                 str(launcher),
                 "--plist",
                 str(plist),
-                "--no-load",
             ]
         )
         == 0
@@ -232,3 +240,5 @@ def test_install_keeps_session_out_of_launcher_and_plist(
     assert plist_data["StartInterval"] == 300
     assert "ae4eb665" in config
     assert "8f2f3158" in config
+    assert any(command[:2] == ("/bin/launchctl", "bootstrap") for command in commands)
+    assert not any("kickstart" in command for command in commands)
