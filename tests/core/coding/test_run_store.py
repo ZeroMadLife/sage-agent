@@ -413,3 +413,58 @@ def test_run_audit_omits_read_file_body_and_projects_orphan_result(tmp_path: Pat
     assert step["arguments_preview"] == '{"path":".env"}'
     assert step["result_preview"] == "已读取文件内容（摘要不展示正文）"
     assert "must-not-leak" not in str(store.get_run("run_denied")["audit"])
+
+
+def test_run_audit_attaches_late_approval_to_existing_tool_step(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    store.start_run("run_approval")
+    store.append_trace(
+        "run_approval",
+        {
+            "type": "tool_call",
+            "tool": "run_shell",
+            "args": {},
+            "tool_call_id": "call-1",
+            "created_at": "2026-07-14T10:00:00+00:00",
+        },
+    )
+    store.append_trace(
+        "run_approval",
+        {
+            "type": "approval_required",
+            "tool": "run_shell",
+            "args": {"command": "pwd"},
+            "tool_call_id": "call-1",
+            "created_at": "2026-07-14T10:00:01+00:00",
+        },
+    )
+    store.append_trace(
+        "run_approval",
+        {
+            "type": "approval_granted",
+            "tool": "run_shell",
+            "tool_call_id": "call-1",
+            "created_at": "2026-07-14T10:00:05+00:00",
+        },
+    )
+    store.append_trace(
+        "run_approval",
+        {
+            "type": "tool_result",
+            "tool": "run_shell",
+            "args": {"command": "pwd"},
+            "tool_call_id": "call-1",
+            "content": "exit_code: 0\n/workspace",
+            "is_error": False,
+            "created_at": "2026-07-14T10:00:06.700000+00:00",
+        },
+    )
+
+    audit = store.get_run("run_approval")["audit"]
+
+    assert audit["tool_count"] == 1
+    assert audit["approval_count"] == 1
+    assert audit["steps"][0]["status"] == "completed"
+    assert audit["steps"][0]["action_summary"] == "执行 pwd"
+    assert audit["steps"][0]["arguments_preview"] == '{"command":"pwd"}'
+    assert audit["steps"][0]["duration_ms"] == 1700

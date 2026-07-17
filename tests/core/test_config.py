@@ -19,6 +19,13 @@ def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
     assert settings.knowledge_qwen_vl_enabled is False
 
 
+def test_sandbox_configuration_defaults_to_local_development() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_coding_sandbox_provider == "local_workspace"
+    assert settings.sage_coding_sandbox_image == "python:3.11-slim"
+
+
 def test_settings_has_amap_base_url() -> None:
     """Amap API base URL has a default value."""
     settings = Settings()

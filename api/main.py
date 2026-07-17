@@ -29,7 +29,10 @@ from core.harness.mcp_adapter import (
     build_configured_mcp_catalog,
     build_configured_mcp_manager,
 )
-from core.harness.sandbox_factory import reconcile_coding_sandboxes
+from core.harness.sandbox_factory import (
+    normalize_sandbox_provider,
+    reconcile_coding_sandboxes,
+)
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
@@ -365,16 +368,18 @@ def create_app(
         else coding_deerflow_v2_enabled
     )
     app.state.coding_harness_config = coding_harness_config or HarnessConfig()
-    app.state.coding_sandbox_provider = (
-        os.getenv("SAGE_CODING_SANDBOX_PROVIDER", "local_workspace")
+    app.state.coding_sandbox_provider = normalize_sandbox_provider(
+        settings.sage_coding_sandbox_provider
         if coding_sandbox_provider is None
         else coding_sandbox_provider
     )
-    app.state.coding_sandbox_image = (
-        os.getenv("SAGE_CODING_SANDBOX_IMAGE", "python:3.11-slim")
+    app.state.coding_sandbox_image = str(
+        settings.sage_coding_sandbox_image
         if coding_sandbox_image is None
         else coding_sandbox_image
-    )
+    ).strip()
+    if not app.state.coding_sandbox_image:
+        raise ValueError("coding sandbox image must not be empty")
     app.state.sage_harness_checkpointer = None
     app.state.coding_mcp_live_enabled = (
         settings.sage_mcp_live_enabled

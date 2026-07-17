@@ -348,6 +348,24 @@ async def test_harness_evidence_preparation_failure_closes_trace(
     assert runtime.run_store.run_status("run_v2_prepare_failure") == "error"
 
 
+async def test_harness_evidence_adds_server_timestamp_to_public_events(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
+    run_id = "run_v2_timestamp"
+
+    await runtime.begin_harness_evidence(run_id)
+    await runtime.append_harness_evidence(
+        run_id,
+        {"type": "tool_call", "tool": "read_file", "args": {"path": "README.md"}},
+    )
+    await runtime.abort_harness_evidence(run_id, status="cancelled", duration_ms=10)
+
+    events = runtime.run_store.get_run(run_id)["events"]
+    assert events[0]["type"] == "tool_call"
+    assert events[0]["created_at"]
+
+
 async def test_engine_construction_failure_closes_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

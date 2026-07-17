@@ -118,6 +118,8 @@ class Settings(BaseSettings):
     cloud_frontend_url: str = "http://localhost:5173"
     sage_deerflow_v2_enabled: bool = False
     sage_mcp_live_enabled: bool = False
+    sage_coding_sandbox_provider: str = "local_workspace"
+    sage_coding_sandbox_image: str = "python:3.11-slim"
 
     # GitHub OAuth is used for identity only. Repository authorization is
     # handled separately by a GitHub App so private repository access can be

@@ -182,7 +182,12 @@ def _audit_summary(run_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
     for event in events:
         event_type = str(event.get("type", ""))
         if event_type == "approval_required":
-            approvals.append({"event": event, "used": False})
+            approvals.append({"event": event, "decision": None, "used": False})
+            continue
+        if event_type == "approval_granted":
+            approval = _matching_approval_decision(approvals, event)
+            if approval is not None:
+                approval["decision"] = event
             continue
         if event_type == "tool_call":
             approval = _matching_approval(approvals, event)
@@ -199,6 +204,11 @@ def _audit_summary(run_id: str, events: list[dict[str, Any]]) -> dict[str, Any]:
                 approval["used"] = True
             target = {"call": None, "result": None, "approval": approval}
             step_states.append(target)
+        elif target.get("approval") is None:
+            approval = _matching_approval(approvals, event)
+            if approval is not None:
+                approval["used"] = True
+                target["approval"] = approval
         target["result"] = event
 
     for approval in approvals:
@@ -251,6 +261,12 @@ def _matching_approval(
 ) -> dict[str, Any] | None:
     tool = str(event.get("tool", ""))
     args = event.get("args")
+    tool_call_id = str(event.get("tool_call_id", "")).strip()
+    if tool_call_id:
+        for approval in reversed(approvals):
+            payload = approval["event"]
+            if not approval["used"] and payload.get("tool_call_id") == tool_call_id:
+                return approval
     for approval in reversed(approvals):
         payload = approval["event"]
         if not approval["used"] and payload.get("tool") == tool and payload.get("args") == args:
@@ -258,6 +274,24 @@ def _matching_approval(
     for approval in reversed(approvals):
         payload = approval["event"]
         if not approval["used"] and payload.get("tool") == tool:
+            return approval
+    return None
+
+
+def _matching_approval_decision(
+    approvals: list[dict[str, Any]],
+    event: dict[str, Any],
+) -> dict[str, Any] | None:
+    tool_call_id = str(event.get("tool_call_id", "")).strip()
+    tool = str(event.get("tool", ""))
+    if tool_call_id:
+        for approval in reversed(approvals):
+            payload = approval["event"]
+            if approval.get("decision") is None and payload.get("tool_call_id") == tool_call_id:
+                return approval
+    for approval in reversed(approvals):
+        payload = approval["event"]
+        if approval.get("decision") is None and payload.get("tool") == tool:
             return approval
     return None
 
@@ -271,9 +305,20 @@ def _project_audit_step(state: dict[str, Any]) -> dict[str, Any]:
         if isinstance(approval_state, dict) and isinstance(approval_state.get("event"), dict)
         else None
     )
+    approval_decision = (
+        approval_state.get("decision")
+        if isinstance(approval_state, dict)
+        and isinstance(approval_state.get("decision"), dict)
+        else None
+    )
     source = call or result or approval or {}
     tool = str(source.get("tool", ""))
-    raw_args = source.get("args")
+    raw_args: Any = {}
+    for candidate in (call, result, approval):
+        candidate_args = candidate.get("args") if isinstance(candidate, dict) else None
+        if isinstance(candidate_args, dict) and candidate_args:
+            raw_args = candidate_args
+            break
     args: dict[str, Any] = (
         {str(key): value for key, value in raw_args.items()} if isinstance(raw_args, dict) else {}
     )
@@ -286,7 +331,14 @@ def _project_audit_step(state: dict[str, Any]) -> dict[str, Any]:
         status = "error" if bool(result.get("is_error")) else "completed"
     result_text = _safe_result_preview(tool, result)
     result_preview, result_truncated = _bounded_preview(result_text)
-    start_event = call or approval or result or {}
+    start_event = (
+        _latest_timestamped_event(call, approval_decision)
+        or call
+        or approval_decision
+        or approval
+        or result
+        or {}
+    )
     return {
         "tool": tool,
         "status": status,
@@ -418,6 +470,24 @@ def _duration_between(start: dict[str, Any] | None, end: dict[str, Any] | None) 
         return max(0, int((finished - started).total_seconds() * 1000))
     except (TypeError, ValueError):
         return 0
+
+
+def _latest_timestamped_event(
+    *events: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    latest: dict[str, Any] | None = None
+    latest_at: datetime | None = None
+    for event in events:
+        if not event:
+            continue
+        try:
+            created_at = datetime.fromisoformat(_event_timestamp(event).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        if latest_at is None or created_at > latest_at:
+            latest = event
+            latest_at = created_at
+    return latest
 
 
 def _run_status_label(status: str) -> str:

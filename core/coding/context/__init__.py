@@ -32,7 +32,9 @@ from core.coding.context.summary import (
     CompactionSummary,
 )
 from core.coding.context.workspace import (
+    HIDDEN_CONTROL_DIR_NAMES,
     IGNORED_PATH_NAMES,
+    PROTECTED_PATH_NAMES,
     WorkspaceContext,
     clip,
     now,
@@ -48,9 +50,11 @@ from core.coding.context.workspace_diff import (
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
+    "HIDDEN_CONTROL_DIR_NAMES",
     "IGNORED_PATH_NAMES",
     "MAX_DIFF_FILES",
     "MAX_FILE_SIZE",
+    "PROTECTED_PATH_NAMES",
     "SYSTEM_PROMPT_DYNAMIC_BOUNDARY",
     "CheckpointVerifier",
     "CodingModelDefinition",

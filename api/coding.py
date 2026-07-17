@@ -125,7 +125,11 @@ def _require_enabled_runtime_profile(value: object, request: Request) -> Runtime
     sandbox_provider = str(
         getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
     ).strip().lower()
-    if profile == "deerflow_v2" and app_env not in {"development", "test"} and sandbox_provider == "local_workspace":
+    if (
+        profile == "deerflow_v2"
+        and app_env not in {"development", "test"}
+        and sandbox_provider != "container"
+    ):
         raise HTTPException(
             status_code=422,
             detail="deerflow_v2 requires an isolated sandbox outside development/test",
@@ -142,7 +146,7 @@ def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
     sandbox_provider = str(
         getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
     ).strip().lower()
-    if app_env in {"development", "test"} or sandbox_provider != "local_workspace":
+    if app_env in {"development", "test"} or sandbox_provider == "container":
         profiles.append("deerflow_v2")
     return profiles
 

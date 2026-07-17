@@ -4,6 +4,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
@@ -1389,6 +1390,9 @@ def _make_bare_client(tmp_path: Path) -> TestClient:
 def test_list_coding_files_returns_directory_entries(tmp_path: Path) -> None:
     """GET /files returns dirs first then files, ignoring noise."""
     client = _make_client(tmp_path)
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "usage.sqlite3").write_text("private", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=private\n", encoding="utf-8")
     session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
 
     response = client.get(f"/api/v1/coding/{session_id}/files", params={"path": "."})
@@ -1398,6 +1402,8 @@ def test_list_coding_files_returns_directory_entries(tmp_path: Path) -> None:
     names = [entry["name"] for entry in entries]
     assert "src" in names
     assert "README.md" in names
+    assert ".sage" not in names
+    assert ".env" not in names
     src_entry = next(entry for entry in entries if entry["name"] == "src")
     assert src_entry["is_dir"] is True
 
@@ -1495,6 +1501,17 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
             cloud_repository=object(),
         )
     )
+    isolated_production = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-prod-container",
+            coding_deerflow_v2_enabled=True,
+            coding_sandbox_provider="container",
+            cloud_app_env="production",
+            cloud_repository=object(),
+        )
+    )
 
     assert development.get("/api/v1/coding/models").json()["runtime_profiles"] == [
         "legacy",
@@ -1503,6 +1520,28 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
     assert production.get("/api/v1/coding/models").json()["runtime_profiles"] == [
         "legacy"
     ]
+    assert isolated_production.get("/api/v1/coding/models").json()[
+        "runtime_profiles"
+    ] == ["legacy", "deerflow_v2"]
+
+
+def test_app_rejects_unknown_or_empty_sandbox_configuration(tmp_path: Path) -> None:
+    from sage_harness import SandboxPolicyError
+
+    with pytest.raises(SandboxPolicyError, match="unknown sandbox provider"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-unknown",
+            coding_sandbox_provider="host",
+        )
+    with pytest.raises(ValueError, match="image must not be empty"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-empty-image",
+            coding_sandbox_image=" ",
+        )
 
 
 def test_list_coding_skills_returns_bundled_skills(tmp_path: Path) -> None:

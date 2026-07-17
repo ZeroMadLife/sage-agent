@@ -25,7 +25,12 @@ from sage_harness import (
     SandboxResult,
 )
 
-from core.coding.context import WorkspaceContext, clip
+from core.coding.context import (
+    IGNORED_PATH_NAMES,
+    PROTECTED_PATH_NAMES,
+    WorkspaceContext,
+    clip,
+)
 from core.coding.memory import workspace_id_from_path
 
 _ALL_OPERATIONS = frozenset(
@@ -36,18 +41,7 @@ _DEFAULT_IMAGE = "python:3.11-slim"
 _CONTAINER_ROOT = "/workspace"
 _DEFAULT_COMMAND_TIMEOUT = 30.0
 _IGNORED_NAMES = frozenset(
-    {
-        ".git",
-        ".coding",
-        ".pico",
-        "__pycache__",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".mypy_cache",
-        ".venv",
-        "venv",
-        "node_modules",
-    }
+    {*IGNORED_PATH_NAMES, *PROTECTED_PATH_NAMES, ".env", ".env.*"}
 )
 
 
@@ -118,7 +112,10 @@ class ContainerWorkspaceSandbox:
             raise SandboxPolicyError("container shell is disabled by provider policy")
 
         await asyncio.to_thread(self._ensure_started)
-        result = await asyncio.to_thread(self._invoke_sync, operation, dict(arguments))
+        try:
+            result = await asyncio.to_thread(self._invoke_sync, operation, dict(arguments))
+        except ValueError as exc:
+            result = (str(exc), True)
         return SandboxResult(
             operation=operation,
             content=result[0],
@@ -359,6 +356,14 @@ class ContainerWorkspaceSandbox:
         if operation == "search":
             path = self._virtual_path(str(arguments.get("path", ".")))
             pattern = str(arguments["pattern"])
+            excluded_names = [
+                item
+                for name in sorted(PROTECTED_PATH_NAMES)
+                for item in (f"--exclude={name}", f"--exclude-dir={name}")
+            ]
+            excluded_dirs = [
+                f"--exclude-dir={name}" for name in sorted(IGNORED_PATH_NAMES)
+            ]
             output = self._docker_capture(
                 [
                     "exec",
@@ -366,9 +371,13 @@ class ContainerWorkspaceSandbox:
                     _CONTAINER_ROOT,
                     self._container_name,
                     "grep",
-                    "-R",
+                    "-r",
                     "-n",
                     "-I",
+                    "--exclude=.env",
+                    "--exclude=.env.*",
+                    *excluded_names,
+                    *excluded_dirs,
                     "--",
                     pattern,
                     path,

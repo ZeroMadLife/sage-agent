@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 from sage_harness import SandboxPolicyError, SandboxPort
 
@@ -11,6 +11,15 @@ from core.harness.container_sandbox import ContainerWorkspaceSandbox
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 
 SandboxProviderName = Literal["local_workspace", "container"]
+SANDBOX_PROVIDERS = frozenset({"local_workspace", "container"})
+
+
+def normalize_sandbox_provider(value: object) -> SandboxProviderName:
+    """Normalize a deployment provider without accepting unsafe fallbacks."""
+    normalized = str(value).strip().lower() or "local_workspace"
+    if normalized not in SANDBOX_PROVIDERS:
+        raise SandboxPolicyError(f"unknown sandbox provider: {normalized}")
+    return cast(SandboxProviderName, normalized)
 
 
 def create_coding_sandbox(
@@ -29,7 +38,7 @@ def create_coding_sandbox(
     ``container`` uses the server-owned Docker adapter and must never silently
     fall back to host execution.
     """
-    normalized = provider.strip().lower() or "local_workspace"
+    normalized = normalize_sandbox_provider(provider)
     if normalized == "local_workspace":
         return LocalWorkspaceSandbox(
             workspace,
@@ -51,10 +60,15 @@ def create_coding_sandbox(
             raise
         except Exception as exc:
             raise SandboxPolicyError("container sandbox provider failed to initialize") from exc
-    raise SandboxPolicyError(f"unknown sandbox provider: {normalized}")
+    raise AssertionError(f"unhandled sandbox provider: {normalized}")
 
 
-__all__ = ["SandboxProviderName", "create_coding_sandbox"]
+__all__ = [
+    "SANDBOX_PROVIDERS",
+    "SandboxProviderName",
+    "create_coding_sandbox",
+    "normalize_sandbox_provider",
+]
 
 
 def reconcile_coding_sandboxes(provider: str, *, docker_binary: str = "docker") -> int:

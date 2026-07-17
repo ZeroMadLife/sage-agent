@@ -291,6 +291,7 @@ class CodingRuntime:
                 target.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
             )
             if item.name not in IGNORED_PATH_NAMES
+            and not self.workspace.is_protected(item)
         ]
         return [{"name": item.name, "is_dir": item.is_dir()} for item in entries[:200]]
 
@@ -531,7 +532,7 @@ class CodingRuntime:
         """Return the first 2000 characters of the plan file (best-effort)."""
         if not plan_path:
             return ""
-        target = self.workspace.path(plan_path)
+        target = self.workspace.internal_path(plan_path)
         if not target.is_file():
             return ""
         content = target.read_text(encoding="utf-8", errors="replace")
@@ -794,6 +795,7 @@ class CodingRuntime:
         event = {"run_id": run_id, **dict(payload)}
         if not str(event.get("type", "")).strip():
             return
+        event.setdefault("created_at", now())
         await asyncio.to_thread(self.run_store.append_trace, run_id, event)
 
     async def finish_harness_evidence(
