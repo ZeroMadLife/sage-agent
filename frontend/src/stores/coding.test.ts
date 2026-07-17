@@ -119,6 +119,7 @@ describe('coding store', () => {
       ok: true,
       json: async () => ({
         models: [], current: null, reasoning_mode: 'off', runtime_profiles: ['legacy'],
+        default_runtime_profile: 'legacy',
       }),
     }))
     const store = useCodingStore()
@@ -127,8 +128,57 @@ describe('coding store', () => {
 
     expect(store.availableRuntimeProfiles).toEqual(['legacy'])
     expect(store.newSessionRuntimeProfile).toBe('legacy')
-    expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBe('legacy')
+    expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBeNull()
     expect(store.setNewSessionRuntimeProfile('deerflow_v2')).toBe(false)
+  })
+
+  it('lets the server default Harness 2.0 for a browser with no local preference', async () => {
+    class FakeSocket {
+      readyState = 0
+      onopen: (() => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    const empty = {
+      items: [], next_cursor: 0, has_more: false, older_cursor: null,
+      latest_cursor: 0, active_run: null, models: [], current: null,
+      reasoning_mode: 'off', runtime_profiles: ['legacy', 'deerflow_v2'],
+      default_runtime_profile: 'deerflow_v2', entries: [], path: '.',
+      is_git: false, branch: '', dirty_count: 0, changed_files: [], sessions: [],
+      runs: [], configured: false, used_tokens: 0,
+    }
+    const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 'server-default-v2', workspace_root: '/tmp/repo', workspace_id: 'w1',
+            permission_mode: 'default', runtime_profile: 'deerflow_v2',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => empty })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+
+    await store.initialize()
+
+    const creation = fetchMock.mock.calls.find(([input, init]) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      return init?.method === 'POST' && url.pathname.endsWith('/coding/session')
+    })
+    expect(creation).toBeDefined()
+    expect(JSON.parse(String(creation?.[1]?.body))).toMatchObject({ runtime_profile: null })
+    expect(store.newSessionRuntimeProfile).toBe('deerflow_v2')
+    expect(store.runtimeProfile).toBe('deerflow_v2')
+    expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBeNull()
+    store.disconnect()
   })
 
   it('creates initial and subsequent sessions with the opted-in Harness 2.0 profile', async () => {
@@ -146,6 +196,7 @@ describe('coding store', () => {
       items: [], next_cursor: 0, has_more: false, older_cursor: null,
       latest_cursor: 0, active_run: null, models: [], current: null,
       reasoning_mode: 'off', runtime_profiles: ['legacy', 'deerflow_v2'],
+      default_runtime_profile: 'deerflow_v2',
       entries: [], path: '.', is_git: false, branch: '', dirty_count: 0,
       changed_files: [], sessions: [], runs: [], configured: false, used_tokens: 0,
     }
@@ -1826,16 +1877,24 @@ describe('coding store', () => {
         socketInstances.push(this)
       }
     }
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
+    const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 's-new', workspace_root: '/tmp/repo', runtime_profile: 'deerflow_v2',
+          }),
+        })
+      }
+      return Promise.resolve({
         ok: true,
-        json: async () => ({ session_id: 's-new', workspace_root: '/tmp/repo' }),
+        json: async () => ({
+          runs: [], sessions: [], models: [], current: null, reasoning_mode: 'off',
+          runtime_profiles: ['legacy', 'deerflow_v2'], default_runtime_profile: 'deerflow_v2',
+        }),
       })
-      .mockResolvedValue({
-        ok: true,
-        json: async () => ({ runs: [], sessions: [] }),
-      })
+    })
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('WebSocket', FakeSocket)
     const store = useCodingStore()

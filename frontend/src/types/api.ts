@@ -936,6 +936,7 @@ export type CodingModelsResponse = {
   current: string | null
   reasoning_mode: 'off' | 'low' | 'medium' | 'high'
   runtime_profiles: CodingRuntimeProfile[]
+  default_runtime_profile: CodingRuntimeProfile
 }
 
 export type CodingProviderReasoning =

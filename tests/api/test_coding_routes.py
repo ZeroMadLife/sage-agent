@@ -232,6 +232,35 @@ def test_create_coding_session(tmp_path: Path) -> None:
     assert data["sandbox_image"] == "python:3.11-slim"
 
 
+def test_server_default_profile_applies_only_to_new_unspecified_sessions(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding-default-v2",
+        coding_deerflow_v2_enabled=True,
+        coding_default_runtime_profile="deerflow_v2",
+    )
+    client = TestClient(app)
+
+    default_session = client.post("/api/v1/coding/session", json={})
+    legacy_session = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "legacy"},
+    )
+
+    assert default_session.status_code == 200
+    assert default_session.json()["runtime_profile"] == "deerflow_v2"
+    assert legacy_session.status_code == 200
+    assert legacy_session.json()["runtime_profile"] == "legacy"
+
+    legacy_session_id = legacy_session.json()["session_id"]
+    app.state.coding_sessions.pop(legacy_session_id)
+    resumed = client.post(f"/api/v1/coding/session/{legacy_session_id}/resume")
+
+    assert resumed.status_code == 200
+    assert resumed.json()["runtime_profile"] == "legacy"
+
+
 def test_deerflow_profile_requires_server_rollout_gate(tmp_path: Path) -> None:
     client = TestClient(
         create_app(
@@ -1480,6 +1509,7 @@ def test_list_coding_models_returns_providers(tmp_path: Path) -> None:
     assert all(m["reasoning_modes"] == [] for m in models)
     assert data["current"] == "deepseek:deepseek-v4-flash"
     assert data["runtime_profiles"] == ["legacy"]
+    assert data["default_runtime_profile"] == "legacy"
 
 
 def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path) -> None:
@@ -1513,16 +1543,42 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
         )
     )
 
-    assert development.get("/api/v1/coding/models").json()["runtime_profiles"] == [
+    development_models = development.get("/api/v1/coding/models").json()
+    production_models = production.get("/api/v1/coding/models").json()
+    isolated_production_models = isolated_production.get(
+        "/api/v1/coding/models"
+    ).json()
+
+    assert development_models["runtime_profiles"] == [
         "legacy",
         "deerflow_v2",
     ]
-    assert production.get("/api/v1/coding/models").json()["runtime_profiles"] == [
-        "legacy"
-    ]
-    assert isolated_production.get("/api/v1/coding/models").json()[
-        "runtime_profiles"
-    ] == ["legacy", "deerflow_v2"]
+    assert development_models["default_runtime_profile"] == "deerflow_v2"
+    assert production_models["runtime_profiles"] == ["legacy"]
+    assert production_models["default_runtime_profile"] == "legacy"
+    assert isolated_production_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
+    assert isolated_production_models["default_runtime_profile"] == "deerflow_v2"
+
+    production_session = production.post("/api/v1/coding/session", json={})
+    assert production_session.status_code == 200
+    assert production_session.json()["runtime_profile"] == "legacy"
+
+
+def test_app_rejects_invalid_default_runtime_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown runtime profile"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-invalid-default",
+            coding_default_runtime_profile="future",
+        )
+    with pytest.raises(ValueError, match="must not be empty"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-empty-default",
+            coding_default_runtime_profile=" ",
+        )
 
 
 def test_app_rejects_unknown_or_empty_sandbox_configuration(tmp_path: Path) -> None:

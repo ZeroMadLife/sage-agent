@@ -29,6 +29,7 @@ from core.harness.mcp_adapter import (
     build_configured_mcp_catalog,
     build_configured_mcp_manager,
 )
+from core.harness.profile import normalize_runtime_profile
 from core.harness.sandbox_factory import (
     normalize_sandbox_provider,
     reconcile_coding_sandboxes,
@@ -176,6 +177,7 @@ def create_app(
     coding_default_model: str | None = None,
     coding_checkpoint_anchor_key: bytes | None = None,
     coding_deerflow_v2_enabled: bool | None = None,
+    coding_default_runtime_profile: str | None = None,
     coding_harness_config: HarnessConfig | None = None,
     coding_sandbox_provider: str | None = None,
     coding_sandbox_image: str | None = None,
@@ -366,6 +368,16 @@ def create_app(
         settings.sage_deerflow_v2_enabled
         if coding_deerflow_v2_enabled is None
         else coding_deerflow_v2_enabled
+    )
+    configured_default_runtime_profile = (
+        settings.sage_coding_default_runtime_profile
+        if coding_default_runtime_profile is None
+        else coding_default_runtime_profile
+    )
+    if not str(configured_default_runtime_profile).strip():
+        raise ValueError("coding default runtime profile must not be empty")
+    app.state.coding_default_runtime_profile = normalize_runtime_profile(
+        configured_default_runtime_profile
     )
     app.state.coding_harness_config = coding_harness_config or HarnessConfig()
     app.state.coding_sandbox_provider = normalize_sandbox_provider(

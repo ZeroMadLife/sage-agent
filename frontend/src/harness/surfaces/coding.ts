@@ -29,9 +29,13 @@ export const codingHarnessDefinition: HarnessDefinition = {
   ],
 }
 
+const TOOL_MODEL_KINDS = new Set(['tool', 'tools'])
+const NON_REPLY_MODEL_KINDS = new Set([...TOOL_MODEL_KINDS, 'retry'])
+
 export function adaptCodingTimeline(events: readonly CodingTimelineEvent[]): HarnessTimelineEvent[] {
   const output: HarnessTimelineEvent[] = []
   const modelRequestCounts = new Map<string, number>()
+  const actPreparedRuns = new Set<string>()
   const replyPreparedRuns = new Set<string>()
   const replyStartedRuns = new Set<string>()
   const ordered = [...events].sort(
@@ -52,15 +56,19 @@ export function adaptCodingTimeline(events: readonly CodingTimelineEvent[]): Har
     output.push(...adaptLegacyEvent(
       event,
       modelRequestCount === 0,
+      actPreparedRuns.has(event.run_id),
       !replyStartedRuns.has(event.run_id),
       replyPreparedRuns.has(event.run_id),
     ))
     if (event.kind === 'model' && type === 'model_requested') {
       modelRequestCounts.set(event.run_id, modelRequestCount + 1)
     }
-    if (event.kind === 'model' && type === 'model_parsed' && event.payload.kind !== 'tool') {
-      replyPreparedRuns.add(event.run_id)
+    if (event.kind === 'model' && type === 'model_parsed') {
+      const parsedKind = stringValue(event.payload.kind)
+      if (!NON_REPLY_MODEL_KINDS.has(parsedKind)) replyPreparedRuns.add(event.run_id)
+      if (TOOL_MODEL_KINDS.has(parsedKind)) actPreparedRuns.add(event.run_id)
     }
+    if (event.kind === 'tool' && type === 'tool_call') actPreparedRuns.delete(event.run_id)
     if (event.kind === 'assistant' && type === 'text_delta') replyStartedRuns.add(event.run_id)
   }
   return output
@@ -99,6 +107,7 @@ function adaptExplicitStageEvent(event: CodingTimelineEvent): HarnessTimelineEve
 function adaptLegacyEvent(
   event: CodingTimelineEvent,
   initialModelRequest: boolean,
+  actPrepared: boolean,
   initialAssistantDelta: boolean,
   replyPrepared: boolean,
 ): HarnessTimelineEvent[] {
@@ -131,18 +140,26 @@ function adaptLegacyEvent(
     ]
   }
   if (event.kind === 'model' && type === 'model_parsed') {
-    const target = event.payload.kind === 'tool' ? 'act' : 'reply'
+    const parsedKind = stringValue(event.payload.kind)
+    if (parsedKind === 'retry') return []
+    const target = TOOL_MODEL_KINDS.has(parsedKind) ? 'act' : 'reply'
     return [
       eventFrom(event, 'stage_completed', 0, { stageId: 'plan' }),
       transition(event, 1, 'plan', target),
     ]
   }
   if (event.kind === 'tool' && type === 'tool_call') {
-    return [eventFrom(event, 'stage_started', 0, {
-      stageId: 'act',
-      detail: toolDetail(event),
-      operationRef: { kind: 'coding_run', id: event.run_id },
-    })]
+    return [
+      ...(!actPrepared ? [
+        eventFrom(event, 'stage_completed', 0, { stageId: 'plan' }),
+        transition(event, 1, 'plan', 'act'),
+      ] : []),
+      eventFrom(event, 'stage_started', 2, {
+        stageId: 'act',
+        detail: toolDetail(event),
+        operationRef: { kind: 'coding_run', id: event.run_id },
+      }),
+    ]
   }
   if (event.kind === 'tool' && type === 'tool_result') {
     const failed = event.payload.is_error === true || event.status === 'error'
@@ -153,7 +170,10 @@ function adaptLegacyEvent(
         status: failed ? 'failed' : 'completed',
         operationRef: { kind: 'coding_run', id: event.run_id },
       }),
-      ...(failed ? [] : [transition(event, 1, 'act', 'plan')]),
+      ...(failed ? [] : [
+        transition(event, 1, 'act', 'plan'),
+        eventFrom(event, 'stage_started', 2, { stageId: 'plan' }),
+      ]),
     ]
   }
   if (event.kind === 'approval') {

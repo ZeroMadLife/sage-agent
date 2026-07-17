@@ -87,7 +87,7 @@ function isTimelineEvent(value: unknown, sessionId: string): value is CodingTime
 export async function startCodingSession(
   workspaceRoot?: string,
   approvalPolicy: 'auto' | 'ask' | 'never' = 'ask',
-  runtimeProfile: CodingRuntimeProfile = 'legacy',
+  runtimeProfile?: CodingRuntimeProfile,
 ): Promise<CodingSessionResponse> {
   const response = await apiFetch(new URL('/api/v1/coding/session', API_BASE_URL), {
     method: 'POST',
@@ -95,7 +95,7 @@ export async function startCodingSession(
     body: JSON.stringify({
       workspace_root: workspaceRoot || null,
       approval_policy: approvalPolicy,
-      runtime_profile: runtimeProfile,
+      runtime_profile: runtimeProfile ?? null,
     }),
   })
 

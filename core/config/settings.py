@@ -116,7 +116,8 @@ class Settings(BaseSettings):
     # forced to Secure by the app factory regardless of this value.
     cloud_secure_cookies: bool = False
     cloud_frontend_url: str = "http://localhost:5173"
-    sage_deerflow_v2_enabled: bool = False
+    sage_deerflow_v2_enabled: bool = True
+    sage_coding_default_runtime_profile: str = "deerflow_v2"
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"

@@ -917,6 +917,7 @@ class CodingModelsResponse(BaseModel):
     runtime_profiles: list[Literal["legacy", "deerflow_v2"]] = Field(
         default_factory=_default_coding_runtime_profiles
     )
+    default_runtime_profile: Literal["legacy", "deerflow_v2"] = "legacy"
 
 
 class CodingModelSwitchRequest(BaseModel):

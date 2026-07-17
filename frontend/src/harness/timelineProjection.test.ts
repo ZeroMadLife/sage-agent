@@ -71,6 +71,24 @@ describe('harness timeline projection', () => {
     expect(projection.transitions.find((edge) => edge.id === 'receive-context')?.takenCount).toBe(1)
   })
 
+  it('excludes blocked approval time from a resumed stage duration', () => {
+    const projection = projectHarnessTimeline([
+      { ...harnessEvent(1, 'stage_started', { stageId: 'act' }), timestamp: '2026-07-16T00:00:00Z' },
+      {
+        ...harnessEvent(2, 'stage_started', { stageId: 'act', status: 'blocked' }),
+        timestamp: '2026-07-16T00:00:02Z',
+      },
+      { ...harnessEvent(3, 'stage_started', { stageId: 'act' }), timestamp: '2026-07-16T00:01:02Z' },
+      { ...harnessEvent(4, 'stage_completed', { stageId: 'act' }), timestamp: '2026-07-16T00:01:03Z' },
+    ], codingHarnessDefinition)
+
+    expect(projection.stages.find((stage) => stage.id === 'act')).toMatchObject({
+      status: 'completed',
+      visitCount: 1,
+      durationMs: 3_000,
+    })
+  })
+
   it('falls back to an ordered stage list when the recorded definition is unavailable', () => {
     const projection = projectHarnessTimeline([
       harnessEvent(1, 'stage_started', { stageId: 'custom_gate', definitionVersion: 99 }),
@@ -107,6 +125,23 @@ describe('harness timeline projection', () => {
     })
     expect(projection.stages.find((stage) => stage.id === 'reply')?.visitCount).toBe(1)
     expect(projection.visitedPath).toEqual(['receive', 'context', 'plan', 'act', 'plan', 'reply'])
+  })
+
+  it('projects plural tool batches into act instead of reply', () => {
+    const projection = projectLatestCodingHarness([
+      codingEvent(1, 'user', { type: 'user', content: '检查多个文件' }),
+      codingEvent(2, 'model', { type: 'model_requested' }, 'running'),
+      codingEvent(3, 'model', { type: 'model_parsed', kind: 'tools' }),
+      codingEvent(4, 'tool', {
+        type: 'tool_call', tool: 'read_file', args: { path: 'README.md' },
+      }, 'running'),
+    ])
+
+    expect(projection.activeStageId).toBe('act')
+    expect(projection.visitedPath).toEqual(['receive', 'context', 'plan', 'act'])
+    expect(projection.stages.find((stage) => stage.id === 'reply')?.visitCount).toBe(0)
+    expect(projection.transitions.find((edge) => edge.id === 'plan-act')?.takenCount).toBe(1)
+    expect(projection.transitions.find((edge) => edge.id === 'plan-reply')?.takenCount).toBe(0)
   })
 
   it('produces the same projection from live batches and a full replay', () => {
@@ -190,12 +225,65 @@ describe('harness timeline projection', () => {
       codingEvent(5, 'assistant', { type: 'text_delta', delta: '完成' }, 'running'),
     ])
 
-    expect(projection.visitedPath).toEqual(['receive', 'context', 'plan', 'act', 'reply'])
+    expect(projection.visitedPath).toEqual(['receive', 'context', 'plan', 'act', 'plan', 'reply'])
     expect(projection.stages.find((stage) => stage.id === 'act')?.detail).toBe('run_shell · pwd')
     expect(projection.runtimeResources).toContainEqual(expect.objectContaining({
       kind: 'mcp', label: 'MCP 目录', detail: '2 个服务 · 1 已配置 · 1 未配置',
       status: 'blocked',
     }))
+  })
+
+  it('projects a V2 approval loop without charging human wait to plan or tool time', () => {
+    const projection = projectLatestCodingHarness([
+      { ...codingEvent(1, 'user', { type: 'user', content: '执行 pwd' }), timestamp: '2026-07-16T00:00:00Z' },
+      {
+        ...codingEvent(2, 'context', { type: 'context_usage_updated' }),
+        timestamp: '2026-07-16T00:00:01Z',
+      },
+      {
+        ...codingEvent(3, 'harness', { type: 'mcp_catalog_updated', servers: [] }),
+        timestamp: '2026-07-16T00:00:01Z',
+      },
+      {
+        ...codingEvent(4, 'tool', { type: 'tool_call', tool: 'run_shell', args: {} }, 'running'),
+        timestamp: '2026-07-16T00:00:02Z',
+      },
+      {
+        ...codingEvent(5, 'approval', {
+          type: 'approval_required', tool: 'run_shell', description: '等待确认',
+        }, 'blocked'),
+        timestamp: '2026-07-16T00:00:03Z',
+      },
+      {
+        ...codingEvent(6, 'approval', { type: 'approval_granted', tool: 'run_shell' }),
+        timestamp: '2026-07-16T00:01:03Z',
+      },
+      {
+        ...codingEvent(7, 'tool', {
+          type: 'tool_result', tool: 'run_shell', args: { command: 'pwd' }, content: '/workspace',
+        }),
+        timestamp: '2026-07-16T00:01:04Z',
+      },
+      {
+        ...codingEvent(8, 'assistant', { type: 'text_delta', delta: '/workspace' }, 'running'),
+        timestamp: '2026-07-16T00:01:05Z',
+      },
+      {
+        ...codingEvent(9, 'assistant', { type: 'final', content: '/workspace' }),
+        timestamp: '2026-07-16T00:01:06Z',
+      },
+      {
+        ...codingEvent(10, 'terminal', { event: 'run_completed' }),
+        timestamp: '2026-07-16T00:01:06Z',
+      },
+    ])
+
+    expect(projection.visitedPath).toEqual(['receive', 'context', 'plan', 'act', 'plan', 'reply'])
+    expect(projection.stages.find((stage) => stage.id === 'act')?.durationMs).toBe(2_000)
+    expect(projection.stages.find((stage) => stage.id === 'plan')).toMatchObject({
+      visitCount: 2,
+      durationMs: 1_000,
+    })
   })
 
   it('updates one child resource from started to terminal status', () => {

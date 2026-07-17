@@ -151,6 +151,23 @@ def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
     return profiles
 
 
+def _effective_default_runtime_profile(request: Request) -> RuntimeProfile:
+    """Return the configured default only when this deployment can create it safely."""
+    configured = normalize_runtime_profile(
+        getattr(request.app.state, "coding_default_runtime_profile", "legacy")
+    )
+    if configured in _available_runtime_profiles(request):
+        return configured
+    return "legacy"
+
+
+def _resolve_new_runtime_profile(value: object, request: Request) -> RuntimeProfile:
+    """Use the server default only for new sessions with no explicit profile."""
+    if value is None or value == "":
+        return _effective_default_runtime_profile(request)
+    return _require_enabled_runtime_profile(value, request)
+
+
 async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
     session_id = str(
         connection.path_params.get("session_id", "")
@@ -628,7 +645,7 @@ async def create_coding_session(
     registry = combined_capabilities(request, account)
     reasoning_modes = combined_reasoning_modes(request, account)
     session_id = str(uuid4())
-    runtime_profile = _require_enabled_runtime_profile(payload.runtime_profile, request)
+    runtime_profile = _resolve_new_runtime_profile(payload.runtime_profile, request)
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=workspace_root,
@@ -1564,6 +1581,7 @@ async def list_coding_models(
         current=current,
         reasoning_mode=cast(Literal["off", "low", "medium", "high"], reasoning_mode),
         runtime_profiles=_available_runtime_profiles(request),
+        default_runtime_profile=_effective_default_runtime_profile(request),
     )
 
 

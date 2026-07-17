@@ -112,7 +112,7 @@ describe('coding API client', () => {
       credentials: 'include',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_root: '/tmp/repo', approval_policy: 'ask', runtime_profile: 'legacy' }),
+      body: JSON.stringify({ workspace_root: '/tmp/repo', approval_policy: 'ask', runtime_profile: null }),
     })
   })
 
