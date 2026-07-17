@@ -1,0 +1,49 @@
+name: Sage Quality
+
+on:
+  pull_request:
+    branches: [dev/sage-v7, main]
+  push:
+    branches: [dev/sage-v7, main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sage-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend-quality:
+    name: backend-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: pip install -r requirements.txt
+      - run: ruff check core/ db/ mcp_servers/ agents/ api/ evals/ tests/
+      - run: mypy core/ db/ mcp_servers/ agents/ api/ evals/
+      - run: pytest tests/ -q --tb=short
+
+  frontend-quality:
+    name: frontend-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run test -- --run
+      - run: npm run build
