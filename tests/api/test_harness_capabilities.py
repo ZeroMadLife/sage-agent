@@ -8,7 +8,14 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sage_harness import McpConfigSnapshot, McpManager, McpScope, McpServerConfig, McpToolDescriptor
+from sage_harness import (
+    McpConfigSnapshot,
+    McpManager,
+    McpScope,
+    McpServerConfig,
+    McpToolDescriptor,
+    WebSearchResult,
+)
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
@@ -22,6 +29,14 @@ from db.migrations import init_db
 class FakeModel:
     def __init__(self, *args: object, **kwargs: object) -> None:
         _ = args, kwargs
+
+
+class FakeWebSearchPort:
+    provider = "fake"
+    available = True
+
+    async def search(self, query: str, **_: object) -> WebSearchResult:
+        return WebSearchResult(query=query, provider=self.provider, status="no_evidence")
 
 
 class CountingTransport:
@@ -187,6 +202,32 @@ def test_capability_api_rejects_unknown_session_and_invalid_filters(tmp_path: Pa
 
     assert missing.status_code == 404
     assert invalid.status_code == 422
+
+
+def test_capability_api_exposes_web_search_only_with_server_port(tmp_path: Path) -> None:
+    disabled_root = tmp_path / "disabled"
+    enabled_root = tmp_path / "enabled"
+    disabled_root.mkdir()
+    enabled_root.mkdir()
+    disabled_app = _app(disabled_root)
+    enabled_app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=enabled_root,
+        coding_storage_root=enabled_root / ".coding",
+        coding_web_search_port=FakeWebSearchPort(),
+    )
+
+    def capability_ids(app) -> set[str]:  # type: ignore[no-untyped-def]
+        with TestClient(app) as client:
+            session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+            payload = client.get(
+                "/api/v1/harness/capabilities",
+                params={"session_id": session_id, "surface": "coding"},
+            ).json()
+        return {item["capability_id"] for item in payload["capabilities"]}
+
+    assert "web:search" not in capability_ids(disabled_app)
+    assert "web:search" in capability_ids(enabled_app)
 
 
 def test_capability_health_api_returns_content_free_workspace_metrics(

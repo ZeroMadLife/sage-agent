@@ -62,6 +62,10 @@ def _request(tmp_path: Path, child_run_id: str = "child_test") -> SubagentReques
     )
 
 
+def test_subagent_request_normalizes_legacy_profile_name(tmp_path: Path) -> None:
+    assert _request(tmp_path).subagent_type == "explore"
+
+
 def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
     model = FakeModel(

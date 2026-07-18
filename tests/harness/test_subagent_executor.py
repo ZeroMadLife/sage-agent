@@ -155,6 +155,7 @@ def test_real_graph_waits_for_child_and_persists_terminal_result() -> None:
     assert len(executor.requests) == 1
     request = executor.requests[0]
     assert request.tool_scope == ("list_files", "read_file", "search")
+    assert request.subagent_type == "explore"
     assert request.child_run_id.startswith("child_")
     assert result["delegations"][0]["status"] == "succeeded"
     assert result["delegations"][0]["result_ref"].startswith("subagent://")
@@ -162,6 +163,39 @@ def test_real_graph_waits_for_child_and_persists_terminal_result() -> None:
     assert len(tool_messages) == 1
     assert "Found the requested evidence" in str(tool_messages[0].content)
     assert tool_messages[0].additional_kwargs["sage_subagent"]["status"] == "succeeded"
+
+
+def test_task_tool_accepts_lowercase_explore_profile_from_model() -> None:
+    executor = FakeExecutor()
+    call = _task_call("call-lowercase")
+    call["args"] = {**call["args"], "subagent_type": "explore"}  # type: ignore[index]
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="Child evidence was used."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_tool(executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda config: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Inspect the repository")]},
+            context=_context(),
+        )
+    )
+
+    assert executor.requests[0].subagent_type == "explore"
+    assert result["delegations"][0]["status"] == "succeeded"
 
 
 def test_task_tool_times_out_and_requests_child_cancellation() -> None:

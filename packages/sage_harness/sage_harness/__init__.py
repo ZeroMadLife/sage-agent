@@ -56,6 +56,9 @@ from sage_harness.ports import (
     ToolCallRequest,
     ToolExecutionPort,
     ToolExecutionResult,
+    WebEvidence,
+    WebSearchPort,
+    WebSearchResult,
 )
 from sage_harness.runtime import (
     CheckpointScopeError,
@@ -177,6 +180,9 @@ __all__ = [
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",
+    "WebEvidence",
+    "WebSearchPort",
+    "WebSearchResult",
     "assemble_deferred_tools",
     "build_graph_message_compaction_plan",
     "build_memory_checkpointer",

@@ -290,7 +290,7 @@ def test_event_adapter_keeps_large_knowledge_result_valid_and_deduplicated() -> 
     assert duplicate_message_events == ()
 
 
-def test_message_payload_only_expands_knowledge_tool_content() -> None:
+def test_message_payload_expands_structured_evidence_tool_content() -> None:
     content = "x" * 5_000
 
     regular = message_payload(
@@ -303,9 +303,13 @@ def test_message_payload_only_expands_knowledge_tool_content() -> None:
             name="knowledge_search",
         )
     )
+    web = message_payload(
+        ToolMessage(content=content, tool_call_id="call-web", name="search_web")
+    )
 
     assert len(str(regular["content"])) == 4_000
     assert knowledge["content"] == content
+    assert web["content"] == content
 
 
 def test_event_adapter_projects_only_scoped_tool_artifact_metadata() -> None:

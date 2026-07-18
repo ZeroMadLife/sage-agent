@@ -194,7 +194,7 @@ class DeerflowAgentFakeModel(FakeMessagesListChatModel):
                             "args": {
                                 "description": "读取 README",
                                 "prompt": "读取 README 并返回第一行",
-                                "subagent_type": "Explore",
+                                "subagent_type": "explore",
                             },
                             "id": "call-task",
                             "type": "tool_call",
@@ -719,11 +719,23 @@ def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
             websocket.send_json({"content": "启动一个探索任务"})
             payloads: list[dict] = []
+            agent_kinds: list[str] = []
             while True:
                 event = websocket.receive_json()
                 payloads.append(event["payload"])
+                if str(event["payload"].get("type", "")).startswith("subagent_"):
+                    agent_kinds.append(event["kind"])
                 if event["kind"] == "terminal":
                     break
+
+        child_run_id = str(
+            next(item for item in payloads if item.get("type") == "subagent_started")[
+                "child_run_id"
+            ]
+        )
+        child_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{child_run_id}"
+        )
 
     agent_events = [
         item for item in payloads if str(item.get("type", "")).startswith("subagent_")
@@ -735,6 +747,20 @@ def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path
     assert agent_events[0]["child_run_id"].startswith("child_")
     assert agent_events[1]["child_run_id"] == agent_events[0]["child_run_id"]
     assert agent_events[1]["result_ref"].startswith("subagent://")
+    assert agent_kinds == ["agent", "agent"]
+    assert agent_events[0]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert agent_events[1]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert child_response.status_code == 200
+    child_run = child_response.json()
+    assert child_run["run_id"] == child_run_id
+    assert child_run["events"][0]["parent_run_id"]
+    assert child_run["events"][-1]["type"] == "run_finished"
     assert any(item.get("type") == "final" for item in payloads)
 
 

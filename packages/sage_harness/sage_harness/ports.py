@@ -117,6 +117,34 @@ class KnowledgeRetrievalResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WebEvidence:
+    """One immutable, bounded web-search excerpt for the current turn."""
+
+    citation_id: str
+    canonical_url: str
+    original_url: str
+    title: str
+    excerpt: str
+    provider: str
+    retrieved_at: str
+    content_hash: str
+    rank: int
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WebSearchResult:
+    """Provider-neutral result that never implies trusted Knowledge state."""
+
+    query: str
+    provider: str
+    status: Literal["evidence_found", "no_evidence", "unavailable"]
+    evidence: tuple[WebEvidence, ...] = ()
+    omitted_count: int = 0
+    error_code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryReference:
     """Small durable-memory reference safe to assemble into context."""
 
@@ -198,6 +226,26 @@ class KnowledgePort(Protocol):
         token_budget: int,
         top_k: int = 8,
     ) -> KnowledgeRetrievalResult: ...
+
+
+class WebSearchPort(Protocol):
+    """Search external sources without granting fetch or persistence authority."""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def available(self) -> bool: ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        freshness: str = "all",
+        domains: Sequence[str] = (),
+        language: str = "all",
+    ) -> WebSearchResult: ...
 
 
 class MemoryPort(Protocol):

@@ -261,6 +261,10 @@ search_web(query, freshness, domains, top_k)
 - 支持 `tool_search -> search_web -> final answer` 的完整流式循环。
 - 不写 Knowledge，不自动抓取所有搜索结果。
 
+实现状态（2026-07-18）：已形成可独立验收的 H2.5A 切片。Harness 只依赖 provider-neutral `WebSearchPort`，首个服务端 adapter 使用 SearXNG JSON Search API；能力默认关闭，只有服务端同时启用并配置 endpoint 时才进入 Capability Registry。结果归一为预算内 title、HTTPS URL、excerpt、retrieved time、content hash 和稳定 `wcite_` 引用，并带 `remote_content` 边界进入当前回答。该切片不抓取 URL 正文、不持久化网页 Artifact、不写 Knowledge，也不转发浏览器登录态。
+
+同时关闭两项运行时可追溯性缺口：Subagent 类型按规范化 ID 匹配，父 timeline 通过 `operation_ref` 关联 child run；前端事件回放改为 append-only event view，重复进入同一阶段不会覆盖旧记录。断连时发送失败会保留输入草稿，由用户在连接恢复后显式重试。
+
 #### H2.5B：Fetch + Artifact
 
 - 实现安全 Fetch Port、HTML 主内容提取和 PDF 文本适配。
@@ -621,9 +625,9 @@ Web、MCP 和模型真实 smoke 使用测试账户/低权限 fixture。CI 不依
 - Knowledge 增量更新后的 retrieval hit/freshness 不回退；
 - 任何跨 owner/workspace、SSRF、secret、approval bypass 测试必须 100% 通过。
 
-## 13. 第一实施批次
+## 13. 实施批次记录
 
-用户已审阅并确认，本批次只交付 `H2.4A`：
+第一批次已交付 `H2.4A`：
 
 1. 为当前 local tools、MCP、Skills 和 Subagent profiles 建立只读 CapabilityDescriptor；
 2. 不改变工具执行、模型选择和前端布局；
@@ -632,7 +636,7 @@ Web、MCP 和模型真实 smoke 使用测试账户/低权限 fixture。CI 不依
 5. 用现有工具场景证明行为完全兼容；
 6. 独立提交、PR、全量门禁和 sage-learning 收口后，再进入 H2.4B。
 
-第一批次不做 Web Search、不改 Memory、不启用自动 Goal 续跑。这样能先建立后续所有扩展共享的能力底座，同时把风险控制在目录和契约层。
+第一批次没有加入 Web Search、Memory 或自动 Goal 续跑，先建立了后续扩展共享的能力底座。随后 H2.4B-C 已完成统一发现、安全提升、健康度与审计；当前批次推进到 H2.5A，只交付 Search 与当前回答引用。H2.5B 的安全 Fetch/Artifact、H2.5C 的来源保存提案以及 H2.6 Research Subagent 仍是后续独立切片。
 
 ## 14. 完成定义
 

@@ -109,6 +109,16 @@ export type HarnessTransitionViewModel = HarnessTransitionDefinition & {
   active: boolean
 }
 
+export type HarnessStageEventViewModel = {
+  eventId: string
+  stageId: string
+  label: string
+  detail?: string
+  status: HarnessStageStatus
+  timestamp: string
+  sequence: number
+}
+
 export type HarnessProjection = {
   definitionId: string
   definitionVersion: number
@@ -119,6 +129,7 @@ export type HarnessProjection = {
   stages: HarnessStageViewModel[]
   transitions: HarnessTransitionViewModel[]
   visitedPath: string[]
+  stageEvents?: HarnessStageEventViewModel[]
   lastSequence: number
   runtimeResources?: HarnessRuntimeResource[]
 }
@@ -129,4 +140,5 @@ export type HarnessRuntimeResource = {
   label: string
   detail: string
   status: HarnessStageStatus
+  operationRef?: HarnessOperationRef
 }

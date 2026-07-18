@@ -104,6 +104,7 @@ def build_task_tool(
         """
         description = " ".join(str(description).split())[:_DESCRIPTION_MAX]
         prompt = str(prompt).strip()[:_PROMPT_MAX]
+        subagent_type = str(subagent_type).strip().casefold()
         child_run_id = derive_child_run_id(
             runtime.context.thread_id,
             runtime.context.run_id,
@@ -130,7 +131,8 @@ def build_task_tool(
                 "child_run_id": child_run_id,
                 "parent_run_id": request.parent_run_id,
                 "description": request.description,
-                "subagent_type": subagent_type,
+                "subagent_type": request.subagent_type,
+                "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )
         if subagent_type not in effective.allowed_types:
@@ -193,6 +195,7 @@ def build_task_tool(
                 "result_brief": result.result.strip()[:500],
                 "result_ref": result.result_ref,
                 "error_code": result.error_code,
+                "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )
         return _terminal_command(
