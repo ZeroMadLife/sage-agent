@@ -880,7 +880,11 @@ def test_runtime_adapter_promotes_deferred_tool_before_execution(tmp_path: Path)
     promoted = state["promoted_tools"]
     assert isinstance(promoted, dict)
     bundle_hash = promoted["catalog_hash"]
-    assert promoted == {"catalog_hash": bundle_hash, "names": ["todo_list"]}
+    assert promoted == {
+        "catalog_hash": bundle_hash,
+        "names": ["todo_list"],
+        "capability_ids": ["local:todo_list"],
+    }
     assert isinstance(bundle_hash, str) and len(bundle_hash) == 16
 
 

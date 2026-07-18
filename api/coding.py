@@ -20,8 +20,10 @@ from sage_harness import (
     McpCatalogPort,
     McpManager,
     McpScope,
+    McpToolSnapshot,
     SubagentLimits,
     SubagentToolConfig,
+    resolve_skill_allowed_tools,
 )
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
@@ -428,6 +430,7 @@ async def _deerflow_timeline_events(
             return
 
         mcp_tools: tuple[BaseTool, ...] = ()
+        mcp_snapshot: McpToolSnapshot | None = None
         mcp_servers = None
         if isinstance(mcp_catalog, McpManager):
             mcp_scope = McpScope(
@@ -467,6 +470,11 @@ async def _deerflow_timeline_events(
                 memory_port=CodingMemoryPort(runtime),
                 sandbox=sandbox,
                 extra_deferred_tools=mcp_tools,
+                mcp_catalog=mcp_snapshot.catalog if mcp_snapshot is not None else None,
+                active_skill_allowed_tools=resolve_skill_allowed_tools(
+                    runtime.skill_registry,
+                    content,
+                ),
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
                 graph_approvals=True,

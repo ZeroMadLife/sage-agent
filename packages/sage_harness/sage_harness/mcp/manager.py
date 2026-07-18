@@ -307,6 +307,7 @@ class McpManager:
                 **dict(descriptor.metadata),
                 "category": "mcp",
                 "mcp_server": descriptor.server_name,
+                "mcp_tool_id": descriptor.tool_id,
                 "remote_content": descriptor.remote_content,
                 "deferred": True,
                 "config_revision": catalog.revision,

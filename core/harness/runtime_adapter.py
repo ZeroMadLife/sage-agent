@@ -70,11 +70,14 @@ class SageHarnessRuntimeAdapter:
             catalog_hash = deferred_setup.catalog_hash
             if catalog_hash is None:
                 raise ValueError("Enabled deferred tool setup requires a catalog hash")
+            if deferred_setup.selection_index is None:
+                raise ValueError("Enabled deferred tool setup requires a selection index")
+            capability_bindings = deferred_setup.selection_index.bindings
             registry = registry.with_spec(
                 MiddlewareSpec(
                     "deferred_tool_filter",
                     lambda config: DeferredToolFilterMiddleware(
-                        deferred_setup.deferred_names,
+                        capability_bindings,
                         catalog_hash,
                     ),
                 ),

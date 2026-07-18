@@ -113,10 +113,11 @@ class ApprovalContext(TypedDict, total=False):
 
 
 class PromotedTools(TypedDict):
-    """Deferred tool names authorized for one exact catalog revision."""
+    """Stable capability IDs authorized for one exact catalog revision."""
 
     catalog_hash: str
     names: list[str]
+    capability_ids: NotRequired[list[str]]
 
 
 def merge_thread_data(
@@ -366,8 +367,22 @@ def merge_promoted_tools(
         for name in dict.fromkeys(str(item).strip() for item in new.get("names", []))
         if name
     ]
+    capability_ids = [
+        capability_id
+        for capability_id in dict.fromkeys(
+            str(item).strip() for item in new.get("capability_ids", [])
+        )
+        if capability_id
+    ]
+    includes_capability_ids = "capability_ids" in new
     if existing is None or existing.get("catalog_hash") != catalog_hash:
-        return {"catalog_hash": catalog_hash, "names": names[-MAX_PROMOTED_TOOLS:]}
+        replacement: PromotedTools = {
+            "catalog_hash": catalog_hash,
+            "names": names[-MAX_PROMOTED_TOOLS:],
+        }
+        if includes_capability_ids:
+            replacement["capability_ids"] = capability_ids[-MAX_PROMOTED_TOOLS:]
+        return replacement
 
     merged = list(
         dict.fromkeys(
@@ -377,10 +392,23 @@ def merge_promoted_tools(
             ]
         )
     )
-    return {
+    merged_result: PromotedTools = {
         "catalog_hash": catalog_hash,
         "names": [name for name in merged if name][-MAX_PROMOTED_TOOLS:],
     }
+    if includes_capability_ids or "capability_ids" in existing:
+        merged_capability_ids = list(
+            dict.fromkeys(
+                [
+                    *(str(item).strip() for item in existing.get("capability_ids", [])),
+                    *capability_ids,
+                ]
+            )
+        )
+        merged_result["capability_ids"] = [
+            item for item in merged_capability_ids if item
+        ][-MAX_PROMOTED_TOOLS:]
+    return merged_result
 
 
 class SageThreadState(AgentState):

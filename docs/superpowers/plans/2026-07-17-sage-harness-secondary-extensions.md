@@ -192,7 +192,18 @@ H2.4A 已按只读边界实现，未进入 H2.4B：
 - 前端生产构建：通过，仅保留既有 Harness 大 chunk 提示；
 - `git diff --check`：通过。
 
-H2.4B 仍保持未实现：`tool_search` 尚未改为查询统一 Registry，MCP promotion、Skill `allowed_tools` 与执行层的三层一致性也没有在本批次扩张。
+### 4.6 H2.4B 交付记录（2026-07-18）
+
+H2.4B 已按“目录只发现、稳定 ID 才提升、执行仍走原边界”的原则实现：
+
+1. `CapabilitySelectionIndex` 提供按 surface、availability 和 Skill `allowed_tools` 过滤的确定性发现；搜索只返回限长公开元数据，不返回完整 Tool Schema；
+2. `tool_search` 改为两阶段协议：先用关键词发现，再以 `select:<capability_id>` 提升单个稳定能力的完整 Schema；展示名冲突必须改用 stable ID，不再静默选择；
+3. promotion checkpoint 同时保存 catalog hash、兼容 name 和 stable capability ID；中间件只信任当前 catalog hash 下的 capability ID，旧 names-only checkpoint 自动 fail-closed；
+4. MCP wrapper 只附带非敏感 `mcp_tool_id`，Sage adapter 在应用层映射为 stable capability ID；MCP catalog revision、schema hash、健康状态或 Skill allowlist 变化都会使旧 promotion 失效；
+5. Skill `allowed_tools` 同时进入 discovery/promotion catalog hash，并继续由 `SkillActivationMiddleware` 在模型可见工具与执行层阻断伪造调用；
+6. local Tool、MCP、Skill 和 Explore Subagent 共享同一可查询目录，实际执行仍由 Tool adapter、MCP Manager、Skill middleware 和 Subagent executor 负责。
+
+本批次不扩张 H2.4C：尚未新增 `capability_catalog_updated`、`capability_selected` timeline 事件，也未实现成功率、P50/P95 延迟和失败类别聚合。
 
 ## 5. H2.5：Web Evidence
 

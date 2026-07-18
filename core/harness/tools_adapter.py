@@ -13,6 +13,7 @@ from langgraph.types import interrupt
 from sage_harness import (
     DeferredToolSetup,
     KnowledgePort,
+    McpCatalogSnapshot,
     MemoryPort,
     SandboxPort,
     SubagentExecutorPort,
@@ -25,6 +26,11 @@ from core.coding.engine.events import ToolResultEvent, event_to_dict
 from core.coding.runtime import CodingRuntime
 from core.coding.tool_executor.approval import ApprovalChoice
 from core.coding.tool_executor.executor import ToolExecutor
+from core.harness.capability_adapter import (
+    build_sage_capability_registry,
+    local_tool_capability_id,
+    mcp_tool_capability_id,
+)
 
 _DEERFLOW_TOOLS = frozenset(
     {"list_files", "read_file", "search", "write_file", "patch_file", "run_shell"}
@@ -75,6 +81,8 @@ def build_deerflow_coding_tool_bundle(
     memory_port: MemoryPort | None = None,
     sandbox: SandboxPort | None = None,
     extra_deferred_tools: Sequence[BaseTool] = (),
+    mcp_catalog: McpCatalogSnapshot | None = None,
+    active_skill_allowed_tools: frozenset[str] | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
     graph_approvals: bool = False,
@@ -215,21 +223,48 @@ def build_deerflow_coding_tool_bundle(
                     "This tool never writes durable memory until the proposal is approved."
                 ),
                 args_schema=remember_definition.schema_model,
-                metadata={"category": "memory", "sage_source": "memory_port"},
+                metadata={
+                    "category": "memory",
+                    "sage_source": "memory_port",
+                    "capability_id": local_tool_capability_id("remember"),
+                },
             )
             (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
 
     if subagent_executor is not None:
         resident_tools.append(build_task_tool(subagent_executor, subagent_config))
 
-    deferred_tools.extend(extra_deferred_tools)
+    deferred_tools.extend(_with_mcp_capability_ids(extra_deferred_tools))
+
+    capability_registry = build_sage_capability_registry(
+        tools=runtime.tools,
+        skills=runtime.skill_registry.list(),
+        mcp_catalog=mcp_catalog,
+    )
 
     graph_tools, deferred_setup = assemble_deferred_tools(
         resident_tools,
         deferred_tools,
         enabled=enable_deferred_tools,
+        capability_registry=capability_registry,
+        surface="coding",
+        allowed_tool_names=active_skill_allowed_tools,
     )
     return CodingToolBundle(tuple(graph_tools), deferred_setup)
+
+
+def _with_mcp_capability_ids(tools: Sequence[BaseTool]) -> list[BaseTool]:
+    """Copy MCP wrappers with Sage stable IDs while preserving neutral source metadata."""
+    annotated: list[BaseTool] = []
+    for tool in tools:
+        metadata = dict(tool.metadata) if isinstance(tool.metadata, Mapping) else {}
+        tool_id = str(metadata.get("mcp_tool_id", "")).strip()
+        if tool_id:
+            metadata["capability_id"] = mcp_tool_capability_id(tool_id)
+            annotated.append(tool.model_copy(update={"metadata": metadata}))
+        else:
+            annotated.append(tool)
+    return annotated
 
 
 def _build_runtime_tool(
@@ -346,6 +381,7 @@ def _build_runtime_tool(
         description=registered.description,
         args_schema=args_schema,
         metadata={
+            "capability_id": local_tool_capability_id(name),
             "category": registered.category,
             "risky": registered.risky,
             "sage_source": "coding_registry",

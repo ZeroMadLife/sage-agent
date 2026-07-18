@@ -23,6 +23,14 @@ from langchain_core.utils.function_calling import convert_to_openai_function
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from sage_harness.capabilities import (
+    CapabilityBinding,
+    CapabilityMatch,
+    CapabilityRegistry,
+    CapabilitySelectionIndex,
+    CapabilitySelectionOutcome,
+    CapabilitySurface,
+)
 from sage_harness.config import HarnessRunContext
 from sage_harness.state import SageThreadState
 
@@ -35,6 +43,7 @@ class DeferredToolCatalog:
     """Immutable, bounded catalog of model-discoverable tools."""
 
     tools: tuple[BaseTool, ...]
+    selection_index: CapabilitySelectionIndex
 
     def __post_init__(self) -> None:
         names = [tool.name for tool in self.tools]
@@ -46,6 +55,9 @@ class DeferredToolCatalog:
             raise ValueError("Deferred tool catalog cannot contain tool_search")
         if len(names) != len(set(names)):
             raise ValueError("Deferred tool names must be unique")
+        binding_names = {binding.tool_name for binding in self.selection_index.bindings}
+        if binding_names != set(names):
+            raise ValueError("Every deferred tool requires exactly one capability binding")
 
     @cached_property
     def names(self) -> frozenset[str]:
@@ -53,46 +65,51 @@ class DeferredToolCatalog:
 
     @cached_property
     def hash(self) -> str:
-        canonical = [
-            convert_to_openai_function(candidate)
-            for candidate in sorted(self.tools, key=lambda item: item.name)
-        ]
+        canonical = {
+            "registry_revision": self.selection_index.revision,
+            "bindings": [
+                {
+                    "capability_id": binding.capability_id,
+                    "tool_name": binding.tool_name,
+                }
+                for binding in self.selection_index.bindings
+            ],
+            "allowed_tool_names": (
+                sorted(self.selection_index.allowed_tool_names)
+                if self.selection_index.allowed_tool_names is not None
+                else None
+            ),
+            "tools": [
+                convert_to_openai_function(candidate)
+                for candidate in sorted(self.tools, key=lambda item: item.name)
+            ],
+        }
         payload = json.dumps(canonical, sort_keys=True, ensure_ascii=False, default=str)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def search(self, query: str) -> list[BaseTool]:
-        """Return at most five deterministic matches without evaluating regex."""
+        """Compatibility helper returning tools only after an exact selection."""
         normalized = query.strip()[:MAX_QUERY_CHARS]
-        if not normalized:
+        if not normalized.casefold().startswith("select:"):
             return []
+        identifiers = tuple(
+            item.strip()
+            for item in normalized.split(":", 1)[1].split(",")
+            if item.strip()
+        )
+        outcome = self.select(identifiers)
+        by_name = {candidate.name: candidate for candidate in self.tools}
+        return [
+            by_name[item.tool_name]
+            for item in outcome.selected
+            if item.tool_name in by_name
+        ]
 
-        if normalized.casefold().startswith("select:"):
-            requested = [
-                name.strip()
-                for name in normalized.split(":", 1)[1].split(",")
-                if name.strip()
-            ]
-            by_name = {candidate.name: candidate for candidate in self.tools}
-            return [by_name[name] for name in requested if name in by_name][
-                :MAX_SEARCH_RESULTS
-            ]
+    def discover(self, query: str) -> tuple[CapabilityMatch, ...]:
+        return self.selection_index.discover(query)
 
-        query_text = normalized.casefold()
-        tokens = [token for token in query_text.split() if token]
-        ranked: list[tuple[int, str, BaseTool]] = []
-        for candidate in self.tools:
-            metadata = candidate.metadata if isinstance(candidate.metadata, Mapping) else {}
-            category = str(metadata.get("category", ""))
-            name = candidate.name.casefold()
-            description = str(candidate.description or "").casefold()
-            searchable = f"{name} {description} {category.casefold()}"
-            if query_text not in searchable and not any(token in searchable for token in tokens):
-                continue
-            score = 4 if query_text == name else 3 if query_text in name else 1
-            score += sum(1 for token in tokens if token in searchable)
-            ranked.append((score, candidate.name, candidate))
-        ranked.sort(key=lambda item: (-item[0], item[1]))
-        return [candidate for _, _, candidate in ranked[:MAX_SEARCH_RESULTS]]
+    def select(self, identifiers: tuple[str, ...]) -> CapabilitySelectionOutcome:
+        return self.selection_index.select(identifiers)
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +119,7 @@ class DeferredToolSetup:
     tool_search: BaseTool | None = None
     deferred_names: frozenset[str] = frozenset()
     catalog_hash: str | None = None
+    selection_index: CapabilitySelectionIndex | None = None
 
     @property
     def enabled(self) -> bool:
@@ -119,25 +137,62 @@ def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
     ) -> Command[Any]:
         """Find deferred tools and authorize their exact schemas for this thread.
 
-        Use ``select:name_a,name_b`` for exact names, or a short keyword query.
-        A successful result makes the returned tools callable on the next model turn.
+        First use a short keyword query to inspect bounded public metadata. Then use
+        ``select:<capability_id>`` to authorize an exact schema for the next model turn.
         """
-        matched = catalog.search(query)
-        names = [candidate.name for candidate in matched]
-        if matched:
+        normalized = str(query).strip()[:MAX_QUERY_CHARS]
+        names: list[str] = []
+        capability_ids: list[str] = []
+        if normalized.casefold().startswith("select:"):
+            requested = tuple(
+                item.strip()
+                for item in normalized.split(":", 1)[1].split(",")
+                if item.strip()
+            )
+            outcome = catalog.select(requested)
+            by_name = {candidate.name: candidate for candidate in catalog.tools}
+            selected_payload: list[dict[str, object]] = []
+            for match in outcome.selected:
+                item = match.as_dict()
+                if match.tool_name is not None and match.tool_name in by_name:
+                    item["schema"] = convert_to_openai_function(by_name[match.tool_name])
+                    names.append(match.tool_name)
+                    capability_ids.append(match.descriptor.capability_id)
+                selected_payload.append(item)
             content = json.dumps(
-                [convert_to_openai_function(candidate) for candidate in matched],
+                {
+                    "status": "selected" if selected_payload else "rejected",
+                    "catalog_revision": catalog.selection_index.revision,
+                    "selected": selected_payload,
+                    "rejected": [item.as_dict() for item in outcome.rejected],
+                },
                 ensure_ascii=False,
                 indent=2,
             )
         else:
+            matched = catalog.discover(normalized)
             content = json.dumps(
-                {"status": "no_match", "query": query[:MAX_QUERY_CHARS]},
+                {
+                    "status": "matches" if matched else "no_match",
+                    "catalog_revision": catalog.selection_index.revision,
+                    "query": normalized,
+                    "results": [item.as_dict() for item in matched],
+                    "instruction": (
+                        "Call tool_search again with select:<capability_id> to promote one exact schema."
+                        if matched
+                        else "Choose another bounded search query."
+                    ),
+                },
                 ensure_ascii=False,
+                indent=2,
             )
         return Command(
             update={
-                "promoted_tools": {"catalog_hash": catalog_hash, "names": names},
+                "promoted_tools": {
+                    "catalog_hash": catalog_hash,
+                    "names": names,
+                    "capability_ids": capability_ids,
+                },
                 "messages": [
                     ToolMessage(
                         content=content,
@@ -151,11 +206,38 @@ def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
     return tool_search
 
 
+def _capability_binding(
+    registry: CapabilityRegistry,
+    candidate: BaseTool,
+) -> CapabilityBinding:
+    metadata = candidate.metadata if isinstance(candidate.metadata, Mapping) else {}
+    configured_id = str(metadata.get("capability_id", "")).strip()
+    if configured_id:
+        descriptor = registry.get(configured_id)
+        matches = [descriptor] if descriptor is not None else []
+    else:
+        matches = [
+            descriptor
+            for descriptor in registry.list()
+            if descriptor.kind == "tool"
+            and descriptor.deferred
+            and descriptor.name == candidate.name
+        ]
+    if len(matches) != 1 or matches[0] is None:
+        raise ValueError(
+            f"Deferred tool '{candidate.name}' requires one stable capability descriptor"
+        )
+    return CapabilityBinding(matches[0].capability_id, candidate.name)
+
+
 def assemble_deferred_tools(
     resident_tools: Sequence[BaseTool],
     deferred_tools: Sequence[BaseTool],
     *,
     enabled: bool,
+    capability_registry: CapabilityRegistry,
+    surface: CapabilitySurface = "coding",
+    allowed_tool_names: frozenset[str] | None = None,
 ) -> tuple[list[BaseTool], DeferredToolSetup]:
     """Assemble executable tools and the catalog that controls model visibility."""
     residents = list(resident_tools)
@@ -166,7 +248,16 @@ def assemble_deferred_tools(
     if not enabled or not deferred:
         return [*residents, *deferred], DeferredToolSetup()
 
-    catalog = DeferredToolCatalog(tuple(deferred))
+    bindings = tuple(
+        _capability_binding(capability_registry, candidate) for candidate in deferred
+    )
+    selection_index = CapabilitySelectionIndex(
+        capability_registry,
+        bindings=bindings,
+        surface=surface,
+        allowed_tool_names=allowed_tool_names,
+    )
+    catalog = DeferredToolCatalog(tuple(deferred), selection_index)
     search_tool = build_tool_search_tool(catalog)
     if search_tool.name in names:
         raise ValueError("tool_search conflicts with an existing tool")
@@ -176,6 +267,7 @@ def assemble_deferred_tools(
             tool_search=search_tool,
             deferred_names=catalog.names,
             catalog_hash=catalog.hash,
+            selection_index=selection_index,
         ),
     )
 
@@ -184,12 +276,25 @@ def render_deferred_tool_index(setup: DeferredToolSetup) -> str:
     """Expose only escaped names; schemas remain behind ``tool_search``."""
     if not setup.enabled:
         return ""
-    names = "\n".join(html.escape(name, quote=False) for name in sorted(setup.deferred_names))
+    if setup.selection_index is None:
+        raise ValueError("Enabled deferred tool setup requires a selection index")
+    entries = "\n".join(
+        "\t".join(
+            (
+                html.escape(match.descriptor.capability_id, quote=False),
+                html.escape(match.descriptor.name, quote=False),
+                match.descriptor.origin,
+                match.descriptor.kind,
+            )
+        )
+        for match in setup.selection_index.list_discoverable()
+    )
     return (
-        "<available-deferred-tools>\n"
-        f"{names}\n"
-        "Use tool_search before calling any tool listed above.\n"
-        "</available-deferred-tools>"
+        "<available-capabilities>\n"
+        f"{entries}\n"
+        "Use tool_search with a keyword, then select one stable capability_id before calling "
+        "a deferred tool.\n"
+        "</available-capabilities>"
     )
 
 
@@ -198,11 +303,18 @@ class DeferredToolFilterMiddleware(AgentMiddleware[SageThreadState, HarnessRunCo
 
     state_schema = SageThreadState
 
-    def __init__(self, deferred_names: frozenset[str], catalog_hash: str) -> None:
+    def __init__(
+        self,
+        capability_bindings: tuple[CapabilityBinding, ...],
+        catalog_hash: str,
+    ) -> None:
         super().__init__()
-        if not deferred_names or not catalog_hash.strip():
-            raise ValueError("Deferred tool filtering requires names and a catalog hash")
-        self._deferred_names = deferred_names
+        if not capability_bindings or not catalog_hash.strip():
+            raise ValueError("Deferred tool filtering requires bindings and a catalog hash")
+        self._tool_names_by_capability_id = {
+            binding.capability_id: binding.tool_name for binding in capability_bindings
+        }
+        self._deferred_names = frozenset(self._tool_names_by_capability_id.values())
         self._catalog_hash = catalog_hash
 
     def _promoted(self, state: object) -> set[str]:
@@ -213,10 +325,14 @@ class DeferredToolFilterMiddleware(AgentMiddleware[SageThreadState, HarnessRunCo
             return set()
         if promoted.get("catalog_hash") != self._catalog_hash:
             return set()
-        names = promoted.get("names")
-        if not isinstance(names, list | tuple | set | frozenset):
+        capability_ids = promoted.get("capability_ids")
+        if not isinstance(capability_ids, list | tuple | set | frozenset):
             return set()
-        return {str(name) for name in names} & set(self._deferred_names)
+        return {
+            self._tool_names_by_capability_id[str(capability_id)]
+            for capability_id in capability_ids
+            if str(capability_id) in self._tool_names_by_capability_id
+        }
 
     def _hidden(self, state: object) -> set[str]:
         return set(self._deferred_names) - self._promoted(state)

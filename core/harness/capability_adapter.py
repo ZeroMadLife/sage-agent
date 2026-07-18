@@ -38,6 +38,17 @@ def _segment(value: object) -> str:
     return normalized[:128] or "unknown"
 
 
+def local_tool_capability_id(name: object) -> str:
+    """Return the stable Registry ID for one application-owned tool name."""
+    return f"local:{_segment(name)}"
+
+
+def mcp_tool_capability_id(tool_id: object) -> str:
+    """Return the stable Registry ID for one scoped MCP descriptor identity."""
+    parts = tuple(_segment(part) for part in str(tool_id).split(":"))
+    return ":".join(("mcp", *parts))
+
+
 def _revision(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
@@ -78,7 +89,7 @@ def _tool_descriptor(name: str, tool: object) -> CapabilityDescriptor:
         "meta": _ALL_SURFACES,
     }.get(category, ("coding",))
     return CapabilityDescriptor(
-        capability_id=f"local:{_segment(name)}",
+        capability_id=local_tool_capability_id(name),
         name=_public_text(name, maximum=128),
         origin="local",
         kind="tool",
@@ -148,10 +159,9 @@ def _mcp_descriptors(catalog: McpCatalogSnapshot) -> list[CapabilityDescriptor]:
             "degraded": "degraded",
             "stale": "stale",
         }.get(status, "unavailable")
-        tool_parts = tuple(_segment(part) for part in tool.tool_id.split(":"))
         descriptors.append(
             CapabilityDescriptor(
-                capability_id=":".join(("mcp", *tool_parts)),
+                capability_id=mcp_tool_capability_id(tool.tool_id),
                 name=_public_text(tool.name, maximum=128),
                 origin="mcp",
                 kind="tool",
@@ -210,4 +220,8 @@ def build_sage_capability_registry(
     return CapabilityRegistry(descriptors)
 
 
-__all__ = ["build_sage_capability_registry"]
+__all__ = [
+    "build_sage_capability_registry",
+    "local_tool_capability_id",
+    "mcp_tool_capability_id",
+]

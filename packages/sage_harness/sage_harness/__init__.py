@@ -3,12 +3,15 @@
 from sage_harness.agents import create_sage_agent
 from sage_harness.capabilities import (
     CapabilityAvailability,
+    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityKind,
     CapabilityOrigin,
     CapabilityPermission,
     CapabilityRegistry,
     CapabilityRisk,
+    CapabilitySelectionIndex,
+    CapabilitySelectionOutcome,
     CapabilitySurface,
 )
 from sage_harness.config import HarnessConfig, HarnessRunContext
@@ -81,6 +84,7 @@ from sage_harness.skills import (
     SkillActivationMiddleware,
     SkillCatalog,
     parse_skill_activation,
+    resolve_skill_allowed_tools,
 )
 from sage_harness.state import SageThreadState
 from sage_harness.subagents import (
@@ -103,12 +107,15 @@ __all__ = [
     "ApprovalRequest",
     "CancelCheck",
     "CapabilityAvailability",
+    "CapabilityBinding",
     "CapabilityDescriptor",
     "CapabilityKind",
     "CapabilityOrigin",
     "CapabilityPermission",
     "CapabilityRegistry",
     "CapabilityRisk",
+    "CapabilitySelectionIndex",
+    "CapabilitySelectionOutcome",
     "CapabilitySurface",
     "CheckpointPort",
     "CheckpointScopeError",
@@ -178,5 +185,6 @@ __all__ = [
     "open_sqlite_checkpointer",
     "parse_skill_activation",
     "render_deferred_tool_index",
+    "resolve_skill_allowed_tools",
     "thread_config",
 ]
