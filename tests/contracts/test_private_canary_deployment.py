@@ -1,5 +1,6 @@
 """Static release contracts for the private Canary deployment."""
 
+import subprocess
 from pathlib import Path
 
 from api.main import create_app
@@ -64,6 +65,19 @@ def test_api_image_uses_the_official_retrying_package_index() -> None:
     assert "apt-get install --no-install-recommends -y git" in dockerfile
     assert "ARG SAGE_DOCKER_REGISTRY=docker.io" in dockerfile
     assert "${SAGE_DOCKER_REGISTRY}/library/python:3.12.13-slim-bookworm" in dockerfile
+
+
+def test_api_entrypoint_runs_explicit_migration_commands() -> None:
+    entrypoint = ROOT / "infra/docker/sage-api-entrypoint.sh"
+
+    completed = subprocess.run(
+        ["sh", str(entrypoint), "printf", "%s", "migration-command"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout == "migration-command"
 
 
 def test_web_image_cannot_disable_the_production_login_gate() -> None:
