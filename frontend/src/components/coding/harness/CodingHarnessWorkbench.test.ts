@@ -59,4 +59,31 @@ describe('CodingHarnessWorkbench', () => {
     expect(wrapper.get('.workbench-mark').classes()).toContain('completed')
     expect(wrapper.get('.metric-state').text()).toContain('已完成')
   })
+
+  it('opens a traceable child operation from the runtime resource list', async () => {
+    const current = projection()
+    const wrapper = mount(CodingHarnessWorkbench, {
+      props: {
+        projection: {
+          ...current,
+          runtimeResources: [{
+            id: 'agent:child-1',
+            kind: 'agent',
+            label: '子代理',
+            detail: '比较两份文档',
+            status: 'running',
+            operationRef: { kind: 'coding_run', id: 'child-1' },
+          }],
+        },
+        sessionTitle: '验证子代理',
+      },
+    })
+
+    await wrapper.get('button[aria-label="查看子代理运行详情"]').trigger('click')
+
+    expect(wrapper.emitted('openOperation')).toEqual([[{
+      kind: 'coding_run',
+      id: 'child-1',
+    }]])
+  })
 })

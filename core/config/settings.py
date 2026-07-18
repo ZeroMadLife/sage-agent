@@ -121,6 +121,9 @@ class Settings(BaseSettings):
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"
+    sage_web_search_enabled: bool = False
+    sage_web_search_endpoint: str = ""
+    sage_web_search_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
 
     # GitHub OAuth is used for identity only. Repository authorization is
     # handled separately by a GitHub App so private repository access can be

@@ -60,7 +60,9 @@ class CodingSubagentExecutor:
         task = WorkerTask(
             id=request.child_run_id,
             description=request.description,
-            subagent_type=request.subagent_type,
+            # The legacy worker runtime still uses the display spelling for
+            # plan-mode selection; the public Harness contract is lowercase.
+            subagent_type="Explore",
             write_scope=(),
             prompt=request.prompt,
             status="running",
@@ -146,7 +148,7 @@ class CodingSubagentExecutor:
             raise ValueError("subagent workspace identity does not match runtime")
         if Path(request.workspace_path).resolve() != self.runtime.workspace.root.resolve():
             raise ValueError("subagent workspace path does not match runtime")
-        if request.subagent_type != "Explore":
+        if request.subagent_type.casefold() != "explore":
             raise ValueError("only read-only Explore children are enabled")
         if not set(request.tool_scope).issubset(_READ_ONLY_CHILD_TOOLS):
             raise ValueError("subagent requested tools outside the read-only scope")

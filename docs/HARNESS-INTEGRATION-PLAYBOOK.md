@@ -52,9 +52,11 @@ curl -fsS -X POST http://127.0.0.1:8002/api/v1/coding/session \
 | F5 审批一次 | `在 tmp/harness-smoke.txt 写入内容 smoke-approved，并确认写入结果。` | 选择“允许一次”；只执行一次；Diff 能定位到本轮变更 |
 | F6 Deferred 能力 | `查看当前会话的待办事项；如果能力还没有加载，先查找再使用。` | 先 `tool_search`，后目标工具；出现 catalog/selection 审计；未提升能力不能执行 |
 | F7 Skill 约束 | `/review 只审查 README.md，禁止修改文件，也不要执行 shell。` | Skill 激活；模型可见工具和执行层都受 `allowed_tools` 约束 |
-| F8 子 Agent | `请让只读 Explore 子 Agent 比较 README.md 与 docs/GETTING-STARTED.md 的启动步骤，只返回差异摘要，不要修改文件。` | child started/terminal 可追溯；父运行等待结果；子 Agent 不获得写权限 |
+| F8 子 Agent | `请让只读 Explore 子 Agent 比较 README.md 与 docs/GETTING-STARTED.md 的启动步骤，只返回差异摘要，不要修改文件。` | child started/terminal 可追溯；父运行等待结果；点击子运行可打开完整 child timeline；子 Agent 不获得写权限 |
 | F9 Knowledge RAG | `根据知识库说明 Harness 2.0 的目标，并给出可点击引用；没有证据就明确说没有。` | 只使用 revision-bound citation；引用能回到来源；无证据不编造 |
 | F10 恢复 | `读取 README.md 后给出三点摘要。` 在工具运行或流式输出时刷新页面 | 历史 replay 不重复；活动 run 恢复；同一工具不二次执行 |
+| F11 Web Search | `只搜索 LangGraph checkpoint 的官方文档，比较 thread 恢复与 checkpoint 恢复，给出每条结论的网页引用；不要保存到知识库。` | 先发现并提升 `web:search`；只返回 HTTPS 证据和稳定 `wcite_` 引用；不读取正文、不写 Knowledge |
+| F12 断连草稿 | 停止后端后输入 `连接恢复后只回答：消息没有丢失。` 并按回车 | 输入框保留原文；显示“连接正在恢复”；连接成功后由用户再次发送，不能静默丢消息或重复提交 |
 
 MCP 只在已配置低权限测试服务时追加：
 
@@ -70,6 +72,7 @@ MCP 只在已配置低权限测试服务时追加：
 | --- | --- | --- |
 | 审批拒绝 | 对 F4 选择“拒绝” | 工具不执行，失败可追溯，回答不宣称成功 |
 | 浏览器断线 | 运行中刷新或断开 Network | durable timeline 补齐缺口，不重复 tool call |
+| 发送时断线 | 停止后端后输入消息并按回车 | 草稿保留，明确显示恢复提示；不创建幽灵 run |
 | 后端重启 | 停止 8002 后用同一命令重启 | 已完成 run 可 replay；待审批 run 可恢复或明确标记 interrupted |
 | 过期 promotion | 能力提升后刷新 MCP/Skill revision | 旧 catalog hash 失效，调用 fail-closed |
 | 外部服务不可用 | 临时停用测试 MCP | 主回答说明不可用，不泄露异常栈和连接配置 |
@@ -98,6 +101,7 @@ capability_catalog_updated
 capability_selected | capability_selection_failed
 capability_invocation_completed
 tool_call -> tool_result
+subagent_started(operation_ref) -> child run timeline -> subagent_terminal
 approval_required -> approval resolution
 assistant text_delta -> final -> terminal
 ```
@@ -119,6 +123,8 @@ F7  Skill 约束        PASS / FAIL  证据:
 F8  子 Agent          PASS / FAIL  证据:
 F9  Knowledge 引用    PASS / FAIL  证据:
 F10 刷新/恢复         PASS / FAIL  证据:
+F11 Web Search        PASS / FAIL  证据:
+F12 断连草稿          PASS / FAIL  证据:
 
 Console error:
 后端异常:

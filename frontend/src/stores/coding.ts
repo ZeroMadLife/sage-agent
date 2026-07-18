@@ -869,7 +869,12 @@ export const useCodingStore = defineStore('coding', () => {
     content: string,
     surfaceContext?: HarnessSurfaceContext | null,
   ): boolean {
-    if (!content.trim() || !stream) return false
+    if (!content.trim()) return false
+    if (!stream || connectionState.value !== 'connected') {
+      errorMessage.value = '连接正在恢复，消息已保留，请稍后重试'
+      if (!stream || connectionState.value === 'disconnected') connectSocket()
+      return false
+    }
     const sent = stream.send(content, surfaceContext)
     if (!sent) return false
     const optimistic = {
@@ -1461,15 +1466,17 @@ export const useCodingStore = defineStore('coding', () => {
 
   async function loadRunDetail(runId: string) {
     const targetSessionId = sessionId.value
-    if (!targetSessionId) return
+    if (!targetSessionId) return false
     const generation = ++runDetailGeneration
     try {
       const detail = await fetchCodingRun(targetSessionId, runId)
-      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return false
       selectedRun.value = detail
+      return true
     } catch {
-      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return false
       selectedRun.value = null
+      return false
     }
   }
 

@@ -260,6 +260,7 @@ function projectCodingRuntimeResources(
       label: '子代理',
       detail: stringValue(event.payload.description) || previous?.detail || agentId,
       status: explicitStatus(event.status),
+      operationRef: operationRef(event.payload.operation_ref) || previous?.operationRef,
     })
   }
   resources.push(...agentResources.values())

@@ -174,7 +174,7 @@ it('shows configured context at the top-right and real reasoning controls in the
 
 it('sends the message on enter after a skill has been selected', async () => {
   const { wrapper, store } = mountComposer()
-  store.sendMessage = vi.fn()
+  store.sendMessage = vi.fn().mockReturnValue(true)
 
   await textarea(wrapper).setValue('/rev')
   await nextTick()
@@ -193,7 +193,7 @@ it('sends the message on enter after a skill has been selected', async () => {
 
 it('re-shows the skill menu after sending a message', async () => {
   const { wrapper, store } = mountComposer()
-  store.sendMessage = vi.fn()
+  store.sendMessage = vi.fn().mockReturnValue(true)
 
   // Select a skill, then send it.
   await textarea(wrapper).setValue('/rev')
@@ -207,6 +207,17 @@ it('re-shows the skill menu after sending a message', async () => {
   await nextTick()
   expect(wrapper.find('.skill-menu').exists()).toBe(true)
   expect(wrapper.findAll('.skill-menu-item')).toHaveLength(3)
+})
+
+it('keeps the draft when the transport rejects the message', async () => {
+  const { wrapper, store } = mountComposer()
+  store.sendMessage = vi.fn().mockReturnValue(false)
+
+  await textarea(wrapper).setValue('连接恢复后继续发送')
+  await textarea(wrapper).trigger('keydown', { key: 'Enter', shiftKey: false })
+
+  expect(store.sendMessage).toHaveBeenCalledWith('连接恢复后继续发送')
+  expect((textarea(wrapper).element as HTMLTextAreaElement).value).toBe('连接恢复后继续发送')
 })
 
 it('selects a skill by mouse click', async () => {

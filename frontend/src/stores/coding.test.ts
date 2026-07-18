@@ -1413,18 +1413,24 @@ describe('coding store', () => {
   })
 
   it('shows the preparation phase as soon as a message is accepted by the stream', () => {
+    const sockets: FakeSocket[] = []
     class FakeSocket {
       readyState = 1
+      onopen: (() => void) | null = null
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
       send = vi.fn()
       close = vi.fn()
+      constructor() {
+        sockets.push(this)
+      }
     }
     vi.stubGlobal('WebSocket', FakeSocket)
     const store = useCodingStore()
     store.sessionId = 'session-a'
     store.connectSocket()
+    sockets[0].onopen?.()
 
     store.sendMessage('检查这个模块')
 

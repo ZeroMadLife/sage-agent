@@ -91,3 +91,22 @@ def test_adapter_revision_tracks_tool_schema_without_exposing_it(tmp_path) -> No
 
     assert first.get("local:read_file").revision != second.get("local:read_file").revision
     assert "schema" not in first.get("local:read_file").as_dict()
+
+
+def test_adapter_exposes_web_search_only_when_server_port_is_available(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    workspace = WorkspaceContext(tmp_path)
+    tools = build_tool_registry(workspace)
+
+    disabled = build_sage_capability_registry(tools=tools, skills=[])
+    enabled = build_sage_capability_registry(
+        tools=tools,
+        skills=[],
+        web_search_available=True,
+    )
+
+    assert disabled.get("web:search") is None
+    descriptor = enabled.get("web:search")
+    assert descriptor is not None
+    assert descriptor.deferred is True
+    assert descriptor.remote_content is True
+    assert descriptor.permission == "runtime"

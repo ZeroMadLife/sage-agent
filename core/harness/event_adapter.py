@@ -18,6 +18,7 @@ from core.coding.run_coordinator import RunEvent
 
 _PUBLIC_TOOL_CONTENT_LIMIT = 4_000
 _PUBLIC_KNOWLEDGE_CITATION_LIMIT = 12
+_PUBLIC_WEB_CITATION_LIMIT = 8
 _KNOWLEDGE_STATUSES = frozenset({"evidence_found", "no_evidence", "unavailable"})
 _CAPABILITY_EVENT_TYPES = frozenset(
     {
@@ -655,6 +656,8 @@ def _public_failure_categories(
 
 def _public_tool_result_content(tool_name: str, value: object) -> str:
     text = value if isinstance(value, str) else str(value)
+    if tool_name == "search_web":
+        return _public_web_search_content(text)
     if tool_name != "knowledge_search":
         return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
     try:
@@ -728,6 +731,70 @@ def _public_tool_result_content(tool_name: str, value: object) -> str:
         ],
     }
     return json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
+
+
+def _public_web_search_content(text: str) -> str:
+    payload = _remote_json_payload(text)
+    if payload is None:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    status = _public_string(payload.get("status"), 32)
+    if status not in _KNOWLEDGE_STATUSES:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    raw_citations = payload.get("citations")
+    citations = [item for item in raw_citations if isinstance(item, Mapping)][
+        :_PUBLIC_WEB_CITATION_LIMIT
+    ] if isinstance(raw_citations, list) else []
+    omitted_count = _public_non_negative_int(payload.get("omitted_count"))
+    base = {
+        "status": status,
+        "query": _public_string(payload.get("query"), 400),
+        "provider": _public_string(payload.get("provider"), 80),
+        "omitted_count": omitted_count,
+        "error_code": _public_string(payload.get("error_code"), 80),
+        "remote_content": True,
+    }
+    if status != "evidence_found" or not citations:
+        return json.dumps({**base, "citations": []}, ensure_ascii=False, separators=(",", ":"))
+    for count in range(len(citations), 0, -1):
+        for excerpt_limit in (700, 350, 160, 80, 40):
+            public_citations = [
+                {
+                    "citation_id": _public_string(item.get("citation_id"), 160),
+                    "rank": _public_positive_int(item.get("rank")),
+                    "url": _public_string(item.get("url"), 1_000),
+                    "title": _public_string(item.get("title"), 240),
+                    "excerpt": _public_string(item.get("excerpt"), excerpt_limit),
+                    "provider": _public_string(item.get("provider"), 80),
+                    "retrieved_at": _public_string(item.get("retrieved_at"), 80),
+                    "content_hash": _public_string(item.get("content_hash"), 128),
+                    "remote_content": True,
+                }
+                for item in citations[:count]
+                if _public_string(item.get("citation_id"), 160)
+                and _public_string(item.get("url"), 1)
+            ]
+            candidate = {
+                **base,
+                "omitted_count": omitted_count + max(0, len(citations) - count),
+                "citations": public_citations,
+            }
+            encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= _PUBLIC_TOOL_CONTENT_LIMIT:
+                return encoded
+    return json.dumps({**base, "citations": []}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _remote_json_payload(text: str) -> Mapping[object, object] | None:
+    candidate = text.strip()
+    prefix = "<remote-content>"
+    suffix = "</remote-content>"
+    if candidate.startswith(prefix) and candidate.endswith(suffix):
+        candidate = candidate[len(prefix) : -len(suffix)].strip()
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
 
 
 def _public_knowledge_citation(

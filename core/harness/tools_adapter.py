@@ -18,6 +18,7 @@ from sage_harness import (
     SandboxPort,
     SubagentExecutorPort,
     SubagentToolConfig,
+    WebSearchPort,
     assemble_deferred_tools,
     build_task_tool,
 )
@@ -31,6 +32,7 @@ from core.harness.capability_adapter import (
     local_tool_capability_id,
     mcp_tool_capability_id,
 )
+from core.harness.web_search import build_web_search_tool
 
 _DEERFLOW_TOOLS = frozenset(
     {"list_files", "read_file", "search", "write_file", "patch_file", "run_shell"}
@@ -58,6 +60,7 @@ def build_deerflow_coding_tools(
     sandbox: SandboxPort | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
+    web_search_port: WebSearchPort | None = None,
     graph_approvals: bool = False,
 ) -> list[BaseTool]:
     """Build the established resident tool slice without deferred discovery."""
@@ -70,6 +73,7 @@ def build_deerflow_coding_tools(
             sandbox=sandbox,
             subagent_executor=subagent_executor,
             subagent_config=subagent_config,
+            web_search_port=web_search_port,
             graph_approvals=graph_approvals,
             enable_deferred_tools=False,
         ).tools
@@ -88,6 +92,7 @@ def build_deerflow_coding_tool_bundle(
     active_skill_allowed_tools: frozenset[str] | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
+    web_search_port: WebSearchPort | None = None,
     graph_approvals: bool = False,
     enable_deferred_tools: bool = True,
 ) -> CodingToolBundle:
@@ -246,12 +251,17 @@ def build_deerflow_coding_tool_bundle(
         task_metadata["capability_id"] = "subagent:explore"
         resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
 
+    web_search_available = bool(web_search_port is not None and web_search_port.available)
+    if web_search_available and web_search_port is not None:
+        deferred_tools.append(build_web_search_tool(web_search_port))
+
     deferred_tools.extend(_with_mcp_capability_ids(extra_deferred_tools))
 
     capability_registry = build_sage_capability_registry(
         tools=runtime.tools,
         skills=runtime.skill_registry.list(),
         mcp_catalog=mcp_catalog,
+        web_search_available=web_search_available,
     )
 
     graph_tools, deferred_setup = assemble_deferred_tools(

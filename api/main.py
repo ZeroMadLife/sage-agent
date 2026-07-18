@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
-from sage_harness import HarnessConfig, McpCatalogPort, McpManager
+from sage_harness import HarnessConfig, McpCatalogPort, McpManager, WebSearchPort
 from sage_harness.runtime.checkpoint import open_sqlite_checkpointer
 
 from agents.graph import build_graph
@@ -35,6 +35,7 @@ from core.harness.sandbox_factory import (
     normalize_sandbox_provider,
     reconcile_coding_sandboxes,
 )
+from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
@@ -184,6 +185,7 @@ def create_app(
     coding_sandbox_image: str | None = None,
     coding_mcp_live_enabled: bool | None = None,
     coding_mcp_catalog: McpCatalogPort | None = None,
+    coding_web_search_port: WebSearchPort | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
     cloud_secure_cookies: bool | None = None,
@@ -416,6 +418,18 @@ def create_app(
     app.state.coding_mcp_manager = (
         resolved_mcp_catalog if isinstance(resolved_mcp_catalog, McpManager) else None
     )
+    if coding_web_search_port is not None:
+        app.state.coding_web_search_port = coding_web_search_port
+    elif settings.sage_web_search_enabled:
+        if not settings.sage_web_search_endpoint.strip():
+            raise ValueError("SAGE_WEB_SEARCH_ENDPOINT is required when web search is enabled")
+        app.state.coding_web_search_port = SearxngWebSearchAdapter(
+            settings.sage_web_search_endpoint,
+            allow_http=app_env == "development",
+            timeout_seconds=settings.sage_web_search_timeout_seconds,
+        )
+    else:
+        app.state.coding_web_search_port = None
     app.state.coding_workspace_root = resolved_workspace_root
     app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
     configured_knowledge_root = (

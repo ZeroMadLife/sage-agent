@@ -205,11 +205,33 @@ def _explore_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _web_search_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="web:search",
+        name="search_web",
+        origin="web",
+        kind="tool",
+        revision="web-search-current-turn-v1",
+        description=(
+            "Search public web sources and return bounded current-turn citation excerpts."
+        ),
+        surfaces=_ALL_SURFACES,
+        risk="medium",
+        permission="runtime",
+        deferred=True,
+        remote_content=True,
+        availability="available",
+        timeout_seconds=30.0,
+        tags=("web", "search", "evidence"),
+    )
+
+
 def build_sage_capability_registry(
     *,
     tools: Mapping[str, object],
     skills: Sequence[Skill],
     mcp_catalog: McpCatalogSnapshot | None = None,
+    web_search_available: bool = False,
 ) -> CapabilityRegistry:
     """Build a public catalog from current runtime-owned source metadata."""
     descriptors = [_tool_descriptor(name, tool) for name, tool in tools.items()]
@@ -217,6 +239,8 @@ def build_sage_capability_registry(
     if mcp_catalog is not None:
         descriptors.extend(_mcp_descriptors(mcp_catalog))
     descriptors.append(_explore_descriptor())
+    if web_search_available:
+        descriptors.append(_web_search_descriptor())
     return CapabilityRegistry(descriptors)
 
 

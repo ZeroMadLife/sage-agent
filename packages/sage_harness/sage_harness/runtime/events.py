@@ -63,7 +63,8 @@ def message_payload(message: Any) -> dict[str, Any]:
             content,
             text_limit=(
                 _TOOL_MESSAGE_CONTENT_LIMIT
-                if isinstance(message, ToolMessage) and name == "knowledge_search"
+                if isinstance(message, ToolMessage)
+                and name in {"knowledge_search", "search_web"}
                 else 4_000
             ),
         ),

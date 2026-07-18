@@ -66,8 +66,10 @@ function onInput() {
 function send() {
   const content = input.value.trim()
   if (!content) return
-  if (props.surfaceContext) store.sendMessage(content, props.surfaceContext)
-  else store.sendMessage(content)
+  const sent = props.surfaceContext
+    ? store.sendMessage(content, props.surfaceContext)
+    : store.sendMessage(content)
+  if (!sent) return
   input.value = ''
   selectedIndex.value = 0
   skillMenuDismissed.value = false

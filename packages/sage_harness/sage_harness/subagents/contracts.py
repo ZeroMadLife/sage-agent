@@ -32,7 +32,7 @@ class SubagentLimits:
 class SubagentToolConfig:
     """Capabilities inherited by children launched through the task tool."""
 
-    allowed_types: frozenset[str] = frozenset({"Explore"})
+    allowed_types: frozenset[str] = frozenset({"explore"})
     tool_scope: tuple[str, ...] = ("list_files", "read_file", "search")
     token_budget: int = 24_000
     timeout_seconds: float = 90.0
@@ -41,6 +41,11 @@ class SubagentToolConfig:
     def __post_init__(self) -> None:
         if not self.allowed_types or any(not item.strip() for item in self.allowed_types):
             raise ValueError("allowed_types must contain non-empty names")
+        object.__setattr__(
+            self,
+            "allowed_types",
+            frozenset(item.strip().casefold() for item in self.allowed_types),
+        )
         if not self.tool_scope or any(not item.strip() for item in self.tool_scope):
             raise ValueError("tool_scope must contain non-empty tool names")
         if self.token_budget < 1:
@@ -88,6 +93,7 @@ class SubagentRequest:
             raise ValueError("subagent budgets must be positive")
         if self.depth < 1:
             raise ValueError("depth must be positive")
+        object.__setattr__(self, "subagent_type", self.subagent_type.strip().casefold())
 
 
 @dataclass(frozen=True, slots=True)

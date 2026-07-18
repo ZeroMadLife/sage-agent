@@ -11,12 +11,13 @@ import {
   CodingHarnessWorkbench,
   CodingPlanApproval,
   CodingPlanPreview,
+  CodingRunDrawer,
   CodingSidebar,
 } from '../components/coding'
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { projectCodingReviewBundle } from '../harness/surfaces/codingReviewBundle'
-import type { HarnessSurfaceContext } from '../harness/types'
+import type { HarnessOperationRef, HarnessSurfaceContext } from '../harness/types'
 import { useCodingStore } from '../stores/coding'
 import { useWorkbenchPreferences } from '../composables/useWorkbenchPreferences'
 import { wireNaiveUI } from '../composables/useNaiveUI'
@@ -26,6 +27,9 @@ const route = useRoute()
 const router = useRouter()
 const showPlanPreview = ref(false)
 const filesDrawerVisible = ref(false)
+const runDrawerVisible = ref(false)
+const runDrawerId = ref('')
+const runDrawerError = ref('')
 const leftOpen = ref(false)
 const selectedHarnessRunId = ref('')
 const deepLinkError = ref('')
@@ -107,6 +111,17 @@ watch(() => store.sessionId, () => { selectedHarnessRunId.value = '' })
 
 function selectHarnessRun(runId: string) {
   if (runId) selectedHarnessRunId.value = runId
+}
+
+async function openHarnessOperation(operation: HarnessOperationRef) {
+  if (operation.kind !== 'coding_run' || !operation.id) return
+  runDrawerId.value = operation.id
+  runDrawerError.value = ''
+  store.selectedRun = null
+  runDrawerVisible.value = true
+  if (!await store.loadRunDetail(operation.id)) {
+    runDrawerError.value = '无法读取该子运行，运行记录可能尚未落盘'
+  }
 }
 
 const outputSignature = computed(() => JSON.stringify({
@@ -376,6 +391,7 @@ onBeforeUnmount(() => {
                 :deposit-busy="harnessDepositBusy"
                 @approve-deposit="store.approveMemoryProposal"
                 @reject-deposit="store.rejectMemoryProposal"
+                @open-operation="openHarnessOperation"
               />
             </section>
           </template>
@@ -438,6 +454,13 @@ onBeforeUnmount(() => {
     <CodingPlanPreview v-if="showPlanPreview" :plan-path="store.planPath" :topic="store.planTopic" :visible="true" @close="showPlanPreview = false" />
     <CodingFilesDrawer :visible="filesDrawerVisible" @close="filesDrawerVisible = false" />
     <CodingDiffDrawer :diff="store.currentDiffData" :visible="store.diffDrawerVisible" @close="store.closeDiffDrawer" />
+    <CodingRunDrawer
+      :visible="runDrawerVisible"
+      :run-id="runDrawerId"
+      :run="store.selectedRun"
+      :error="runDrawerError"
+      @close="runDrawerVisible = false"
+    />
   </div>
 </template>
 

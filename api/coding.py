@@ -24,6 +24,7 @@ from sage_harness import (
     McpToolSnapshot,
     SubagentLimits,
     SubagentToolConfig,
+    WebSearchPort,
     resolve_skill_allowed_tools,
 )
 from starlette.requests import HTTPConnection
@@ -238,6 +239,7 @@ async def _runtime_timeline_events(
     harness_checkpointer: Any | None = None,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_search_port: WebSearchPort | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -260,6 +262,7 @@ async def _runtime_timeline_events(
                 checkpointer=harness_checkpointer,
                 harness_config=harness_config,
                 mcp_catalog=mcp_catalog,
+                web_search_port=web_search_port,
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
@@ -371,6 +374,7 @@ async def _deerflow_timeline_events(
     checkpointer: Any,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_search_port: WebSearchPort | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -480,6 +484,7 @@ async def _deerflow_timeline_events(
                 ),
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
+                web_search_port=web_search_port,
                 graph_approvals=True,
             )
             if not is_resume:
@@ -610,6 +615,8 @@ def _timeline_kind(event_type: str) -> str:
     if event_type.startswith("memory_"):
         return "memory"
     if event_type.startswith("agent_"):
+        return "agent"
+    if event_type.startswith("subagent_"):
         return "agent"
     if event_type in {"run_finished", "turn_started", "turn_finished"}:
         return "run"
@@ -834,6 +841,9 @@ def _harness_capability_context(
             tools=tools,
             skills=skills,
             mcp_catalog=mcp_snapshot,
+            web_search_available=bool(
+                getattr(request.app.state, "coding_web_search_port", None)
+            ),
         ),
     )
 
@@ -1221,6 +1231,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 harness_checkpointer=getattr(websocket.app.state, "sage_harness_checkpointer", None),
                 harness_config=getattr(websocket.app.state, "coding_harness_config", None),
                 mcp_catalog=getattr(websocket.app.state, "coding_mcp_catalog", None),
+                web_search_port=getattr(
+                    websocket.app.state, "coding_web_search_port", None
+                ),
                 app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
             )
             try:
@@ -1457,6 +1470,7 @@ async def coding_approval_respond(
             ),
             harness_config=getattr(request.app.state, "coding_harness_config", None),
             mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
+            web_search_port=getattr(request.app.state, "coding_web_search_port", None),
             app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
             resume_value={
                 "approval_id": payload.approval_id,
