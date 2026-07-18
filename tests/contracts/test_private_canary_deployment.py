@@ -76,6 +76,14 @@ def test_web_image_cannot_disable_the_production_login_gate() -> None:
     assert "SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}" in compose
 
 
+def test_deployctl_uses_python_310_compatible_utc() -> None:
+    source = (ROOT / "scripts/deployctl.py").read_text(encoding="utf-8")
+
+    assert "from datetime import UTC" not in source
+    assert "_UTC = timezone.utc" in source
+    assert "datetime.now(_UTC)" in source
+
+
 def test_production_paths_can_live_on_persistent_volumes(
     tmp_path: Path,
     monkeypatch,

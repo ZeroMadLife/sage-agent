@@ -13,9 +13,11 @@ import sys
 import urllib.request
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol, TextIO
+
+_UTC = timezone.utc  # noqa: UP017 - Ubuntu 22.04 system Python is 3.10.
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_COMPOSE_FILE = ROOT / "infra/compose/private-canary.yml"
@@ -425,7 +427,7 @@ class DeployController:
                 )
             raise
 
-        deployed_at = datetime.now(UTC).isoformat()
+        deployed_at = datetime.now(_UTC).isoformat()
         self._write_state(
             {
                 "current": tag,
@@ -458,7 +460,7 @@ class DeployController:
             timeout=600,
         )
         self._gateway_health()
-        rolled_back_at = datetime.now(UTC).isoformat()
+        rolled_back_at = datetime.now(_UTC).isoformat()
         self._write_state(
             {
                 "current": tag,
@@ -476,7 +478,7 @@ class DeployController:
 
     def _backup_database(self, tag: str) -> Path:
         self.config.backup_root.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(_UTC).strftime("%Y%m%dT%H%M%SZ")
         target = self.config.backup_root / f"{timestamp}-{tag}.sql"
         target.touch(mode=0o600, exist_ok=False)
         with target.open("w", encoding="utf-8") as output:
