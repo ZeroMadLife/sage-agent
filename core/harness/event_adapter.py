@@ -154,6 +154,21 @@ class HarnessEventAdapter:
                         source_event_id=f"{source_event_id}:memory-proposal",
                     )
                 )
+            source_proposal_payload = _knowledge_source_proposal_payload(
+                tool_name=tool_name,
+                content=content,
+                session_id=self.session_id,
+                run_id=self.run_id,
+            )
+            if source_proposal_payload is not None:
+                events.append(
+                    self._event(
+                        "proposal",
+                        "pending",
+                        source_proposal_payload,
+                        source_event_id=f"{source_event_id}:knowledge-source-proposal",
+                    )
+                )
             return tuple(events)
         return ()
 
@@ -962,6 +977,44 @@ def _memory_proposal_payload(
         session_id=session_id,
         run_id=run_id,
     )
+
+
+def _knowledge_source_proposal_payload(
+    *,
+    tool_name: str,
+    content: object,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    if tool_name != "save_web_source" or not isinstance(content, str):
+        return None
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    proposal_id = _public_string(value.get("proposal_id"), 128)
+    content_hash = _public_string(value.get("content_hash"), 64)
+    revision = _public_non_negative_int(value.get("revision"))
+    if (
+        not proposal_id.startswith("ksprop_")
+        or len(content_hash) != 64
+        or revision < 1
+        or value.get("status") != "pending"
+    ):
+        return None
+    return {
+        "type": "knowledge_source_proposal_created",
+        "proposal_id": proposal_id,
+        "proposal_type": "knowledge_source",
+        "source_kind": "web",
+        "content_hash": content_hash,
+        "requires_user_confirmation": True,
+        "revision": revision,
+        "session_id": session_id,
+        "run_id": run_id,
+    }
 
 
 def _validated_memory_proposal_payload(

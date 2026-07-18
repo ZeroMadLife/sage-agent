@@ -245,6 +245,25 @@ def _web_fetch_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _web_save_source_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="web:save-source",
+        name="save_web_source",
+        origin="web",
+        kind="tool",
+        revision="web-source-proposal-v1",
+        description="Propose a fetched web artifact for user-reviewed Knowledge ingestion.",
+        surfaces=_ALL_SURFACES,
+        risk="medium",
+        permission="runtime",
+        deferred=True,
+        remote_content=False,
+        availability="available",
+        timeout_seconds=30.0,
+        tags=("web", "knowledge", "proposal"),
+    )
+
+
 def build_sage_capability_registry(
     *,
     tools: Mapping[str, object],
@@ -252,6 +271,7 @@ def build_sage_capability_registry(
     mcp_catalog: McpCatalogSnapshot | None = None,
     web_search_available: bool = False,
     web_fetch_available: bool = False,
+    web_source_proposal_available: bool = False,
 ) -> CapabilityRegistry:
     """Build a public catalog from current runtime-owned source metadata."""
     descriptors = [_tool_descriptor(name, tool) for name, tool in tools.items()]
@@ -263,6 +283,8 @@ def build_sage_capability_registry(
         descriptors.append(_web_search_descriptor())
     if web_fetch_available:
         descriptors.append(_web_fetch_descriptor())
+    if web_source_proposal_available:
+        descriptors.append(_web_save_source_descriptor())
     return CapabilityRegistry(descriptors)
 
 

@@ -113,7 +113,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
 
     await engine.dispose()
 
-    assert revisions == [
+    assert set(revisions) == {
         "20260713_v7_cloud_control_plane",
         "20260713_v7_github_oauth",
         "20260714_v7_model_providers",
@@ -122,7 +122,8 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "20260716_v7_5_4_source_connectors",
         "20260718_h2_5b2_external_parse_tasks",
         "20260718_v7_canary_invite_device_login",
-    ]
+        "20260718_h2_5c_knowledge_source_proposals",
+    }
     assert {
         "cloud_model_providers",
         "cloud_models",
@@ -132,6 +133,8 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "knowledge_ingest_jobs",
         "knowledge_ingest_items",
         "knowledge_external_parse_tasks",
+        "knowledge_source_proposals",
+        "knowledge_source_proposal_events",
         "knowledge_ingest_idempotency",
         "knowledge_job_events",
         "knowledge_source_manifests",

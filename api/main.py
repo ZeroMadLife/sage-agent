@@ -32,6 +32,9 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.usage_store import UsageStore
 from core.config.settings import get_settings
 from core.harness.capability_health_store import CapabilityHealthStore
+from core.harness.knowledge_source_proposal_adapter import (
+    CodingKnowledgeSourceProposalService,
+)
 from core.harness.mcp_adapter import (
     build_configured_mcp_catalog,
     build_configured_mcp_manager,
@@ -50,6 +53,7 @@ from core.knowledge.jobs import (
     RedisKnowledgeJobQueue,
 )
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
+from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
@@ -207,6 +211,7 @@ def create_app(
     knowledge_database_path: str | Path | None = None,
     knowledge_source_roots: Mapping[str, KnowledgeSourceRoot] | None = None,
     knowledge_job_service: KnowledgeJobService | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     knowledge_jobs_enabled: bool | None = None,
 ) -> FastAPI:
     """Create the Sage API app.
@@ -239,6 +244,9 @@ def create_app(
                 )
             )
         service = getattr(app.state, "knowledge_job_service", None)
+        proposal_service = getattr(app.state, "knowledge_source_proposal_service", None)
+        if isinstance(proposal_service, CodingKnowledgeSourceProposalService):
+            await proposal_service.prepare()
         if isinstance(service, KnowledgeJobService):
             await service.start()
         try:
@@ -483,6 +491,8 @@ def create_app(
     app.state.knowledge_store = None
     app.state.knowledge_job_service = knowledge_job_service
     app.state.knowledge_job_redis_client = None
+    app.state.knowledge_source_proposal_service = knowledge_source_proposal_service
+    owns_knowledge_job_service = False
     if configured_knowledge_root is not None:
         configured_knowledge_database = (
             Path(knowledge_database_path).expanduser()
@@ -512,6 +522,18 @@ def create_app(
                 RedisKnowledgeJobQueue(redis_client),
                 external_parser=build_external_parse_coordinator(settings),
             )
+            owns_knowledge_job_service = True
+    if (
+        app.state.knowledge_source_proposal_service is None
+        and app.state.knowledge_job_service is not None
+        and owns_knowledge_job_service
+        and app_env != "production"
+    ):
+        app.state.knowledge_source_proposal_service = CodingKnowledgeSourceProposalService(
+            KnowledgeSourceProposalRepository(AsyncSessionFactory),
+            app.state.knowledge_job_service,
+            coding_storage_root=app.state.coding_storage_root,
+        )
     app.state.coding_usage_store = UsageStore(resolved_workspace_root / ".sage" / "usage.sqlite3")
     app.state.harness_capability_health_store = CapabilityHealthStore(
         app.state.coding_storage_root / "capability-health.sqlite3"

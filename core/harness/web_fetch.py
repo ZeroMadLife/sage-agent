@@ -266,7 +266,19 @@ def build_web_fetch_tool(
                 {},
             )
         document = result.document
-        receipt = artifact_store.archive(tool_call_id, document.text)
+        receipt = artifact_store.archive(
+            tool_call_id,
+            document.text,
+            metadata={
+                "artifact_kind": "web_fetch",
+                "canonical_url": document.canonical_url,
+                "title": document.title,
+                "retrieved_at": document.retrieved_at,
+                "content_hash": document.content_hash,
+                "media_type": document.media_type,
+                "wire_bytes": document.wire_bytes,
+            },
+        )
         excerpt = fit_excerpt(
             document.text,
             token_budget=token_budget,

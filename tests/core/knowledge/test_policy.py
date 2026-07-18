@@ -85,6 +85,22 @@ def test_external_and_freeform_derived_content_remain_reviewable() -> None:
     assert spoofed.action == "draft"
 
 
+def test_confirmed_web_source_still_requires_wiki_review() -> None:
+    outcome = evaluate_knowledge_policy(
+        KnowledgePolicyInput(
+            change_kind="ingest",
+            source_kind="web",
+            target_path="wiki/sources/web-evidence.md",
+            visibility="private",
+            parser_id="sage.markdown",
+        )
+    )
+
+    assert outcome.risk_level == "medium"
+    assert outcome.action == "draft"
+    assert "human_review_required" in outcome.reason_codes
+
+
 def test_destructive_and_unsafe_changes_never_auto_apply() -> None:
     rollback = evaluate_knowledge_policy(
         KnowledgePolicyInput(

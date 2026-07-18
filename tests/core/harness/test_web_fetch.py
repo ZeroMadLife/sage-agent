@@ -175,6 +175,10 @@ def test_fetch_tool_archives_full_text_and_returns_bounded_timeline(tmp_path: Pa
     assert payload["used_tokens"] <= 256
     assert payload["excerpt"].endswith("...")
     assert store.read(payload["artifact_ref"]) == f"资料 {remote_text}"
+    metadata = store.read_metadata(payload["artifact_ref"])
+    assert metadata["artifact_kind"] == "web_fetch"
+    assert metadata["canonical_url"] == "https://example.com/docs"
+    assert metadata["content_hash"] == payload["content_hash"]
 
     events = HarnessEventAdapter(session_id="session-fetch", run_id="run-fetch").adapt(
         HarnessStreamItem(

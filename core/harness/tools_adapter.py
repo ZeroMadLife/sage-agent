@@ -10,9 +10,11 @@ from typing import Annotated, Any, cast
 
 from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
 from langgraph.types import interrupt
+from pydantic import BaseModel, Field
 from sage_harness import (
     DeferredToolSetup,
     KnowledgePort,
+    KnowledgeSourceProposalPort,
     McpCatalogSnapshot,
     MemoryPort,
     SandboxPort,
@@ -54,6 +56,14 @@ class CodingToolBundle:
     capability_count: int
 
 
+class SaveWebSourceArgs(BaseModel):
+    """Model-visible arguments for creating a review-only source proposal."""
+
+    artifact_ref: str = Field(min_length=1, max_length=1_000)
+    reason: str = Field(min_length=1, max_length=1_000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
 def build_deerflow_coding_tools(
     runtime: CodingRuntime,
     *,
@@ -66,6 +76,7 @@ def build_deerflow_coding_tools(
     web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
     artifact_store: ToolArtifactPort | None = None,
+    knowledge_source_proposal_port: KnowledgeSourceProposalPort | None = None,
     graph_approvals: bool = False,
 ) -> list[BaseTool]:
     """Build the established resident tool slice without deferred discovery."""
@@ -81,6 +92,7 @@ def build_deerflow_coding_tools(
             web_fetch_port=web_fetch_port,
             web_search_port=web_search_port,
             artifact_store=artifact_store,
+            knowledge_source_proposal_port=knowledge_source_proposal_port,
             graph_approvals=graph_approvals,
             enable_deferred_tools=False,
         ).tools
@@ -102,6 +114,7 @@ def build_deerflow_coding_tool_bundle(
     web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
     artifact_store: ToolArtifactPort | None = None,
+    knowledge_source_proposal_port: KnowledgeSourceProposalPort | None = None,
     graph_approvals: bool = False,
     enable_deferred_tools: bool = True,
 ) -> CodingToolBundle:
@@ -268,6 +281,61 @@ def build_deerflow_coding_tool_bundle(
     )
     if web_fetch_available and web_fetch_port is not None and artifact_store is not None:
         deferred_tools.append(build_web_fetch_tool(web_fetch_port, artifact_store))
+    web_source_proposal_available = bool(
+        knowledge_source_proposal_port is not None
+        and knowledge_source_proposal_port.available
+    )
+    if web_source_proposal_available and knowledge_source_proposal_port is not None:
+
+        async def save_web_source(
+            artifact_ref: str,
+            reason: str,
+            evidence_refs: list[str] | None = None,
+        ) -> str:
+            receipt = await knowledge_source_proposal_port.propose(
+                runtime.session_id,
+                run_id,
+                artifact_ref,
+                reason=reason,
+                evidence_refs=tuple(evidence_refs or ()),
+            )
+            return json.dumps(
+                {
+                    "proposal_id": receipt.proposal_id,
+                    "proposal_type": "knowledge_source",
+                    "status": receipt.status,
+                    "revision": receipt.revision,
+                    "source_kind": receipt.source_kind,
+                    "content_hash": receipt.content_hash,
+                    "requires_user_confirmation": receipt.status == "pending",
+                    "instruction": (
+                        "The source is not in durable Knowledge yet. The user must approve "
+                        "this proposal through the review API."
+                    ),
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        deferred_tools.append(
+            StructuredTool.from_function(
+                coroutine=save_web_source,
+                name="save_web_source",
+                description=(
+                    "Create a pending Knowledge source proposal from an artifact_ref returned by "
+                    "fetch_web. Use only when the user explicitly asks to save that exact source. "
+                    "This tool cannot approve or write Wiki content."
+                ),
+                args_schema=SaveWebSourceArgs,
+                metadata={
+                    "capability_id": "web:save-source",
+                    "category": "knowledge",
+                    "remote_content": False,
+                    "risky": False,
+                    "sage_source": "knowledge_source_proposal_port",
+                },
+            )
+        )
 
     deferred_tools.extend(_with_mcp_capability_ids(extra_deferred_tools))
 
@@ -277,6 +345,7 @@ def build_deerflow_coding_tool_bundle(
         mcp_catalog=mcp_catalog,
         web_search_available=web_search_available,
         web_fetch_available=web_fetch_available,
+        web_source_proposal_available=web_source_proposal_available,
     )
 
     graph_tools, deferred_setup = assemble_deferred_tools(

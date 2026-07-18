@@ -164,7 +164,7 @@ class KnowledgeSourceRootSummary(BaseModel):
     """Browser-safe configured source root without a server filesystem path."""
 
     root_id: str
-    kind: Literal["obsidian", "markdown", "github", "feishu"]
+    kind: Literal["obsidian", "markdown", "github", "feishu", "web"]
     label: str
 
 
@@ -1273,6 +1273,58 @@ class CodingMemoryProposalDetail(BaseModel):
 class CodingMemoryProposalTransitionRequest(BaseModel):
     """Revision guard for an ID-addressed proposal transition."""
 
+    expected_revision: int = Field(ge=0)
+
+
+class CodingKnowledgeSourceProposal(BaseModel):
+    """Browser-safe review projection for one web evidence proposal."""
+
+    proposal_id: str
+    thread_id: str
+    run_id: str
+    artifact_ref: str
+    source_kind: str
+    canonical_url: str
+    title: str
+    media_type: str
+    retrieved_at: str
+    content_hash: str
+    reason: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    status: Literal["pending", "applying", "approved", "rejected"]
+    revision: int = Field(ge=0)
+    target_root_id: str
+    target_relative_path: str = ""
+    job_id: str | None = None
+    last_error: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class CodingKnowledgeSourceProposalEvent(BaseModel):
+    """Append-only safe lifecycle event for one source proposal."""
+
+    event_id: str
+    proposal_id: str
+    sequence: int = Field(ge=1)
+    event_type: str
+    revision: int = Field(ge=0)
+    detail: dict[str, str] = Field(default_factory=dict)
+    created_at: str
+
+
+class CodingKnowledgeSourceProposalsResponse(BaseModel):
+    proposals: list[CodingKnowledgeSourceProposal]
+
+
+class CodingKnowledgeSourceProposalDetail(BaseModel):
+    proposal: CodingKnowledgeSourceProposal
+    events: list[CodingKnowledgeSourceProposalEvent]
+
+
+class CodingKnowledgeSourceProposalTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 

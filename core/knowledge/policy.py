@@ -45,6 +45,12 @@ def evaluate_knowledge_policy(value: KnowledgePolicyInput) -> KnowledgePolicyOut
             return KnowledgePolicyOutcome("blocked", "block", ("target_outside_source_wiki",))
         if value.parser_id is None:
             return KnowledgePolicyOutcome("blocked", "block", ("missing_parse_evidence",))
+        if value.source_kind == "web":
+            return KnowledgePolicyOutcome(
+                "medium",
+                "draft",
+                ("external_web_source", "human_review_required"),
+            )
         if is_trusted_local_parser(value.parser_id):
             return KnowledgePolicyOutcome(
                 "low",

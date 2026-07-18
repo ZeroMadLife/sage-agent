@@ -62,6 +62,11 @@ from api.schemas import (
     CodingFileEntry,
     CodingFilesResponse,
     CodingGitStatusResponse,
+    CodingKnowledgeSourceProposal,
+    CodingKnowledgeSourceProposalDetail,
+    CodingKnowledgeSourceProposalEvent,
+    CodingKnowledgeSourceProposalsResponse,
+    CodingKnowledgeSourceProposalTransitionRequest,
     CodingMcpServer,
     CodingMcpServersResponse,
     CodingMemoryCandidate,
@@ -127,12 +132,22 @@ from core.harness.context_adapter import (
     context_status_event,
 )
 from core.harness.knowledge_adapter import CodingKnowledgePort
+from core.harness.knowledge_source_proposal_adapter import (
+    CodingKnowledgeSourceProposalPort,
+    CodingKnowledgeSourceProposalService,
+)
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.sandbox_factory import create_coding_sandbox
 from core.harness.subagent_adapter import CodingSubagentExecutor
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
+from core.knowledge.source_proposals import (
+    KnowledgeSourceProposal,
+    KnowledgeSourceProposalConflictError,
+    KnowledgeSourceProposalEvent,
+    KnowledgeSourceProposalNotFoundError,
+)
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 
@@ -262,6 +277,7 @@ async def _runtime_timeline_events(
     mcp_catalog: McpCatalogPort | None = None,
     web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -286,6 +302,7 @@ async def _runtime_timeline_events(
                 mcp_catalog=mcp_catalog,
                 web_fetch_port=web_fetch_port,
                 web_search_port=web_search_port,
+                knowledge_source_proposal_service=knowledge_source_proposal_service,
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
@@ -399,6 +416,7 @@ async def _deerflow_timeline_events(
     mcp_catalog: McpCatalogPort | None = None,
     web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -516,6 +534,11 @@ async def _deerflow_timeline_events(
                 web_fetch_port=web_fetch_port,
                 web_search_port=web_search_port,
                 artifact_store=artifact_store,
+                knowledge_source_proposal_port=CodingKnowledgeSourceProposalPort(
+                    runtime,
+                    run_id,
+                    knowledge_source_proposal_service,
+                ),
                 graph_approvals=True,
             )
             if not is_resume:
@@ -873,6 +896,10 @@ def _harness_capability_context(
             ),
             web_fetch_available=_port_available(
                 getattr(request.app.state, "coding_web_fetch_port", None)
+            ),
+            web_source_proposal_available=isinstance(
+                getattr(request.app.state, "knowledge_source_proposal_service", None),
+                CodingKnowledgeSourceProposalService,
             ),
         ),
     )
@@ -1267,6 +1294,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 web_search_port=getattr(
                     websocket.app.state, "coding_web_search_port", None
                 ),
+                knowledge_source_proposal_service=getattr(
+                    websocket.app.state, "knowledge_source_proposal_service", None
+                ),
                 app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
             )
             try:
@@ -1505,6 +1535,9 @@ async def coding_approval_respond(
             mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
             web_fetch_port=getattr(request.app.state, "coding_web_fetch_port", None),
             web_search_port=getattr(request.app.state, "coding_web_search_port", None),
+            knowledge_source_proposal_service=getattr(
+                request.app.state, "knowledge_source_proposal_service", None
+            ),
             app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
             resume_value={
                 "approval_id": payload.approval_id,
@@ -1714,6 +1747,191 @@ async def reject_memory_proposal(
     return _transition_memory_proposal(
         request, session_id, payload.proposal_id, payload.expected_revision, "rejected"
     )
+
+
+def _source_proposal_service(request: Request) -> CodingKnowledgeSourceProposalService:
+    service = getattr(request.app.state, "knowledge_source_proposal_service", None)
+    if not isinstance(service, CodingKnowledgeSourceProposalService):
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge source proposal service is unavailable",
+        )
+    return service
+
+
+def _source_proposal_scope(
+    request: Request,
+    session_id: str,
+) -> tuple[CodingKnowledgeSourceProposalService, str, str]:
+    owner_id, _, _ = _harness_capability_context(request, session_id)
+    service = _source_proposal_service(request)
+    return service, owner_id, service.job_service.workspace_id
+
+
+def _source_proposal_response(
+    proposal: KnowledgeSourceProposal,
+) -> CodingKnowledgeSourceProposal:
+    return CodingKnowledgeSourceProposal(
+        proposal_id=proposal.proposal_id,
+        thread_id=proposal.thread_id,
+        run_id=proposal.run_id,
+        artifact_ref=proposal.artifact_ref,
+        source_kind=proposal.source_kind,
+        canonical_url=proposal.canonical_url,
+        title=proposal.title,
+        media_type=proposal.media_type,
+        retrieved_at=proposal.retrieved_at,
+        content_hash=proposal.content_hash,
+        reason=proposal.reason,
+        evidence_refs=list(proposal.evidence_refs),
+        status=proposal.status,
+        revision=proposal.revision,
+        target_root_id=proposal.target_root_id,
+        target_relative_path=proposal.target_relative_path,
+        job_id=proposal.job_id,
+        last_error=proposal.last_error,
+        decided_by=proposal.decided_by,
+        decided_at=proposal.decided_at,
+        created_at=proposal.created_at,
+        updated_at=proposal.updated_at,
+    )
+
+
+def _source_proposal_event_response(
+    event: KnowledgeSourceProposalEvent,
+) -> CodingKnowledgeSourceProposalEvent:
+    return CodingKnowledgeSourceProposalEvent(
+        event_id=event.event_id,
+        proposal_id=event.proposal_id,
+        sequence=event.sequence,
+        event_type=event.event_type,
+        revision=event.revision,
+        detail=event.detail,
+        created_at=event.created_at,
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals",
+    response_model=CodingKnowledgeSourceProposalsResponse,
+)
+async def list_knowledge_source_proposals(
+    session_id: str,
+    request: Request,
+    response: Response,
+    status: Literal["pending", "applying", "approved", "rejected"] | None = None,
+) -> CodingKnowledgeSourceProposalsResponse:
+    """List source proposals scoped to the authorized Thread owner."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    proposals = await service.repository.list(
+        workspace_id=workspace_id,
+        owner_id=owner_id,
+        thread_id=session_id,
+        status=status,
+    )
+    return CodingKnowledgeSourceProposalsResponse(
+        proposals=[_source_proposal_response(item) for item in proposals]
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}",
+    response_model=CodingKnowledgeSourceProposalDetail,
+)
+async def get_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposalDetail:
+    """Return one source proposal and its append-only review trail."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.repository.get(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+        events = await service.repository.events(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    return CodingKnowledgeSourceProposalDetail(
+        proposal=_source_proposal_response(proposal),
+        events=[_source_proposal_event_response(item) for item in events],
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/approve",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def approve_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Approve one immutable source snapshot and schedule its durable ingest job."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.approve(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Source proposal artifact is no longer valid; refresh before retrying",
+        ) from exc
+    return _source_proposal_response(proposal)
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/reject",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def reject_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Reject one pending proposal with an optimistic revision guard."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.reject(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _source_proposal_response(proposal)
 
 
 @router.get("/api/v1/coding/{session_id}/runs", response_model=CodingRunsResponse)

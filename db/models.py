@@ -486,6 +486,82 @@ class KnowledgeExternalParseRecord(Base):
     )
 
 
+class KnowledgeSourceProposalRecord(Base):
+    """User-reviewable bridge from one private run artifact to Knowledge."""
+
+    __tablename__ = "knowledge_source_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "owner_id",
+            "thread_id",
+            "run_id",
+            "artifact_ref",
+            "content_hash",
+            name="knowledge_source_proposal_artifact_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_workspaces.id", ondelete="CASCADE"), index=True
+    )
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    artifact_ref: Mapped[str] = mapped_column(String(1000))
+    source_kind: Mapped[str] = mapped_column(String(32), default="web")
+    canonical_url: Mapped[str] = mapped_column(String(2000))
+    title: Mapped[str] = mapped_column(String(300))
+    media_type: Mapped[str] = mapped_column(String(120))
+    retrieved_at: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    target_root_id: Mapped[str] = mapped_column(String(64), default="web-evidence")
+    target_relative_path: Mapped[str] = mapped_column(String(1024), default="")
+    job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_ingest_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KnowledgeSourceProposalEventRecord(Base):
+    """Append-only lifecycle evidence for one Knowledge source proposal."""
+
+    __tablename__ = "knowledge_source_proposal_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id",
+            "sequence",
+            name="knowledge_source_proposal_event_sequence_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("knowledge_source_proposals.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class KnowledgeIdempotencyRecord(Base):
     """Cross-job content-revision claim used to prevent duplicate processing."""
 

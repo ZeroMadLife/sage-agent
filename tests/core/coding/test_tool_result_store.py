@@ -75,6 +75,60 @@ def test_artifact_reference_is_bound_to_its_session_and_run(tmp_path):
         second.read(archived.artifact_ref)
 
 
+def test_artifact_metadata_is_bounded_private_and_scope_bound(tmp_path):
+    first = ToolResultStore(tmp_path, "s1", "run_1")
+    second = ToolResultStore(tmp_path, "s2", "run_2")
+    archived = first.archive(
+        "call_1",
+        "verified evidence",
+        metadata={"artifact_kind": "web_fetch", "canonical_url": "https://example.com/"},
+    )
+    metadata_path = first.root / "call_1.metadata.json"
+
+    assert first.read_metadata(archived.artifact_ref) == {
+        "artifact_kind": "web_fetch",
+        "canonical_url": "https://example.com/",
+    }
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+    with pytest.raises(ValueError, match="scope"):
+        second.read_metadata(archived.artifact_ref)
+
+
+def test_archive_rejects_oversized_metadata_before_replacing_content(tmp_path):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    first = store.archive("call_1", "original")
+
+    with pytest.raises(ValueError, match="size limit"):
+        store.archive("call_1", "replacement", metadata={"value": "x" * 20_000})
+
+    assert store.read(first.artifact_ref) == "original"
+
+
+def test_archive_without_metadata_removes_stale_sidecar(tmp_path):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    archived = store.archive(
+        "call_1",
+        "web evidence",
+        metadata={"artifact_kind": "web_fetch"},
+    )
+    store.archive("call_1", "ordinary result")
+
+    assert store.read(archived.artifact_ref) == "ordinary result"
+    with pytest.raises(FileNotFoundError):
+        store.read_metadata(archived.artifact_ref)
+
+
+def test_metadata_reader_rejects_symlink_without_reading_outside(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret":"outside"}', encoding="utf-8")
+    store = ToolResultStore(tmp_path / "trusted", "s1", "run_1")
+    archived = store.archive("call_1", "evidence")
+    (store.root / "call_1.metadata.json").symlink_to(outside)
+
+    with pytest.raises(OSError):
+        store.read_metadata(archived.artifact_ref)
+
+
 @pytest.mark.parametrize(
     ("session_id", "run_id"),
     [

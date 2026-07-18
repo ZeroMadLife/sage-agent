@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import secrets
 import stat
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,15 +45,34 @@ class ToolResultStore:
         self.root = root.joinpath(*self._components)
         _reject_existing_symlinks(self._root, self._components)
 
-    def archive(self, call_id: str, content: str) -> ArchivedToolResult:
+    def archive(
+        self,
+        call_id: str,
+        content: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ArchivedToolResult:
         """Atomically persist ``content``, then return its transcript preview."""
         _validate_scope_id(call_id, "call")
         artifact_name = f"{call_id}.txt"
         artifact_ref = self._artifact_ref(call_id)
+        metadata_content = _metadata_json(metadata) if metadata is not None else None
+        metadata_name = f"{call_id}.metadata.json"
         directory_fd = _open_directory(self._root, self._components)
         try:
             _reject_symlink_file(directory_fd, artifact_name)
+            _reject_symlink_file(directory_fd, metadata_name)
+            if metadata_content is None:
+                with suppress(FileNotFoundError):
+                    os.unlink(metadata_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
             self._replace_artifact(directory_fd, artifact_name, content)
+            if metadata_content is not None:
+                self._replace_artifact(
+                    directory_fd,
+                    metadata_name,
+                    metadata_content,
+                )
         finally:
             os.close(directory_fd)
 
@@ -78,6 +99,36 @@ class ToolResultStore:
             while chunk := os.read(file_fd, 64 * 1024):
                 chunks.append(chunk)
             return b"".join(chunks).decode("utf-8")
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+            os.close(directory_fd)
+
+    def read_metadata(self, artifact_ref: str) -> dict[str, object]:
+        """Read bounded server-only metadata bound to this artifact scope."""
+
+        artifact_name = self._artifact_name(artifact_ref)
+        metadata_name = f"{artifact_name[:-4]}.metadata.json"
+        directory_fd = _open_directory(self._root, self._components, create=False)
+        file_fd = -1
+        try:
+            file_fd = os.open(metadata_name, os.O_RDONLY | _FILE_FLAGS, dir_fd=directory_fd)
+            metadata = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size > 16 * 1024
+            ):
+                raise ValueError("artifact metadata is not a bounded private regular file")
+            payload = bytearray()
+            while chunk := os.read(file_fd, 16 * 1024):
+                payload.extend(chunk)
+                if len(payload) > 16 * 1024:
+                    raise ValueError("artifact metadata exceeds its size limit")
+            value = json.loads(payload.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("artifact metadata must be an object")
+            return {str(key): item for key, item in value.items()}
         finally:
             if file_fd >= 0:
                 os.close(file_fd)
@@ -158,6 +209,18 @@ def _bounded_preview(content: str, artifact_ref: str) -> str:
         tail_chars = budget - head_chars
         selected = selected[:head_chars] + selected[-tail_chars:]
     return selected + marker
+
+
+def _metadata_json(metadata: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        {str(key): value for key, value in metadata.items()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(encoded.encode("utf-8")) > 16 * 1024:
+        raise ValueError("artifact metadata exceeds its size limit")
+    return encoded
 
 
 def _trusted_root(root: Path) -> Path:

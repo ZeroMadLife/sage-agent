@@ -158,6 +158,22 @@ class KnowledgeJobService:
         await self.enqueue_ready()
         return job
 
+    async def register_source_root(self, source: KnowledgeSourceRoot) -> KnowledgeSourceRoot:
+        """Register one server-owned root and bind its connector durably."""
+
+        registered = self.store.register_source_root(source)
+        adapter = self.source_adapters.resolve(registered)
+        self._source_ids[registered.root_id] = await self.repository.ensure_workspace(
+            self.workspace_id,
+            self.store.workspace_root.name or "knowledge",
+            root_id=registered.root_id,
+            source_kind=registered.kind,
+            source_label=registered.label,
+            adapter_id=adapter.adapter_id,
+            adapter_version=adapter.adapter_version,
+        )
+        return registered
+
     async def preview_sync(
         self, source_root_id: str, relative_directory: str = "."
     ) -> KnowledgeSyncPlan:

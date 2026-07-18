@@ -192,6 +192,20 @@ class MemoryProposalReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeSourceProposalReceipt:
+    """Host-owned receipt for an external source awaiting user confirmation."""
+
+    proposal_id: str
+    thread_id: str
+    run_id: str
+    status: Literal["pending", "approved", "rejected"]
+    revision: int
+    source_kind: str
+    title: str
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class McpServerReference:
     """Sanitized MCP server metadata safe to expose to the agent runtime."""
 
@@ -224,7 +238,13 @@ class ToolExecutionPort(Protocol):
 class ToolArtifactPort(Protocol):
     """Archive full tool text outside graph state before checkpointing."""
 
-    def archive(self, call_id: str, content: str) -> ToolArtifactReceipt: ...
+    def archive(
+        self,
+        call_id: str,
+        content: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ToolArtifactReceipt: ...
 
 
 class ApprovalPort(Protocol):
@@ -280,6 +300,23 @@ class WebFetchPort(Protocol):
     def available(self) -> bool: ...
 
     async def fetch(self, url: str) -> WebFetchResult: ...
+
+
+class KnowledgeSourceProposalPort(Protocol):
+    """Propose, but never approve, one external source for durable Knowledge."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def propose(
+        self,
+        thread_id: str,
+        run_id: str,
+        artifact_ref: str,
+        *,
+        reason: str,
+        evidence_refs: Sequence[str] = (),
+    ) -> KnowledgeSourceProposalReceipt: ...
 
 
 class MemoryPort(Protocol):
