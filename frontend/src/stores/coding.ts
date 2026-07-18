@@ -65,12 +65,13 @@ import type {
 } from '../types/api'
 import { applyCodingEvent } from './codingEvents'
 import type { ChatMessage, DiffInfo, PlanReviewState } from './codingEvents'
-import { CodingStream } from './codingStream'
+import { CodingStream, type CodingConnectionState } from './codingStream'
 import {
   createTimelineProjection,
   mergeTimelineEvents,
   type TimelineTurn,
 } from './codingTimeline'
+import type { HarnessSurfaceContext } from '../harness/types'
 
 export type { ChatMessage, ToolActivity } from './codingEvents'
 
@@ -103,6 +104,7 @@ function clearStoredNewSessionRuntimeProfile() {
 
 export type CodingSessionUiState = {
   workspaceRoot: string
+  workspaceId: string
   permissionMode: PermissionMode
   runtimeProfile: CodingRuntimeProfile
   timeline: CodingTimelineEvent[]
@@ -114,6 +116,7 @@ export type CodingSessionUiState = {
   timelineInitialized: boolean
   timelineLoading: boolean
   activeRun: CodingActiveRun | null
+  connectionState: CodingConnectionState
   stateSequence: number
   currentModelId: string
   reasoningMode: 'off' | 'low' | 'medium' | 'high'
@@ -153,6 +156,7 @@ export type CodingSessionUiState = {
 function createSessionUiState(): CodingSessionUiState {
   return {
     workspaceRoot: '',
+    workspaceId: '',
     permissionMode: 'default',
     runtimeProfile: 'legacy',
     timeline: [],
@@ -164,6 +168,7 @@ function createSessionUiState(): CodingSessionUiState {
     timelineInitialized: false,
     timelineLoading: false,
     activeRun: null,
+    connectionState: 'idle',
     stateSequence: 0,
     currentModelId: '',
     reasoningMode: 'off',
@@ -286,6 +291,7 @@ export const useCodingStore = defineStore('coding', () => {
     })
   }
   const workspaceRoot = sessionField('workspaceRoot')
+  const workspaceId = sessionField('workspaceId')
   const messages = sessionField('messages')
   const optimisticMessage = sessionField('optimisticMessage')
   const legacyMessages = sessionField('legacyMessages')
@@ -327,6 +333,7 @@ export const useCodingStore = defineStore('coding', () => {
   const timelineInitialized = sessionField('timelineInitialized')
   const timelineLoading = sessionField('timelineLoading')
   const activeRun = sessionField('activeRun')
+  const connectionState = sessionField('connectionState')
   const scrollAnchor = sessionField('scrollAnchor')
 
   const skills = ref<CodingSkillSummary[]>([])
@@ -367,7 +374,10 @@ export const useCodingStore = defineStore('coding', () => {
   const breadcrumb = computed(() => fileTreePath.value.split('/').filter(Boolean))
 
   let stream: CodingStream | null = null
-  const pendingInitialPrompts = new Map<string, string>()
+  const pendingInitialPrompts = new Map<string, {
+    content: string
+    surfaceContext?: HarnessSurfaceContext | null
+  }>()
   let approvalPollTimer: number | null = null
   let fileTreeGeneration = 0
   let runsRequestGeneration = 0
@@ -755,6 +765,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
     await Promise.all([
@@ -784,7 +795,12 @@ export const useCodingStore = defineStore('coding', () => {
       onOpen: (openedSessionId) => {
         if (openedSessionId !== sessionId.value) return
         const prompt = pendingInitialPrompts.get(openedSessionId)
-        if (prompt && sendMessage(prompt)) pendingInitialPrompts.delete(openedSessionId)
+        if (prompt && sendMessage(prompt.content, prompt.surfaceContext)) {
+          pendingInitialPrompts.delete(openedSessionId)
+        }
+      },
+      onConnectionState: (openedSessionId, state) => {
+        ensureSession(openedSessionId).connectionState = state
       },
       onError: (message) => {
         ensureSession(targetSessionId).errorMessage = message
@@ -849,9 +865,12 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
-  function sendMessage(content: string): boolean {
+  function sendMessage(
+    content: string,
+    surfaceContext?: HarnessSurfaceContext | null,
+  ): boolean {
     if (!content.trim() || !stream) return false
-    const sent = stream.send(content)
+    const sent = stream.send(content, surfaceContext)
     if (!sent) return false
     const optimistic = {
       id: `optimistic:${sessionId.value}:${Date.now()}`,
@@ -1332,6 +1351,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
     runs.value = []
@@ -1352,7 +1372,10 @@ export const useCodingStore = defineStore('coding', () => {
     connectSocket()
   }
 
-  async function createNewSession(initialPrompt = ''): Promise<string> {
+  async function createNewSession(
+    initialPrompt = '',
+    initialSurfaceContext?: HarnessSurfaceContext | null,
+  ): Promise<string> {
     const selection = ++selectionGeneration
     await bootstrapModelCatalog()
     if (selection !== selectionGeneration) return ''
@@ -1366,6 +1389,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
     runs.value = []
@@ -1383,7 +1407,12 @@ export const useCodingStore = defineStore('coding', () => {
       loadContext(),
     ])
     if (selection !== selectionGeneration || sessionId.value !== session.session_id) return ''
-    if (initialPrompt) pendingInitialPrompts.set(session.session_id, initialPrompt)
+    if (initialPrompt) {
+      pendingInitialPrompts.set(session.session_id, {
+        content: initialPrompt,
+        surfaceContext: initialSurfaceContext,
+      })
+    }
     connectSocket()
     return session.session_id
   }
@@ -1392,10 +1421,13 @@ export const useCodingStore = defineStore('coding', () => {
     return createNewSession()
   }
 
-  async function startSessionWithPrompt(content: string): Promise<string> {
+  async function startSessionWithPrompt(
+    content: string,
+    surfaceContext?: HarnessSurfaceContext | null,
+  ): Promise<string> {
     const prompt = content.trim()
     if (!prompt) throw new Error('请输入内容后再开始对话')
-    return createNewSession(prompt)
+    return createNewSession(prompt, surfaceContext)
   }
 
   async function restoreCurrentSession() {
@@ -1627,6 +1659,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId,
     sessionsById,
     workspaceRoot,
+    workspaceId,
     messages,
     optimisticMessage,
     legacyMessages,
@@ -1640,6 +1673,7 @@ export const useCodingStore = defineStore('coding', () => {
     timelineInitialized,
     timelineLoading,
     activeRun,
+    connectionState,
     scrollAnchor,
     isThinking,
     errorMessage,

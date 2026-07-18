@@ -51,8 +51,11 @@ import {
   undoKnowledgeAutoApply,
 } from '../api/knowledge'
 import { KnowledgeGraphCanvas, KnowledgeInspector } from '../components/knowledge'
-import { ChatHarnessLayout, HarnessContextSummary } from '../components/harness'
+import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
+import { CodingComposer, CodingPlanApproval } from '../components/coding'
+import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { knowledgeSurfaceAdapter } from '../harness/surfaces/knowledge'
+import { useHarnessSession } from '../harness/useHarnessSession'
 import type {
   KnowledgeGoalAlignment,
   KnowledgeGraph,
@@ -112,6 +115,11 @@ const busy = ref<Record<string, boolean>>({})
 const importOpen = ref(false)
 const libraryOpen = ref(false)
 const harnessLayout = ref<ChatHarnessLayoutHandle | null>(null)
+const harnessSession = useHarnessSession()
+const chat = harnessSession.store
+const selectedHarnessRunId = ref('')
+const harnessSessionError = ref('')
+const harnessSessionStarting = ref(false)
 const viewportWidth = ref(window.innerWidth)
 const jobsAvailable = ref(true)
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -155,10 +163,60 @@ const knowledgeContext = computed(() => knowledgeSurfaceAdapter.buildContext({
   selectedPage: selectedPage.value,
   activeJobs: activeJobs.value,
 }))
-const operationLabels = computed(() => Object.fromEntries(activeJobs.value.map((job) => [
-  job.job_id,
-  `${job.source_label} / ${job.relative_directory}`,
-])))
+const harnessProjection = computed(() => projectLatestCodingHarness(
+  chat.visibleTimeline,
+  selectedHarnessRunId.value || chat.activeRun?.run_id || '',
+))
+const chatOutputSignature = computed(() => JSON.stringify({
+  session: chat.sessionId,
+  connection: chat.connectionState,
+  thinking: chat.isThinking,
+  phase: chat.thinkingPhase,
+  approval: chat.pendingApproval?.approval_id ?? '',
+  messages: chat.messages.map((message) => ({
+    id: message.id,
+    run: message.run_id,
+    role: message.role,
+    content: message.content,
+    thinking: message.isThinking,
+    tools: message.tools?.map((tool) => [tool.tool, tool.status, tool.content.length]),
+  })),
+  optimistic: chat.optimisticMessage?.id ?? '',
+}))
+const knowledgeChatError = computed(() => chat.errorMessage || harnessSessionError.value)
+watch(() => chat.activeRun?.run_id || '', (runId, previousRunId) => {
+  if (runId && runId !== previousRunId) selectedHarnessRunId.value = runId
+})
+watch(() => chat.sessionId, () => { selectedHarnessRunId.value = '' })
+
+function selectHarnessRun(runId: string) {
+  if (runId) selectedHarnessRunId.value = runId
+}
+
+async function connectHarnessSession() {
+  harnessSessionError.value = ''
+  try {
+    await chat.bootstrapModelCatalog()
+    await harnessSession.connectExistingSession()
+  } catch (reason) {
+    harnessSessionError.value = `无法恢复对话：${explain(reason)}`
+  }
+}
+
+async function createHarnessSession() {
+  if (harnessSessionStarting.value) return
+  harnessSessionStarting.value = true
+  harnessSessionError.value = ''
+  try {
+    await chat.bootstrapModelCatalog()
+    await harnessSession.createSession()
+  } catch (reason) {
+    harnessSessionError.value = `无法新建对话：${explain(reason)}`
+  } finally {
+    harnessSessionStarting.value = false
+  }
+}
+
 const attentionCount = computed(() => proposals.value.length + insights.value.filter(
   (item) => item.severity === 'high',
 ).length)
@@ -517,12 +575,14 @@ onMounted(() => {
     migrationPlan.value = value
   }).catch(() => undefined)
   void refreshWorkspace()
+  void connectHarnessSession()
   pollTimer = setInterval(() => void refreshJobs(), 3000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewport)
   if (pollTimer) clearInterval(pollTimer)
+  harnessSession.detach()
 })
 </script>
 
@@ -815,7 +875,66 @@ onBeforeUnmount(() => {
         </template>
 
         <template #chat>
-          <HarnessContextSummary :context="knowledgeContext" :operation-labels="operationLabels" />
+          <ChatDock
+            :projection="harnessProjection"
+            :connection-state="chat.connectionState"
+            :context="knowledgeContext"
+            :output-signature="chatOutputSignature"
+            :message-count="chat.messages.length"
+            :session-key="chat.sessionId"
+            :timeline-ready="chat.timelineInitialized"
+            :scroll-anchor="chat.scrollAnchor"
+            :has-more="chat.timelineHasMore"
+            :loading="chat.timelineLoading"
+            :is-empty="chat.messages.length === 0"
+            :load-older="chat.loadOlderTimeline"
+            compact-status
+            empty-title="围绕知识图谱继续学习"
+            empty-description="选择节点后提问，本轮会冻结 graph、page 与 revision。"
+            @anchor-change="chat.setScrollAnchor"
+          >
+            <ChatConversation
+              :legacy-messages="chat.legacyMessages"
+              :messages="chat.messages"
+              :turns="chat.turns"
+              :optimistic-message="chat.optimisticMessage"
+              :active-run-id="chat.activeRun?.run_id || ''"
+              :selected-run-id="harnessProjection.runId"
+              :pending-approval="chat.pendingApproval"
+              :approval-busy="chat.approvalBusy"
+              :is-thinking="chat.isThinking"
+              :thinking-phase="chat.thinkingPhase"
+              :runs="chat.runs"
+              :diff-info-by-run="chat.diffInfoByRun"
+              :error-message="knowledgeChatError"
+              @select-run="selectHarnessRun"
+              @respond-approval="chat.respondApproval"
+              @open-run-diff="chat.openRunDiff"
+            />
+            <template #empty>
+              <div class="knowledge-chat-empty">
+                <template v-if="chat.sessionId">
+                  <strong>围绕知识图谱继续学习</strong>
+                  <span>选择节点后提问，本轮会冻结 graph、page 与 revision。</span>
+                </template>
+                <template v-else>
+                  <strong>还没有可复用的对话</strong>
+                  <span>显式新建后，Knowledge 会继续使用同一套 Chat Harness。</span>
+                  <button type="button" :disabled="harnessSessionStarting" @click="createHarnessSession">
+                    {{ harnessSessionStarting ? '正在创建...' : '新建对话' }}
+                  </button>
+                </template>
+              </div>
+            </template>
+            <template #composer>
+              <CodingPlanApproval v-if="chat.planReview" />
+              <CodingComposer
+                density="compact"
+                :surface-context="knowledgeContext"
+                placeholder="围绕已选节点提问，或提出练习与沉淀任务"
+              />
+            </template>
+          </ChatDock>
         </template>
 
         <template #details>
@@ -916,6 +1035,7 @@ onBeforeUnmount(() => {
 .workspace-footer { display:flex; align-items:center; gap:18px; min-width:0; padding:0 14px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface); font-size:11px; }.workspace-footer span { display:flex; align-items:center; gap:5px; white-space:nowrap; }.workspace-footer i { width:7px; height:7px; border-radius:50%; background:var(--sage-success); }.workspace-footer i.active { background:var(--sage-review); }.footer-spacer { flex:1; }
 .panel-backdrop,.modal-backdrop { position:fixed; z-index:54; inset:0; background:var(--sage-overlay); }.modal-backdrop { z-index:80; display:grid; place-items:center; padding:20px; }.import-dialog { width:min(680px,100%); max-height:min(720px,calc(100dvh - 40px)); overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); }.import-dialog>header,.import-dialog>header>div { display:flex; align-items:flex-start; }.import-dialog>header { justify-content:space-between; gap:14px; padding:18px 20px; border-bottom:1px solid var(--sage-border); }.import-dialog>header>div { gap:11px; }.import-dialog>header>div>span { display:grid; place-items:center; width:34px; height:34px; border-radius:var(--sage-radius); color:var(--sage-brand-strong); background:var(--sage-brand-bg); }.import-dialog h2 { margin:0; font-size:18px; }.import-dialog header p { margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.field-label { display:grid; gap:6px; margin:16px 20px; color:var(--sage-text-secondary); font-size:var(--sage-font-xs); }.field-label select,.import-options input { min-width:0; height:38px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); padding:0 10px; outline:0; color:var(--sage-text); background:var(--sage-surface); }.field-label select:focus,.import-options input:focus { border-color:var(--sage-source); }.import-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:0 20px 20px; }.import-options form { display:grid; grid-template-rows:auto auto auto auto; align-content:start; gap:10px; padding:15px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); }.import-options form>svg { color:var(--sage-source); }.import-options strong { font-size:var(--sage-font-md); }.import-options p { min-height:38px; margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); line-height:1.5; }.import-dialog>footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface-muted); font-size:11px; }.import-dialog>footer span { display:flex; align-items:center; gap:5px; }.import-dialog>footer p { margin:0; text-align:right; }
 .sync-preview { display:grid; gap:9px; min-width:0; padding:11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-muted); }.sync-preview>header { display:flex; align-items:center; justify-content:space-between; gap:8px; }.sync-preview>header strong { display:flex; align-items:center; gap:5px; font-size:var(--sage-font-sm); }.sync-preview>header code,.sync-preview>small { color:var(--sage-text-muted); font-size:10px; }.sync-counts { display:flex; flex-wrap:wrap; gap:6px; }.sync-counts span { padding:3px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:10px; }.sync-preview ul { max-height:150px; overflow:auto; margin:0; padding:0; list-style:none; }.sync-preview li { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:7px; min-height:28px; border-top:1px solid var(--sage-border); }.sync-preview li em { color:var(--sage-source); font-size:10px; font-style:normal; }.sync-preview li em[data-kind="deleted"] { color:var(--sage-danger); }.sync-preview li em[data-kind="modified"] { color:var(--sage-review-strong); }.sync-preview li code { overflow:hidden; color:var(--sage-text-secondary); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.sync-preview>.primary-button { width:100%; }
+.knowledge-chat-empty { display:flex; min-height:100%; flex-direction:column; align-items:center; justify-content:center; gap:7px; padding:24px; color:var(--sage-text-muted); text-align:center; }.knowledge-chat-empty strong { color:var(--sage-text-secondary); font-size:var(--sage-font-md); }.knowledge-chat-empty span { max-width:280px; font-size:var(--sage-font-sm); line-height:1.55; }.knowledge-chat-empty button { min-height:34px; margin-top:7px; padding:0 12px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius); color:var(--sage-surface); background:var(--sage-brand-strong); font-size:var(--sage-font-sm); }.knowledge-chat-empty button:disabled { color:var(--sage-text-muted); background:var(--sage-surface-muted); }
 .spinning { animation:spin .9s linear infinite; }@keyframes spin { to { transform:rotate(360deg); } }
 @media (max-width:1359px) {
   .workspace-body,.workspace-body.is-loading { grid-template-columns:minmax(0,1fr); }.knowledge-library.compact { position:absolute; z-index:55; inset:0 auto 0 0; width:min(280px,calc(100vw - 40px)); display:none; box-shadow:var(--sage-shadow-drawer); }.knowledge-library.compact.open { display:flex; }

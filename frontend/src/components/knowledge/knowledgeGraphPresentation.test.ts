@@ -3,6 +3,7 @@ import type { KnowledgeGraph, KnowledgeGraphCommunities } from '../../types/api'
 import {
   communitySeedPositions,
   featuredNodeIds,
+  graphPerformanceProfile,
   graphFocus,
   graphLegendItems,
 } from './knowledgeGraphPresentation'
@@ -87,4 +88,19 @@ it('builds a real legend for the active graph color mode', () => {
     { id: 'page', label: '页面', count: 2, color: '#00f' },
     { id: 'concept', label: '概念', count: 1, color: '#80f' },
   ])
+})
+
+it('defines deterministic 200, 1k and 5k rendering budgets', () => {
+  expect(graphPerformanceProfile(200, 800)).toMatchObject({
+    tier: 'small', maxRenderedEdges: 800, hideEdgesOnMove: false, useListFallback: false,
+  })
+  expect(graphPerformanceProfile(1_000, 6_000)).toMatchObject({
+    tier: 'medium', maxRenderedEdges: 6_000, barnesHutOptimize: true,
+  })
+  expect(graphPerformanceProfile(5_000, 40_000)).toMatchObject({
+    tier: 'large', maxRenderedEdges: 20_000, hideEdgesOnMove: true,
+  })
+  expect(graphPerformanceProfile(1_201, 2_000, true)).toMatchObject({
+    tier: 'fallback', useListFallback: true,
+  })
 })

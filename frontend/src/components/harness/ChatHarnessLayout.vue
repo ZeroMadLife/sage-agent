@@ -16,6 +16,7 @@ const props = withDefaults(defineProps<{
   minDockWidth?: number
   maxDockWidth?: number
   initialTab?: WorkbenchTab
+  initialMobilePane?: MobilePane
   showDetails?: boolean
   chatLabel?: string
 }>(), {
@@ -24,6 +25,7 @@ const props = withDefaults(defineProps<{
   minDockWidth: 360,
   maxDockWidth: 520,
   initialTab: 'chat',
+  initialMobilePane: 'canvas',
   showDetails: true,
   chatLabel: '对话',
 })
@@ -50,7 +52,7 @@ function initialDockWidth() {
 const dockWidth = ref(initialDockWidth())
 const dockOpen = ref(true)
 const activeTab = ref<WorkbenchTab>(props.initialTab)
-const mobilePane = ref<MobilePane>(props.initialTab)
+const mobilePane = ref<MobilePane>(props.initialMobilePane)
 const resizing = ref(false)
 const layoutStyle = computed(() => ({ '--harness-dock-width': `${dockWidth.value}px` }))
 

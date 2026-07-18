@@ -82,7 +82,10 @@ describe('ChatHarnessLayout', () => {
     const wrapper = mountLayout()
     const mobileNav = wrapper.get('[aria-label="移动工作台视图"]')
 
-    await mobileNav.get('button[aria-pressed="false"]').trigger('click')
+    expect(wrapper.attributes('data-mobile-pane')).toBe('canvas')
+    await mobileNav.findAll('button')[1].trigger('click')
+    expect(wrapper.attributes('data-mobile-pane')).toBe('chat')
+    await mobileNav.findAll('button')[0].trigger('click')
     expect(wrapper.attributes('data-mobile-pane')).toBe('canvas')
     expect(wrapper.find('[data-testid="chat"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="details"]').exists()).toBe(true)

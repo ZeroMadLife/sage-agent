@@ -99,7 +99,7 @@ beforeEach(() => {
   })
 })
 
-it('degrades the graph to a searchable node list on mobile', async () => {
+it('keeps the interactive graph on mobile within the compact performance budget', async () => {
   const wrapper = mount(KnowledgeGraphCanvas, {
     props: {
       graph, communities, selectedNodeId: null, colorMode: 'community',
@@ -107,8 +107,35 @@ it('degrades the graph to a searchable node list on mobile', async () => {
     },
   })
 
-  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(2)
-  await wrapper.setProps({ visibleKinds: ['page'], query: 'agent' })
+  expect(wrapper.find('.mobile-node-list').exists()).toBe(false)
+  expect(wrapper.get('.sigma-container').attributes('aria-label')).toBe('本地知识图谱')
+  wrapper.unmount()
+})
+
+it('degrades an oversized compact graph to a bounded node list', async () => {
+  const oversizedGraph: KnowledgeGraph = {
+    snapshot: { ...snapshot, node_count: 1201, edge_count: 0 },
+    nodes: Array.from({ length: 1201 }, (_, index) => ({
+      ...pageNode,
+      node_id: `page-${index + 1}`,
+      page_id: `page-${index + 1}`,
+      label: index === 0 ? 'Agent Harness' : `Page ${index + 1}`,
+    })),
+    edges: [],
+    offset: 0,
+    next_offset: null,
+    has_more: false,
+  }
+  const wrapper = mount(KnowledgeGraphCanvas, {
+    props: {
+      graph: oversizedGraph, communities: null, selectedNodeId: null, colorMode: 'community',
+      visibleKinds: ['page'], query: '',
+    },
+  })
+
+  expect(wrapper.find('.sigma-container').exists()).toBe(false)
+  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(80)
+  await wrapper.setProps({ query: 'agent' })
   await flushPromises()
   expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(1)
   await wrapper.get('.mobile-node-list button').trigger('click')

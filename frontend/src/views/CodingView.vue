@@ -3,23 +3,19 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, FileText, History, House, ScrollText, Settings, X } from 'lucide-vue-next'
 import {
-  CodingApprovalCard,
   CodingComposer,
   CodingDiffDrawer,
   CodingFilesDrawer,
   CodingGitBadge,
   CodingHarnessWorkbench,
-  CodingMessageTurn,
   CodingPlanApproval,
   CodingPlanPreview,
-  CodingRunTrace,
   CodingSidebar,
-  CodingThinkingIndicator,
 } from '../components/coding'
-import { ChatHarnessLayout, ChatTimeline } from '../components/harness'
+import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
+import type { HarnessSurfaceContext } from '../harness/types'
 import { useCodingStore } from '../stores/coding'
-import { useMarkdown } from '../composables/useMarkdown'
 import { useWorkbenchPreferences } from '../composables/useWorkbenchPreferences'
 import { wireNaiveUI } from '../composables/useNaiveUI'
 
@@ -36,7 +32,6 @@ const leftSheetRef = ref<HTMLElement | null>(null)
 const leftCloseRef = ref<HTMLButtonElement | null>(null)
 const lastResolvedSessionId = ref<string | null>(null)
 const viewGeneration = ref(0)
-const { render } = useMarkdown()
 const { showToolProcess } = useWorkbenchPreferences()
 
 // Wire Naive UI message/dialog bridge for store-level notifications
@@ -45,16 +40,6 @@ wireNaiveUI()
 const routeSessionId = computed(() => {
   const value = route.params.sessionId
   return typeof value === 'string' && value.trim() ? value : ''
-})
-const showThinkingIndicator = computed(() => {
-  return Boolean(store.isThinking && store.thinkingPhase)
-})
-const thinkingCharacterState = computed(() => {
-  if (store.pendingApproval) return 'waiting' as const
-  const activeTools = store.turns.find((turn) => turn.run_id === store.activeRun?.run_id)?.tools ?? []
-  if (activeTools.some((tool) => tool.status === 'running' || tool.status === 'blocked')) return 'tool' as const
-  if (/失败|错误/.test(store.thinkingPhase)) return 'failed' as const
-  return 'thinking' as const
 })
 const currentSession = computed(() => store.codingSessions.find((session) => session.session_id === store.sessionId))
 const currentSessionTitle = computed(() => currentSession.value?.title || '未命名会话')
@@ -68,6 +53,25 @@ const harnessToolCallCount = computed(() => store.visibleTimeline.filter((event)
   && event.kind === 'tool'
   && event.payload.type === 'tool_call'
 )).length)
+const codingContext = computed<HarnessSurfaceContext | null>(() => {
+  if (!store.workspaceId) return null
+  const workspaceLabel = store.workspaceRoot.split('/').filter(Boolean).at(-1) || 'coding'
+  return {
+    surface: 'coding',
+    workspaceId: store.workspaceId,
+    resource: {
+      type: 'coding_workspace',
+      id: store.workspaceId,
+      label: workspaceLabel,
+    },
+    selection: store.previewPath ? {
+      type: 'coding_file',
+      id: store.previewPath,
+      label: store.previewPath,
+    } : null,
+    operationRefs: [],
+  }
+})
 const mainInert = computed(() => leftOpen.value)
 const drawerError = ref('')
 
@@ -79,48 +83,6 @@ function showDeepLinkError(error: unknown) {
 function clearDeepLinkError() {
   deepLinkError.value = ''
 }
-
-function messagesForRun(runId: string) {
-  return store.messages.filter((message) => message.run_id === runId)
-}
-
-function userMessagesForRun(runId: string) {
-  return messagesForRun(runId).filter((message) => message.role === 'user')
-}
-
-function assistantMessagesForRun(runId: string) {
-  return messagesForRun(runId).filter((message) => message.role === 'assistant')
-}
-
-function runHasAssistantReply(runId: string) {
-  return assistantMessagesForRun(runId).some((message) => message.content.trim())
-}
-
-function isActiveTurn(runId: string) {
-  return store.activeRun?.run_id === runId
-}
-
-function turnHasUser(runId: string) {
-  return userMessagesForRun(runId).length > 0
-}
-
-function auditForRun(runId: string) {
-  return store.runs.find((run) => run.run_id === runId)?.audit
-}
-
-function shouldShowRunTrace(runId: string, toolCount: number, approvalCount: number) {
-  const hasEvidence = toolCount > 0 || approvalCount > 0 || Boolean(auditForRun(runId)?.steps.length)
-  return hasEvidence && (showToolProcess.value || isActiveTurn(runId))
-}
-
-function pendingToolForRun(runId: string) {
-  return isActiveTurn(runId) ? store.pendingApproval?.tool || '' : ''
-}
-
-const optimisticAttachedToTurn = computed(() => {
-  return Boolean(store.optimisticMessage && store.activeRun &&
-    store.turns.some((turn) => turn.run_id === store.activeRun?.run_id))
-})
 
 watch(() => store.activeRun?.run_id || '', (runId, previousRunId) => {
   if (runId && runId !== previousRunId) selectedHarnessRunId.value = runId
@@ -399,84 +361,46 @@ onBeforeUnmount(() => {
           </template>
 
           <template #chat>
-            <section class="coding-chat-pane">
-              <ChatTimeline
-                class="message-area"
-                :output-signature="outputSignature"
-                :message-count="store.messages.length"
-                :session-key="store.sessionId"
-                :timeline-ready="store.timelineInitialized"
-                :scroll-anchor="store.scrollAnchor"
-                :has-more="store.timelineHasMore"
-                :loading="store.timelineLoading"
-                :is-empty="store.messages.length === 0"
-                :load-older="store.loadOlderTimeline"
-                @anchor-change="store.setScrollAnchor"
-              >
-                <template #empty>
-                  <div class="empty-state"><strong>Sage 已就绪</strong><span>输入编码任务，或使用 /review 开始审查。</span></div>
-                </template>
-                <CodingMessageTurn
-                  v-for="(msg, index) in store.legacyMessages"
-                  :key="`legacy:${index}:${msg.role}:${msg.content}`"
-                  :message="{ ...msg, id: `legacy:${index}` }"
-                  :rendered-content="render(msg.content)"
-                  :show-process="showToolProcess"
-                />
-                <template v-for="turn in store.turns" :key="turn.id">
-                  <div
-                    class="timeline-turn"
-                    :class="{ 'is-harness-selected': harnessProjection.runId === turn.run_id }"
-                    :data-timeline-turn-id="turn.id"
-                    :data-harness-selected="harnessProjection.runId === turn.run_id"
-                    @click="selectHarnessRun(turn.run_id)"
-                    @focusin="selectHarnessRun(turn.run_id)"
-                  >
-                    <CodingMessageTurn
-                      v-if="isActiveTurn(turn.run_id) && !turnHasUser(turn.run_id) && store.optimisticMessage"
-                      :message="store.optimisticMessage"
-                      :rendered-content="render(store.optimisticMessage.content)"
-                      :show-process="showToolProcess"
-                    />
-                    <CodingMessageTurn v-for="msg in userMessagesForRun(turn.run_id)" :key="msg.id" :message="msg" :rendered-content="render(msg.content)" :show-process="showToolProcess" />
-                    <div v-if="showThinkingIndicator && isActiveTurn(turn.run_id) && !runHasAssistantReply(turn.run_id)" class="active-run-status">
-                      <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
-                    </div>
-                    <CodingApprovalCard v-if="isActiveTurn(turn.run_id) && store.pendingApproval" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
-                    <CodingRunTrace
-                      v-if="shouldShowRunTrace(turn.run_id, turn.tools.length, turn.approvals.length)"
-                      :run-id="turn.run_id"
-                      :tools="turn.tools"
-                      :audit="auditForRun(turn.run_id)"
-                      :active="isActiveTurn(turn.run_id)"
-                      :pending-tool="pendingToolForRun(turn.run_id)"
-                    />
-                    <CodingMessageTurn
-                      v-for="msg in assistantMessagesForRun(turn.run_id)"
-                      :key="msg.id"
-                      :message="msg"
-                      :rendered-content="render(msg.content)"
-                      :show-process="false"
-                      :diff-file-count="store.diffInfoByRun[turn.run_id]?.file_count || 0"
-                      @view-diff="store.openRunDiff(turn.run_id)"
-                    />
-                  </div>
-                </template>
-                <CodingMessageTurn
-                  v-if="store.optimisticMessage && !optimisticAttachedToTurn"
-                  :message="store.optimisticMessage"
-                  :rendered-content="render(store.optimisticMessage.content)"
-                  :show-process="showToolProcess"
-                />
-                <CodingApprovalCard v-if="store.pendingApproval && !store.activeRun" :approval="store.pendingApproval" :busy="store.approvalBusy" @respond="store.respondApproval" />
-                <div v-if="showThinkingIndicator && !store.activeRun" class="active-run-status">
-                  <CodingThinkingIndicator :phase="store.thinkingPhase" :state="thinkingCharacterState" />
-                </div>
+            <ChatDock
+              :projection="harnessProjection"
+              :connection-state="store.connectionState"
+              :context="codingContext"
+              :output-signature="outputSignature"
+              :message-count="store.messages.length"
+              :session-key="store.sessionId"
+              :timeline-ready="store.timelineInitialized"
+              :scroll-anchor="store.scrollAnchor"
+              :has-more="store.timelineHasMore"
+              :loading="store.timelineLoading"
+              :is-empty="store.messages.length === 0"
+              :load-older="store.loadOlderTimeline"
+              empty-description="输入学习目标、实践任务，或使用 /review 开始审查。"
+              @anchor-change="store.setScrollAnchor"
+            >
+              <ChatConversation
+                :legacy-messages="store.legacyMessages"
+                :messages="store.messages"
+                :turns="store.turns"
+                :optimistic-message="store.optimisticMessage"
+                :active-run-id="store.activeRun?.run_id || ''"
+                :selected-run-id="harnessProjection.runId"
+                :pending-approval="store.pendingApproval"
+                :approval-busy="store.approvalBusy"
+                :is-thinking="store.isThinking"
+                :thinking-phase="store.thinkingPhase"
+                :show-process="showToolProcess"
+                :runs="store.runs"
+                :diff-info-by-run="store.diffInfoByRun"
+                :error-message="store.errorMessage || deepLinkError"
+                @select-run="selectHarnessRun"
+                @respond-approval="store.respondApproval"
+                @open-run-diff="store.openRunDiff"
+              />
+              <template #composer>
                 <CodingPlanApproval v-if="store.planReview" />
-                <p v-if="store.errorMessage || deepLinkError" class="error-text" role="alert">{{ store.errorMessage || deepLinkError }}</p>
-              </ChatTimeline>
-              <CodingComposer density="compact" />
-            </section>
+                <CodingComposer density="compact" :surface-context="codingContext" />
+              </template>
+            </ChatDock>
           </template>
         </ChatHarnessLayout>
       </main>

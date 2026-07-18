@@ -2,7 +2,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Focus, Minus, Plus, X } from 'lucide-vue-next'
 import Graph from 'graphology'
-import forceAtlas2 from 'graphology-layout-forceatlas2'
 import type Sigma from 'sigma'
 import type { NodeHoverDrawingFunction } from 'sigma/rendering'
 import type {
@@ -16,6 +15,7 @@ import {
   featuredNodeIds,
   graphFocus,
   graphLegendItems,
+  graphPerformanceProfile,
 } from './knowledgeGraphPresentation'
 
 const props = defineProps<{
@@ -33,13 +33,15 @@ const emit = defineEmits<{
 
 const surface = ref<HTMLElement | null>(null)
 const container = ref<HTMLElement | null>(null)
-const mobile = ref(window.innerWidth < 680)
+const compactViewport = ref(window.innerWidth < 680)
 const rendererError = ref('')
 const themeRevision = ref(0)
 let renderer: Sigma | null = null
 let sigmaGraph: Graph | null = null
 let themeObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
+let layoutSupervisor: { start(): void; stop(): void; kill(): void } | null = null
+let layoutStopTimer: ReturnType<typeof setTimeout> | null = null
 let renderRequest = 0
 let rendererPending = false
 let rendererDirty = true
@@ -66,8 +68,12 @@ const drawSageNodeHover: NodeHoverDrawingFunction = (context, data, settings) =>
 
   context.beginPath()
   context.arc(data.x, data.y, data.size + 3, 0, Math.PI * 2)
-  context.fillStyle = hoverSurfaceColor
-  context.fill()
+  context.lineWidth = 4
+  context.strokeStyle = hoverSurfaceColor
+  context.stroke()
+  context.beginPath()
+  context.arc(data.x, data.y, data.size + 3, 0, Math.PI * 2)
+  context.lineWidth = 1.5
   context.strokeStyle = data.color
   context.stroke()
 
@@ -159,6 +165,12 @@ const selectedCommunity = computed(() => props.communities?.communities.find(
   (item) => item.community_id === selectedMetric.value?.community_id,
 ) ?? null)
 const sourceCount = computed(() => props.graph.nodes.filter((node) => node.kind === 'source').length)
+const performanceProfile = computed(() => graphPerformanceProfile(
+  props.graph.nodes.length,
+  props.graph.edges.length,
+  compactViewport.value,
+))
+const listFallback = computed(() => performanceProfile.value.useListFallback || Boolean(rendererError.value))
 const legendItems = computed(() => graphLegendItems(
   props.graph,
   props.communities,
@@ -261,7 +273,7 @@ function applyPresentation() {
     sigmaGraph?.setEdgeAttribute(
       edgeId,
       'hidden',
-      Boolean(focusNodeId ? !focused : attributes.globalHidden),
+      Boolean(attributes.globalHidden && !focused),
     )
     sigmaGraph?.setEdgeAttribute(
       edgeId,
@@ -273,6 +285,8 @@ function applyPresentation() {
       'size',
       focusNodeId && focused
         ? Math.max(1.35, Number(attributes.baseSize) * 1.45)
+        : focusNodeId
+          ? Math.min(0.34, Number(attributes.baseSize))
         : Number(attributes.baseSize),
     )
     sigmaGraph?.setEdgeAttribute(edgeId, 'zIndex', focusNodeId && focused ? 2 : 0)
@@ -287,6 +301,10 @@ function hasRenderableArea() {
 }
 
 function destroyRenderer() {
+  if (layoutStopTimer) clearTimeout(layoutStopTimer)
+  layoutStopTimer = null
+  layoutSupervisor?.kill()
+  layoutSupervisor = null
   renderer?.kill()
   renderer = null
   sigmaGraph = null
@@ -295,8 +313,8 @@ function destroyRenderer() {
 
 async function mountRenderer(requestId: number) {
   rendererError.value = ''
-  if (mobile.value || !container.value) {
-    if (mobile.value) destroyRenderer()
+  if (performanceProfile.value.useListFallback || !container.value) {
+    if (performanceProfile.value.useListFallback) destroyRenderer()
     return
   }
   await nextTick()
@@ -312,8 +330,13 @@ async function mountRenderer(requestId: number) {
   const labelFont = rootStyles.getPropertyValue('--sage-font-sans').trim() || 'sans-serif'
   const brandColor = rootStyles.getPropertyValue('--sage-brand').trim() || '#58c78b'
   const darkTheme = document.documentElement.dataset.theme === 'dark'
-  const mutedEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.035)' : 'rgba(113, 122, 137, 0.04)'
-  const linkedEdgeColor = darkTheme ? 'rgba(111, 148, 205, 0.055)' : 'rgba(72, 114, 177, 0.06)'
+  const smallGraph = performanceProfile.value.tier === 'small'
+  const mutedEdgeColor = darkTheme
+    ? `rgba(139, 148, 163, ${smallGraph ? 0.18 : 0.08})`
+    : `rgba(113, 122, 137, ${smallGraph ? 0.2 : 0.1})`
+  const linkedEdgeColor = darkTheme
+    ? `rgba(111, 148, 205, ${smallGraph ? 0.28 : 0.14})`
+    : `rgba(72, 114, 177, ${smallGraph ? 0.32 : 0.18})`
   dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.09)' : 'rgba(113, 122, 137, 0.12)'
   dimEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.08)' : 'rgba(113, 122, 137, 0.08)'
   focusEdgeColor = brandColor
@@ -322,8 +345,11 @@ async function mountRenderer(requestId: number) {
   hoverBorderColor = rootStyles.getPropertyValue('--sage-border-strong').trim()
     || (darkTheme ? '#4a5059' : '#c7ccd4')
   hoverTextColor = labelColor
+  let missingCachedPosition = false
   props.graph.nodes.filter(isNodeVisible).forEach((node, index) => {
-    const position = positions.get(node.node_id)
+    const cachedPosition = positions.get(node.node_id)
+    if (!cachedPosition) missingCachedPosition = true
+    const position = cachedPosition
       ?? seedPositions.get(node.node_id)
       ?? { x: index, y: 0 }
     const metric = metricByNode.value.get(node.node_id)
@@ -344,12 +370,28 @@ async function mountRenderer(requestId: number) {
       zIndex: 1,
     })
   })
-  for (const edge of props.graph.edges) {
+  const preferredNodeId = props.selectedNodeId
+  const renderedEdges = props.graph.edges
+    .slice()
+    .sort((left, right) => {
+      const leftFocused = Number(
+        left.source_node_id === preferredNodeId || left.target_node_id === preferredNodeId,
+      )
+      const rightFocused = Number(
+        right.source_node_id === preferredNodeId || right.target_node_id === preferredNodeId,
+      )
+      if (leftFocused !== rightFocused) return rightFocused - leftFocused
+      if (left.kind !== right.kind) return left.kind === 'WIKILINK' ? -1 : 1
+      return (right.weight * right.confidence) - (left.weight * left.confidence)
+    })
+    .slice(0, performanceProfile.value.maxRenderedEdges)
+  for (const edge of renderedEdges) {
     if (!graph.hasNode(edge.source_node_id) || !graph.hasNode(edge.target_node_id)) continue
     const baseColor = edge.kind === 'WIKILINK' ? linkedEdgeColor : mutedEdgeColor
-    const baseSize = edge.kind === 'WIKILINK'
+    const edgeScale = smallGraph ? 1.8 : performanceProfile.value.tier === 'medium' ? 1.25 : 1
+    const baseSize = (edge.kind === 'WIKILINK'
       ? Math.min(0.72, 0.34 + edge.weight * 0.08)
-      : Math.min(0.5, 0.24 + edge.confidence * 0.12)
+      : Math.min(0.5, 0.24 + edge.confidence * 0.12)) * edgeScale
     const globalHidden = edge.kind === 'EVIDENCED_BY'
     graph.addEdgeWithKey(edge.edge_id, edge.source_node_id, edge.target_node_id, {
       color: baseColor,
@@ -363,47 +405,27 @@ async function mountRenderer(requestId: number) {
       zIndex: 0,
     })
   }
-  if (
-    positions.size !== graph.order
-    && graph.order > 1
-    && graph.size > 0
-    && !props.communities?.communities.length
-  ) {
-    forceAtlas2.assign(graph, {
-      iterations: Math.min(360, 150 + graph.order),
-      settings: {
-        edgeWeightInfluence: 0.55,
-        gravity: 0.08,
-        linLogMode: true,
-        scalingRatio: 36,
-        strongGravityMode: false,
-        slowDown: 16,
-        barnesHutOptimize: graph.order > 100,
-        barnesHutTheta: 0.7,
-      },
-    })
-    savePositions(graph)
-  }
   try {
     renderer = new SigmaRenderer(graph, container.value, {
-      allowInvalidContainer: false,
+      allowInvalidContainer: true,
       defaultDrawNodeHover: drawSageNodeHover,
       defaultEdgeColor: mutedEdgeColor,
       defaultEdgeType: 'line',
+      hideEdgesOnMove: performanceProfile.value.hideEdgesOnMove,
       hideLabelsOnMove: true,
       inertiaDuration: 320,
       inertiaRatio: 1.8,
       labelColor: { color: labelColor },
-      labelDensity: 0.05,
+      labelDensity: performanceProfile.value.labelDensity,
       labelFont,
-      labelGridCellSize: 140,
-      labelRenderedSizeThreshold: 100,
+      labelGridCellSize: performanceProfile.value.tier === 'small' ? 120 : 160,
+      labelRenderedSizeThreshold: performanceProfile.value.labelRenderedSizeThreshold,
       labelSize: 12,
       labelWeight: '500',
       maxCameraRatio: 4,
       minCameraRatio: 0.16,
       renderEdgeLabels: false,
-      stagePadding: 52,
+      stagePadding: compactViewport.value ? 48 : 64,
       zoomDuration: 260,
       zIndex: true,
     })
@@ -422,6 +444,31 @@ async function mountRenderer(requestId: number) {
       if (container.value) container.value.style.cursor = 'default'
       applyPresentation()
     })
+    if (missingCachedPosition && graph.order > 1 && graph.size > 0) {
+      const { default: FA2LayoutSupervisor } = await import('graphology-layout-forceatlas2/worker')
+      if (requestId !== renderRequest || sigmaGraph !== graph) return
+      layoutSupervisor = new FA2LayoutSupervisor(graph, {
+        settings: {
+          edgeWeightInfluence: 0.55,
+          gravity: 0.08,
+          linLogMode: true,
+          scalingRatio: performanceProfile.value.tier === 'large' ? 48 : 36,
+          strongGravityMode: false,
+          slowDown: performanceProfile.value.tier === 'small' ? 14 : 20,
+          barnesHutOptimize: performanceProfile.value.barnesHutOptimize,
+          barnesHutTheta: 0.7,
+        },
+      })
+      layoutSupervisor.start()
+      layoutStopTimer = setTimeout(() => {
+        layoutSupervisor?.stop()
+        layoutSupervisor?.kill()
+        layoutSupervisor = null
+        layoutStopTimer = null
+        savePositions(graph)
+        renderer?.refresh()
+      }, performanceProfile.value.layoutDurationMs)
+    }
     rendererDirty = false
   } catch (reason) {
     rendererDirty = false
@@ -453,7 +500,12 @@ function requestRenderer() {
 }
 
 function updateRendererSize() {
-  if (mobile.value || !hasRenderableArea()) return
+  if (listFallback.value) return
+  if (!hasRenderableArea()) {
+    layoutSupervisor?.stop()
+    return
+  }
+  if (layoutSupervisor && layoutStopTimer) layoutSupervisor.start()
   if (!renderer || rendererDirty) {
     scheduleRenderer()
     return
@@ -463,6 +515,10 @@ function updateRendererSize() {
 }
 
 function updateSelection() {
+  if (performanceProfile.value.tier === 'large') {
+    requestRenderer()
+    return
+  }
   if (!sigmaGraph || !renderer) return
   applyPresentation()
   const camera = renderer.getCamera()
@@ -490,14 +546,8 @@ function resetCamera() {
 
 function updateViewport() {
   const next = window.innerWidth < 680
-  if (next !== mobile.value) {
-    mobile.value = next
-    if (next) {
-      renderRequest += 1
-      rendererDirty = false
-      destroyRenderer()
-      return
-    }
+  if (next !== compactViewport.value) {
+    compactViewport.value = next
     requestRenderer()
     return
   }
@@ -511,6 +561,7 @@ watch(
     props.visibleKinds.join(','),
     props.query,
     props.communities?.analysis.analysis_revision,
+    compactViewport.value,
     themeRevision.value,
   ],
   requestRenderer,
@@ -540,8 +591,8 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="surface" class="graph-surface">
-    <div v-if="!mobile" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
-    <div v-if="!mobile && selectedNode" class="graph-focus-summary" role="status">
+    <div v-if="!listFallback" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
+    <div v-if="!listFallback && selectedNode" class="graph-focus-summary" role="status">
       <i :style="{ background: nodeColor(selectedNode) }"></i>
       <span>
         <strong>{{ selectedNode.label }}</strong>
@@ -554,24 +605,24 @@ onBeforeUnmount(() => {
         <X :size="15" />
       </button>
     </div>
-    <div v-else-if="!mobile" class="graph-global-summary">
+    <div v-else-if="!listFallback" class="graph-global-summary">
       <strong>全局图谱</strong>
-      <span>{{ communities?.analysis.community_count ?? 0 }} 个社区 · {{ sourceCount }} 个来源文件</span>
+      <span>{{ communities?.analysis.community_count ?? 0 }} 个社区 · {{ sourceCount }} 个来源文件 · {{ performanceProfile.tier }}</span>
     </div>
-    <div v-if="!mobile" class="graph-legend-panel" :data-mode="colorMode" aria-label="图谱图例">
+    <div v-if="!listFallback" class="graph-legend-panel" :data-mode="colorMode" aria-label="图谱图例">
       <span v-for="item in legendItems" :key="item.id" :title="`${item.label} · ${item.count}`">
         <i :style="{ background: item.color }"></i>
         <b>{{ item.label }}</b>
         <small>{{ item.count }}</small>
       </span>
     </div>
-    <div v-if="!mobile" class="graph-controls" aria-label="图谱缩放">
+    <div v-if="!listFallback" class="graph-controls" aria-label="图谱缩放">
       <button type="button" title="放大" aria-label="放大图谱" @click="zoom('in')"><Plus :size="17" /></button>
       <button type="button" title="缩小" aria-label="缩小图谱" @click="zoom('out')"><Minus :size="17" /></button>
       <button type="button" title="居中" aria-label="重置图谱视图" @click="resetCamera"><Focus :size="17" /></button>
     </div>
-    <p v-if="rendererError && !mobile" class="graph-error" role="status">{{ rendererError }}</p>
-    <div v-if="mobile || rendererError" class="mobile-node-list" aria-label="知识节点列表">
+    <p v-if="rendererError" class="graph-error" role="status">图谱渲染已降级：{{ rendererError }}</p>
+    <div v-if="listFallback" class="mobile-node-list" aria-label="知识节点列表">
       <button
         v-for="node in mobileNodes"
         :key="node.node_id"
@@ -594,5 +645,10 @@ onBeforeUnmount(() => {
 .graph-global-summary { position:absolute; left:16px; bottom:16px; display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:color-mix(in srgb,var(--sage-surface) 90%,transparent); font-size:11px; backdrop-filter:blur(8px); }.graph-global-summary strong { color:var(--sage-text-secondary); font-size:11px; }
 .graph-legend-panel { position:absolute; top:14px; left:14px; display:flex; flex-wrap:wrap; gap:5px; width:min(520px,calc(100% - 100px)); pointer-events:none; }.graph-legend-panel span { display:grid; grid-template-columns:8px minmax(0,auto) auto; align-items:center; gap:5px; min-width:0; height:26px; padding:0 7px; border:1px solid color-mix(in srgb,var(--sage-border) 76%,transparent); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:color-mix(in srgb,var(--sage-surface) 84%,transparent); font-size:10px; backdrop-filter:blur(8px); }.graph-legend-panel i { width:7px; height:7px; border-radius:50%; }.graph-legend-panel b { max-width:105px; overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }.graph-legend-panel small { color:var(--sage-text-muted); font-size:9px; }
 .mobile-node-list { height:100%; overflow:auto; padding:8px 14px 24px; }.mobile-node-list button { display:grid; grid-template-columns:10px minmax(0,1fr); align-items:center; gap:11px; width:100%; min-height:58px; padding:8px 4px; border:0; border-bottom:1px solid var(--sage-border); text-align:left; color:var(--sage-text); background:transparent; }.mobile-node-list button.active { background:var(--sage-source-bg); }.mobile-node-list i { width:9px; height:9px; border-radius:50%; }.mobile-node-list span,.mobile-node-list strong,.mobile-node-list small { display:block; min-width:0; }.mobile-node-list strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--sage-font-md); }.mobile-node-list small { margin-top:3px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.mobile-node-list>p { color:var(--sage-text-muted); text-align:center; }
+@media (max-width:679px) {
+  .graph-legend-panel,.graph-global-summary { display:none; }
+  .graph-controls { right:10px; bottom:82px; }
+  .graph-focus-summary { left:10px; bottom:10px; width:calc(100% - 20px); }
+}
 @media (prefers-reduced-motion:reduce) { .graph-controls button { transition:none; } }
 </style>

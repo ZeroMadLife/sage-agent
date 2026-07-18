@@ -1,4 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
+import { createPinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, expect, it, vi } from 'vitest'
 import {
@@ -221,7 +222,7 @@ async function mountKnowledge() {
     routes: [{ path: '/knowledge', component: KnowledgeView }],
   })
   await router.push('/knowledge')
-  const wrapper = mount(KnowledgeView, { global: { plugins: [router] } })
+  const wrapper = mount(KnowledgeView, { global: { plugins: [createPinia(), router] } })
   await flushPromises()
   return wrapper
 }
@@ -235,7 +236,8 @@ it('renders the versioned graph workspace without a duplicate RAG question form'
   expect(wrapper.get('.graph-stub').text()).toContain('真实图谱 2')
   expect(wrapper.find('[aria-label="Knowledge 主画布"]').exists()).toBe(true)
   expect(wrapper.get('.workbench-dock [role="tab"][aria-selected="true"]').text()).toContain('对话')
-  expect(wrapper.text()).toContain('尚未选择知识内容')
+  expect(wrapper.text()).toContain('还没有可复用的对话')
+  expect(wrapper.get('.surface-context-bar').text()).toContain('surface_context 已冻结')
   expect(wrapper.find('input[aria-label="知识库问题"]').exists()).toBe(false)
   wrapper.unmount()
 })
@@ -247,7 +249,8 @@ it('loads revision-bound evidence when a graph node is selected', async () => {
   await flushPromises()
 
   expect(fetchKnowledgeGraphNeighborhood).toHaveBeenCalledWith('node-page')
-  expect(wrapper.get('[aria-label="当前对话上下文"]').text()).toContain('Agent Harness')
+  expect(wrapper.get('.surface-context-bar').text()).toContain('Agent Harness')
+  expect(wrapper.get('.surface-context-bar').text()).toContain('surface_context 已冻结')
   expect(wrapper.get('.knowledge-harness').attributes('data-active-tab')).toBe('chat')
   await wrapper.findAll('.workbench-dock [role="tab"]')[1].trigger('click')
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')

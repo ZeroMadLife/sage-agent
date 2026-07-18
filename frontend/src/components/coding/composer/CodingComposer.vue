@@ -4,13 +4,18 @@ import { BrainCircuit, Send, Settings, Square } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useCodingStore } from '../../../stores/coding'
 import type { CodingSkillSummary } from '../../../types/api'
+import type { HarnessSurfaceContext } from '../../../harness/types'
 import CodingContextBudget from '../chat/CodingContextBudget.vue'
 import CodingPermissionModeDrawer from './CodingPermissionModeDrawer.vue'
 
 const props = withDefaults(defineProps<{
   density?: 'default' | 'compact'
+  surfaceContext?: HarnessSurfaceContext | null
+  placeholder?: string
 }>(), {
   density: 'default',
+  surfaceContext: null,
+  placeholder: '输入任务，或 /review 调用 skill',
 })
 
 const store = useCodingStore()
@@ -61,7 +66,8 @@ function onInput() {
 function send() {
   const content = input.value.trim()
   if (!content) return
-  store.sendMessage(content)
+  if (props.surfaceContext) store.sendMessage(content, props.surfaceContext)
+  else store.sendMessage(content)
   input.value = ''
   selectedIndex.value = 0
   skillMenuDismissed.value = false
@@ -138,7 +144,7 @@ defineExpose({
             v-model="input"
             rows="2"
             :disabled="!store.sessionId || store.isThinking"
-            placeholder="输入任务，或 /review 调用 skill"
+            :placeholder="placeholder"
             @keydown="onKeydown"
             @input="onInput"
           />
@@ -446,7 +452,22 @@ defineExpose({
 
 @media (max-width: 720px) {
   .composer { padding-right:12px; padding-left:12px; }
-  .composer-controls { overflow-x:auto; scrollbar-width:none; }
+  .composer.compact .composer-controls {
+    display:grid;
+    grid-template-columns:28px auto minmax(0,1fr) 32px;
+    grid-template-areas:
+      "settings permission model send"
+      "reasoning reasoning reasoning reasoning";
+    gap:4px;
+    overflow:visible;
+  }
+  .composer.compact .rail-icon { grid-area:settings; }
+  .composer.compact :deep(.permission-mode-control) { grid-area:permission; min-width:0; }
+  .composer.compact .model-select { grid-area:model; width:100%; max-width:none; min-width:0; }
+  .composer.compact .reasoning-control { grid-area:reasoning; justify-content:stretch; min-width:0; padding-left:3px; }
+  .composer.compact .reasoning-control button { flex:1; min-width:0; }
+  .composer.compact .send-btn,.composer.compact .stop-btn { grid-area:send; margin-left:0; }
+  .composer.compact .context-error { grid-column:1 / -1; }
   .composer-input textarea { padding-right:128px; }
   .reasoning-control svg { display:none; }
 }

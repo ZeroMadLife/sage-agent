@@ -1,4 +1,6 @@
 export { default as ChatHarnessLayout } from './ChatHarnessLayout.vue'
+export { default as ChatDock } from './ChatDock.vue'
+export { default as ChatConversation } from './ChatConversation.vue'
 export { default as HarnessContextSummary } from './HarnessContextSummary.vue'
 export { default as ChatExecutionLog } from './chat/ChatExecutionLog.vue'
 export { default as ChatMessageTurn } from './chat/ChatMessageTurn.vue'
