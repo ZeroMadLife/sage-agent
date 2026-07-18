@@ -9,6 +9,9 @@ RUN VITE_CLOUD_AUTH_REQUIRED=true npm run build
 
 FROM ${SAGE_DOCKER_REGISTRY}/library/caddy:2.10.2-alpine
 
+RUN setcap -r /usr/bin/caddy \
+    && test -z "$(getcap /usr/bin/caddy)"
+
 COPY infra/proxy/Caddyfile.private /etc/caddy/Caddyfile
 COPY --from=build /src/dist /srv
 

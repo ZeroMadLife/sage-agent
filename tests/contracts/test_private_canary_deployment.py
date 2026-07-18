@@ -85,6 +85,8 @@ def test_web_image_cannot_disable_the_production_login_gate() -> None:
     compose = (ROOT / "infra/compose/private-canary.yml").read_text(encoding="utf-8")
 
     assert "RUN VITE_CLOUD_AUTH_REQUIRED=true npm run build" in dockerfile
+    assert "setcap -r /usr/bin/caddy" in dockerfile
+    assert 'test -z "$(getcap /usr/bin/caddy)"' in dockerfile
     assert "ARG VITE_CLOUD_AUTH_REQUIRED" not in dockerfile
     assert "VITE_CLOUD_AUTH_REQUIRED:" not in compose
     assert "SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}" in compose
