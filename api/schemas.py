@@ -1137,6 +1137,36 @@ class CodingMcpServersResponse(BaseModel):
     servers: list[CodingMcpServer]
 
 
+class HarnessCapabilityResponse(BaseModel):
+    """Browser-safe metadata for one non-executable Harness capability."""
+
+    capability_id: str
+    name: str
+    origin: Literal["local", "mcp", "skill", "subagent", "web"]
+    kind: Literal["tool", "workflow", "delegate"]
+    revision: str
+    description: str
+    surfaces: list[Literal["growth", "knowledge", "coding"]]
+    risk: Literal["low", "medium", "high"]
+    permission: Literal["none", "approval", "runtime"]
+    deferred: bool
+    remote_content: bool
+    availability: Literal["available", "degraded", "unavailable", "disabled", "stale"]
+    timeout_seconds: float = Field(gt=0, le=3600)
+    tags: list[str]
+
+
+class HarnessCapabilitiesResponse(BaseModel):
+    """Revisioned capability catalog for one authorized session surface."""
+
+    session_id: str
+    workspace_id: str
+    surface: Literal["growth", "knowledge", "coding"]
+    revision: str
+    count: int = Field(ge=0)
+    capabilities: list[HarnessCapabilityResponse]
+
+
 class CodingApprovalResponse(BaseModel):
     """Pending approval returned to the coding UI."""
 

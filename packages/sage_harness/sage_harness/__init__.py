@@ -1,6 +1,16 @@
 """Reusable, application-neutral agent harness contracts."""
 
 from sage_harness.agents import create_sage_agent
+from sage_harness.capabilities import (
+    CapabilityAvailability,
+    CapabilityDescriptor,
+    CapabilityKind,
+    CapabilityOrigin,
+    CapabilityPermission,
+    CapabilityRegistry,
+    CapabilityRisk,
+    CapabilitySurface,
+)
 from sage_harness.config import HarnessConfig, HarnessRunContext
 from sage_harness.deferred_tools import (
     DeferredToolCatalog,
@@ -92,6 +102,14 @@ __all__ = [
     "ApprovalPort",
     "ApprovalRequest",
     "CancelCheck",
+    "CapabilityAvailability",
+    "CapabilityDescriptor",
+    "CapabilityKind",
+    "CapabilityOrigin",
+    "CapabilityPermission",
+    "CapabilityRegistry",
+    "CapabilityRisk",
+    "CapabilitySurface",
     "CheckpointPort",
     "CheckpointScopeError",
     "DeferredToolCatalog",

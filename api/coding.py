@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
 from inspect import signature
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
@@ -80,6 +80,8 @@ from api.schemas import (
     CodingTimelineResponse,
     CodingUsageSummary,
     ErrorEvent,
+    HarnessCapabilitiesResponse,
+    HarnessCapabilityResponse,
     PermissionModeSwitchRequest,
     UserMessage,
 )
@@ -100,6 +102,7 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.capability_adapter import build_sage_capability_registry
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
     build_deerflow_system_prompt,
@@ -752,6 +755,89 @@ async def _close_coding_mcp_scope(request: Request, session_id: str) -> None:
     )
     with suppress(Exception):
         await manager.close_scope(scope)
+
+
+@router.get(
+    "/api/v1/harness/capabilities",
+    response_model=HarnessCapabilitiesResponse,
+)
+async def list_harness_capabilities(
+    request: Request,
+    session_id: str,
+    surface: Literal["growth", "knowledge", "coding"] = "coding",
+    origin: Annotated[
+        list[Literal["local", "mcp", "skill", "subagent", "web"]] | None,
+        Query(),
+    ] = None,
+    availability: Annotated[
+        list[Literal["available", "degraded", "unavailable", "disabled", "stale"]] | None,
+        Query(),
+    ] = None,
+    q: Annotated[str, Query(max_length=200)] = "",
+) -> HarnessCapabilitiesResponse:
+    """List safe metadata for capabilities visible to one authorized session."""
+    _require_valid_session_id(session_id)
+    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
+    runtime = sessions.get(session_id)
+    store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
+    try:
+        persisted = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+
+    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    workspace_root = _resolve_persisted_workspace_root(
+        default_workspace,
+        persisted.get("workspace_root"),
+    )
+    if runtime is not None:
+        tools: Mapping[str, object] = runtime.tools
+        skills = runtime.skill_registry.list()
+        owner_id = runtime.owner_user_id or "local"
+    else:
+        from core.coding.context import WorkspaceContext
+        from core.coding.skills import SkillRegistry
+        from core.coding.tools.registry import build_tool_registry
+
+        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        skills = SkillRegistry(root=workspace_root).list()
+        owner_id = str(persisted.get("owner_user_id") or "local")
+
+    workspace_id = workspace_id_from_path(workspace_root)
+    mcp_snapshot = None
+    manager = getattr(request.app.state, "coding_mcp_manager", None)
+    if isinstance(manager, McpManager):
+        mcp_snapshot = manager.cached_catalog(
+            McpScope(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                thread_id=session_id,
+            )
+        )
+    registry = build_sage_capability_registry(
+        tools=tools,
+        skills=skills,
+        mcp_catalog=mcp_snapshot,
+    )
+    descriptors = registry.query(
+        surface=surface,
+        origins=frozenset(origin) if origin else None,
+        availability=frozenset(availability) if availability else None,
+        text=q,
+    )
+    capabilities = [
+        HarnessCapabilityResponse.model_validate(item.as_dict()) for item in descriptors
+    ]
+    return HarnessCapabilitiesResponse(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        surface=surface,
+        revision=registry.revision,
+        count=len(capabilities),
+        capabilities=capabilities,
+    )
 
 
 @router.post("/api/v1/coding/session/{session_id}/resume")
