@@ -17,6 +17,50 @@ export type KnowledgeGraphLegendItem = {
   color: string
 }
 
+export type KnowledgeGraphPerformanceProfile = {
+  tier: 'small' | 'medium' | 'large' | 'fallback'
+  layoutDurationMs: number
+  maxRenderedEdges: number
+  labelDensity: number
+  labelRenderedSizeThreshold: number
+  hideEdgesOnMove: boolean
+  barnesHutOptimize: boolean
+  useListFallback: boolean
+}
+
+export function graphPerformanceProfile(
+  nodeCount: number,
+  edgeCount: number,
+  compactViewport = false,
+): KnowledgeGraphPerformanceProfile {
+  if (nodeCount > 5_000 || (compactViewport && nodeCount > 1_200)) {
+    return {
+      tier: 'fallback', layoutDurationMs: 0, maxRenderedEdges: 0,
+      labelDensity: 0, labelRenderedSizeThreshold: 100,
+      hideEdgesOnMove: true, barnesHutOptimize: true, useListFallback: true,
+    }
+  }
+  if (nodeCount <= 200) {
+    return {
+      tier: 'small', layoutDurationMs: 1_600, maxRenderedEdges: edgeCount,
+      labelDensity: 0.075, labelRenderedSizeThreshold: 8,
+      hideEdgesOnMove: false, barnesHutOptimize: nodeCount > 100, useListFallback: false,
+    }
+  }
+  if (nodeCount <= 1_000) {
+    return {
+      tier: 'medium', layoutDurationMs: 1_200, maxRenderedEdges: edgeCount,
+      labelDensity: 0.04, labelRenderedSizeThreshold: 10,
+      hideEdgesOnMove: edgeCount > 3_000, barnesHutOptimize: true, useListFallback: false,
+    }
+  }
+  return {
+    tier: 'large', layoutDurationMs: 800, maxRenderedEdges: Math.min(edgeCount, 20_000),
+    labelDensity: 0.016, labelRenderedSizeThreshold: 12,
+    hideEdgesOnMove: true, barnesHutOptimize: true, useListFallback: false,
+  }
+}
+
 function stableFraction(value: string) {
   let hash = 2166136261
   for (let index = 0; index < value.length; index += 1) {
