@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
+from core.cloud.model_providers import ModelProviderRepository
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
 
@@ -18,8 +19,10 @@ async def _production_client(tmp_path: Path) -> tuple[TestClient, CloudRepositor
     factory = create_session_factory(engine)
     await init_db(engine)
     repository = CloudRepository(factory)
+    providers = ModelProviderRepository(factory, encryption_secret="test-secret-" * 4)
     app = create_app(
         cloud_repository=repository,
+        cloud_model_provider_repository=providers,
         cloud_app_env="production",
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",

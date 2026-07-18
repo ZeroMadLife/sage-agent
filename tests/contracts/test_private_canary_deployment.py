@@ -39,6 +39,7 @@ def test_api_image_uses_the_official_retrying_package_index() -> None:
     assert "PIP_INDEX_URL=https://pypi.org/simple" in dockerfile
     assert "PIP_RETRIES=10" in dockerfile
     assert "pip install --no-cache-dir --upgrade pip" not in dockerfile
+    assert "apt-get install --no-install-recommends -y git" in dockerfile
 
 
 def test_web_image_cannot_disable_the_production_login_gate() -> None:

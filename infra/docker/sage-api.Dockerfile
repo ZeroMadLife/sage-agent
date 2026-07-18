@@ -17,6 +17,9 @@ WORKDIR /app
 COPY requirements.txt ./
 COPY packages ./packages
 RUN python -m pip install --no-cache-dir -r requirements.txt
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y git \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY agents ./agents
 COPY api ./api
