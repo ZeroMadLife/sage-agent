@@ -226,12 +226,32 @@ def _web_search_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _web_fetch_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="web:fetch",
+        name="fetch_web",
+        origin="web",
+        kind="tool",
+        revision="web-fetch-current-turn-v1",
+        description="Fetch one public HTTPS HTML page into bounded current-turn evidence.",
+        surfaces=_ALL_SURFACES,
+        risk="medium",
+        permission="runtime",
+        deferred=True,
+        remote_content=True,
+        availability="available",
+        timeout_seconds=30.0,
+        tags=("web", "fetch", "evidence"),
+    )
+
+
 def build_sage_capability_registry(
     *,
     tools: Mapping[str, object],
     skills: Sequence[Skill],
     mcp_catalog: McpCatalogSnapshot | None = None,
     web_search_available: bool = False,
+    web_fetch_available: bool = False,
 ) -> CapabilityRegistry:
     """Build a public catalog from current runtime-owned source metadata."""
     descriptors = [_tool_descriptor(name, tool) for name, tool in tools.items()]
@@ -241,6 +261,8 @@ def build_sage_capability_registry(
     descriptors.append(_explore_descriptor())
     if web_search_available:
         descriptors.append(_web_search_descriptor())
+    if web_fetch_available:
+        descriptors.append(_web_fetch_descriptor())
     return CapabilityRegistry(descriptors)
 
 

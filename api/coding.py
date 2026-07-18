@@ -24,6 +24,7 @@ from sage_harness import (
     McpToolSnapshot,
     SubagentLimits,
     SubagentToolConfig,
+    WebFetchPort,
     WebSearchPort,
     resolve_skill_allowed_tools,
 )
@@ -123,6 +124,10 @@ from core.harness.subagent_adapter import CodingSubagentExecutor
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+def _port_available(port: object) -> bool:
+    return bool(port is not None and getattr(port, "available", True))
 
 
 def _require_enabled_runtime_profile(value: object, request: Request) -> RuntimeProfile:
@@ -239,6 +244,7 @@ async def _runtime_timeline_events(
     harness_checkpointer: Any | None = None,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
@@ -262,6 +268,7 @@ async def _runtime_timeline_events(
                 checkpointer=harness_checkpointer,
                 harness_config=harness_config,
                 mcp_catalog=mcp_catalog,
+                web_fetch_port=web_fetch_port,
                 web_search_port=web_search_port,
                 app_env=app_env,
                 resume_value=resume_value,
@@ -374,6 +381,7 @@ async def _deerflow_timeline_events(
     checkpointer: Any,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
@@ -470,6 +478,11 @@ async def _deerflow_timeline_events(
         try:
             subagent_executor = CodingSubagentExecutor(runtime)
             subagent_config = SubagentToolConfig()
+            artifact_store = ToolResultStore(
+                runtime.storage_root,
+                runtime.session_id,
+                run_id,
+            )
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
                 run_id=run_id,
@@ -484,7 +497,9 @@ async def _deerflow_timeline_events(
                 ),
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
+                web_fetch_port=web_fetch_port,
                 web_search_port=web_search_port,
+                artifact_store=artifact_store,
                 graph_approvals=True,
             )
             if not is_resume:
@@ -511,11 +526,7 @@ async def _deerflow_timeline_events(
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
                 config=harness_config,
-                artifact_store=ToolResultStore(
-                    runtime.storage_root,
-                    runtime.session_id,
-                    run_id,
-                ),
+                artifact_store=artifact_store,
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
                 capability_revision=tool_bundle.capability_revision,
             )
@@ -841,8 +852,11 @@ def _harness_capability_context(
             tools=tools,
             skills=skills,
             mcp_catalog=mcp_snapshot,
-            web_search_available=bool(
+            web_search_available=_port_available(
                 getattr(request.app.state, "coding_web_search_port", None)
+            ),
+            web_fetch_available=_port_available(
+                getattr(request.app.state, "coding_web_fetch_port", None)
             ),
         ),
     )
@@ -1231,6 +1245,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 harness_checkpointer=getattr(websocket.app.state, "sage_harness_checkpointer", None),
                 harness_config=getattr(websocket.app.state, "coding_harness_config", None),
                 mcp_catalog=getattr(websocket.app.state, "coding_mcp_catalog", None),
+                web_fetch_port=getattr(
+                    websocket.app.state, "coding_web_fetch_port", None
+                ),
                 web_search_port=getattr(
                     websocket.app.state, "coding_web_search_port", None
                 ),
@@ -1470,6 +1487,7 @@ async def coding_approval_respond(
             ),
             harness_config=getattr(request.app.state, "coding_harness_config", None),
             mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
+            web_fetch_port=getattr(request.app.state, "coding_web_fetch_port", None),
             web_search_port=getattr(request.app.state, "coding_web_search_port", None),
             app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
             resume_value={

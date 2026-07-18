@@ -18,6 +18,8 @@ from sage_harness import (
     SandboxPort,
     SubagentExecutorPort,
     SubagentToolConfig,
+    ToolArtifactPort,
+    WebFetchPort,
     WebSearchPort,
     assemble_deferred_tools,
     build_task_tool,
@@ -32,6 +34,7 @@ from core.harness.capability_adapter import (
     local_tool_capability_id,
     mcp_tool_capability_id,
 )
+from core.harness.web_fetch import build_web_fetch_tool
 from core.harness.web_search import build_web_search_tool
 
 _DEERFLOW_TOOLS = frozenset(
@@ -60,7 +63,9 @@ def build_deerflow_coding_tools(
     sandbox: SandboxPort | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
+    web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
+    artifact_store: ToolArtifactPort | None = None,
     graph_approvals: bool = False,
 ) -> list[BaseTool]:
     """Build the established resident tool slice without deferred discovery."""
@@ -73,7 +78,9 @@ def build_deerflow_coding_tools(
             sandbox=sandbox,
             subagent_executor=subagent_executor,
             subagent_config=subagent_config,
+            web_fetch_port=web_fetch_port,
             web_search_port=web_search_port,
+            artifact_store=artifact_store,
             graph_approvals=graph_approvals,
             enable_deferred_tools=False,
         ).tools
@@ -92,7 +99,9 @@ def build_deerflow_coding_tool_bundle(
     active_skill_allowed_tools: frozenset[str] | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
+    web_fetch_port: WebFetchPort | None = None,
     web_search_port: WebSearchPort | None = None,
+    artifact_store: ToolArtifactPort | None = None,
     graph_approvals: bool = False,
     enable_deferred_tools: bool = True,
 ) -> CodingToolBundle:
@@ -254,6 +263,11 @@ def build_deerflow_coding_tool_bundle(
     web_search_available = bool(web_search_port is not None and web_search_port.available)
     if web_search_available and web_search_port is not None:
         deferred_tools.append(build_web_search_tool(web_search_port))
+    web_fetch_available = bool(
+        web_fetch_port is not None and web_fetch_port.available and artifact_store is not None
+    )
+    if web_fetch_available and web_fetch_port is not None and artifact_store is not None:
+        deferred_tools.append(build_web_fetch_tool(web_fetch_port, artifact_store))
 
     deferred_tools.extend(_with_mcp_capability_ids(extra_deferred_tools))
 
@@ -262,6 +276,7 @@ def build_deerflow_coding_tool_bundle(
         skills=runtime.skill_registry.list(),
         mcp_catalog=mcp_catalog,
         web_search_available=web_search_available,
+        web_fetch_available=web_fetch_available,
     )
 
     graph_tools, deferred_setup = assemble_deferred_tools(

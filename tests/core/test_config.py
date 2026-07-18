@@ -26,6 +26,15 @@ def test_sandbox_configuration_defaults_to_local_development() -> None:
     assert settings.sage_coding_sandbox_image == "python:3.11-slim"
 
 
+def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_web_fetch_enabled is False
+    assert settings.sage_web_fetch_connect_timeout_seconds == 5.0
+    assert settings.sage_web_fetch_read_timeout_seconds == 10.0
+    assert settings.sage_web_fetch_total_timeout_seconds == 20.0
+
+
 def test_settings_has_amap_base_url() -> None:
     """Amap API base URL has a default value."""
     settings = Settings()

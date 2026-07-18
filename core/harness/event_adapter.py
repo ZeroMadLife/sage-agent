@@ -711,6 +711,8 @@ def _public_tool_result_content(tool_name: str, value: object) -> str:
     text = value if isinstance(value, str) else str(value)
     if tool_name == "search_web":
         return _public_web_search_content(text)
+    if tool_name == "fetch_web":
+        return _public_web_fetch_content(text)
     if tool_name != "knowledge_search":
         return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
     try:
@@ -839,12 +841,60 @@ def _public_web_search_content(text: str) -> str:
     return json.dumps({**base, "citations": []}, ensure_ascii=False, separators=(",", ":"))
 
 
+def _public_web_fetch_content(text: str) -> str:
+    payload = _remote_json_payload(text)
+    if payload is None:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    status = _public_string(payload.get("status"), 32)
+    if status not in {"evidence_found", "unavailable"}:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    artifact_ref = _public_string(payload.get("artifact_ref"), 1_000)
+    if artifact_ref and not artifact_ref.startswith("sage://coding/"):
+        artifact_ref = ""
+    public = {
+        "status": status,
+        "citation_id": _public_string(payload.get("citation_id"), 160),
+        "url": _public_string(payload.get("url"), 1_000),
+        "title": _public_string(payload.get("title"), 240),
+        "excerpt": _public_string(payload.get("excerpt"), 1_200),
+        "retrieved_at": _public_string(payload.get("retrieved_at"), 80),
+        "content_hash": _public_string(payload.get("content_hash"), 128),
+        "media_type": _public_string(payload.get("media_type"), 80),
+        "wire_bytes": _public_non_negative_int(payload.get("wire_bytes")),
+        "used_tokens": _public_non_negative_int(payload.get("used_tokens")),
+        "token_budget": _public_non_negative_int(payload.get("token_budget")),
+        "artifact_ref": artifact_ref,
+        "original_chars": _public_non_negative_int(payload.get("original_chars")),
+        "error_code": _public_string(payload.get("error_code"), 80),
+        "remote_content": True,
+    }
+    for excerpt_limit in (1_200, 800, 400, 160, 80, 40, 0):
+        candidate = {
+            **public,
+            "excerpt": _public_string(payload.get("excerpt"), excerpt_limit)
+            if excerpt_limit
+            else "",
+        }
+        encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) <= _PUBLIC_TOOL_CONTENT_LIMIT:
+            return encoded
+    return json.dumps(
+        {"status": status, "remote_content": True},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _remote_json_payload(text: str) -> Mapping[object, object] | None:
     candidate = text.strip()
-    prefix = "<remote-content>"
-    suffix = "</remote-content>"
-    if candidate.startswith(prefix) and candidate.endswith(suffix):
-        candidate = candidate[len(prefix) : -len(suffix)].strip()
+    boundaries = (
+        ("<remote-content>", "</remote-content>"),
+        ("--- BEGIN REMOTE TOOL CONTENT ---", "--- END REMOTE TOOL CONTENT ---"),
+    )
+    for prefix, suffix in boundaries:
+        if candidate.startswith(prefix) and candidate.endswith(suffix):
+            candidate = candidate[len(prefix) : -len(suffix)].strip()
+            break
     try:
         payload = json.loads(candidate)
     except (TypeError, ValueError):

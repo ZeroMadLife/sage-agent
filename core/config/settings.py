@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     sage_web_search_enabled: bool = False
     sage_web_search_endpoint: str = ""
     sage_web_search_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_enabled: bool = False
+    sage_web_fetch_connect_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
+    sage_web_fetch_read_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_total_timeout_seconds: float = Field(default=20.0, ge=2.0, le=90.0)
 
     # GitHub OAuth is used for identity only. Repository authorization is
     # handled separately by a GitHub App so private repository access can be

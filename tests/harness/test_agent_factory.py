@@ -269,6 +269,34 @@ def test_large_tool_result_is_archived_before_checkpoint_projection() -> None:
     }
 
 
+def test_prearchived_tool_result_is_not_archived_again() -> None:
+    class ArtifactStore:
+        def archive(self, call_id: str, content: str):
+            raise AssertionError(f"prearchived result was archived again: {call_id} {content[:20]}")
+
+    middleware = ToolResultArtifactMiddleware(ArtifactStore())
+    request = ToolCallRequest(
+        tool_call={"name": "remote_lookup", "args": {}, "id": "call-fetch", "type": "tool_call"},
+        tool=None,
+        state={},
+        runtime=MagicMock(),
+    )
+    original = ToolMessage(
+        content="x" * 20_000,
+        name="remote_lookup",
+        tool_call_id="call-fetch",
+        artifact={
+            "artifact_ref": "sage://coding/s1/runs/r1/tool-results/call-fetch.txt",
+            "original_chars": 20_000,
+            "truncated": True,
+        },
+    )
+
+    result = middleware.wrap_tool_call(request, lambda _: original)
+
+    assert result is original
+
+
 def test_token_budget_stops_before_another_model_call() -> None:
     middleware = TokenBudgetMiddleware(max_tokens=10)
     runtime = MagicMock(context=_context())

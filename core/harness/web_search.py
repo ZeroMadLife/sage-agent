@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import html
 import json
-import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -16,6 +15,8 @@ import httpx
 from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, Field, field_validator
 from sage_harness import WebEvidence, WebSearchPort, WebSearchResult
+
+from core.harness.web_evidence import estimated_tokens, fit_excerpt
 
 _QUERY_MAX = 2_000
 _TITLE_MAX = 300
@@ -355,14 +356,7 @@ def build_web_search_tool(port: WebSearchPort) -> BaseTool:
 
 
 def _estimated_evidence_tokens(title: str, url: str, excerpt: str) -> int:
-    content = f"{title}\n{url}\n{excerpt}"
-    ascii_characters = sum(character.isascii() for character in content)
-    non_ascii_bytes = sum(
-        len(character.encode("utf-8"))
-        for character in content
-        if not character.isascii()
-    )
-    return max(1, math.ceil(ascii_characters / 4) + math.ceil(non_ascii_bytes / 2))
+    return estimated_tokens(title, url, excerpt)
 
 
 def _fit_evidence_excerpt(
@@ -372,24 +366,11 @@ def _fit_evidence_excerpt(
     title: str,
     url: str,
 ) -> str:
-    overhead = _estimated_evidence_tokens(title, url, "")
-    available = remaining_tokens - overhead
-    if available < 16:
-        return ""
-    if _estimated_evidence_tokens(title, url, excerpt) <= remaining_tokens:
-        return excerpt
-    marker = "..."
-    lower = 0
-    upper = len(excerpt)
-    while lower < upper:
-        midpoint = (lower + upper + 1) // 2
-        candidate = f"{excerpt[:midpoint].rstrip()}{marker}"
-        if _estimated_evidence_tokens(title, url, candidate) <= remaining_tokens:
-            lower = midpoint
-        else:
-            upper = midpoint - 1
-    clipped = excerpt[:lower].rstrip()
-    return f"{clipped}{marker}" if clipped else ""
+    return fit_excerpt(
+        excerpt,
+        token_budget=remaining_tokens,
+        overhead=(title, url),
+    )
 
 
 __all__ = ["SearchWebArgs", "SearxngWebSearchAdapter", "build_web_search_tool"]

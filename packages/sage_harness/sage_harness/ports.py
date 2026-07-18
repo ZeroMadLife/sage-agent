@@ -147,6 +147,28 @@ class WebSearchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WebFetchedDocument:
+    """Normalized public HTML owned by a host-side fetch adapter."""
+
+    canonical_url: str
+    title: str
+    text: str
+    media_type: str
+    retrieved_at: str
+    content_hash: str
+    wire_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class WebFetchResult:
+    """Provider-neutral fetch result that never implies trusted Knowledge state."""
+
+    status: Literal["evidence_found", "unavailable"]
+    document: WebFetchedDocument | None = None
+    error_code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryReference:
     """Small durable-memory reference safe to assemble into context."""
 
@@ -249,6 +271,15 @@ class WebSearchPort(Protocol):
         domains: Sequence[str] = (),
         language: str = "all",
     ) -> WebSearchResult: ...
+
+
+class WebFetchPort(Protocol):
+    """Fetch one public HTTPS HTML document through a server-owned safety boundary."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def fetch(self, url: str) -> WebFetchResult: ...
 
 
 class MemoryPort(Protocol):

@@ -14,6 +14,7 @@ from sage_harness import (
     McpScope,
     McpServerConfig,
     McpToolDescriptor,
+    WebFetchResult,
     WebSearchResult,
 )
 
@@ -43,6 +44,14 @@ class FakeWebSearchPort:
             token_budget=2_000,
             used_tokens=0,
         )
+
+
+class FakeWebFetchPort:
+    available = True
+
+    async def fetch(self, url: str) -> WebFetchResult:
+        del url
+        return WebFetchResult(status="unavailable", error_code="not_used")
 
 
 class CountingTransport:
@@ -210,7 +219,7 @@ def test_capability_api_rejects_unknown_session_and_invalid_filters(tmp_path: Pa
     assert invalid.status_code == 422
 
 
-def test_capability_api_exposes_web_search_only_with_server_port(tmp_path: Path) -> None:
+def test_capability_api_exposes_web_tools_only_with_server_ports(tmp_path: Path) -> None:
     disabled_root = tmp_path / "disabled"
     enabled_root = tmp_path / "enabled"
     disabled_root.mkdir()
@@ -220,6 +229,7 @@ def test_capability_api_exposes_web_search_only_with_server_port(tmp_path: Path)
         coding_model_factory=FakeModel,
         coding_workspace_root=enabled_root,
         coding_storage_root=enabled_root / ".coding",
+        coding_web_fetch_port=FakeWebFetchPort(),
         coding_web_search_port=FakeWebSearchPort(),
     )
 
@@ -233,7 +243,9 @@ def test_capability_api_exposes_web_search_only_with_server_port(tmp_path: Path)
         return {item["capability_id"] for item in payload["capabilities"]}
 
     assert "web:search" not in capability_ids(disabled_app)
+    assert "web:fetch" not in capability_ids(disabled_app)
     assert "web:search" in capability_ids(enabled_app)
+    assert "web:fetch" in capability_ids(enabled_app)
 
 
 def test_capability_health_api_returns_content_free_workspace_metrics(
