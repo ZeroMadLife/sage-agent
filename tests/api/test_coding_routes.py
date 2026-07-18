@@ -310,14 +310,15 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert app.state.coding_sessions[session_id].runtime_profile == "deerflow_v2"
 
 
-def test_deerflow_profile_refuses_host_local_sandbox_in_production(tmp_path: Path) -> None:
+def test_deerflow_profile_refuses_host_local_sandbox_outside_development(
+    tmp_path: Path,
+) -> None:
     app = create_app(
         coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",
         coding_deerflow_v2_enabled=True,
-        cloud_app_env="production",
-        cloud_repository=object(),
+        cloud_app_env="staging",
     )
 
     response = TestClient(app).post(
@@ -1573,31 +1574,29 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
             coding_deerflow_v2_enabled=True,
         )
     )
-    production = TestClient(
+    staging = TestClient(
         create_app(
             coding_model_factory=FakeModel,
             coding_workspace_root=tmp_path,
-            coding_storage_root=tmp_path / ".coding-prod",
+            coding_storage_root=tmp_path / ".coding-staging",
             coding_deerflow_v2_enabled=True,
-            cloud_app_env="production",
-            cloud_repository=object(),
+            cloud_app_env="staging",
         )
     )
-    isolated_production = TestClient(
+    isolated_staging = TestClient(
         create_app(
             coding_model_factory=FakeModel,
             coding_workspace_root=tmp_path,
-            coding_storage_root=tmp_path / ".coding-prod-container",
+            coding_storage_root=tmp_path / ".coding-staging-container",
             coding_deerflow_v2_enabled=True,
             coding_sandbox_provider="container",
-            cloud_app_env="production",
-            cloud_repository=object(),
+            cloud_app_env="staging",
         )
     )
 
     development_models = development.get("/api/v1/coding/models").json()
-    production_models = production.get("/api/v1/coding/models").json()
-    isolated_production_models = isolated_production.get(
+    staging_models = staging.get("/api/v1/coding/models").json()
+    isolated_staging_models = isolated_staging.get(
         "/api/v1/coding/models"
     ).json()
 
@@ -1606,14 +1605,14 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
         "deerflow_v2",
     ]
     assert development_models["default_runtime_profile"] == "deerflow_v2"
-    assert production_models["runtime_profiles"] == ["legacy"]
-    assert production_models["default_runtime_profile"] == "legacy"
-    assert isolated_production_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
-    assert isolated_production_models["default_runtime_profile"] == "deerflow_v2"
+    assert staging_models["runtime_profiles"] == ["legacy"]
+    assert staging_models["default_runtime_profile"] == "legacy"
+    assert isolated_staging_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
+    assert isolated_staging_models["default_runtime_profile"] == "deerflow_v2"
 
-    production_session = production.post("/api/v1/coding/session", json={})
-    assert production_session.status_code == 200
-    assert production_session.json()["runtime_profile"] == "legacy"
+    staging_session = staging.post("/api/v1/coding/session", json={})
+    assert staging_session.status_code == 200
+    assert staging_session.json()["runtime_profile"] == "legacy"
 
 
 def test_app_rejects_invalid_default_runtime_profile(tmp_path: Path) -> None:

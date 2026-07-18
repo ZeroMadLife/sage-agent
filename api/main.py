@@ -313,7 +313,9 @@ def create_app(
             ),
         )
     repo_root = Path(__file__).resolve().parent.parent
-    resolved_workspace_root = Path(coding_workspace_root or repo_root).resolve()
+    resolved_workspace_root = Path(
+        coding_workspace_root or settings.sage_coding_workspace_root or repo_root
+    ).resolve()
     legacy_manifest_path = os.getenv(
         "SAGE_CODING_MODELS_FILE", str(repo_root / "config" / "coding_models.toml")
     )
@@ -449,7 +451,11 @@ def create_app(
     else:
         app.state.coding_web_fetch_port = None
     app.state.coding_workspace_root = resolved_workspace_root
-    app.state.coding_storage_root = Path(coding_storage_root or (repo_root / ".coding")).resolve()
+    app.state.coding_storage_root = Path(
+        coding_storage_root
+        or settings.sage_coding_storage_root
+        or (repo_root / ".coding")
+    ).resolve()
     configured_knowledge_root = (
         Path(knowledge_workspace_root).expanduser()
         if knowledge_workspace_root is not None
@@ -524,6 +530,7 @@ def create_app(
     )
 
     app.include_router(assistant.router)
+    app.include_router(routes.health_router)
     app.include_router(routes.router)
     app.include_router(ws.router)
     app.include_router(coding.router)

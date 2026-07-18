@@ -1,0 +1,128 @@
+name: sage-canary
+
+x-api-common: &api-common
+  image: sage-api:${SAGE_IMAGE_TAG:?SAGE_IMAGE_TAG is required}
+  build:
+    context: ../..
+    dockerfile: infra/docker/sage-api.Dockerfile
+    args:
+      SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}
+  env_file:
+    - ${SAGE_ENV_FILE:-/etc/sage/env}
+  environment:
+    APP_ENV: production
+    APP_DEBUG: "false"
+    POSTGRES_HOST: postgres
+    REDIS_HOST: redis
+    SAGE_CODING_SANDBOX_PROVIDER: container
+    SAGE_CODING_WORKSPACE_ROOT: /opt/sage/data/workspaces
+    SAGE_CODING_STORAGE_ROOT: /opt/sage/data/coding
+    DOCKER_HOST: unix:///var/run/sage-rootless-docker.sock
+  user: "${SAGE_API_UID:?SAGE_API_UID is required}:${SAGE_API_GID:?SAGE_API_GID is required}"
+  init: true
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=256m
+  volumes:
+    - ${SAGE_ROOTLESS_DOCKER_SOCKET:?rootless Docker socket is required}:/var/run/sage-rootless-docker.sock
+    - /opt/sage/data/workspaces:/opt/sage/data/workspaces
+    - /opt/sage/data/coding:/opt/sage/data/coding
+    - /opt/sage/data/knowledge:/opt/sage/data/knowledge
+    - /opt/sage/config:/opt/sage/config
+  networks:
+    - sage
+
+services:
+  postgres:
+    image: ${SAGE_DOCKER_REGISTRY:-docker.io}/pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    volumes:
+      - sage_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sage
+
+  redis:
+    image: ${SAGE_DOCKER_REGISTRY:-docker.io}/library/redis:7.2-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - sage_redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    networks:
+      - sage
+
+  api:
+    <<: *api-common
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  web:
+    image: sage-web:${SAGE_IMAGE_TAG:?SAGE_IMAGE_TAG is required}
+    build:
+      context: ../..
+      dockerfile: infra/docker/sage-web.Dockerfile
+      args:
+        SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${SAGE_GATEWAY_PORT:-8080}:8080"
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /config:rw,noexec,nosuid,mode=1777,size=16m
+      - /data:rw,noexec,nosuid,mode=1777,size=16m
+      - /tmp:rw,noexec,nosuid,mode=1777,size=16m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - sage
+
+networks:
+  sage:
+    driver: bridge
+
+volumes:
+  sage_postgres:
+  sage_redis:

@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+)
 from langchain_core.tools import BaseTool
 from sage_harness import (
     CapabilityRegistry,
@@ -31,7 +39,10 @@ from sage_harness import (
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import (
+    SESSION_COOKIE,
+    require_cloud_authentication_in_production,
+)
 from api.cloud_model_context import (
     combined_capabilities,
     combined_catalog,
@@ -213,7 +224,12 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
 
 
-router = APIRouter(dependencies=[Depends(_enforce_coding_session_owner)])
+router = APIRouter(
+    dependencies=[
+        Depends(require_cloud_authentication_in_production),
+        Depends(_enforce_coding_session_owner),
+    ]
+)
 
 
 def _valid_session_id(session_id: str) -> bool:

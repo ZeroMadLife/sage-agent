@@ -8,6 +8,7 @@ from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Path,
     Query,
@@ -18,6 +19,7 @@ from fastapi import (
     status,
 )
 
+from api.cloud_dependencies import require_cloud_authentication_in_production
 from api.schemas import (
     KnowledgeBatchIngestRequest,
     KnowledgeCitationResponse,
@@ -130,7 +132,7 @@ from core.knowledge.jobs import (
 from core.knowledge.parsing import ParseArtifact
 from core.knowledge.sources import default_source_adapter_registry, fetch_source_by_key
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_cloud_authentication_in_production)])
 _MAX_DIFF_CHARS = 200_000
 _MAX_CITATION_EXCERPT_CHARS = 3_200
 _MAX_PAGE_CONTENT_CHARS = 200_000

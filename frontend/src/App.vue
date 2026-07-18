@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NConfigProvider,
@@ -13,11 +13,23 @@ import {
 } from 'naive-ui'
 import { useWorkbenchPreferences } from './composables/useWorkbenchPreferences'
 import { AssistantNavigation } from './components/assistant'
+import CloudAuthGate from './components/auth/CloudAuthGate.vue'
+import { useCloudAuth } from './composables/useCloudAuth'
 
 const { themeMode } = useWorkbenchPreferences()
 const osTheme = useOsTheme()
 const route = useRoute()
 const usesAssistantShell = computed(() => route.meta.assistantShell === true)
+const cloudAuthRequired = import.meta.env.VITE_CLOUD_AUTH_REQUIRED === 'true'
+const cloudAuthenticated = ref(!cloudAuthRequired)
+const cloudAuthChecking = ref(cloudAuthRequired)
+const { check: checkCloudAuth } = useCloudAuth()
+
+onMounted(async () => {
+  if (!cloudAuthRequired) return
+  cloudAuthenticated.value = await checkCloudAuth()
+  cloudAuthChecking.value = false
+})
 
 const naiveTheme = computed(() => {
   const mode = themeMode.value
@@ -42,7 +54,11 @@ watch(
     <NLoadingBarProvider>
       <NMessageProvider>
         <NDialogProvider>
-          <div class="app-shell">
+          <CloudAuthGate
+            v-if="cloudAuthRequired && !cloudAuthenticated"
+            :checking="cloudAuthChecking"
+          />
+          <div v-else class="app-shell">
             <AssistantNavigation v-if="usesAssistantShell">
               <RouterView />
             </AssistantNavigation>
