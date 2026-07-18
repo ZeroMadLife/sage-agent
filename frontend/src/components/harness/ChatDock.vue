@@ -96,6 +96,10 @@ function handleAnchorChange(eventId: string, offset: number) {
       </div>
     </header>
 
+    <aside v-if="$slots.attention" class="chat-attention" aria-label="需要你处理">
+      <slot name="attention" />
+    </aside>
+
     <ChatTimeline
       class="chat-dock-timeline message-area"
       :output-signature="outputSignature"
@@ -140,6 +144,7 @@ function handleAnchorChange(eventId: string, offset: number) {
   color: var(--sage-text);
   background: var(--sage-surface);
 }
+.chat-dock:has(.chat-attention) { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
 
 .chat-run-strip { padding: 10px 12px 9px; border-bottom: 1px solid var(--sage-border); background: var(--sage-surface-muted); }
 .chat-dock.compact .chat-run-strip { padding-top: 8px; padding-bottom: 7px; }
@@ -164,6 +169,7 @@ function handleAnchorChange(eventId: string, offset: number) {
 .run-stage-track i.running { background: var(--sage-success); }
 .run-stage-track i.blocked { background: var(--sage-warning); }
 .run-stage-track i.failed,.run-stage-track i.cancelled { background: var(--sage-danger); }
+.chat-attention { min-width: 0; border-bottom: 1px solid color-mix(in srgb, var(--sage-warning) 48%, var(--sage-border)); background: var(--sage-warning-bg); }
 .chat-dock-timeline { padding: 14px 12px 16px; }
 .chat-dock-composer { min-width: 0; }
 .surface-context-bar { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 28px; padding: 0 11px; border-top: 1px solid var(--sage-border); color: var(--sage-text-muted); font-size: 10px; }

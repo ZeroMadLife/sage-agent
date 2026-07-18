@@ -3,9 +3,11 @@ import type { KnowledgeGraph, KnowledgeGraphCommunities } from '../../types/api'
 import {
   communitySeedPositions,
   featuredNodeIds,
+  graphScopeNodeIds,
   graphPerformanceProfile,
   graphFocus,
   graphLegendItems,
+  shortestGraphPath,
 } from './knowledgeGraphPresentation'
 
 const nodes = [
@@ -103,4 +105,26 @@ it('defines deterministic 200, 1k and 5k rendering budgets', () => {
   expect(graphPerformanceProfile(1_201, 2_000, true)).toMatchObject({
     tier: 'fallback', useListFallback: true,
   })
+})
+
+it('projects global, goal and local graph scopes from existing edges', () => {
+  expect(graphScopeNodeIds(graph, {
+    mode: 'global', depth: 2, anchorNodeId: null, goalNodeIds: [],
+  })).toEqual(new Set(nodes.map((node) => node.node_id)))
+
+  expect(graphScopeNodeIds(graph, {
+    mode: 'goal', depth: 1, anchorNodeId: null, goalNodeIds: ['page-neighbor'],
+  })).toEqual(new Set(['page-neighbor', 'center']))
+
+  expect(graphScopeNodeIds(graph, {
+    mode: 'local', depth: 1, anchorNodeId: 'center', goalNodeIds: [],
+  })).toEqual(new Set(['center', 'source-neighbor', 'page-neighbor']))
+})
+
+it('finds a deterministic evidence path from the selected node to a goal node', () => {
+  expect(shortestGraphPath(graph, 'source-neighbor', ['page-neighbor'])).toEqual({
+    nodeIds: ['source-neighbor', 'center', 'page-neighbor'],
+    edgeIds: ['edge-source', 'edge-page'],
+  })
+  expect(shortestGraphPath(graph, 'isolated', ['page-neighbor'])).toBeNull()
 })

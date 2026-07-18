@@ -50,4 +50,18 @@ describe('ChatDock', () => {
     expect(wrapper.attributes('data-run-state')).toBe('recovering')
     expect(wrapper.get('.run-strip-title').text()).toContain('恢复连接')
   })
+
+  it('pins an attention slot above the conversation timeline', () => {
+    const wrapper = mount(ChatDock, {
+      props: {
+        projection: projection('blocked', 'act'), connectionState: 'connected',
+        outputSignature: 'attention', messageCount: 1, sessionKey: 'session-1',
+        timelineReady: true,
+      },
+      slots: { attention: '<button type="button">批准并继续</button>' },
+    })
+
+    expect(wrapper.get('.chat-attention').text()).toContain('批准并继续')
+    expect(wrapper.get('.chat-attention').element.nextElementSibling?.classList).toContain('chat-dock-timeline')
+  })
 })

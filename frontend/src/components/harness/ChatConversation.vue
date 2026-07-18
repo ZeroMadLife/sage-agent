@@ -23,6 +23,7 @@ const props = withDefaults(defineProps<{
   selectedRunId?: string
   pendingApproval?: CodingApproval | null
   approvalBusy?: boolean
+  showApprovalCard?: boolean
   isThinking?: boolean
   thinkingPhase?: string
   showProcess?: boolean
@@ -35,6 +36,7 @@ const props = withDefaults(defineProps<{
   selectedRunId: '',
   pendingApproval: null,
   approvalBusy: false,
+  showApprovalCard: true,
   isThinking: false,
   thinkingPhase: '',
   showProcess: true,
@@ -142,7 +144,7 @@ function pendingToolForRun(runId: string) {
         <CodingThinkingIndicator :phase="thinkingPhase" :state="thinkingCharacterState" />
       </div>
       <CodingApprovalCard
-        v-if="isActiveTurn(turn.run_id) && pendingApproval"
+        v-if="showApprovalCard && isActiveTurn(turn.run_id) && pendingApproval"
         :approval="pendingApproval"
         :busy="approvalBusy"
         @respond="emit('respondApproval', $event)"
@@ -174,7 +176,7 @@ function pendingToolForRun(runId: string) {
     :show-process="showProcess"
   />
   <CodingApprovalCard
-    v-if="pendingApproval && !activeRunId"
+    v-if="showApprovalCard && pendingApproval && !activeRunId"
     :approval="pendingApproval"
     :busy="approvalBusy"
     @respond="emit('respondApproval', $event)"

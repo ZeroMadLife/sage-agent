@@ -16,16 +16,28 @@ import {
   graphFocus,
   graphLegendItems,
   graphPerformanceProfile,
+  graphScopeNodeIds,
+  shortestGraphPath,
+  type KnowledgeGraphScopeMode,
 } from './knowledgeGraphPresentation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   graph: KnowledgeGraph
   communities: KnowledgeGraphCommunities | null
   selectedNodeId: string | null
   colorMode: 'type' | 'community'
   visibleKinds: KnowledgeGraphNodeKind[]
   query: string
-}>()
+  scopeMode?: KnowledgeGraphScopeMode
+  depth?: 1 | 2 | 3
+  goalNodeIds?: string[]
+  showGoalPath?: boolean
+}>(), {
+  scopeMode: 'global',
+  depth: 2,
+  goalNodeIds: () => [],
+  showGoalPath: false,
+})
 
 const emit = defineEmits<{
   select: [nodeId: string | null]
@@ -49,6 +61,7 @@ let hoveredNodeId: string | null = null
 let dimNodeColor = 'rgba(126, 132, 142, 0.2)'
 let dimEdgeColor = 'rgba(126, 132, 142, 0.08)'
 let focusEdgeColor = '#58c78b'
+let goalPathEdgeColor = '#b46b27'
 let hoverSurfaceColor = '#25282d'
 let hoverBorderColor = '#4a5059'
 let hoverTextColor = '#f3f4f6'
@@ -153,18 +166,36 @@ const communityColor = computed(() => {
 })
 const visibleSet = computed(() => new Set(props.visibleKinds))
 const normalizedQuery = computed(() => props.query.trim().toLocaleLowerCase())
+const goalPath = computed(() => props.showGoalPath
+  ? shortestGraphPath(props.graph, props.selectedNodeId, props.goalNodeIds)
+  : null)
+const scopeNodeIds = computed(() => {
+  const ids = graphScopeNodeIds(props.graph, {
+    mode: props.scopeMode,
+    depth: props.depth,
+    anchorNodeId: props.selectedNodeId,
+    goalNodeIds: props.goalNodeIds,
+  })
+  for (const nodeId of goalPath.value?.nodeIds ?? []) ids.add(nodeId)
+  return ids
+})
 const featuredLabels = computed(() => featuredNodeIds(props.graph, props.communities, 1))
 const focus = computed(() => graphFocus(props.graph, props.selectedNodeId, 2))
 const selectedNode = computed(() => props.graph.nodes.find(
   (node) => node.node_id === props.selectedNodeId,
 ) ?? null)
+const selectedNodeVisible = computed(() => Boolean(selectedNode.value && isNodeVisible(selectedNode.value)))
 const selectedMetric = computed(() => (
   props.selectedNodeId ? metricByNode.value.get(props.selectedNodeId) : null
 ))
 const selectedCommunity = computed(() => props.communities?.communities.find(
   (item) => item.community_id === selectedMetric.value?.community_id,
 ) ?? null)
-const sourceCount = computed(() => props.graph.nodes.filter((node) => node.kind === 'source').length)
+const scopeLabel = computed(() => ({ global: '全局图谱', goal: '目标图谱', local: '局部图谱' }[props.scopeMode]))
+const sourceCount = computed(() => props.graph.nodes.filter(
+  (node) => node.kind === 'source' && isNodeVisible(node),
+).length)
+const visibleNodeCount = computed(() => props.graph.nodes.filter(isNodeVisible).length)
 const performanceProfile = computed(() => graphPerformanceProfile(
   props.graph.nodes.length,
   props.graph.edges.length,
@@ -187,6 +218,7 @@ const mobileNodes = computed(() => props.graph.nodes
   .slice(0, 80))
 
 function isNodeVisible(node: KnowledgeGraphNode) {
+  if (!scopeNodeIds.value.has(node.node_id)) return false
   if (!visibleSet.value.has(node.kind)) return false
   const query = normalizedQuery.value
   return !query || node.label.toLocaleLowerCase().includes(query)
@@ -219,7 +251,7 @@ function cachedPositions() {
 }
 
 function savePositions(graph: Graph) {
-  const positions: Record<string, { x: number; y: number }> = {}
+  const positions: Record<string, { x: number; y: number }> = Object.fromEntries(cachedPositions())
   graph.forEachNode((nodeId, attributes) => {
     positions[nodeId] = { x: Number(attributes.x), y: Number(attributes.y) }
   })
@@ -245,51 +277,57 @@ function applyPresentation() {
     const focused = nodeId === focusNodeId
     const connected = focusValue.connectedNodeIds.has(nodeId)
     const hovered = nodeId === hoveredNodeId
+    const onGoalPath = Boolean(goalPath.value?.nodeIds.includes(nodeId))
     const baseColor = String(attributes.baseColor)
     const baseSize = Number(attributes.baseSize)
     sigmaGraph?.setNodeAttribute(
       nodeId,
       'color',
-      focusNodeId && !focused && !connected ? dimNodeColor : baseColor,
+      focusNodeId && !focused && !connected && !onGoalPath ? dimNodeColor : baseColor,
     )
     sigmaGraph?.setNodeAttribute(
       nodeId,
       'size',
-      selected ? baseSize * 1.38 : focused ? baseSize * 1.22 : connected || hovered ? baseSize * 1.08 : baseSize,
+      selected ? baseSize * 1.38 : focused ? baseSize * 1.22 : onGoalPath ? baseSize * 1.14 : connected || hovered ? baseSize * 1.08 : baseSize,
     )
     sigmaGraph?.setNodeAttribute(
       nodeId,
       'forceLabel',
-      hovered || (focusNodeId
+      hovered || onGoalPath || (focusNodeId
         ? focusValue.labelNodeIds.has(nodeId)
         : featuredLabels.value.has(nodeId)),
     )
     sigmaGraph?.setNodeAttribute(nodeId, 'highlighted', false)
-    sigmaGraph?.setNodeAttribute(nodeId, 'zIndex', selected ? 6 : focused ? 5 : connected || hovered ? 3 : 1)
+    sigmaGraph?.setNodeAttribute(nodeId, 'zIndex', selected ? 6 : focused ? 5 : onGoalPath ? 4 : connected || hovered ? 3 : 1)
   })
 
   sigmaGraph.forEachEdge((edgeId, attributes) => {
     const focused = focusValue.focusedEdgeIds.has(edgeId)
+    const onGoalPath = Boolean(goalPath.value?.edgeIds.includes(edgeId))
     sigmaGraph?.setEdgeAttribute(
       edgeId,
       'hidden',
-      Boolean(attributes.globalHidden && !focused),
+      Boolean(attributes.globalHidden && !focused && !onGoalPath),
     )
     sigmaGraph?.setEdgeAttribute(
       edgeId,
       'color',
-      focusNodeId ? (focused ? focusEdgeColor : dimEdgeColor) : String(attributes.baseColor),
+      onGoalPath
+        ? goalPathEdgeColor
+        : focusNodeId ? (focused ? focusEdgeColor : dimEdgeColor) : String(attributes.baseColor),
     )
     sigmaGraph?.setEdgeAttribute(
       edgeId,
       'size',
-      focusNodeId && focused
+      onGoalPath
+        ? Math.max(1.7, Number(attributes.baseSize) * 1.7)
+        : focusNodeId && focused
         ? Math.max(1.35, Number(attributes.baseSize) * 1.45)
         : focusNodeId
           ? Math.min(0.34, Number(attributes.baseSize))
         : Number(attributes.baseSize),
     )
-    sigmaGraph?.setEdgeAttribute(edgeId, 'zIndex', focusNodeId && focused ? 2 : 0)
+    sigmaGraph?.setEdgeAttribute(edgeId, 'zIndex', onGoalPath ? 3 : focusNodeId && focused ? 2 : 0)
   })
   renderer?.refresh()
 }
@@ -313,7 +351,7 @@ function destroyRenderer() {
 
 async function mountRenderer(requestId: number) {
   rendererError.value = ''
-  if (performanceProfile.value.useListFallback || !container.value) {
+  if (performanceProfile.value.useListFallback || visibleNodeCount.value === 0 || !container.value) {
     if (performanceProfile.value.useListFallback) destroyRenderer()
     return
   }
@@ -329,6 +367,7 @@ async function mountRenderer(requestId: number) {
   const labelColor = rootStyles.getPropertyValue('--sage-text').trim() || '#202124'
   const labelFont = rootStyles.getPropertyValue('--sage-font-sans').trim() || 'sans-serif'
   const brandColor = rootStyles.getPropertyValue('--sage-brand').trim() || '#58c78b'
+  const reviewColor = rootStyles.getPropertyValue('--sage-review-strong').trim() || '#b46b27'
   const darkTheme = document.documentElement.dataset.theme === 'dark'
   const smallGraph = performanceProfile.value.tier === 'small'
   const mutedEdgeColor = darkTheme
@@ -340,13 +379,16 @@ async function mountRenderer(requestId: number) {
   dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.09)' : 'rgba(113, 122, 137, 0.12)'
   dimEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.08)' : 'rgba(113, 122, 137, 0.08)'
   focusEdgeColor = brandColor
+  goalPathEdgeColor = reviewColor
   hoverSurfaceColor = rootStyles.getPropertyValue('--sage-surface-raised').trim()
     || (darkTheme ? '#25282d' : '#ffffff')
   hoverBorderColor = rootStyles.getPropertyValue('--sage-border-strong').trim()
     || (darkTheme ? '#4a5059' : '#c7ccd4')
   hoverTextColor = labelColor
   let missingCachedPosition = false
-  props.graph.nodes.filter(isNodeVisible).forEach((node, index) => {
+  const visibleNodes = props.graph.nodes.filter(isNodeVisible)
+  const visibleNodeIds = new Set(visibleNodes.map((node) => node.node_id))
+  visibleNodes.forEach((node, index) => {
     const cachedPosition = positions.get(node.node_id)
     if (!cachedPosition) missingCachedPosition = true
     const position = cachedPosition
@@ -372,8 +414,14 @@ async function mountRenderer(requestId: number) {
   })
   const preferredNodeId = props.selectedNodeId
   const renderedEdges = props.graph.edges
+    .filter((edge) => (
+      visibleNodeIds.has(edge.source_node_id) && visibleNodeIds.has(edge.target_node_id)
+    ))
     .slice()
     .sort((left, right) => {
+      const leftPath = Number(goalPath.value?.edgeIds.includes(left.edge_id))
+      const rightPath = Number(goalPath.value?.edgeIds.includes(right.edge_id))
+      if (leftPath !== rightPath) return rightPath - leftPath
       const leftFocused = Number(
         left.source_node_id === preferredNodeId || left.target_node_id === preferredNodeId,
       )
@@ -560,6 +608,10 @@ watch(
     props.colorMode,
     props.visibleKinds.join(','),
     props.query,
+    props.scopeMode,
+    props.depth,
+    props.goalNodeIds.join(','),
+    props.showGoalPath,
     props.communities?.analysis.analysis_revision,
     compactViewport.value,
     themeRevision.value,
@@ -590,15 +642,16 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="surface" class="graph-surface">
-    <div v-if="!listFallback" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
-    <div v-if="!listFallback && selectedNode" class="graph-focus-summary" role="status">
+  <div ref="surface" class="graph-surface" :data-scope="scopeMode">
+    <div v-if="!listFallback && visibleNodeCount" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
+    <div v-if="!listFallback && selectedNode && selectedNodeVisible" class="graph-focus-summary" role="status">
       <i :style="{ background: nodeColor(selectedNode) }"></i>
       <span>
         <strong>{{ selectedNode.label }}</strong>
         <small>
           {{ selectedNode.kind }} · {{ focus.connectedNodeIds.size }} 条直接连接
           <template v-if="selectedCommunity && selectedCommunity.node_count > 1"> · {{ selectedCommunity.label }}</template>
+          <template v-if="goalPath"> · 到目标 {{ goalPath.edgeIds.length }} 跳</template>
         </small>
       </span>
       <button type="button" title="退出聚焦" aria-label="退出节点聚焦" @click="emit('select', null)">
@@ -606,8 +659,17 @@ onBeforeUnmount(() => {
       </button>
     </div>
     <div v-else-if="!listFallback" class="graph-global-summary">
-      <strong>全局图谱</strong>
-      <span>{{ communities?.analysis.community_count ?? 0 }} 个社区 · {{ sourceCount }} 个来源文件 · {{ performanceProfile.tier }}</span>
+      <strong>{{ scopeLabel }}</strong>
+      <span>
+        {{ visibleNodeCount }} 个可见节点
+        <template v-if="visibleKinds.includes('source')"> · {{ sourceCount }} 个来源</template>
+        <template v-else> · 来源已隐藏</template>
+        <template v-if="scopeMode !== 'global'"> · 深度 {{ depth }}</template>
+      </span>
+    </div>
+    <div v-if="!listFallback && !visibleNodeCount" class="graph-scope-empty" role="status">
+      <strong>{{ scopeLabel }}暂无匹配节点</strong>
+      <span>{{ scopeMode === 'goal' ? '当前学习目标还没有匹配到可见节点。' : '调整节点类型、搜索条件或探索范围。' }}</span>
     </div>
     <div v-if="!listFallback" class="graph-legend-panel" :data-mode="colorMode" aria-label="图谱图例">
       <span v-for="item in legendItems" :key="item.id" :title="`${item.label} · ${item.count}`">
@@ -643,6 +705,7 @@ onBeforeUnmount(() => {
 .sigma-container { position:absolute; inset:0; cursor:grab; }.sigma-container:active { cursor:grabbing; }.graph-controls { position:absolute; right:16px; bottom:16px; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(10px); }.graph-controls button { display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-bottom:1px solid var(--sage-border); color:var(--sage-text-secondary); background:transparent; }.graph-controls button:last-child { border-bottom:0; }.graph-controls button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.graph-error { position:absolute; top:16px; left:50%; margin:0; padding:8px 11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-danger); background:var(--sage-surface); transform:translateX(-50%); }
 .graph-focus-summary { position:absolute; left:16px; bottom:16px; display:grid; grid-template-columns:10px minmax(0,1fr) 28px; align-items:center; gap:10px; width:min(390px,calc(100% - 82px)); min-height:54px; padding:8px 8px 8px 12px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); color:var(--sage-text); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(12px); }.graph-focus-summary>i { width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 4px color-mix(in srgb,currentColor 12%,transparent); }.graph-focus-summary span,.graph-focus-summary strong,.graph-focus-summary small { display:block; min-width:0; }.graph-focus-summary strong { overflow:hidden; font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary small { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:var(--sage-radius); color:var(--sage-text-muted); background:transparent; }.graph-focus-summary button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }
 .graph-global-summary { position:absolute; left:16px; bottom:16px; display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:color-mix(in srgb,var(--sage-surface) 90%,transparent); font-size:11px; backdrop-filter:blur(8px); }.graph-global-summary strong { color:var(--sage-text-secondary); font-size:11px; }
+.graph-scope-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:5px; padding:24px; color:var(--sage-text-muted); text-align:center; }.graph-scope-empty strong { color:var(--sage-text-secondary); font-size:var(--sage-font-md); }.graph-scope-empty span { max-width:320px; font-size:var(--sage-font-xs); line-height:1.55; }
 .graph-legend-panel { position:absolute; top:14px; left:14px; display:flex; flex-wrap:wrap; gap:5px; width:min(520px,calc(100% - 100px)); pointer-events:none; }.graph-legend-panel span { display:grid; grid-template-columns:8px minmax(0,auto) auto; align-items:center; gap:5px; min-width:0; height:26px; padding:0 7px; border:1px solid color-mix(in srgb,var(--sage-border) 76%,transparent); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:color-mix(in srgb,var(--sage-surface) 84%,transparent); font-size:10px; backdrop-filter:blur(8px); }.graph-legend-panel i { width:7px; height:7px; border-radius:50%; }.graph-legend-panel b { max-width:105px; overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }.graph-legend-panel small { color:var(--sage-text-muted); font-size:9px; }
 .mobile-node-list { height:100%; overflow:auto; padding:8px 14px 24px; }.mobile-node-list button { display:grid; grid-template-columns:10px minmax(0,1fr); align-items:center; gap:11px; width:100%; min-height:58px; padding:8px 4px; border:0; border-bottom:1px solid var(--sage-border); text-align:left; color:var(--sage-text); background:transparent; }.mobile-node-list button.active { background:var(--sage-source-bg); }.mobile-node-list i { width:9px; height:9px; border-radius:50%; }.mobile-node-list span,.mobile-node-list strong,.mobile-node-list small { display:block; min-width:0; }.mobile-node-list strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:var(--sage-font-md); }.mobile-node-list small { margin-top:3px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.mobile-node-list>p { color:var(--sage-text-muted); text-align:center; }
 @media (max-width:679px) {

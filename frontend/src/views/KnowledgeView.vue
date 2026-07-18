@@ -18,6 +18,7 @@ import {
   Network,
   PanelLeftOpen,
   RefreshCw,
+  Route,
   RotateCcw,
   Search,
   Sparkles,
@@ -51,8 +52,12 @@ import {
   undoKnowledgeAutoApply,
 } from '../api/knowledge'
 import { KnowledgeGraphCanvas, KnowledgeInspector } from '../components/knowledge'
+import {
+  shortestGraphPath,
+  type KnowledgeGraphScopeMode,
+} from '../components/knowledge/knowledgeGraphPresentation'
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
-import { CodingComposer, CodingPlanApproval } from '../components/coding'
+import { CodingApprovalCard, CodingComposer, CodingPlanApproval } from '../components/coding'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { knowledgeSurfaceAdapter } from '../harness/surfaces/knowledge'
 import { useHarnessSession } from '../harness/useHarnessSession'
@@ -100,6 +105,9 @@ const selectedNodeId = ref<string | null>(null)
 const selectedPageId = ref<string | null>(null)
 const mode = ref<WorkspaceMode>('graph')
 const colorMode = ref<'type' | 'community'>('community')
+const graphScope = ref<KnowledgeGraphScopeMode>('global')
+const graphDepth = ref<1 | 2 | 3>(2)
+const showGoalPath = ref(false)
 const visibleKinds = ref<KnowledgeGraphNodeKind[]>([
   'page', 'project', 'concept', 'decision', 'tool',
 ])
@@ -148,6 +156,17 @@ const selectedPage = computed<KnowledgePage | null>(() => {
 const selectedCommunityId = computed(() => communities.value?.node_metrics.find(
   (item) => item.node_id === selectedNodeId.value,
 )?.community_id ?? null)
+const goalNodeIds = computed(() => [...new Set(
+  alignments.value.flatMap((item) => item.matched_node_ids),
+)])
+const selectedGoalPath = computed(() => graph.value
+  ? shortestGraphPath(graph.value, selectedNodeId.value, goalNodeIds.value)
+  : null)
+const graphScopeLabel = computed(() => ({
+  global: '全局知识图谱',
+  goal: '目标知识图谱',
+  local: '局部知识图谱',
+}[graphScope.value]))
 const filteredPages = computed(() => {
   const value = query.value.trim().toLocaleLowerCase()
   if (!value) return pages.value
@@ -188,6 +207,9 @@ watch(() => chat.activeRun?.run_id || '', (runId, previousRunId) => {
   if (runId && runId !== previousRunId) selectedHarnessRunId.value = runId
 })
 watch(() => chat.sessionId, () => { selectedHarnessRunId.value = '' })
+watch(selectedGoalPath, (path) => {
+  if (!path) showGoalPath.value = false
+})
 
 function selectHarnessRun(runId: string) {
   if (runId) selectedHarnessRunId.value = runId
@@ -309,7 +331,11 @@ async function selectNode(nodeId: string | null) {
     visibleKinds.value = [...visibleKinds.value, nodeKind]
   }
   neighborhood.value = null
-  if (!nodeId) return
+  if (!nodeId) {
+    if (graphScope.value === 'local') graphScope.value = 'global'
+    showGoalPath.value = false
+    return
+  }
   if (viewportWidth.value < 768) harnessLayout.value?.selectTab('details')
   const requestId = ++nodeRequest
   nodeLoading.value = true
@@ -321,6 +347,34 @@ async function selectNode(nodeId: string | null) {
   } finally {
     if (requestId === nodeRequest) nodeLoading.value = false
   }
+}
+
+function selectGraphScope(scope: KnowledgeGraphScopeMode) {
+  if (scope === 'local' && !selectedNodeId.value) {
+    notice.value = '先选择一个知识节点，再进入局部图谱。'
+    return
+  }
+  if (scope === 'goal' && goalNodeIds.value.length === 0) {
+    notice.value = '当前目标还没有匹配到图谱节点。'
+    return
+  }
+  graphScope.value = scope
+}
+
+function toggleGoalPath() {
+  if (!selectedNodeId.value) {
+    notice.value = '先选择节点，再查看它到学习目标的路径。'
+    return
+  }
+  if (!goalNodeIds.value.length) {
+    notice.value = '当前目标还没有可连接的图谱节点。'
+    return
+  }
+  if (!selectedGoalPath.value) {
+    notice.value = '当前节点与学习目标之间没有可追溯路径。'
+    return
+  }
+  showGoalPath.value = !showGoalPath.value
 }
 
 function closeInspector() {
@@ -716,6 +770,16 @@ onBeforeUnmount(() => {
             >{{ tabItem.label }}</button>
           </div>
           <div v-if="mode === 'graph'" class="graph-filters">
+            <div class="graph-scope-control" role="group" aria-label="图谱探索范围">
+              <button type="button" :aria-pressed="graphScope === 'global'" :class="{ active: graphScope === 'global' }" @click="selectGraphScope('global')">全局</button>
+              <button type="button" :aria-pressed="graphScope === 'goal'" :class="{ active: graphScope === 'goal' }" :disabled="!goalNodeIds.length" @click="selectGraphScope('goal')">目标</button>
+              <button type="button" :aria-pressed="graphScope === 'local'" :class="{ active: graphScope === 'local' }" :disabled="!selectedNodeId" @click="selectGraphScope('local')">局部</button>
+            </div>
+            <div class="graph-depth-control" role="group" aria-label="图谱探索深度">
+              <span>深度</span>
+              <button v-for="depth in ([1, 2, 3] as const)" :key="depth" type="button" :aria-pressed="graphDepth === depth" :class="{ active: graphDepth === depth }" @click="graphDepth = depth">{{ depth }}</button>
+            </div>
+            <button type="button" class="goal-path-toggle" :class="{ active: showGoalPath }" :aria-pressed="showGoalPath" :disabled="!selectedGoalPath" @click="toggleGoalPath"><Route :size="15" />到目标的路径</button>
             <label title="节点着色方式">
               <CircleDot :size="15" />
               <select v-model="colorMode" aria-label="图谱着色方式">
@@ -747,7 +811,7 @@ onBeforeUnmount(() => {
           <section v-if="mode === 'graph'" class="graph-stage" aria-labelledby="graph-title">
             <div v-if="graph && graph.nodes.length" class="graph-heading">
               <div>
-                <h1 id="graph-title">知识图谱</h1>
+                <h1 id="graph-title">{{ graphScopeLabel }}</h1>
                 <span>{{ graph.snapshot.node_count }} 个节点 · {{ graph.snapshot.edge_count }} 条证据连接 · {{ communities?.analysis.community_count ?? 0 }} 个社区</span>
               </div>
               <span class="graph-reading-hint">悬停查看邻域 · 点击打开证据</span>
@@ -760,6 +824,10 @@ onBeforeUnmount(() => {
               :color-mode="colorMode"
               :visible-kinds="visibleKinds"
               :query="query"
+              :scope-mode="graphScope"
+              :depth="graphDepth"
+              :goal-node-ids="goalNodeIds"
+              :show-goal-path="showGoalPath"
               @select="selectNode"
             />
             <div v-else class="stage-state empty">
@@ -893,6 +961,14 @@ onBeforeUnmount(() => {
             empty-description="选择节点后提问，本轮会冻结 graph、page 与 revision。"
             @anchor-change="chat.setScrollAnchor"
           >
+            <template v-if="chat.pendingApproval" #attention>
+              <CodingApprovalCard
+                :approval="chat.pendingApproval"
+                :busy="chat.approvalBusy"
+                compact
+                @respond="chat.respondApproval"
+              />
+            </template>
             <ChatConversation
               :legacy-messages="chat.legacyMessages"
               :messages="chat.messages"
@@ -901,6 +977,7 @@ onBeforeUnmount(() => {
               :active-run-id="chat.activeRun?.run_id || ''"
               :selected-run-id="harnessProjection.runId"
               :pending-approval="chat.pendingApproval"
+              :show-approval-card="false"
               :approval-busy="chat.approvalBusy"
               :is-thinking="chat.isThinking"
               :thinking-phase="chat.thinkingPhase"
@@ -1027,7 +1104,7 @@ onBeforeUnmount(() => {
 .workspace-body { position:relative; display:grid; grid-template-columns:238px minmax(0,1fr); min-width:0; min-height:0; overflow:hidden; }.workspace-body.is-loading { grid-template-columns:238px minmax(0,1fr); }
 .knowledge-harness { min-width:0; min-height:0; height:100%; }
 .knowledge-library { z-index:2; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); }.knowledge-library>header { display:flex; align-items:center; justify-content:space-between; min-height:58px; padding:0 14px; border-bottom:1px solid var(--sage-border); }.knowledge-library>header div { display:flex; flex-direction:column; }.knowledge-library>header strong { font-size:var(--sage-font-md); }.knowledge-library>header small { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.library-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; margin:12px; border:1px solid var(--sage-border); background:var(--sage-border); }.library-metrics button { min-width:0; min-height:62px; padding:8px 3px; border:0; color:var(--sage-text); background:var(--sage-surface); }.library-metrics button:hover { background:var(--sage-surface-muted); }.library-metrics strong,.library-metrics span { display:block; }.library-metrics strong { font-size:17px; }.library-metrics span { color:var(--sage-text-muted); font-size:11px; }.library-search { display:flex; align-items:center; gap:7px; margin:0 12px 12px; min-height:34px; padding:0 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:var(--sage-surface-raised); }.library-search:focus-within { border-color:var(--sage-source); }.library-search input { min-width:0; width:100%; border:0; outline:0; color:var(--sage-text); background:transparent; font-size:var(--sage-font-sm); }.goal-summary { margin:0 12px 12px; padding:11px; border-left:3px solid var(--sage-brand); background:var(--sage-brand-bg); }.goal-summary span { display:flex; align-items:center; gap:5px; color:var(--sage-brand-strong); font-size:11px; font-weight:700; }.goal-summary strong,.goal-summary small { display:block; }.goal-summary strong { margin-top:5px; font-size:var(--sage-font-sm); line-height:1.45; }.goal-summary small { margin-top:4px; color:var(--sage-text-muted); font-size:10px; }.library-nav { display:grid; gap:2px; padding:0 8px 10px; border-bottom:1px solid var(--sage-border); }.library-nav button { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; min-height:36px; padding:0 8px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; font-size:var(--sage-font-sm); }.library-nav button:hover,.library-nav button.active { color:var(--sage-text); background:var(--sage-surface-muted); }.library-nav button.active { color:var(--sage-brand-strong); font-weight:650; }.library-nav em { min-width:20px; padding:1px 5px; border-radius:9px; color:var(--sage-review-strong); background:var(--sage-review-bg); text-align:center; font-size:10px; font-style:normal; }.page-tree { min-height:0; flex:1; overflow:auto; padding:8px; }.tree-heading { display:flex; justify-content:space-between; padding:5px 7px 7px; color:var(--sage-text-muted); font-size:11px; }.page-tree button { display:grid; grid-template-columns:17px minmax(0,1fr); align-items:center; gap:6px; width:100%; min-height:43px; padding:5px 7px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; }.page-tree button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.page-tree button>span,.page-tree strong,.page-tree small { display:block; min-width:0; }.page-tree strong { overflow:hidden; font-size:var(--sage-font-xs); text-overflow:ellipsis; white-space:nowrap; }.page-tree small { margin-top:1px; color:var(--sage-text-muted); font-size:10px; }.page-tree>p { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-align:center; }.library-import { display:flex; align-items:center; gap:7px; min-height:40px; margin:8px 12px 12px; padding:0 10px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); }.library-import:hover { color:var(--sage-brand-strong); border-color:var(--sage-brand); }
-.knowledge-stage { min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }.stage-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:50px; padding:0 14px; border-bottom:1px solid var(--sage-border); }.stage-tabs { display:flex; align-self:stretch; min-width:0; }.stage-tabs button { min-height:49px; padding:0 12px; border:0; border-bottom:2px solid transparent; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-sm); white-space:nowrap; }.stage-tabs button.active { border-color:var(--sage-brand); color:var(--sage-text); font-weight:650; }.graph-filters,.graph-filters label,.graph-filters summary { display:flex; align-items:center; }.graph-filters { gap:6px; }.graph-filters>label,.graph-filters summary { gap:5px; min-height:32px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-xs); }.graph-filters select { border:0; outline:0; color:inherit; background:transparent; }.graph-filters details { position:relative; }.graph-filters summary { cursor:pointer; list-style:none; }.kind-menu { position:absolute; z-index:15; top:38px; right:0; display:grid; width:150px; padding:8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); }.kind-menu label { min-height:30px; border:0; padding:0 4px; }.kind-menu input { accent-color:var(--sage-brand); }
+.knowledge-stage { min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }.stage-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:50px; padding:0 14px; overflow-x:auto; border-bottom:1px solid var(--sage-border); scrollbar-width:none; }.stage-toolbar::-webkit-scrollbar { display:none; }.stage-tabs { display:flex; align-self:stretch; min-width:0; flex:none; }.stage-tabs button { min-height:49px; padding:0 12px; border:0; border-bottom:2px solid transparent; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-sm); white-space:nowrap; }.stage-tabs button.active { border-color:var(--sage-brand); color:var(--sage-text); font-weight:650; }.graph-filters,.graph-filters label,.graph-filters summary { display:flex; align-items:center; }.graph-filters { flex:none; gap:6px; }.graph-filters>label,.graph-filters summary { gap:5px; min-height:32px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-xs); }.graph-filters select { border:0; outline:0; color:inherit; background:transparent; }.graph-filters details { position:relative; }.graph-filters summary { cursor:pointer; list-style:none; }.graph-scope-control,.graph-depth-control { display:flex; align-items:center; height:32px; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-muted); }.graph-scope-control button,.graph-depth-control button,.goal-path-toggle { min-height:30px; padding:0 8px; border:0; color:var(--sage-text-muted); background:transparent; font-size:10px; white-space:nowrap; }.graph-scope-control button+button,.graph-depth-control button+button { border-left:1px solid var(--sage-border); }.graph-scope-control button.active,.graph-depth-control button.active { color:var(--sage-brand-strong); background:var(--sage-surface-raised); font-weight:700; }.graph-scope-control button:disabled,.goal-path-toggle:disabled { cursor:not-allowed; opacity:.45; }.graph-depth-control>span { padding:0 7px; color:var(--sage-text-muted); font-size:9px; }.goal-path-toggle { display:inline-flex; align-items:center; gap:5px; height:32px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); }.goal-path-toggle.active { border-color:var(--sage-review-strong); color:var(--sage-review-strong); background:var(--sage-review-bg); }.kind-menu { position:absolute; z-index:15; top:38px; right:0; display:grid; width:150px; padding:8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); }.kind-menu label { min-height:30px; border:0; padding:0 4px; }.kind-menu input { accent-color:var(--sage-brand); }
 .graph-stage { position:relative; display:grid; grid-template-rows:60px minmax(0,1fr); height:calc(100% - 50px); min-height:0; }.graph-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 18px; border-bottom:1px solid var(--sage-border); }.graph-heading h1,.list-stage h1 { margin:0; font-size:18px; letter-spacing:0; }.graph-heading>div>span,.graph-reading-hint { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.graph-reading-hint { white-space:nowrap; }
 .stage-state { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:7px; height:100%; color:var(--sage-text-muted); text-align:center; }.stage-state strong { color:var(--sage-text); font-size:var(--sage-font-md); }.stage-state span { max-width:440px; font-size:var(--sage-font-sm); }.stage-state.empty { min-height:260px; padding:24px; }.stage-state.empty .primary-button { margin-top:8px; }.list-stage { height:calc(100% - 50px); min-height:0; overflow:auto; padding:22px 24px 42px; }.list-stage>header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:18px; border-bottom:1px solid var(--sage-border); }.list-stage>header p { margin:4px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); }.list-stage>header>strong { color:var(--sage-text-muted); font-size:24px; }.wiki-list article { display:grid; grid-template-columns:minmax(0,1fr) auto 34px; align-items:center; gap:16px; min-height:68px; border-bottom:1px solid var(--sage-border); }.wiki-main { display:grid; grid-template-columns:22px minmax(0,1fr); align-items:center; gap:9px; min-width:0; padding:7px 0; border:0; color:var(--sage-text-secondary); text-align:left; background:transparent; }.wiki-main span,.wiki-main strong,.wiki-main code { display:block; min-width:0; }.wiki-main strong { overflow:hidden; color:var(--sage-text); font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.wiki-main code { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.wiki-list article>div { display:flex; flex-direction:column; align-items:flex-end; color:var(--sage-text-muted); font-size:11px; }.empty-row { padding:28px 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); text-align:center; }
 .index-line,.migration-line { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:11px; margin:16px 0; padding:12px 14px; border-left:3px solid var(--sage-source); background:var(--sage-source-bg); }.index-line>span,.index-line strong,.index-line small,.migration-line>span,.migration-line strong,.migration-line small { display:block; min-width:0; }.index-line small,.migration-line small { margin-top:2px; color:var(--sage-text-muted); font-size:11px; }.index-line code { color:var(--sage-text-muted); font-size:10px; }.projection-status { display:flex; flex-wrap:wrap; gap:8px; margin:-6px 0 8px; }.projection-status span { display:inline-flex; align-items:center; gap:4px; min-height:28px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:var(--sage-surface-muted); font-size:10px; }.projection-status strong { color:var(--sage-text-secondary); }.projection-status span[data-stale="true"] { border-color:var(--sage-review); color:var(--sage-review-strong); background:var(--sage-review-bg); }.inline-warning,.inline-success { color:var(--sage-review-strong); font-size:var(--sage-font-sm); }.inline-success { color:var(--sage-success); }.job-list>article { padding:15px 0; border-bottom:1px solid var(--sage-border); }.job-list article>header,.job-list article>footer { display:flex; align-items:center; justify-content:space-between; gap:12px; }.job-list article>header span,.job-list article>header strong,.job-list article>header small { display:block; min-width:0; }.job-list article>header strong { font-size:var(--sage-font-sm); }.job-list article>header small,.job-list article>header code,.job-list article>footer { color:var(--sage-text-muted); font-size:11px; }.job-progress { height:5px; margin:10px 0; overflow:hidden; border-radius:3px; background:var(--sage-border); }.job-progress i { display:block; height:100%; background:var(--sage-brand); }.job-list article>footer { justify-content:flex-start; }.job-list article>footer button { display:inline-flex; align-items:center; gap:4px; margin-left:auto; border:0; color:var(--sage-danger); background:transparent; }.failed-items { display:grid; gap:6px; margin-top:8px; }.failed-items button { display:flex; align-items:flex-start; gap:7px; width:100%; padding:8px; border:1px solid var(--sage-danger); border-radius:var(--sage-radius-sm); color:var(--sage-danger); text-align:left; background:var(--sage-danger-bg); font-size:11px; }.failed-items button span,.failed-items button strong,.failed-items button small { display:block; min-width:0; }.failed-items button strong { overflow-wrap:anywhere; }.failed-items button small { margin-top:2px; color:var(--sage-text-muted); line-height:1.4; }

@@ -28,6 +28,104 @@ export type KnowledgeGraphPerformanceProfile = {
   useListFallback: boolean
 }
 
+export type KnowledgeGraphScopeMode = 'global' | 'goal' | 'local'
+
+export type KnowledgeGraphPath = {
+  nodeIds: string[]
+  edgeIds: string[]
+}
+
+export function graphScopeNodeIds(
+  graph: KnowledgeGraph,
+  options: {
+    mode: KnowledgeGraphScopeMode
+    depth: number
+    anchorNodeId: string | null
+    goalNodeIds: readonly string[]
+  },
+) {
+  if (options.mode === 'global') return new Set(graph.nodes.map((node) => node.node_id))
+  const seeds = options.mode === 'local'
+    ? options.anchorNodeId ? [options.anchorNodeId] : []
+    : options.goalNodeIds
+  return expandNodeNeighborhood(graph, seeds, options.depth)
+}
+
+export function shortestGraphPath(
+  graph: KnowledgeGraph,
+  startNodeId: string | null,
+  goalNodeIds: readonly string[],
+): KnowledgeGraphPath | null {
+  if (!startNodeId) return null
+  const goals = new Set(goalNodeIds)
+  if (!goals.size) return null
+  if (goals.has(startNodeId)) return { nodeIds: [startNodeId], edgeIds: [] }
+
+  const adjacency = graphAdjacency(graph)
+  const queue = [startNodeId]
+  const visited = new Set(queue)
+  const previous = new Map<string, { nodeId: string; edgeId: string }>()
+  let target = ''
+  while (queue.length && !target) {
+    const current = queue.shift() as string
+    for (const relation of adjacency.get(current) ?? []) {
+      if (visited.has(relation.nodeId)) continue
+      visited.add(relation.nodeId)
+      previous.set(relation.nodeId, { nodeId: current, edgeId: relation.edgeId })
+      if (goals.has(relation.nodeId)) {
+        target = relation.nodeId
+        break
+      }
+      queue.push(relation.nodeId)
+    }
+  }
+  if (!target) return null
+
+  const nodeIds = [target]
+  const edgeIds: string[] = []
+  while (nodeIds[0] !== startNodeId) {
+    const parent = previous.get(nodeIds[0])
+    if (!parent) return null
+    nodeIds.unshift(parent.nodeId)
+    edgeIds.unshift(parent.edgeId)
+  }
+  return { nodeIds, edgeIds }
+}
+
+function expandNodeNeighborhood(graph: KnowledgeGraph, seeds: readonly string[], depth: number) {
+  const available = new Set(graph.nodes.map((node) => node.node_id))
+  const frontier = seeds.filter((nodeId) => available.has(nodeId))
+  const visible = new Set(frontier)
+  const adjacency = graphAdjacency(graph)
+  let current = frontier
+  for (let level = 0; level < Math.max(0, Math.floor(depth)); level += 1) {
+    const next: string[] = []
+    for (const nodeId of current) {
+      for (const relation of adjacency.get(nodeId) ?? []) {
+        if (visible.has(relation.nodeId)) continue
+        visible.add(relation.nodeId)
+        next.push(relation.nodeId)
+      }
+    }
+    current = next
+    if (!current.length) break
+  }
+  return visible
+}
+
+function graphAdjacency(graph: KnowledgeGraph) {
+  const adjacency = new Map<string, Array<{ nodeId: string; edgeId: string }>>()
+  for (const edge of graph.edges) {
+    const source = adjacency.get(edge.source_node_id) ?? []
+    source.push({ nodeId: edge.target_node_id, edgeId: edge.edge_id })
+    adjacency.set(edge.source_node_id, source)
+    const target = adjacency.get(edge.target_node_id) ?? []
+    target.push({ nodeId: edge.source_node_id, edgeId: edge.edge_id })
+    adjacency.set(edge.target_node_id, target)
+  }
+  return adjacency
+}
+
 export function graphPerformanceProfile(
   nodeCount: number,
   edgeCount: number,

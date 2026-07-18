@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { Eye, EyeOff, FileText, History, House, ScrollText, Settings, X } from 'lucide-vue-next'
 import {
   CodingComposer,
+  CodingApprovalCard,
   CodingDiffDrawer,
   CodingFilesDrawer,
   CodingGitBadge,
@@ -14,6 +15,7 @@ import {
 } from '../components/coding'
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
+import { projectCodingReviewBundle } from '../harness/surfaces/codingReviewBundle'
 import type { HarnessSurfaceContext } from '../harness/types'
 import { useCodingStore } from '../stores/coding'
 import { useWorkbenchPreferences } from '../composables/useWorkbenchPreferences'
@@ -53,6 +55,20 @@ const harnessToolCallCount = computed(() => store.visibleTimeline.filter((event)
   && event.kind === 'tool'
   && event.payload.type === 'tool_call'
 )).length)
+const harnessReviewBundle = computed(() => {
+  const runId = harnessProjection.value.runId
+  return projectCodingReviewBundle({
+    runId,
+    turn: store.turns.find((turn) => turn.run_id === runId) ?? null,
+    run: store.runs.find((run) => run.run_id === runId) ?? null,
+    diff: store.diffInfoByRun[runId] ?? null,
+    memoryProposals: store.memoryProposals,
+  })
+})
+const harnessDepositBusy = computed(() => Boolean(
+  harnessReviewBundle.value.deposit.proposalId
+  && store.memoryProposalBusy[harnessReviewBundle.value.deposit.proposalId],
+))
 const codingContext = computed<HarnessSurfaceContext | null>(() => {
   if (!store.workspaceId) return null
   const workspaceLabel = store.workspaceRoot.split('/').filter(Boolean).at(-1) || 'coding'
@@ -356,6 +372,10 @@ onBeforeUnmount(() => {
                 :projection="harnessProjection"
                 :session-title="currentSessionTitle"
                 :tool-call-count="harnessToolCallCount"
+                :review-bundle="harnessReviewBundle"
+                :deposit-busy="harnessDepositBusy"
+                @approve-deposit="store.approveMemoryProposal"
+                @reject-deposit="store.rejectMemoryProposal"
               />
             </section>
           </template>
@@ -377,6 +397,14 @@ onBeforeUnmount(() => {
               empty-description="输入学习目标、实践任务，或使用 /review 开始审查。"
               @anchor-change="store.setScrollAnchor"
             >
+              <template v-if="store.pendingApproval" #attention>
+                <CodingApprovalCard
+                  :approval="store.pendingApproval"
+                  :busy="store.approvalBusy"
+                  compact
+                  @respond="store.respondApproval"
+                />
+              </template>
               <ChatConversation
                 :legacy-messages="store.legacyMessages"
                 :messages="store.messages"
@@ -385,6 +413,7 @@ onBeforeUnmount(() => {
                 :active-run-id="store.activeRun?.run_id || ''"
                 :selected-run-id="harnessProjection.runId"
                 :pending-approval="store.pendingApproval"
+                :show-approval-card="false"
                 :approval-busy="store.approvalBusy"
                 :is-thinking="store.isThinking"
                 :thinking-phase="store.thinkingPhase"

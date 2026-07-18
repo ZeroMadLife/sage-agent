@@ -3,10 +3,14 @@ import { Maximize2, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { CodingApproval, CodingApprovalChoice } from '../../../types/api'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   approval: CodingApproval
   busy?: boolean
-}>()
+  compact?: boolean
+}>(), {
+  busy: false,
+  compact: false,
+})
 
 const emit = defineEmits<{
   respond: [CodingApprovalChoice]
@@ -80,7 +84,7 @@ function redactText(text: string) {
 </script>
 
 <template>
-  <section class="approval-card" aria-label="Tool approval">
+  <section class="approval-card" :class="{ compact }" aria-label="Tool approval">
     <div class="approval-main">
       <p class="eyebrow">需要确认</p>
       <h2>{{ approval.tool }}</h2>
@@ -160,6 +164,25 @@ function redactText(text: string) {
   background: var(--sage-warning-bg);
   box-shadow: var(--sage-shadow-drawer);
 }
+
+.approval-card.compact {
+  grid-template-columns: 1fr;
+  width: 100%;
+  max-height: 280px;
+  margin: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.approval-card.compact .approval-main { max-height: 150px; }
+.approval-card.compact .eyebrow { margin-bottom: 2px; }
+.approval-card.compact h2 { display: inline; margin-right: 6px; font-size: 13px; }
+.approval-card.compact .description { display: inline; font-size: 11px; }
+.approval-card.compact pre { max-height: 54px; margin-top: 6px; font-size: 10px; }
+.approval-card.compact .actions { justify-content: flex-start; }
+.approval-card.compact button { min-height: 29px; padding: 0 9px; font-size: 10px; }
 
 .approval-main {
   min-width: 0;
