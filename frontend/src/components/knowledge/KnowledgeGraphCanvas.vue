@@ -13,7 +13,10 @@ import type {
 import {
   communitySeedPositions,
   featuredNodeIds,
+  focusedGraphEdgeColor,
+  graphEdgePresentation,
   graphFocus,
+  graphInteractionPalette,
   graphLegendItems,
   graphPerformanceProfile,
   graphScopeNodeIds,
@@ -49,6 +52,7 @@ const container = ref<HTMLElement | null>(null)
 const compactViewport = ref(window.innerWidth < 680)
 const rendererError = ref('')
 const themeRevision = ref(0)
+const interactionMode = ref<'global' | 'hover' | 'selected'>('global')
 let renderer: Sigma | null = null
 let sigmaGraph: Graph | null = null
 let selectionContext: CanvasRenderingContext2D | null = null
@@ -62,7 +66,8 @@ let rendererDirty = true
 let hoveredNodeId: string | null = null
 let dimNodeColor = 'rgba(126, 132, 142, 0.2)'
 let dimEdgeColor = 'rgba(126, 132, 142, 0.08)'
-let focusEdgeColor = '#58c78b'
+let focusFallbackColor = '#58c78b'
+let darkThemeActive = false
 let goalPathEdgeColor = '#b46b27'
 let hoverSurfaceColor = '#25282d'
 let hoverBorderColor = '#4a5059'
@@ -182,7 +187,7 @@ const scopeNodeIds = computed(() => {
   return ids
 })
 const featuredLabels = computed(() => featuredNodeIds(props.graph, props.communities, 1))
-const focus = computed(() => graphFocus(props.graph, props.selectedNodeId, 2))
+const focus = computed(() => graphFocus(props.graph, props.selectedNodeId, 1))
 const selectedNode = computed(() => props.graph.nodes.find(
   (node) => node.node_id === props.selectedNodeId,
 ) ?? null)
@@ -234,7 +239,7 @@ function nodeColor(node: KnowledgeGraphNode) {
 
 function layoutCacheKey() {
   const analysisRevision = props.communities?.analysis.analysis_revision ?? 'unclustered'
-  return `sage.knowledge.graph.layout.v7.${props.graph.snapshot.graph_revision}.${analysisRevision}`
+  return `sage.knowledge.graph.layout.v8.${props.graph.snapshot.graph_revision}.${analysisRevision}`
 }
 
 function canvasLabel(label: string) {
@@ -272,7 +277,11 @@ function applyPresentation() {
   const focusNodeId = props.selectedNodeId ?? hoveredNodeId
   const focusValue = focusNodeId === props.selectedNodeId
     ? focus.value
-    : graphFocus(props.graph, focusNodeId, 2)
+    : graphFocus(props.graph, focusNodeId, 0)
+  const focusBaseColor = focusNodeId && sigmaGraph.hasNode(focusNodeId)
+    ? String(sigmaGraph.getNodeAttribute(focusNodeId, 'baseColor'))
+    : focusFallbackColor
+  const activeFocusEdgeColor = focusedGraphEdgeColor(focusBaseColor, darkThemeActive)
 
   sigmaGraph.forEachNode((nodeId, attributes) => {
     const selected = nodeId === props.selectedNodeId
@@ -282,6 +291,8 @@ function applyPresentation() {
     const onGoalPath = Boolean(goalPath.value?.nodeIds.includes(nodeId))
     const baseColor = String(attributes.baseColor)
     const baseSize = Number(attributes.baseSize)
+    const baseLabel = String(attributes.baseLabel)
+    const readableInFocus = hovered || onGoalPath || focusValue.labelNodeIds.has(nodeId)
     const selectedStyle = selected ? selectedNodePresentation(baseColor, baseSize) : null
     sigmaGraph?.setNodeAttribute(
       nodeId,
@@ -296,9 +307,14 @@ function applyPresentation() {
     sigmaGraph?.setNodeAttribute(
       nodeId,
       'forceLabel',
-      hovered || onGoalPath || (focusNodeId
-        ? focusValue.labelNodeIds.has(nodeId)
-        : featuredLabels.value.has(nodeId)),
+      onGoalPath || (focusNodeId
+        ? !hovered && focusValue.labelNodeIds.has(nodeId)
+        : !compactViewport.value && featuredLabels.value.has(nodeId)),
+    )
+    sigmaGraph?.setNodeAttribute(
+      nodeId,
+      'label',
+      focusNodeId && !readableInFocus ? '' : baseLabel,
     )
     sigmaGraph?.setNodeAttribute(nodeId, 'highlighted', selectedStyle?.highlighted ?? false)
     sigmaGraph?.setNodeAttribute(nodeId, 'zIndex', selectedStyle?.zIndex ?? (focused ? 5 : onGoalPath ? 4 : connected || hovered ? 3 : 1))
@@ -317,7 +333,7 @@ function applyPresentation() {
       'color',
       onGoalPath
         ? goalPathEdgeColor
-        : focusNodeId ? (focused ? focusEdgeColor : dimEdgeColor) : String(attributes.baseColor),
+        : focusNodeId ? (focused ? activeFocusEdgeColor : dimEdgeColor) : String(attributes.baseColor),
     )
     sigmaGraph?.setEdgeAttribute(
       edgeId,
@@ -375,6 +391,7 @@ function destroyRenderer() {
   sigmaGraph = null
   selectionContext = null
   hoveredNodeId = null
+  interactionMode.value = props.selectedNodeId ? 'selected' : 'global'
 }
 
 async function mountRenderer(requestId: number) {
@@ -397,13 +414,18 @@ async function mountRenderer(requestId: number) {
   const brandColor = rootStyles.getPropertyValue('--sage-brand').trim() || '#58c78b'
   const reviewColor = rootStyles.getPropertyValue('--sage-review-strong').trim() || '#b46b27'
   const darkTheme = document.documentElement.dataset.theme === 'dark'
-  const smallGraph = performanceProfile.value.tier === 'small'
-  const mutedEdgeColor = darkTheme
-    ? `rgba(139, 148, 163, ${smallGraph ? 0.18 : 0.08})`
-    : `rgba(113, 122, 137, ${smallGraph ? 0.2 : 0.1})`
-  dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.09)' : 'rgba(113, 122, 137, 0.12)'
-  dimEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.08)' : 'rgba(113, 122, 137, 0.08)'
-  focusEdgeColor = brandColor
+  const interactionPalette = graphInteractionPalette(darkTheme)
+  const defaultEdgePresentation = graphEdgePresentation(
+    'WIKILINK',
+    1,
+    1,
+    darkTheme,
+    performanceProfile.value.tier,
+  )
+  darkThemeActive = darkTheme
+  dimNodeColor = interactionPalette.dimNodeColor
+  dimEdgeColor = interactionPalette.dimEdgeColor
+  focusFallbackColor = brandColor
   goalPathEdgeColor = reviewColor
   hoverSurfaceColor = rootStyles.getPropertyValue('--sage-surface-raised').trim()
     || (darkTheme ? '#25282d' : '#ffffff')
@@ -428,6 +450,7 @@ async function mountRenderer(requestId: number) {
     graph.addNode(node.node_id, {
       ...position,
       label: canvasLabel(node.label),
+      baseLabel: canvasLabel(node.label),
       color: baseColor,
       baseColor,
       size: baseSize,
@@ -460,24 +483,20 @@ async function mountRenderer(requestId: number) {
     .slice(0, performanceProfile.value.maxRenderedEdges)
   for (const edge of renderedEdges) {
     if (!graph.hasNode(edge.source_node_id) || !graph.hasNode(edge.target_node_id)) continue
-    const evidenceStrength = Math.min(1, Math.max(0.35, edge.weight * edge.confidence))
-    const baseColor = edge.kind === 'WIKILINK'
-      ? (darkTheme
-        ? `rgba(111, 148, 205, ${Math.min(0.3, (smallGraph ? 0.2 : 0.12) * (0.55 + evidenceStrength * 0.65))})`
-        : `rgba(72, 114, 177, ${Math.min(0.34, (smallGraph ? 0.24 : 0.15) * (0.55 + evidenceStrength * 0.65))})`)
-      : mutedEdgeColor
-    const edgeScale = smallGraph ? 1.8 : performanceProfile.value.tier === 'medium' ? 1.25 : 1
-    const baseSize = (edge.kind === 'WIKILINK'
-      ? Math.min(0.72, 0.34 + edge.weight * 0.08)
-      : Math.min(0.5, 0.24 + edge.confidence * 0.12)) * edgeScale
-    const globalHidden = edge.kind === 'EVIDENCED_BY'
+    const edgePresentation = graphEdgePresentation(
+      edge.kind,
+      edge.weight,
+      edge.confidence,
+      darkTheme,
+      performanceProfile.value.tier,
+    )
     graph.addEdgeWithKey(edge.edge_id, edge.source_node_id, edge.target_node_id, {
-      color: baseColor,
-      baseColor,
-      size: baseSize,
-      baseSize,
-      hidden: globalHidden,
-      globalHidden,
+      color: edgePresentation.color,
+      baseColor: edgePresentation.color,
+      size: edgePresentation.size,
+      baseSize: edgePresentation.size,
+      hidden: edgePresentation.hidden,
+      globalHidden: edgePresentation.hidden,
       weight: edge.kind === 'WIKILINK' ? Math.max(0.5, edge.weight) : 0.06,
       type: 'line',
       zIndex: 0,
@@ -487,17 +506,19 @@ async function mountRenderer(requestId: number) {
     renderer = new SigmaRenderer(graph, container.value, {
       allowInvalidContainer: true,
       defaultDrawNodeHover: drawSageNodeHover,
-      defaultEdgeColor: mutedEdgeColor,
+      defaultEdgeColor: defaultEdgePresentation.color,
       defaultEdgeType: 'line',
       hideEdgesOnMove: performanceProfile.value.hideEdgesOnMove,
       hideLabelsOnMove: true,
       inertiaDuration: 320,
       inertiaRatio: 1.8,
       labelColor: { color: labelColor },
-      labelDensity: performanceProfile.value.labelDensity,
+      labelDensity: compactViewport.value ? 0 : performanceProfile.value.labelDensity,
       labelFont,
       labelGridCellSize: performanceProfile.value.tier === 'small' ? 120 : 160,
-      labelRenderedSizeThreshold: performanceProfile.value.labelRenderedSizeThreshold,
+      labelRenderedSizeThreshold: compactViewport.value
+        ? 100
+        : performanceProfile.value.labelRenderedSizeThreshold,
       labelSize: 12,
       labelWeight: '500',
       maxCameraRatio: 4,
@@ -514,31 +535,37 @@ async function mountRenderer(requestId: number) {
       ?.getContext('2d') ?? null
     sigmaGraph = graph
     hoveredNodeId = null
+    interactionMode.value = props.selectedNodeId ? 'selected' : 'global'
     renderer.on('afterRender', drawSelectionHalo)
     applyPresentation()
     renderer.on('clickNode', ({ node }) => emit('select', node))
     renderer.on('clickStage', () => emit('select', null))
     renderer.on('enterNode', ({ node }) => {
       hoveredNodeId = node
+      interactionMode.value = props.selectedNodeId ? 'selected' : 'hover'
       if (container.value) container.value.style.cursor = 'pointer'
       applyPresentation()
     })
     renderer.on('leaveNode', () => {
       hoveredNodeId = null
+      interactionMode.value = props.selectedNodeId ? 'selected' : 'global'
       if (container.value) container.value.style.cursor = 'default'
       applyPresentation()
     })
-    if (missingCachedPosition && graph.order > 1 && graph.size > 0) {
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    if (!reducedMotion && graph.order > 1 && graph.size > 0) {
       const { default: FA2LayoutSupervisor } = await import('graphology-layout-forceatlas2/worker')
       if (requestId !== renderRequest || sigmaGraph !== graph) return
       layoutSupervisor = new FA2LayoutSupervisor(graph, {
         settings: {
           edgeWeightInfluence: 0.55,
-          gravity: 0.08,
+          gravity: 0.12,
           linLogMode: true,
-          scalingRatio: performanceProfile.value.tier === 'large' ? 48 : 36,
+          scalingRatio: performanceProfile.value.tier === 'large'
+            ? 44
+            : performanceProfile.value.tier === 'medium' ? 30 : 24,
           strongGravityMode: false,
-          slowDown: performanceProfile.value.tier === 'small' ? 14 : 20,
+          slowDown: performanceProfile.value.tier === 'small' ? 18 : 22,
           barnesHutOptimize: performanceProfile.value.barnesHutOptimize,
           barnesHutTheta: 0.7,
         },
@@ -551,7 +578,9 @@ async function mountRenderer(requestId: number) {
         layoutStopTimer = null
         savePositions(graph)
         renderer?.refresh()
-      }, performanceProfile.value.layoutDurationMs)
+      }, missingCachedPosition
+        ? performanceProfile.value.layoutDurationMs
+        : Math.min(650, performanceProfile.value.layoutDurationMs))
     }
     rendererDirty = false
   } catch (reason) {
@@ -599,6 +628,7 @@ function updateRendererSize() {
 }
 
 function updateSelection() {
+  interactionMode.value = props.selectedNodeId ? 'selected' : hoveredNodeId ? 'hover' : 'global'
   if (performanceProfile.value.tier === 'large') {
     requestRenderer()
     return
@@ -678,7 +708,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="surface" class="graph-surface" :data-scope="scopeMode">
+  <div
+    ref="surface"
+    class="graph-surface"
+    :data-scope="scopeMode"
+    :data-interaction="interactionMode"
+  >
     <div v-if="!listFallback && visibleNodeCount" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
     <div v-if="!listFallback && selectedNode && selectedNodeVisible" class="graph-focus-summary" role="status">
       <i :style="{ background: nodeColor(selectedNode) }"></i>

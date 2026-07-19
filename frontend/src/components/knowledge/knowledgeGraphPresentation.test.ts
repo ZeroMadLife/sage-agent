@@ -3,9 +3,12 @@ import type { KnowledgeGraph, KnowledgeGraphCommunities } from '../../types/api'
 import {
   communitySeedPositions,
   featuredNodeIds,
+  focusedGraphEdgeColor,
+  graphEdgePresentation,
   graphScopeNodeIds,
   graphPerformanceProfile,
   graphFocus,
+  graphInteractionPalette,
   graphLegendItems,
   shortestGraphPath,
 } from './knowledgeGraphPresentation'
@@ -105,6 +108,32 @@ it('defines deterministic 200, 1k and 5k rendering budgets', () => {
   expect(graphPerformanceProfile(1_201, 2_000, true)).toMatchObject({
     tier: 'fallback', useListFallback: true,
   })
+})
+
+it('keeps the full relationship network visible before focus', () => {
+  const wikiEdge = graphEdgePresentation('WIKILINK', 1, 1, false, 'small')
+  const evidenceEdge = graphEdgePresentation('EVIDENCED_BY', 4, 1, false, 'small')
+
+  expect(wikiEdge).toMatchObject({
+    color: '#c8cace',
+    hidden: false,
+  })
+  expect(wikiEdge.size).toBeCloseTo(0.672)
+  expect(evidenceEdge).toMatchObject({
+    color: '#e3e5e7',
+    hidden: false,
+  })
+  expect(evidenceEdge.size).toBeCloseTo(0.576)
+})
+
+it('uses a quiet background and the focused node color for local exploration', () => {
+  expect(graphInteractionPalette(false)).toEqual({
+    dimNodeColor: '#d8dadd',
+    dimEdgeColor: '#eef0f2',
+    focusEdgeStrength: 0.84,
+  })
+  expect(focusedGraphEdgeColor('#8b5cf6', false)).toBe('#9e76f7')
+  expect(focusedGraphEdgeColor('#8b5cf6', true)).toBe('#7e55dd')
 })
 
 it('projects global, goal and local graph scopes from existing edges', () => {

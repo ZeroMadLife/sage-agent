@@ -28,6 +28,18 @@ export type KnowledgeGraphPerformanceProfile = {
   useListFallback: boolean
 }
 
+export type KnowledgeGraphEdgePresentation = {
+  color: string
+  size: number
+  hidden: false
+}
+
+export type KnowledgeGraphInteractionPalette = {
+  dimNodeColor: string
+  dimEdgeColor: string
+  focusEdgeStrength: number
+}
+
 export type KnowledgeGraphScopeMode = 'global' | 'goal' | 'local'
 
 export type KnowledgeGraphPath = {
@@ -157,6 +169,85 @@ export function graphPerformanceProfile(
     labelDensity: 0.016, labelRenderedSizeThreshold: 12,
     hideEdgesOnMove: true, barnesHutOptimize: true, useListFallback: false,
   }
+}
+
+function mixedHex(
+  foreground: readonly [number, number, number],
+  background: readonly [number, number, number],
+  strength: number,
+) {
+  const channels = foreground.map((value, index) => (
+    Math.round(background[index] + (value - background[index]) * strength)
+  ))
+  return `#${channels.map((value) => value.toString(16).padStart(2, '0')).join('')}`
+}
+
+export function graphInteractionPalette(darkTheme: boolean): KnowledgeGraphInteractionPalette {
+  return darkTheme
+    ? {
+        dimNodeColor: '#4a4f58',
+        dimEdgeColor: '#292c31',
+        focusEdgeStrength: 0.88,
+      }
+    : {
+        dimNodeColor: '#d8dadd',
+        dimEdgeColor: '#eef0f2',
+        focusEdgeStrength: 0.84,
+      }
+}
+
+export function graphEdgePresentation(
+  kind: KnowledgeGraph['edges'][number]['kind'],
+  weight: number,
+  confidence: number,
+  darkTheme: boolean,
+  tier: KnowledgeGraphPerformanceProfile['tier'],
+): KnowledgeGraphEdgePresentation {
+  const strength = Math.min(1, Math.max(0.35, weight * confidence))
+  const edgeScale = tier === 'small' ? 1.6 : tier === 'medium' ? 1.2 : 1
+
+  if (kind === 'WIKILINK') {
+    const strengthBase = darkTheme
+      ? tier === 'small' ? 0.24 : tier === 'medium' ? 0.18 : 0.13
+      : tier === 'small' ? 0.24 : tier === 'medium' ? 0.18 : 0.12
+    const strengthRange = darkTheme
+      ? tier === 'large' ? 0.04 : tier === 'medium' ? 0.05 : 0.06
+      : tier === 'large' ? 0.06 : tier === 'medium' ? 0.08 : 0.1
+    return {
+      color: mixedHex(
+        darkTheme ? [159, 168, 181] : [92, 99, 110],
+        darkTheme ? [32, 33, 36] : [255, 255, 255],
+        strengthBase + strength * strengthRange,
+      ),
+      size: Math.min(0.72, 0.34 + weight * 0.08) * edgeScale,
+      hidden: false,
+    }
+  }
+
+  const strengthBase = darkTheme
+    ? tier === 'small' ? 0.12 : tier === 'medium' ? 0.08 : 0.055
+    : tier === 'small' ? 0.13 : tier === 'medium' ? 0.09 : 0.06
+  const strengthRange = darkTheme ? 0.055 : 0.07
+  return {
+    color: mixedHex(
+      darkTheme ? [145, 154, 168] : [116, 123, 134],
+      darkTheme ? [32, 33, 36] : [255, 255, 255],
+      strengthBase + strength * strengthRange,
+    ),
+    size: Math.min(0.5, 0.24 + confidence * 0.12) * edgeScale,
+    hidden: false,
+  }
+}
+
+export function focusedGraphEdgeColor(baseNodeColor: string, darkTheme: boolean) {
+  const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(baseNodeColor)
+  if (!match) return baseNodeColor
+  const [, red, green, blue] = match
+  return mixedHex(
+    [Number.parseInt(red, 16), Number.parseInt(green, 16), Number.parseInt(blue, 16)],
+    darkTheme ? [32, 33, 36] : [255, 255, 255],
+    graphInteractionPalette(darkTheme).focusEdgeStrength,
+  )
 }
 
 function stableFraction(value: string) {
