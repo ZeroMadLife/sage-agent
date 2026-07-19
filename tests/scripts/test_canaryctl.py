@@ -11,6 +11,7 @@ from scripts.canaryctl import (
     DEFAULT_REMOTE_HOST,
     CanaryConfig,
     CanaryController,
+    CanaryDeferred,
     CanaryError,
     config_from_values,
     parse_check_runs,
@@ -105,8 +106,41 @@ def test_check_runs_require_latest_success_for_every_gate() -> None:
     ],
 )
 def test_check_runs_block_missing_or_incomplete_gates(payload: dict[str, object]) -> None:
-    with pytest.raises(CanaryError):
+    with pytest.raises(CanaryDeferred):
         parse_check_runs(json.dumps(payload))
+
+
+def test_sync_waits_for_ci_without_incrementing_failures(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    config.state_root.mkdir(parents=True)
+    config.state_path.write_text(
+        json.dumps(
+            {
+                "consecutive_sync_failures": 2,
+                "auto_deploy_paused": False,
+                "last_sync_error": "previous failure",
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = CanaryController(config)
+    controller.latest_sha = lambda: NEXT_SHA
+
+    def deferred(_sha: str) -> dict[str, object]:
+        raise CanaryDeferred("GitHub CI 仍在运行: python")
+
+    controller.deploy = deferred
+
+    result = controller.sync()
+
+    assert result == {
+        "status": "waiting-ci",
+        "reason": "GitHub CI 仍在运行: python",
+    }
+    state = json.loads(config.state_path.read_text(encoding="utf-8"))
+    assert state["consecutive_sync_failures"] == 2
+    assert state["auto_deploy_paused"] is False
+    assert state["last_sync_error"] == "GitHub CI 仍在运行: python"
 
 
 def test_config_rejects_branch_or_remote_socket_drift(tmp_path: Path) -> None:

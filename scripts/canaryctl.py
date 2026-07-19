@@ -51,6 +51,10 @@ class CanaryError(RuntimeError):
     """A bounded CI/CD or availability gate failed."""
 
 
+class CanaryDeferred(CanaryError):
+    """A normal external gate is incomplete and should be checked later."""
+
+
 @dataclass(frozen=True)
 class CommandResult:
     returncode: int
@@ -296,14 +300,14 @@ def parse_check_runs(payload: str) -> dict[str, str]:
             latest[name] = (stamp, status, conclusion)
     missing = [name for name in _REQUIRED_CHECKS if name not in latest]
     if missing:
-        raise CanaryError(f"GitHub CI 尚未提供必需检查: {', '.join(missing)}")
+        raise CanaryDeferred(f"GitHub CI 尚未提供必需检查: {', '.join(missing)}")
     incomplete = [
         name
         for name, (_, status, _) in latest.items()
         if status != "completed"
     ]
     if incomplete:
-        raise CanaryError(f"GitHub CI 仍在运行: {', '.join(sorted(incomplete))}")
+        raise CanaryDeferred(f"GitHub CI 仍在运行: {', '.join(sorted(incomplete))}")
     failed = [
         name
         for name, (_, _, conclusion) in latest.items()
@@ -638,6 +642,15 @@ class CanaryController:
             return {"status": "paused"}
         try:
             result = self.deploy(self.latest_sha())
+        except CanaryDeferred as exc:
+            state.update(
+                {
+                    "last_sync_error": str(exc),
+                    "auto_deploy_paused": False,
+                }
+            )
+            _write_json(self.config.state_path, state)
+            return {"status": "waiting-ci", "reason": str(exc)}
         except CanaryError:
             count = _int_state(state, "consecutive_sync_failures") + 1
             paused = count >= 3
