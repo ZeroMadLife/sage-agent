@@ -123,6 +123,9 @@ def test_remote_deploy_script_has_fixed_order_and_quoted_sha(tmp_path: Path) -> 
 
     assert "preflight" in script
     assert "fetch --prune origin refs/heads/dev/sage-v7" in script
+    assert 'while [ "$attempt" -le 3 ]' in script
+    assert 'test "$fetched" = 1' in script
+    assert "sleep 10" in script
     assert f"checkout --detach {NEXT_SHA}" in script
     assert "--execute apply --tag" in script
     assert script.index("preflight") < script.index("checkout") < script.index("--execute apply")

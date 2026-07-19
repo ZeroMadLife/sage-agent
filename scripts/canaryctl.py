@@ -538,7 +538,11 @@ class CanaryController:
                         "preflight",
                     )
                 ),
-                " ".join(
+                "fetched=0",
+                "attempt=1",
+                "while [ \"$attempt\" -le 3 ]; do",
+                "  if "
+                + " ".join(
                     (
                         "git",
                         "-C",
@@ -548,7 +552,12 @@ class CanaryController:
                         "origin",
                         q(f"refs/heads/{self.config.branch}"),
                     )
-                ),
+                )
+                + "; then fetched=1; break; fi",
+                "  attempt=$((attempt + 1))",
+                "  if [ \"$attempt\" -le 3 ]; then sleep 10; fi",
+                "done",
+                "test \"$fetched\" = 1",
                 " ".join(
                     (
                         "git",
