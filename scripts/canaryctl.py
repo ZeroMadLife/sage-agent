@@ -421,25 +421,7 @@ class CanaryController:
         return value
 
     def availability(self) -> dict[str, object]:
-        http_ok = self.http_probe(self.config.health_url)
-        if not http_ok:
-            curl = self._local(
-                [
-                    self.config.curl_bin,
-                    "--noproxy",
-                    "*",
-                    "--fail",
-                    "--silent",
-                    "--show-error",
-                    "--output",
-                    "/dev/null",
-                    "--max-time",
-                    "15",
-                    self.config.health_url,
-                ],
-                timeout=20,
-            )
-            http_ok = curl.returncode == 0
+        http_ok = self._http_healthy()
         remote_ok = True
         status: dict[str, object] | None = None
         if http_ok:
@@ -456,6 +438,27 @@ class CanaryController:
             "remote": remote_ok,
             "status": status,
         }
+
+    def _http_healthy(self) -> bool:
+        if self.http_probe(self.config.health_url):
+            return True
+        curl = self._local(
+            [
+                self.config.curl_bin,
+                "--noproxy",
+                "*",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--output",
+                "/dev/null",
+                "--max-time",
+                "15",
+                self.config.health_url,
+            ],
+            timeout=20,
+        )
+        return curl.returncode == 0
 
     def _notify(self, message: str) -> bool:
         if not self.config.notify_project or not self.config.notify_session:
@@ -639,7 +642,7 @@ class CanaryController:
         if not bool(report["healthy"]):
             return {"status": "unhealthy", "availability": report}
         result = self.sync()
-        if result.get("status") == "deployed" and not self.http_probe(self.config.health_url):
+        if result.get("status") == "deployed" and not self._http_healthy():
             raise CanaryError("部署后健康检查失败")
         return {"status": "ok", "availability": report, "sync": result}
 
