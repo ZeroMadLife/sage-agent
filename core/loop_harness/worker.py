@@ -106,9 +106,43 @@ class CodexWorker:
                     raise LoopBlockedError(
                         "BLOCKED_WORKER", f"Codex Worker exited with {result.returncode}"
                     )
-                return _parse_result(output_path)
+                try:
+                    return _parse_result(output_path)
+                except LoopBlockedError as exc:
+                    if exc.code != "BLOCKED_WORKER_OUTPUT":
+                        raise
+                    return self._retry_invalid_output(
+                        command=command,
+                        prompt=(
+                            f"{prompt}\n"
+                            "上一次输出未通过严格 JSON 契约校验。请重新检查所有字段和类型，"
+                            "只输出一个完整、合法且不带 Markdown 围栏的 JSON 对象。\n"
+                        ),
+                    )
         except subprocess.TimeoutExpired as exc:
             raise LoopBlockedError("BLOCKED_WORKER_TIMEOUT", "Codex Worker timed out") from exc
+
+    def _retry_invalid_output(self, *, command: list[str], prompt: str) -> WorkerResult:
+        """Retry only malformed structured output, using a fresh output file."""
+        with tempfile.TemporaryDirectory(
+            prefix="worker-retry-", dir=self.reports_root
+        ) as temporary:
+            output_path = Path(temporary) / "worker-result.json"
+            retry_command = _replace_output_path(command, output_path)
+            result = subprocess.run(
+                retry_command,
+                input=prompt,
+                capture_output=True,
+                check=False,
+                text=True,
+                timeout=self.timeout_seconds,
+                env=_sanitized_environment(),
+            )
+            if result.returncode != 0:
+                raise LoopBlockedError(
+                    "BLOCKED_WORKER", f"Codex Worker retry exited with {result.returncode}"
+                )
+            return _parse_result(output_path)
 
 
 class CodexFixer:
@@ -314,6 +348,22 @@ def _parse_fixer_result(path: Path) -> FixerResult:
         tests=_string_list(raw["tests"], "tests"),
         risk_reasons=_string_list(raw["risk_reasons"], "risk_reasons"),
     )
+
+
+def _replace_output_path(command: list[str], output_path: Path) -> list[str]:
+    try:
+        index = command.index("--output-last-message") + 1
+    except ValueError as exc:
+        raise LoopBlockedError(
+            "BLOCKED_WORKER_OUTPUT", "Worker output path is not configured"
+        ) from exc
+    if index >= len(command):
+        raise LoopBlockedError(
+            "BLOCKED_WORKER_OUTPUT", "Worker output path is not configured"
+        )
+    retry_command = list(command)
+    retry_command[index] = str(output_path)
+    return retry_command
 
 
 def _string(value: object, field: str, *, limit: int) -> str:
