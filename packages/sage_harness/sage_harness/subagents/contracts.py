@@ -167,6 +167,9 @@ class SubagentResult:
     result_ref: str = ""
     error_code: str = ""
     evidence_refs: tuple[str, ...] = ()
+    token_usage: int = 0
+    model_calls: int = 0
+    tool_count: int = 0
 
     def __post_init__(self) -> None:
         if not self.child_run_id.strip():
@@ -175,6 +178,8 @@ class SubagentResult:
             raise ValueError("result_ref must use the subagent scheme")
         if any(not item.strip() for item in self.evidence_refs):
             raise ValueError("evidence_refs must contain non-empty values")
+        if self.token_usage < 0 or self.model_calls < 0 or self.tool_count < 0:
+            raise ValueError("subagent usage counters must be non-negative")
         object.__setattr__(self, "evidence_refs", tuple(dict.fromkeys(self.evidence_refs)))
 
 

@@ -579,6 +579,7 @@ async def _deerflow_timeline_events(
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
+                subagent_tool_config=subagent_config,
                 config=harness_config,
                 artifact_store=artifact_store,
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,

@@ -160,6 +160,36 @@ def test_event_adapter_projects_live_run_budget_usage_once_per_counter_state() -
     assert not any(event.payload["type"] == "run_budget_updated" for event in repeated)
 
 
+def test_event_adapter_projects_parent_and_child_budget_as_one_run_total() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "values",
+            {
+                "messages": [],
+                "run_token_usage": 1_000,
+                "run_child_token_usage": 2_000,
+                "run_token_limit": 10_000,
+                "run_model_calls": 1,
+                "run_child_model_calls": 2,
+                "run_model_call_limit": 10,
+                "run_tool_calls": 2,
+                "run_child_tool_calls": 3,
+                "run_tool_call_limit": 10,
+            },
+            "source-budget-child",
+        )
+    )
+
+    budget = next(event for event in events if event.payload["type"] == "run_budget_updated")
+    assert budget.payload["used_tokens"] == 3_000
+    assert budget.payload["model_calls"] == 3
+    assert budget.payload["tool_calls"] == 5
+    assert budget.payload["usage_ratio"] == 0.3
+
+
 def test_event_adapter_projects_only_allowlisted_capability_audit_fields() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
 

@@ -406,11 +406,17 @@ class HarnessEventAdapter:
     ) -> tuple[RunEvent, ...]:
         if not isinstance(payload, Mapping):
             return ()
-        used_tokens = _public_non_negative_int(payload.get("run_token_usage"))
+        used_tokens = _public_non_negative_int(
+            payload.get("run_token_usage")
+        ) + _public_non_negative_int(payload.get("run_child_token_usage"))
         limit_tokens = _public_non_negative_int(payload.get("run_token_limit"))
-        model_calls = _public_non_negative_int(payload.get("run_model_calls"))
+        model_calls = _public_non_negative_int(
+            payload.get("run_model_calls")
+        ) + _public_non_negative_int(payload.get("run_child_model_calls"))
         model_call_limit = _public_non_negative_int(payload.get("run_model_call_limit"))
-        tool_calls = _public_non_negative_int(payload.get("run_tool_calls"))
+        tool_calls = _public_non_negative_int(
+            payload.get("run_tool_calls")
+        ) + _public_non_negative_int(payload.get("run_child_tool_calls"))
         tool_call_limit = _public_non_negative_int(payload.get("run_tool_call_limit"))
         if limit_tokens <= 0 or model_call_limit <= 0 or tool_call_limit <= 0:
             return ()

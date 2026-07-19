@@ -32,6 +32,7 @@ async def run_worker_task(
     max_steps: int = 20,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
     tools: dict[str, Any] | None = None,
+    usage_sink: Callable[[UsageSample], None] | None = None,
 ) -> str:
     """Run one worker task and return its final response."""
     if tools is None:
@@ -46,6 +47,8 @@ async def run_worker_task(
         used_tokens += usage.total_tokens or (
             (usage.input_tokens or 0) + (usage.output_tokens or 0)
         )
+        if usage_sink is not None:
+            usage_sink(usage)
 
     def stopped() -> bool:
         return bool(should_stop and should_stop()) or bool(

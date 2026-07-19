@@ -22,6 +22,7 @@ from sage_harness import (
     SkillCatalog,
     SubagentLifecycleMiddleware,
     SubagentLimits,
+    SubagentToolConfig,
     create_sage_agent,
     load_graph_message_compaction_plan,
     load_scoped_checkpoint,
@@ -52,6 +53,7 @@ class SageHarnessRuntimeAdapter:
         deferred_setup: DeferredToolSetup | None = None,
         skill_catalog: SkillCatalog | None = None,
         subagent_limits: SubagentLimits | None = None,
+        subagent_tool_config: SubagentToolConfig | None = None,
         config: HarnessConfig | None = None,
         artifact_store: ToolArtifactPort | None = None,
         capability_ids_by_tool_name: Mapping[str, str] | None = None,
@@ -115,7 +117,10 @@ class SageHarnessRuntimeAdapter:
             registry = registry.with_spec(
                 MiddlewareSpec(
                     "subagent_lifecycle",
-                    lambda config: SubagentLifecycleMiddleware(subagent_limits),
+                    lambda config: SubagentLifecycleMiddleware(
+                        subagent_limits,
+                        subagent_tool_config,
+                    ),
                 ),
                 before="durable_context",
             )

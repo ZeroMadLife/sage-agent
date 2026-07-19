@@ -173,6 +173,9 @@ def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path:
     assert second == first
     assert model.calls == 2
     assert first.result_ref == "subagent://session-parent/child_test"
+    assert first.token_usage == request.token_budget
+    assert first.model_calls == 2
+    assert first.tool_count == 1
     child_run = runtime.run_store.get_run("child_test")
     assert child_run["events"][0]["type"] == "subagent_started"
     assert child_run["events"][-2]["type"] == "subagent_terminal"
@@ -182,6 +185,28 @@ def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path:
         "status": "completed",
         "type": "run_finished",
     }
+
+
+def test_coding_subagent_fails_closed_for_legacy_cached_usage(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
+    executor = CodingSubagentExecutor(runtime)
+    request = _request(tmp_path, "child_legacy")
+    runtime.run_store.start_run(request.child_run_id)
+    runtime.run_store.append_trace(
+        request.child_run_id,
+        {
+            "type": "subagent_terminal",
+            "status": "succeeded",
+            "result_brief": "legacy result",
+            "result_ref": "subagent://session-parent/child_legacy",
+        },
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.token_usage == request.token_budget
+    assert result.model_calls == request.max_steps + 2
+    assert result.tool_count == request.max_steps
 
 
 def test_coding_subagent_rejects_write_capability_before_execution(tmp_path: Path) -> None:
@@ -257,6 +282,9 @@ def test_research_subagent_uses_bounded_evidence_tools_and_records_progress(
 
     assert result.status == "succeeded"
     assert result.evidence_refs == ("kcite_research", "wcite_research")
+    assert result.model_calls == 3
+    assert result.tool_count == 2
+    assert result.token_usage == request.token_budget
     assert [event["phase"] for event in progress].count("tool_completed") == 2
     assert progress[-1]["evidence_count"] == 2
     trace = runtime.run_store.get_run("child_research")["events"]

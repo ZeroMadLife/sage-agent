@@ -61,6 +61,12 @@ def _terminal_command(
         "tool_scope": list(request.tool_scope),
         "token_budget": request.token_budget,
         "timeout_seconds": request.timeout_seconds,
+        "reserved_tokens": request.token_budget,
+        "reserved_model_calls": request.max_steps + 2,
+        "reserved_tool_calls": request.max_steps,
+        "token_usage": result.token_usage,
+        "model_calls": result.model_calls,
+        "tool_count": result.tool_count,
     }
     if result_brief:
         entry["result_brief"] = result_brief
@@ -75,10 +81,14 @@ def _terminal_command(
         "error_code": result.error_code,
         "evidence_refs": list(result.evidence_refs),
         "evidence_count": len(result.evidence_refs),
+        "token_usage": result.token_usage,
+        "model_calls": result.model_calls,
+        "tool_count": result.tool_count,
     }
     return Command(
         update={
             "delegations": [entry],
+            "evidence_refs": list(result.evidence_refs),
             "messages": [
                 ToolMessage(
                     content=_result_content(result),
@@ -122,6 +132,40 @@ def _non_negative_int(value: object) -> int:
     return value if type(value) is int and value >= 0 else 0
 
 
+def _reserved_token_budget(
+    state: Mapping[str, object],
+    child_run_id: str,
+    fallback: int,
+) -> int:
+    """Use middleware's durable reservation, never a model-authored budget."""
+    delegations = state.get("delegations")
+    if isinstance(delegations, list):
+        for entry in delegations:
+            if isinstance(entry, Mapping) and entry.get("id") == child_run_id:
+                reserved = _non_negative_int(entry.get("reserved_tokens"))
+                if reserved:
+                    return min(fallback, reserved)
+    return fallback
+
+
+def _reserved_max_steps(
+    state: Mapping[str, object],
+    child_run_id: str,
+    fallback: int,
+) -> int:
+    """Project parent model/tool reservations into the child's step limit."""
+    delegations = state.get("delegations")
+    if isinstance(delegations, list):
+        for entry in delegations:
+            if not isinstance(entry, Mapping) or entry.get("id") != child_run_id:
+                continue
+            model_calls = _non_negative_int(entry.get("reserved_model_calls"))
+            tool_calls = _non_negative_int(entry.get("reserved_tool_calls"))
+            if model_calls >= 3 and tool_calls >= 1:
+                return min(fallback, model_calls - 2, tool_calls)
+    return fallback
+
+
 def build_task_tool(
     executor: SubagentExecutorPort,
     config: SubagentToolConfig | None = None,
@@ -163,11 +207,19 @@ def build_task_tool(
             workspace_id=runtime.context.workspace_id,
             workspace_path=runtime.context.workspace_path,
             tool_scope=profile.tool_scope if profile is not None else effective.tool_scope,
-            token_budget=profile.token_budget if profile is not None else effective.token_budget,
+            token_budget=_reserved_token_budget(
+                runtime.state,
+                child_run_id,
+                profile.token_budget if profile is not None else effective.token_budget,
+            ),
             timeout_seconds=(
                 profile.timeout_seconds if profile is not None else effective.timeout_seconds
             ),
-            max_steps=profile.max_steps if profile is not None else effective.max_steps,
+            max_steps=_reserved_max_steps(
+                runtime.state,
+                child_run_id,
+                profile.max_steps if profile is not None else effective.max_steps,
+            ),
         )
         writer = runtime.stream_writer
         writer(
@@ -178,6 +230,7 @@ def build_task_tool(
                 "description": request.description,
                 "subagent_type": request.subagent_type,
                 "tool_scope": list(request.tool_scope),
+                "reserved_tokens": request.token_budget,
                 "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )
@@ -215,6 +268,9 @@ def build_task_tool(
                     child_run_id=child_run_id,
                     status="timed_out",
                     error_code="timeout",
+                    token_usage=request.token_budget,
+                    model_calls=request.max_steps + 2,
+                    tool_count=request.max_steps,
                 )
             except asyncio.CancelledError:
                 await executor.cancel(child_run_id, "parent_cancelled")
@@ -253,6 +309,9 @@ def build_task_tool(
                 "error_code": result.error_code,
                 "evidence_count": len(result.evidence_refs),
                 "evidence_refs": list(result.evidence_refs),
+                "token_usage": result.token_usage,
+                "model_calls": result.model_calls,
+                "tool_count": result.tool_count,
                 "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )
