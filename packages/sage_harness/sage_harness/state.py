@@ -21,6 +21,7 @@ MAX_SKILL_CONTEXT = 8
 MAX_MEMORY_REFS = 32
 MAX_PROMOTED_TOOLS = 64
 MAX_EVIDENCE_REFS = 128
+MAX_EVIDENCE_FINGERPRINTS = 256
 LEGACY_CHILD_MODEL_CALLS = 18
 LEGACY_CHILD_TOOL_CALLS = 16
 
@@ -88,6 +89,8 @@ class DelegationEntry(TypedDict, total=False):
     model_calls: int
     tool_count: int
     evidence_refs: list[str]
+    query_fingerprints: list[str]
+    source_fingerprints: list[str]
     created_at: str
 
 
@@ -148,14 +151,10 @@ def delegation_budget_usage(entry: Mapping[str, object]) -> tuple[int, int, int]
         else _usage_count(entry, "token_budget")
     )
     model_calls = (
-        _usage_count(entry, "model_calls")
-        if "model_calls" in entry
-        else LEGACY_CHILD_MODEL_CALLS
+        _usage_count(entry, "model_calls") if "model_calls" in entry else LEGACY_CHILD_MODEL_CALLS
     )
     tool_calls = (
-        _usage_count(entry, "tool_count")
-        if "tool_count" in entry
-        else LEGACY_CHILD_TOOL_CALLS
+        _usage_count(entry, "tool_count") if "tool_count" in entry else LEGACY_CHILD_TOOL_CALLS
     )
     return token_usage, model_calls, tool_calls
 
@@ -315,6 +314,22 @@ def merge_evidence_refs(
             if isinstance(item, str) and item.strip()
         }
     )[-MAX_EVIDENCE_REFS:]
+
+
+def merge_evidence_fingerprints(
+    existing: list[str] | None,
+    new: list[str] | None,
+) -> list[str]:
+    """Merge opaque evidence breaker fingerprints without retaining raw queries."""
+    if new is None:
+        return sorted(set(existing or []))[-MAX_EVIDENCE_FINGERPRINTS:]
+    return sorted(
+        {
+            str(item).strip()
+            for item in [*(existing or []), *new]
+            if isinstance(item, str) and item.strip()
+        }
+    )[-MAX_EVIDENCE_FINGERPRINTS:]
 
 
 def _normalize_skill(entry: Mapping[str, object]) -> SkillRef:
@@ -486,6 +501,12 @@ class SageThreadState(AgentState):
     goal: Annotated[NotRequired[GoalState | None], merge_goal]
     delegations: Annotated[NotRequired[list[DelegationEntry] | None], merge_delegations]
     evidence_refs: Annotated[NotRequired[list[str] | None], merge_evidence_refs]
+    evidence_query_fingerprints: Annotated[
+        NotRequired[list[str] | None], merge_evidence_fingerprints
+    ]
+    evidence_source_fingerprints: Annotated[
+        NotRequired[list[str] | None], merge_evidence_fingerprints
+    ]
     skill_context: Annotated[NotRequired[list[SkillRef] | None], merge_skill_context]
     memory_refs: Annotated[NotRequired[list[MemoryRef] | None], merge_memory_refs]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
@@ -521,6 +542,7 @@ __all__ = [
     "merge_approval_context",
     "merge_artifacts",
     "merge_delegations",
+    "merge_evidence_fingerprints",
     "merge_evidence_refs",
     "merge_goal",
     "merge_memory_refs",

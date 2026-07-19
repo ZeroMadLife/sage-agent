@@ -131,6 +131,7 @@ from core.harness.context_adapter import (
     build_deerflow_system_prompt,
     context_status_event,
 )
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
 from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalPort,
@@ -515,10 +516,12 @@ async def _deerflow_timeline_events(
         )
         try:
             knowledge_port = CodingKnowledgePort(runtime)
+            evidence_bundle_port = CodingEvidenceBundlePort(runtime)
             subagent_config = build_coding_subagent_config(
                 knowledge_port,
                 web_search_port,
                 web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
                 base_config=SubagentToolConfig(),
             )
             subagent_executor = CodingSubagentExecutor(
@@ -526,6 +529,7 @@ async def _deerflow_timeline_events(
                 knowledge_port=knowledge_port,
                 web_search_port=web_search_port,
                 web_fetch_port=web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
             )
             artifact_store = ToolResultStore(
                 runtime.storage_root,

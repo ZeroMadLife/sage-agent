@@ -73,6 +73,10 @@ def _terminal_command(
     if result.evidence_refs:
         entry["evidence_refs"] = list(result.evidence_refs)
         entry["evidence_count"] = len(result.evidence_refs)
+    if result.query_fingerprints:
+        entry["query_fingerprints"] = list(result.query_fingerprints)
+    if result.source_fingerprints:
+        entry["source_fingerprints"] = list(result.source_fingerprints)
     metadata = {
         "child_run_id": request.child_run_id,
         "parent_run_id": request.parent_run_id,
@@ -89,6 +93,8 @@ def _terminal_command(
         update={
             "delegations": [entry],
             "evidence_refs": list(result.evidence_refs),
+            "evidence_query_fingerprints": list(result.query_fingerprints),
+            "evidence_source_fingerprints": list(result.source_fingerprints),
             "messages": [
                 ToolMessage(
                     content=_result_content(result),
@@ -166,6 +172,40 @@ def _reserved_max_steps(
     return fallback
 
 
+def _state_strings(state: Mapping[str, object], key: str) -> tuple[str, ...]:
+    values = state.get(key)
+    if not isinstance(values, list | tuple):
+        return ()
+    return tuple(
+        dict.fromkeys(
+            str(item).strip() for item in values if isinstance(item, str) and item.strip()
+        )
+    )
+
+
+def _evidence_child_run_ids(
+    state: Mapping[str, object],
+    parent_run_id: str,
+) -> tuple[str, ...]:
+    delegations = state.get("delegations")
+    if not isinstance(delegations, list):
+        return ()
+    child_ids: list[str] = []
+    for entry in delegations:
+        if (
+            not isinstance(entry, Mapping)
+            or entry.get("run_id") != parent_run_id
+            or entry.get("status") != "succeeded"
+            or entry.get("subagent_type") != "research"
+            or not entry.get("evidence_refs")
+        ):
+            continue
+        child_id = str(entry.get("id", "")).strip()
+        if child_id:
+            child_ids.append(child_id)
+    return tuple(dict.fromkeys(child_ids))
+
+
 def build_task_tool(
     executor: SubagentExecutorPort,
     config: SubagentToolConfig | None = None,
@@ -184,9 +224,10 @@ def build_task_tool(
         """Delegate a bounded task and wait for its terminal result.
 
         Choose only a server-registered profile: explore for bounded local
-        inspection, or research when enabled for Knowledge and public web
-        evidence. Children cannot write, persist Memory/Knowledge, launch
-        another child, or expand server-owned tools and budgets.
+        inspection, research for Knowledge and public web evidence, or
+        synthesize for an already-authorized Research evidence bundle. Children
+        cannot write, persist Memory/Knowledge, launch another child, or expand
+        server-owned tools and budgets.
         """
         description = " ".join(str(description).split())[:_DESCRIPTION_MAX]
         prompt = str(prompt).strip()[:_PROMPT_MAX]
@@ -219,6 +260,19 @@ def build_task_tool(
                 runtime.state,
                 child_run_id,
                 profile.max_steps if profile is not None else effective.max_steps,
+            ),
+            evidence_refs=_state_strings(runtime.state, "evidence_refs"),
+            evidence_child_run_ids=_evidence_child_run_ids(
+                runtime.state,
+                runtime.context.run_id,
+            ),
+            query_fingerprints=_state_strings(
+                runtime.state,
+                "evidence_query_fingerprints",
+            ),
+            source_fingerprints=_state_strings(
+                runtime.state,
+                "evidence_source_fingerprints",
             ),
         )
         writer = runtime.stream_writer
