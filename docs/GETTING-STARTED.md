@@ -217,6 +217,16 @@ docker exec tourswarm-redis redis-cli ping
 
 ```
 
+开发环境启动 FastAPI 时会默认执行幂等 PostgreSQL schema 迁移，IDE 直接启动也会
+补齐新版本增加的表和字段。若需要单独修复或确认迁移，可运行：
+
+```bash
+.venv/bin/python -m db.migrations
+```
+
+`SAGE_AUTO_MIGRATE=false` 可关闭开发环境自动迁移。生产环境不会在应用启动时迁移，
+仍由发布流程在启动新版本前显式执行迁移、检查结果并保留回滚点。
+
 **停止服务：**
 
 ```bash

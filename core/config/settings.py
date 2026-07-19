@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # forced to Secure by the app factory regardless of this value.
     cloud_secure_cookies: bool = False
     cloud_frontend_url: str = "http://localhost:5173"
+    # Local development may repair additive PostgreSQL schema changes on startup.
+    # Production deployment keeps migrations explicit in the release runbook.
+    sage_auto_migrate: bool = True
     sage_deerflow_v2_enabled: bool = True
     sage_coding_default_runtime_profile: str = "deerflow_v2"
     sage_mcp_live_enabled: bool = False

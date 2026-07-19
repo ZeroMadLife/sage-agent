@@ -59,6 +59,7 @@ from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
 from core.skill import SkillRegistry, build_travel_planning_skill
 from db.database import AsyncSessionFactory
+from db.migrations import init_db
 from mcp_servers.amap.client import AmapClient
 from mcp_servers.scenic.client import ScenicClient
 from mcp_servers.weather.client import WeatherClient
@@ -198,6 +199,7 @@ def create_app(
     coding_mcp_catalog: McpCatalogPort | None = None,
     coding_web_fetch_port: WebFetchPort | None = None,
     coding_web_search_port: WebSearchPort | None = None,
+    database_auto_migrate: bool | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
     cloud_canary_invite_login_enabled: bool | None = None,
@@ -225,31 +227,47 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         checkpoint_stack = AsyncExitStack()
-        sandbox_provider = str(
-            getattr(app.state, "coding_sandbox_provider", "local_workspace")
-        ).strip().lower()
-        if sandbox_provider == "container":
-            try:
-                app.state.coding_sandbox_reconciled = await asyncio.to_thread(
-                    reconcile_coding_sandboxes,
-                    sandbox_provider,
-                )
-            except Exception as exc:
-                logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
-                raise
-        if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
-            app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
-                open_sqlite_checkpointer(
-                    Path(app.state.coding_storage_root) / "harness-checkpoints.sqlite3"
-                )
-            )
         service = getattr(app.state, "knowledge_job_service", None)
         proposal_service = getattr(app.state, "knowledge_source_proposal_service", None)
-        if isinstance(proposal_service, CodingKnowledgeSourceProposalService):
-            await proposal_service.prepare()
-        if isinstance(service, KnowledgeJobService):
-            await service.start()
         try:
+            if bool(getattr(app.state, "database_auto_migrate", False)):
+                try:
+                    await init_db()
+                except Exception as exc:
+                    logger.error(
+                        "Local database migration failed; run `python -m db.migrations` "
+                        "after confirming PostgreSQL is ready: %s",
+                        type(exc).__name__,
+                    )
+                    raise RuntimeError(
+                        "local database migration failed; run `python -m db.migrations` "
+                        "after confirming PostgreSQL is ready"
+                    ) from exc
+
+            sandbox_provider = (
+                str(getattr(app.state, "coding_sandbox_provider", "local_workspace"))
+                .strip()
+                .lower()
+            )
+            if sandbox_provider == "container":
+                try:
+                    app.state.coding_sandbox_reconciled = await asyncio.to_thread(
+                        reconcile_coding_sandboxes,
+                        sandbox_provider,
+                    )
+                except Exception as exc:
+                    logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
+                    raise
+            if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
+                app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
+                    open_sqlite_checkpointer(
+                        Path(app.state.coding_storage_root) / "harness-checkpoints.sqlite3"
+                    )
+                )
+            if isinstance(proposal_service, CodingKnowledgeSourceProposalService):
+                await proposal_service.prepare()
+            if isinstance(service, KnowledgeJobService):
+                await service.start()
             yield
         finally:
             if isinstance(service, KnowledgeJobService):
@@ -291,6 +309,13 @@ def create_app(
         else cloud_secure_cookies
     )
     app.state.cloud_frontend_url = cloud_frontend_url or settings.cloud_frontend_url
+    app.state.database_auto_migrate = (
+        False
+        if app_env == "production" or settings.app_env == "production"
+        else database_auto_migrate
+        if database_auto_migrate is not None
+        else settings.sage_auto_migrate and settings.app_env == "development"
+    )
     provider_secret = settings.model_provider_encryption_secret
     if not provider_secret:
         provider_secret = hashlib.sha256(
