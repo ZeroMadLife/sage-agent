@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 from contextlib import suppress
 from typing import Annotated, Any
 
@@ -25,12 +26,17 @@ _DESCRIPTION_MAX = 200
 _PROMPT_MAX = 12_000
 _RESULT_MAX = 8_000
 _RESULT_BRIEF_MAX = 2_000
+_PROGRESS_PHASES = frozenset({"model_requested", "tool_started", "tool_completed"})
+_PROGRESS_STATUSES = frozenset({"running", "completed", "error"})
 
 
 def _result_content(result: SubagentResult) -> str:
     if result.status == "succeeded":
         body = result.result.strip()[:_RESULT_MAX] or "The child completed without a text result."
-        return f"Task succeeded. Result:\n{body}"
+        evidence = (
+            "\nEvidence refs: " + ", ".join(result.evidence_refs) if result.evidence_refs else ""
+        )
+        return f"Task succeeded. Result:\n{body}{evidence}"
     if result.status == "timed_out":
         return "Task timed out before producing a usable result."
     if result.status == "cancelled":
@@ -58,12 +64,17 @@ def _terminal_command(
     }
     if result_brief:
         entry["result_brief"] = result_brief
+    if result.evidence_refs:
+        entry["evidence_refs"] = list(result.evidence_refs)
+        entry["evidence_count"] = len(result.evidence_refs)
     metadata = {
         "child_run_id": request.child_run_id,
         "parent_run_id": request.parent_run_id,
         "status": result.status,
         "result_ref": result.result_ref,
         "error_code": result.error_code,
+        "evidence_refs": list(result.evidence_refs),
+        "evidence_count": len(result.evidence_refs),
     }
     return Command(
         update={
@@ -79,6 +90,36 @@ def _terminal_command(
             ],
         }
     )
+
+
+def _progress_event(
+    event: Mapping[str, object],
+    *,
+    child_run_id: str,
+    parent_run_id: str,
+    subagent_type: str,
+) -> dict[str, object]:
+    phase = str(event.get("phase", ""))
+    status = str(event.get("status", ""))
+    payload: dict[str, object] = {
+        "type": "subagent_progress",
+        "child_run_id": child_run_id,
+        "parent_run_id": parent_run_id,
+        "subagent_type": subagent_type,
+        "phase": phase if phase in _PROGRESS_PHASES else "model_requested",
+        "status": status if status in _PROGRESS_STATUSES else "running",
+        "tool_count": _non_negative_int(event.get("tool_count")),
+        "evidence_count": _non_negative_int(event.get("evidence_count")),
+        "operation_ref": {"kind": "coding_run", "id": child_run_id},
+    }
+    tool_name = str(event.get("tool", "")).strip()[:128]
+    if tool_name:
+        payload["tool"] = tool_name
+    return payload
+
+
+def _non_negative_int(value: object) -> int:
+    return value if type(value) is int and value >= 0 else 0
 
 
 def build_task_tool(
@@ -98,9 +139,10 @@ def build_task_tool(
     ) -> Command[Any]:
         """Delegate a bounded task and wait for its terminal result.
 
-        Use this only for multi-step read-only exploration that benefits from an
-        isolated context. The child cannot write files, call Memory/Knowledge,
-        launch another child, or expand its own tool scope.
+        Choose only a server-registered profile: explore for bounded local
+        inspection, or research when enabled for Knowledge and public web
+        evidence. Children cannot write, persist Memory/Knowledge, launch
+        another child, or expand server-owned tools and budgets.
         """
         description = " ".join(str(description).split())[:_DESCRIPTION_MAX]
         prompt = str(prompt).strip()[:_PROMPT_MAX]
@@ -110,6 +152,7 @@ def build_task_tool(
             runtime.context.run_id,
             tool_call_id,
         )
+        profile = effective.resolve(subagent_type)
         request = SubagentRequest(
             parent_thread_id=runtime.context.thread_id,
             parent_run_id=runtime.context.run_id,
@@ -119,10 +162,12 @@ def build_task_tool(
             subagent_type=subagent_type,
             workspace_id=runtime.context.workspace_id,
             workspace_path=runtime.context.workspace_path,
-            tool_scope=effective.tool_scope,
-            token_budget=effective.token_budget,
-            timeout_seconds=effective.timeout_seconds,
-            max_steps=effective.max_steps,
+            tool_scope=profile.tool_scope if profile is not None else effective.tool_scope,
+            token_budget=profile.token_budget if profile is not None else effective.token_budget,
+            timeout_seconds=(
+                profile.timeout_seconds if profile is not None else effective.timeout_seconds
+            ),
+            max_steps=profile.max_steps if profile is not None else effective.max_steps,
         )
         writer = runtime.stream_writer
         writer(
@@ -132,10 +177,11 @@ def build_task_tool(
                 "parent_run_id": request.parent_run_id,
                 "description": request.description,
                 "subagent_type": request.subagent_type,
+                "tool_scope": list(request.tool_scope),
                 "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )
-        if subagent_type not in effective.allowed_types:
+        if profile is None:
             result = SubagentResult(
                 child_run_id=child_run_id,
                 status="failed",
@@ -144,11 +190,21 @@ def build_task_tool(
         else:
             try:
                 execution: asyncio.Future[SubagentResult] = asyncio.ensure_future(
-                    executor.execute(request)
+                    executor.execute(
+                        request,
+                        lambda event: writer(
+                            _progress_event(
+                                event,
+                                child_run_id=child_run_id,
+                                parent_run_id=request.parent_run_id,
+                                subagent_type=request.subagent_type,
+                            )
+                        ),
+                    )
                 )
                 result = await asyncio.wait_for(
                     asyncio.shield(execution),
-                    timeout=effective.timeout_seconds,
+                    timeout=request.timeout_seconds,
                 )
             except TimeoutError:
                 await executor.cancel(child_run_id, "timeout")
@@ -195,6 +251,8 @@ def build_task_tool(
                 "result_brief": result.result.strip()[:500],
                 "result_ref": result.result_ref,
                 "error_code": result.error_code,
+                "evidence_count": len(result.evidence_refs),
+                "evidence_refs": list(result.evidence_refs),
                 "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )

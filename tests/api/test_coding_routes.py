@@ -741,19 +741,18 @@ def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path
     agent_events = [
         item for item in payloads if str(item.get("type", "")).startswith("subagent_")
     ]
-    assert [item["type"] for item in agent_events] == [
-        "subagent_started",
-        "subagent_completed",
-    ]
+    assert agent_events[0]["type"] == "subagent_started"
+    assert agent_events[-1]["type"] == "subagent_completed"
+    assert any(item["type"] == "subagent_progress" for item in agent_events)
     assert agent_events[0]["child_run_id"].startswith("child_")
-    assert agent_events[1]["child_run_id"] == agent_events[0]["child_run_id"]
-    assert agent_events[1]["result_ref"].startswith("subagent://")
-    assert agent_kinds == ["agent", "agent"]
+    assert agent_events[-1]["child_run_id"] == agent_events[0]["child_run_id"]
+    assert agent_events[-1]["result_ref"].startswith("subagent://")
+    assert agent_kinds == ["agent"] * len(agent_events)
     assert agent_events[0]["operation_ref"] == {
         "kind": "coding_run",
         "id": child_run_id,
     }
-    assert agent_events[1]["operation_ref"] == {
+    assert agent_events[-1]["operation_ref"] == {
         "kind": "coding_run",
         "id": child_run_id,
     }

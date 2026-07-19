@@ -3,12 +3,43 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
 SubagentTerminalStatus = Literal["succeeded", "failed", "cancelled", "timed_out"]
 SubagentCancelReason = Literal["parent_cancelled", "timeout"]
+SubagentProgressSink = Callable[[Mapping[str, object]], None]
+
+
+@dataclass(frozen=True, slots=True)
+class SubagentProfile:
+    """One server-owned child capability and budget envelope."""
+
+    name: str
+    tool_scope: tuple[str, ...]
+    token_budget: int
+    timeout_seconds: float
+    max_steps: int
+
+    def __post_init__(self) -> None:
+        normalized = self.name.strip().casefold()
+        if not normalized:
+            raise ValueError("subagent profile name must not be empty")
+        if not self.tool_scope or any(not item.strip() for item in self.tool_scope):
+            raise ValueError("subagent profile tool_scope must contain non-empty names")
+        if self.token_budget < 1:
+            raise ValueError("subagent profile token_budget must be positive")
+        if not 0.1 <= self.timeout_seconds <= 1800:
+            raise ValueError("subagent profile timeout_seconds must be between 0.1 and 1800")
+        if not 1 <= self.max_steps <= 50:
+            raise ValueError("subagent profile max_steps must be between 1 and 50")
+        object.__setattr__(self, "name", normalized)
+        object.__setattr__(
+            self,
+            "tool_scope",
+            tuple(dict.fromkeys(item.strip() for item in self.tool_scope)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +68,7 @@ class SubagentToolConfig:
     token_budget: int = 24_000
     timeout_seconds: float = 90.0
     max_steps: int = 12
+    profiles: tuple[SubagentProfile, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.allowed_types or any(not item.strip() for item in self.allowed_types):
@@ -48,12 +80,41 @@ class SubagentToolConfig:
         )
         if not self.tool_scope or any(not item.strip() for item in self.tool_scope):
             raise ValueError("tool_scope must contain non-empty tool names")
+        object.__setattr__(
+            self,
+            "tool_scope",
+            tuple(dict.fromkeys(item.strip() for item in self.tool_scope)),
+        )
         if self.token_budget < 1:
             raise ValueError("token_budget must be positive")
         if not 0.1 <= self.timeout_seconds <= 1800:
             raise ValueError("timeout_seconds must be between 0.1 and 1800")
         if not 1 <= self.max_steps <= 50:
             raise ValueError("max_steps must be between 1 and 50")
+        names = tuple(profile.name for profile in self.profiles)
+        if len(names) != len(set(names)):
+            raise ValueError("subagent profiles must have unique names")
+        if any(name not in self.allowed_types for name in names):
+            raise ValueError("subagent profiles must be included in allowed_types")
+
+    def resolve(self, name: str) -> SubagentProfile | None:
+        """Resolve one profile without allowing model-authored capability changes."""
+        normalized = name.strip().casefold()
+        if normalized not in self.allowed_types:
+            return None
+        configured = next(
+            (profile for profile in self.profiles if profile.name == normalized),
+            None,
+        )
+        if configured is not None:
+            return configured
+        return SubagentProfile(
+            name=normalized,
+            tool_scope=self.tool_scope,
+            token_budget=self.token_budget,
+            timeout_seconds=self.timeout_seconds,
+            max_steps=self.max_steps,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,18 +166,26 @@ class SubagentResult:
     result: str = ""
     result_ref: str = ""
     error_code: str = ""
+    evidence_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.child_run_id.strip():
             raise ValueError("child_run_id must not be empty")
         if self.result_ref and not self.result_ref.startswith("subagent://"):
             raise ValueError("result_ref must use the subagent scheme")
+        if any(not item.strip() for item in self.evidence_refs):
+            raise ValueError("evidence_refs must contain non-empty values")
+        object.__setattr__(self, "evidence_refs", tuple(dict.fromkeys(self.evidence_refs)))
 
 
 class SubagentExecutorPort(Protocol):
     """Application-owned child runtime used by the neutral task tool."""
 
-    def execute(self, request: SubagentRequest) -> Awaitable[SubagentResult]: ...
+    def execute(
+        self,
+        request: SubagentRequest,
+        progress: SubagentProgressSink | None = None,
+    ) -> Awaitable[SubagentResult]: ...
 
     def cancel(
         self,
@@ -139,6 +208,8 @@ __all__ = [
     "SubagentCancelReason",
     "SubagentExecutorPort",
     "SubagentLimits",
+    "SubagentProfile",
+    "SubagentProgressSink",
     "SubagentRequest",
     "SubagentResult",
     "SubagentTerminalStatus",

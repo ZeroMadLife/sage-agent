@@ -12,6 +12,7 @@ from sage_harness import (
     HarnessRunContext,
     SubagentLifecycleMiddleware,
     SubagentLimits,
+    SubagentProfile,
     SubagentRequest,
     SubagentResult,
     SubagentToolConfig,
@@ -29,8 +30,10 @@ class FakeExecutor:
     requests: list[SubagentRequest] = field(default_factory=list)
     cancelled: list[tuple[str, str]] = field(default_factory=list)
 
-    async def execute(self, request: SubagentRequest) -> SubagentResult:
+    async def execute(self, request: SubagentRequest, progress=None) -> SubagentResult:  # type: ignore[no-untyped-def]
         self.requests.append(request)
+        if progress is not None:
+            progress({"phase": "research", "status": "running"})
         if self.delay:
             await asyncio.sleep(self.delay)
         return SubagentResult(
@@ -74,9 +77,7 @@ def _task_call(call_id: str, description: str = "inspect code") -> dict[str, obj
 
 
 def test_subagent_limits_record_only_allowed_task_calls() -> None:
-    middleware = SubagentLifecycleMiddleware(
-        SubagentLimits(max_concurrent=2, max_total_per_run=2)
-    )
+    middleware = SubagentLifecycleMiddleware(SubagentLimits(max_concurrent=2, max_total_per_run=2))
     message = AIMessage(
         content="",
         tool_calls=[_task_call(f"call-{index}") for index in range(4)],
@@ -195,6 +196,63 @@ def test_task_tool_accepts_lowercase_explore_profile_from_model() -> None:
     )
 
     assert executor.requests[0].subagent_type == "explore"
+    assert result["delegations"][0]["status"] == "succeeded"
+
+
+def test_task_tool_applies_server_owned_research_profile() -> None:
+    executor = FakeExecutor()
+    call = _task_call("call-research")
+    call["args"] = {**call["args"], "subagent_type": "research"}  # type: ignore[index]
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "research"}),
+        profiles=(
+            SubagentProfile(
+                name="research",
+                tool_scope=(
+                    "list_files",
+                    "read_file",
+                    "search",
+                    "knowledge_search",
+                    "search_web",
+                    "fetch_web",
+                ),
+                token_budget=32_000,
+                timeout_seconds=180,
+                max_steps=16,
+            ),
+        ),
+    )
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="Research evidence was used."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_tool(executor, config)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda config: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Research one bounded question")]},
+            context=_context(),
+        )
+    )
+
+    request = executor.requests[0]
+    assert request.subagent_type == "research"
+    assert request.tool_scope[-3:] == ("knowledge_search", "search_web", "fetch_web")
+    assert request.token_budget == 32_000
+    assert request.timeout_seconds == 180
+    assert request.max_steps == 16
     assert result["delegations"][0]["status"] == "succeeded"
 
 

@@ -286,8 +286,13 @@ class HarnessEventAdapter:
             "subagent_failed",
             "subagent_cancelled",
             "subagent_timed_out",
+            "subagent_progress",
         }:
-            event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
+            event_payload = (
+                _public_subagent_progress(payload)
+                if event_type == "subagent_progress"
+                else {str(key): _bounded_value(value) for key, value in payload.items()}
+            )
             if event_type.startswith("subagent"):
                 event_payload.setdefault("agent_run_id", event_payload.get("child_run_id", ""))
             if event_type == "tool_call":
@@ -343,7 +348,8 @@ class HarnessEventAdapter:
                         "blocked"
                         if event_type == "approval_required"
                         else "running"
-                        if event_type in {"agent_started", "subagent_started"}
+                        if event_type
+                        in {"agent_started", "subagent_started", "subagent_progress"}
                         else "error"
                         if event_type == "subagent_cancelled"
                         else "error"
@@ -693,6 +699,36 @@ def _public_capability_payload(payload: Mapping[str, Any]) -> dict[str, Any] | N
         }:
             category = "execution_error"
         public["failure_category"] = category
+    return public
+
+
+def _public_subagent_progress(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project child progress without exposing prompts, arguments, or tool output."""
+    phase = _public_string(payload.get("phase"), 32)
+    if phase not in {"model_requested", "tool_started", "tool_completed"}:
+        phase = "model_requested"
+    status = _public_string(payload.get("status"), 16)
+    if status not in {"running", "completed", "error"}:
+        status = "running"
+    public: dict[str, Any] = {
+        "type": "subagent_progress",
+        "child_run_id": _public_string(payload.get("child_run_id"), 256),
+        "parent_run_id": _public_string(payload.get("parent_run_id"), 256),
+        "subagent_type": _public_string(payload.get("subagent_type"), 64),
+        "phase": phase,
+        "status": status,
+        "tool_count": _public_non_negative_int(payload.get("tool_count")),
+        "evidence_count": _public_non_negative_int(payload.get("evidence_count")),
+    }
+    tool_name = _public_string(payload.get("tool"), 128)
+    if tool_name:
+        public["tool"] = tool_name
+    operation_ref = payload.get("operation_ref")
+    if isinstance(operation_ref, Mapping):
+        kind = _public_string(operation_ref.get("kind"), 64)
+        identifier = _public_string(operation_ref.get("id"), 256)
+        if kind and identifier:
+            public["operation_ref"] = {"kind": kind, "id": identifier}
     return public
 
 

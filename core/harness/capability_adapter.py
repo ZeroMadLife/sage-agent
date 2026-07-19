@@ -205,6 +205,25 @@ def _explore_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _research_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="subagent:research",
+        name="Research",
+        origin="subagent",
+        kind="delegate",
+        revision="research-evidence-v1",
+        description=("Read-only child agent for bounded Knowledge and public web research."),
+        surfaces=_ALL_SURFACES,
+        risk="medium",
+        permission="runtime",
+        deferred=True,
+        remote_content=True,
+        availability="available",
+        timeout_seconds=180.0,
+        tags=("research", "read-only", "evidence"),
+    )
+
+
 def _web_search_descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         capability_id="web:search",
@@ -272,6 +291,7 @@ def build_sage_capability_registry(
     web_search_available: bool = False,
     web_fetch_available: bool = False,
     web_source_proposal_available: bool = False,
+    research_subagent_available: bool = False,
 ) -> CapabilityRegistry:
     """Build a public catalog from current runtime-owned source metadata."""
     descriptors = [_tool_descriptor(name, tool) for name, tool in tools.items()]
@@ -279,6 +299,8 @@ def build_sage_capability_registry(
     if mcp_catalog is not None:
         descriptors.extend(_mcp_descriptors(mcp_catalog))
     descriptors.append(_explore_descriptor())
+    if research_subagent_available:
+        descriptors.append(_research_descriptor())
     if web_search_available:
         descriptors.append(_web_search_descriptor())
     if web_fetch_available:

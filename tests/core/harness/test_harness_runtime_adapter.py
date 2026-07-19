@@ -1137,6 +1137,50 @@ def test_event_adapter_projects_agent_started_event() -> None:
     assert events[0].payload["agent_run_id"] == "agent_1"
 
 
+def test_event_adapter_projects_only_public_subagent_progress_fields() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "subagent_progress",
+                "child_run_id": "child_1",
+                "parent_run_id": "parent_1",
+                "subagent_type": "research",
+                "phase": "tool_completed",
+                "status": "completed",
+                "tool": "search_web",
+                "tool_count": 2,
+                "evidence_count": 3,
+                "operation_ref": {"kind": "coding_run", "id": "child_1"},
+                "args": {"query": "private query"},
+                "content": "private page content",
+                "prompt": "private child prompt",
+            },
+            "source-child-progress",
+        )
+    )
+
+    assert events[0].kind == "agent"
+    assert events[0].status == "running"
+    assert events[0].payload == {
+        "type": "subagent_progress",
+        "child_run_id": "child_1",
+        "parent_run_id": "parent_1",
+        "subagent_type": "research",
+        "phase": "tool_completed",
+        "status": "completed",
+        "tool": "search_web",
+        "tool_count": 2,
+        "evidence_count": 3,
+        "operation_ref": {"kind": "coding_run", "id": "child_1"},
+        "agent_run_id": "child_1",
+        "run_id": "r1",
+        "session_id": "s1",
+    }
+
+
 @pytest.mark.parametrize(
     ("event_type", "child_status", "error_code"),
     [

@@ -31,9 +31,11 @@ async def run_worker_task(
     token_budget: int | None = None,
     max_steps: int = 20,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
+    tools: dict[str, Any] | None = None,
 ) -> str:
     """Run one worker task and return its final response."""
-    tools = build_tool_registry(workspace)
+    if tools is None:
+        tools = build_tool_registry(workspace)
     if tool_scope is not None:
         tools = {name: tool for name, tool in tools.items() if name in set(tool_scope)}
     used_tokens = 0

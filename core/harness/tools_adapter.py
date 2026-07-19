@@ -346,6 +346,10 @@ def build_deerflow_coding_tool_bundle(
         web_search_available=web_search_available,
         web_fetch_available=web_fetch_available,
         web_source_proposal_available=web_source_proposal_available,
+        research_subagent_available=(
+            subagent_config is not None
+            and "research" in subagent_config.allowed_types
+        ),
     )
 
     graph_tools, deferred_setup = assemble_deferred_tools(

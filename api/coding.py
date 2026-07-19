@@ -140,8 +140,12 @@ from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.sandbox_factory import create_coding_sandbox
-from core.harness.subagent_adapter import CodingSubagentExecutor
+from core.harness.subagent_adapter import (
+    CodingSubagentExecutor,
+    build_coding_subagent_config,
+)
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
+from core.knowledge import KnowledgeStore
 from core.knowledge.source_proposals import (
     KnowledgeSourceProposal,
     KnowledgeSourceProposalConflictError,
@@ -510,8 +514,19 @@ async def _deerflow_timeline_events(
             ),
         )
         try:
-            subagent_executor = CodingSubagentExecutor(runtime)
-            subagent_config = SubagentToolConfig()
+            knowledge_port = CodingKnowledgePort(runtime)
+            subagent_config = build_coding_subagent_config(
+                knowledge_port,
+                web_search_port,
+                web_fetch_port,
+                base_config=SubagentToolConfig(),
+            )
+            subagent_executor = CodingSubagentExecutor(
+                runtime,
+                knowledge_port=knowledge_port,
+                web_search_port=web_search_port,
+                web_fetch_port=web_fetch_port,
+            )
             artifact_store = ToolResultStore(
                 runtime.storage_root,
                 runtime.session_id,
@@ -520,7 +535,7 @@ async def _deerflow_timeline_events(
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
                 run_id=run_id,
-                knowledge_port=CodingKnowledgePort(runtime),
+                knowledge_port=knowledge_port,
                 memory_port=CodingMemoryPort(runtime),
                 sandbox=sandbox,
                 extra_deferred_tools=mcp_tools,
@@ -900,6 +915,10 @@ def _harness_capability_context(
             web_source_proposal_available=isinstance(
                 getattr(request.app.state, "knowledge_source_proposal_service", None),
                 CodingKnowledgeSourceProposalService,
+            ),
+            research_subagent_available=(
+                _port_available(getattr(request.app.state, "coding_web_search_port", None))
+                and isinstance(_coding_knowledge_store(request), KnowledgeStore)
             ),
         ),
     )

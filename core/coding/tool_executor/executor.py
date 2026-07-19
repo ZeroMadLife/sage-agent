@@ -78,7 +78,11 @@ class ToolExecutor:
         if tool is None:
             return None
         try:
-            args = validate_tool(self.workspace, name, args)
+            args = (
+                tool.validate_arguments(args)
+                if tool.argument_validator is not None
+                else validate_tool(self.workspace, name, args)
+            )
         except ValueError:
             return None
         permission = self.permission_checker.check(tool, args, self.workspace)
@@ -125,7 +129,11 @@ class ToolExecutor:
             return
 
         try:
-            args = validate_tool(self.workspace, name, args)
+            args = (
+                tool.validate_arguments(args)
+                if tool.argument_validator is not None
+                else validate_tool(self.workspace, name, args)
+            )
         except ValueError as exc:
             yield self._tool_result_event(
                 name,

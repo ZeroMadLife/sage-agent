@@ -246,6 +246,37 @@ def test_capability_api_exposes_web_tools_only_with_server_ports(tmp_path: Path)
     assert "web:fetch" not in capability_ids(disabled_app)
     assert "web:search" in capability_ids(enabled_app)
     assert "web:fetch" in capability_ids(enabled_app)
+    assert "subagent:research" not in capability_ids(enabled_app)
+
+
+def test_capability_api_exposes_research_only_with_knowledge_and_web_search(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    knowledge = tmp_path / "knowledge"
+    workspace.mkdir()
+    knowledge.mkdir()
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=workspace,
+        coding_storage_root=workspace / ".coding",
+        coding_web_search_port=FakeWebSearchPort(),
+        knowledge_workspace_root=knowledge,
+        knowledge_database_path=knowledge / ".sage" / "knowledge.sqlite3",
+        knowledge_jobs_enabled=False,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        payload = client.get(
+            "/api/v1/harness/capabilities",
+            params={"session_id": session_id, "surface": "coding", "origin": "subagent"},
+        ).json()
+
+    assert {item["capability_id"] for item in payload["capabilities"]} == {
+        "subagent:explore",
+        "subagent:research",
+    }
 
 
 def test_capability_health_api_returns_content_free_workspace_metrics(
