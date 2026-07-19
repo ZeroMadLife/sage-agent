@@ -7,6 +7,7 @@ x-api-common: &api-common
     dockerfile: infra/docker/sage-api.Dockerfile
     args:
       SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}
+      SAGE_PIP_INDEX_URL: ${SAGE_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple/}
   env_file:
     - ${SAGE_ENV_FILE:-/etc/sage/env}
   environment:

@@ -3,11 +3,13 @@ FROM ${SAGE_DOCKER_REGISTRY}/library/docker:27.5.1-cli AS docker-cli
 
 FROM ${SAGE_DOCKER_REGISTRY}/library/python:3.12.13-slim-bookworm
 
+ARG SAGE_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+
 ENV HOME=/tmp \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_INDEX_URL=https://pypi.org/simple \
+    PIP_INDEX_URL=${SAGE_PIP_INDEX_URL} \
     PIP_DEFAULT_TIMEOUT=60 \
     PIP_RETRIES=10
 

@@ -59,10 +59,13 @@ def test_private_canary_requires_a_rootless_sandbox_socket() -> None:
     assert "Delegate=cpu cpuset io memory pids" in delegation
 
 
-def test_api_image_uses_the_official_retrying_package_index() -> None:
+def test_api_image_uses_the_configurable_canary_package_index() -> None:
     dockerfile = (ROOT / "infra/docker/sage-api.Dockerfile").read_text(encoding="utf-8")
+    compose = (ROOT / "infra/compose/private-canary.yml").read_text(encoding="utf-8")
 
-    assert "PIP_INDEX_URL=https://pypi.org/simple" in dockerfile
+    assert "ARG SAGE_PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/" in dockerfile
+    assert "PIP_INDEX_URL=${SAGE_PIP_INDEX_URL}" in dockerfile
+    assert "SAGE_PIP_INDEX_URL: ${SAGE_PIP_INDEX_URL:-" in compose
     assert "PIP_RETRIES=10" in dockerfile
     assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
     assert "pip install -r requirements.txt" in dockerfile
