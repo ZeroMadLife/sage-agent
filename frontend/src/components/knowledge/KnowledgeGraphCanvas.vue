@@ -401,9 +401,6 @@ async function mountRenderer(requestId: number) {
   const mutedEdgeColor = darkTheme
     ? `rgba(139, 148, 163, ${smallGraph ? 0.18 : 0.08})`
     : `rgba(113, 122, 137, ${smallGraph ? 0.2 : 0.1})`
-  const linkedEdgeColor = darkTheme
-    ? `rgba(111, 148, 205, ${smallGraph ? 0.28 : 0.14})`
-    : `rgba(72, 114, 177, ${smallGraph ? 0.32 : 0.18})`
   dimNodeColor = darkTheme ? 'rgba(139, 148, 163, 0.09)' : 'rgba(113, 122, 137, 0.12)'
   dimEdgeColor = darkTheme ? 'rgba(139, 148, 163, 0.08)' : 'rgba(113, 122, 137, 0.08)'
   focusEdgeColor = brandColor
@@ -463,7 +460,12 @@ async function mountRenderer(requestId: number) {
     .slice(0, performanceProfile.value.maxRenderedEdges)
   for (const edge of renderedEdges) {
     if (!graph.hasNode(edge.source_node_id) || !graph.hasNode(edge.target_node_id)) continue
-    const baseColor = edge.kind === 'WIKILINK' ? linkedEdgeColor : mutedEdgeColor
+    const evidenceStrength = Math.min(1, Math.max(0.35, edge.weight * edge.confidence))
+    const baseColor = edge.kind === 'WIKILINK'
+      ? (darkTheme
+        ? `rgba(111, 148, 205, ${Math.min(0.3, (smallGraph ? 0.2 : 0.12) * (0.55 + evidenceStrength * 0.65))})`
+        : `rgba(72, 114, 177, ${Math.min(0.34, (smallGraph ? 0.24 : 0.15) * (0.55 + evidenceStrength * 0.65))})`)
+      : mutedEdgeColor
     const edgeScale = smallGraph ? 1.8 : performanceProfile.value.tier === 'medium' ? 1.25 : 1
     const baseSize = (edge.kind === 'WIKILINK'
       ? Math.min(0.72, 0.34 + edge.weight * 0.08)

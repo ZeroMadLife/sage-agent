@@ -3,6 +3,7 @@ import type { KnowledgeGraphNode } from '../types/api'
 import {
   buildKnowledgeNodeResearchModel,
   buildKnowledgeNodeResearchPrompt,
+  buildKnowledgePageResearchPrompt,
 } from './knowledgeNodeResearch'
 
 const node: KnowledgeGraphNode = {
@@ -66,5 +67,16 @@ describe('knowledge node research', () => {
     expect(model.evidenceBound).toBe(false)
     expect(prompt).toContain('只有 graph revision')
     expect(prompt).toContain('不要把关系推断写成事实')
+  })
+
+  it('keeps a Wiki-only handoff bound to its page revision', () => {
+    const prompt = buildKnowledgePageResearchPrompt({
+      page_id: 'page-harness', path: 'wiki/harness.md', title: 'Agent Harness',
+      current_revision: 'page-rev-3', updated_at: '', revisions: [],
+    })
+
+    expect(prompt).toContain('Wiki 页面「Agent Harness」')
+    expect(prompt).toContain('page page-harness 与 revision page-rev-3')
+    expect(prompt).toContain('不要自动写入 Wiki、Memory')
   })
 })

@@ -7,7 +7,6 @@ import {
   Home,
   Menu,
   Settings,
-  Share2,
   Sparkles,
   Sprout,
   X,
@@ -24,8 +23,7 @@ const items = [
   { label: '今天', target: '/assistant', icon: Home },
   { label: '主对话', target: '/coding', icon: History },
   { label: '知识库', target: '/knowledge', icon: BookOpenText },
-  { label: '成长记录', target: '/evolution', icon: Sprout },
-  { label: '公开主页', target: '/public', icon: Share2 },
+  { label: '成长记录', target: '/growth', icon: Sprout },
 ]
 
 function isActive(target: string) {

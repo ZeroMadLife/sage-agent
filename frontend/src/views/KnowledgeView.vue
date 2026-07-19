@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import {
   AlertTriangle,
   BookOpenText,
@@ -13,6 +14,7 @@ import {
   FolderOpen,
   FolderUp,
   GitBranch,
+  MessageCircle,
   History,
   LayoutList,
   Network,
@@ -54,27 +56,19 @@ import {
 import {
   KnowledgeGraphCanvas,
   KnowledgeInspector,
-  KnowledgeNodeResearchPanel,
 } from '../components/knowledge'
 import {
   shortestGraphPath,
   type KnowledgeGraphScopeMode,
 } from '../components/knowledge/knowledgeGraphPresentation'
-import {
-  ChatConversation,
-  ChatDock,
-  ChatHarnessLayout,
-  KnowledgeSourceProposalReviewList,
-} from '../components/harness'
-import { CodingApprovalCard, CodingComposer, CodingPlanApproval } from '../components/coding'
-import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { knowledgeSurfaceAdapter } from '../harness/surfaces/knowledge'
 import {
   buildKnowledgeNodeResearchModel,
+  buildKnowledgePageResearchPrompt,
   buildKnowledgeNodeResearchPrompt,
   type KnowledgeNodeResearchIntent,
 } from '../harness/knowledgeNodeResearch'
-import { useHarnessSession } from '../harness/useHarnessSession'
+import { stageHarnessChatDraft } from '../harness/chatDraftBridge'
 import type {
   KnowledgeGoalAlignment,
   KnowledgeGraph,
@@ -95,15 +89,6 @@ import type {
 } from '../types/api'
 
 type WorkspaceMode = 'graph' | 'wiki' | 'activity' | 'attention'
-type ChatHarnessLayoutHandle = {
-  selectTab: (tab: 'chat' | 'details') => void
-  showCanvas: () => void
-}
-type CodingComposerHandle = {
-  setInput: (value: string) => void
-  focus: () => void
-  hasDraft: () => boolean
-}
 
 const summary = ref<KnowledgeWorkspaceSummary | null>(null)
 const graph = ref<KnowledgeGraph | null>(null)
@@ -141,13 +126,7 @@ const notice = ref('')
 const busy = ref<Record<string, boolean>>({})
 const importOpen = ref(false)
 const libraryOpen = ref(false)
-const harnessLayout = ref<ChatHarnessLayoutHandle | null>(null)
-const knowledgeComposer = ref<CodingComposerHandle | null>(null)
-const harnessSession = useHarnessSession()
-const chat = harnessSession.store
-const selectedHarnessRunId = ref('')
-const harnessSessionError = ref('')
-const harnessSessionStarting = ref(false)
+const router = useRouter()
 const viewportWidth = ref(window.innerWidth)
 const jobsAvailable = ref(true)
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -194,6 +173,7 @@ const filteredPages = computed(() => {
     item.title.toLocaleLowerCase().includes(value) || item.path.toLocaleLowerCase().includes(value),
   )
 })
+const pageTreePages = computed(() => filteredPages.value.slice(0, mode.value === 'graph' ? 4 : 80))
 const activeJobs = computed(() => jobs.value.filter((job) => !isTerminal(job.status)))
 const knowledgeContext = computed(() => knowledgeSurfaceAdapter.buildContext({
   workspaceId: graph.value?.snapshot.workspace_id ?? jobs.value[0]?.workspace_id ?? 'knowledge-local',
@@ -202,96 +182,31 @@ const knowledgeContext = computed(() => knowledgeSurfaceAdapter.buildContext({
   selectedPage: selectedPage.value,
   activeJobs: activeJobs.value,
 }))
-const nodeResearchModel = computed(() => selectedNode.value
-  ? buildKnowledgeNodeResearchModel({
-    node: selectedNode.value,
-    graphRevision: graph.value?.snapshot.graph_revision,
-    neighborhood: neighborhood.value,
-    alignments: alignments.value,
-  })
-  : null)
-const harnessProjection = computed(() => projectLatestCodingHarness(
-  chat.visibleTimeline,
-  selectedHarnessRunId.value || chat.activeRun?.run_id || '',
-))
-const chatOutputSignature = computed(() => JSON.stringify({
-  session: chat.sessionId,
-  connection: chat.connectionState,
-  thinking: chat.isThinking,
-  phase: chat.thinkingPhase,
-  approval: chat.pendingApproval?.approval_id ?? '',
-  messages: chat.messages.map((message) => ({
-    id: message.id,
-    run: message.run_id,
-    role: message.role,
-    content: message.content,
-    thinking: message.isThinking,
-    tools: message.tools?.map((tool) => [tool.tool, tool.status, tool.content.length]),
-  })),
-  optimistic: chat.optimisticMessage?.id ?? '',
-}))
-const knowledgeChatError = computed(() => chat.errorMessage || harnessSessionError.value)
-watch(() => chat.activeRun?.run_id || '', (runId, previousRunId) => {
-  if (runId && runId !== previousRunId) selectedHarnessRunId.value = runId
-})
-watch(() => chat.sessionId, () => { selectedHarnessRunId.value = '' })
 watch(selectedGoalPath, (path) => {
   if (!path) showGoalPath.value = false
 })
 
-function selectHarnessRun(runId: string) {
-  if (runId) selectedHarnessRunId.value = runId
-}
-
-async function connectHarnessSession() {
-  harnessSessionError.value = ''
-  try {
-    await chat.bootstrapModelCatalog()
-    await harnessSession.connectExistingSession()
-  } catch (reason) {
-    harnessSessionError.value = `无法恢复对话：${explain(reason)}`
-  }
-}
-
-async function createHarnessSession(): Promise<boolean> {
-  if (harnessSessionStarting.value) return false
-  harnessSessionStarting.value = true
-  harnessSessionError.value = ''
-  try {
-    await chat.bootstrapModelCatalog()
-    return Boolean(await harnessSession.createSession())
-  } catch (reason) {
-    harnessSessionError.value = `无法新建对话：${explain(reason)}`
-    return false
-  } finally {
-    harnessSessionStarting.value = false
-  }
-}
-
 function openNodeResearch() {
-  harnessLayout.value?.selectTab('chat')
+  void prepareNodeResearch('understand')
 }
 
 async function prepareNodeResearch(intent: KnowledgeNodeResearchIntent) {
-  const model = nodeResearchModel.value
-  if (!model) {
-    notice.value = '先选择一个知识节点，再创建研究任务。'
+  const node = selectedNode.value
+  const page = selectedPage.value
+  if (!node && !page) {
+    notice.value = '先选择一个知识节点或 Wiki 页面，再回到主对话继续研究。'
     return
   }
-  if (knowledgeComposer.value?.hasDraft()) {
-    harnessLayout.value?.selectTab('chat')
-    knowledgeComposer.value.focus()
-    notice.value = '输入框里已有未发送草稿；为避免覆盖，请先发送或清空。'
-    return
-  }
-  if (!chat.sessionId && !await createHarnessSession()) return
-
-  harnessLayout.value?.selectTab('chat')
-  await nextTick()
-  knowledgeComposer.value?.setInput(buildKnowledgeNodeResearchPrompt(intent, model))
-  knowledgeComposer.value?.focus()
-  const label = { understand: '梳理概念', evidence: '补充证据', practice: '生成练习' }[intent]
-  notice.value = `已生成“${label}”草稿；检查后发送，提交时会冻结当前节点与 revision。`
+  const content = node
+    ? buildKnowledgeNodeResearchPrompt(intent, buildKnowledgeNodeResearchModel({
+        node,
+        graphRevision: graph.value?.snapshot.graph_revision,
+        neighborhood: neighborhood.value,
+        alignments: alignments.value,
+      }))
+    : buildKnowledgePageResearchPrompt(page!)
+  stageHarnessChatDraft(content, knowledgeContext.value)
+  await router.push({ path: '/coding', query: { from: 'knowledge' } })
 }
 
 const attentionCount = computed(() => proposals.value.length + insights.value.filter(
@@ -391,7 +306,6 @@ async function selectNode(nodeId: string | null) {
     showGoalPath.value = false
     return
   }
-  if (viewportWidth.value < 768) harnessLayout.value?.selectTab('details')
   const requestId = ++nodeRequest
   nodeLoading.value = true
   try {
@@ -447,7 +361,6 @@ function selectPage(page: KnowledgePage) {
     neighborhood.value = null
     notice.value = '该页面尚未进入当前图谱 revision，但仍可阅读 Wiki 正文。'
   }
-  harnessLayout.value?.selectTab('details')
 }
 
 function toggleKind(kind: KnowledgeGraphNodeKind) {
@@ -677,21 +590,16 @@ watch([selectedRoot, relativeDirectory], () => {
 
 onMounted(() => {
   window.addEventListener('resize', updateViewport)
-  if (viewportWidth.value < 900) {
-    void nextTick(() => harnessLayout.value?.showCanvas())
-  }
   void fetchPendingKnowledgeMigration().then((value) => {
     migrationPlan.value = value
   }).catch(() => undefined)
   void refreshWorkspace()
-  void connectHarnessSession()
   pollTimer = setInterval(() => void refreshJobs(), 3000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', updateViewport)
   if (pollTimer) clearInterval(pollTimer)
-  harnessSession.detach()
 })
 </script>
 
@@ -797,9 +705,12 @@ onBeforeUnmount(() => {
 
         <div class="page-tree">
           <div class="tree-heading"><span>Wiki 页面</span><small>{{ filteredPages.length }}</small></div>
-          <button v-for="page in filteredPages.slice(0, 80)" :key="page.page_id" type="button" @click="selectPage(page)">
+          <button v-for="page in pageTreePages" :key="page.page_id" type="button" @click="selectPage(page)">
             <BookOpenText :size="14" />
             <span><strong>{{ page.title }}</strong><small>{{ page.revisions.length }} 个 revision</small></span>
+          </button>
+          <button v-if="mode === 'graph' && filteredPages.length > pageTreePages.length" type="button" class="page-tree-more" @click="mode = 'wiki'">
+            查看全部 {{ filteredPages.length }} 个页面 <ChevronRight :size="14" />
           </button>
           <p v-if="!filteredPages.length">没有匹配的页面。</p>
         </div>
@@ -809,9 +720,8 @@ onBeforeUnmount(() => {
         </button>
       </aside>
 
-      <ChatHarnessLayout ref="harnessLayout" class="knowledge-harness" surface-label="Knowledge">
-        <template #canvas>
-          <main class="knowledge-stage">
+      <div class="knowledge-canvas-shell" :class="{ 'has-selection': selectedNode || selectedPage }">
+        <main class="knowledge-stage">
         <header class="stage-toolbar">
           <div class="stage-tabs" role="tablist" aria-label="知识空间内容">
             <button
@@ -994,105 +904,9 @@ onBeforeUnmount(() => {
             </details>
           </section>
         </template>
-          </main>
-        </template>
+        </main>
 
-        <template #chat>
-          <ChatDock
-            :projection="harnessProjection"
-            :connection-state="chat.connectionState"
-            :context="knowledgeContext"
-            :output-signature="chatOutputSignature"
-            :message-count="chat.messages.length"
-            :session-key="chat.sessionId"
-            :timeline-ready="chat.timelineInitialized"
-            :scroll-anchor="chat.scrollAnchor"
-            :has-more="chat.timelineHasMore"
-            :loading="chat.timelineLoading"
-            :is-empty="chat.messages.length === 0"
-            :load-older="chat.loadOlderTimeline"
-            compact-status
-            empty-title="围绕知识图谱继续学习"
-            empty-description="选择节点后提问，本轮会冻结 graph、page 与 revision。"
-            @anchor-change="chat.setScrollAnchor"
-          >
-            <template v-if="nodeResearchModel" #contextTools>
-              <KnowledgeNodeResearchPanel
-                :model="nodeResearchModel"
-                :loading="nodeLoading"
-                @choose="prepareNodeResearch"
-              />
-            </template>
-            <template v-if="chat.pendingApproval || chat.knowledgeSourceProposals.length || chat.knowledgeSourceProposalError" #attention>
-              <div class="knowledge-chat-attention">
-                <CodingApprovalCard
-                  v-if="chat.pendingApproval"
-                  :approval="chat.pendingApproval"
-                  :busy="chat.approvalBusy"
-                  compact
-                  @respond="chat.respondApproval"
-                />
-                <KnowledgeSourceProposalReviewList
-                  v-if="chat.knowledgeSourceProposals.length || chat.knowledgeSourceProposalError"
-                  :proposals="chat.knowledgeSourceProposals"
-                  :details="chat.knowledgeSourceProposalDetails"
-                  :busy="chat.knowledgeSourceProposalBusy"
-                  :detail-busy="chat.knowledgeSourceProposalDetailBusy"
-                  :error="chat.knowledgeSourceProposalError"
-                  compact
-                  @approve="chat.approveKnowledgeSourceProposal"
-                  @reject="chat.rejectKnowledgeSourceProposal"
-                  @load-detail="chat.loadKnowledgeSourceProposalDetail"
-                />
-              </div>
-            </template>
-            <ChatConversation
-              :legacy-messages="chat.legacyMessages"
-              :messages="chat.messages"
-              :turns="chat.turns"
-              :optimistic-message="chat.optimisticMessage"
-              :active-run-id="chat.activeRun?.run_id || ''"
-              :selected-run-id="harnessProjection.runId"
-              :pending-approval="chat.pendingApproval"
-              :show-approval-card="false"
-              :approval-busy="chat.approvalBusy"
-              :is-thinking="chat.isThinking"
-              :thinking-phase="chat.thinkingPhase"
-              :runs="chat.runs"
-              :diff-info-by-run="chat.diffInfoByRun"
-              :error-message="knowledgeChatError"
-              @select-run="selectHarnessRun"
-              @respond-approval="chat.respondApproval"
-              @open-run-diff="chat.openRunDiff"
-            />
-            <template #empty>
-              <div class="knowledge-chat-empty">
-                <template v-if="chat.sessionId">
-                  <strong>围绕知识图谱继续学习</strong>
-                  <span>选择节点后提问，本轮会冻结 graph、page 与 revision。</span>
-                </template>
-                <template v-else>
-                  <strong>还没有可复用的对话</strong>
-                  <span>显式新建后，Knowledge 会继续使用同一套 Chat Harness。</span>
-                  <button type="button" :disabled="harnessSessionStarting" @click="createHarnessSession">
-                    {{ harnessSessionStarting ? '正在创建...' : '新建对话' }}
-                  </button>
-                </template>
-              </div>
-            </template>
-            <template #composer>
-              <CodingPlanApproval v-if="chat.planReview" />
-              <CodingComposer
-                ref="knowledgeComposer"
-                density="compact"
-                :surface-context="knowledgeContext"
-                placeholder="围绕已选节点提问，或提出练习与沉淀任务"
-              />
-            </template>
-          </ChatDock>
-        </template>
-
-        <template #details>
+        <aside v-if="selectedNode || selectedPage" class="knowledge-detail-rail" aria-label="知识详情">
           <KnowledgeInspector
             :node="selectedNode"
             :page="selectedPage"
@@ -1108,8 +922,11 @@ onBeforeUnmount(() => {
             @select="selectNode"
             @research="openNodeResearch"
           />
-        </template>
-      </ChatHarnessLayout>
+          <button class="continue-in-chat" type="button" @click="prepareNodeResearch('understand')">
+            <MessageCircle :size="15" />回到主对话继续
+          </button>
+        </aside>
+      </div>
     </div>
 
     <footer class="workspace-footer">
@@ -1180,9 +997,9 @@ onBeforeUnmount(() => {
 .workspace-header { display:flex; align-items:center; justify-content:space-between; gap:18px; padding:0 16px; border-bottom:1px solid var(--sage-border); background:var(--sage-surface); }.workspace-title,.workspace-title>div,.header-actions,.workspace-title small { display:flex; align-items:center; }.workspace-title { gap:10px; min-width:0; }.workspace-title>div { flex-direction:column; align-items:flex-start; min-width:0; line-height:1.3; }.workspace-title strong { max-width:320px; overflow:hidden; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.workspace-title small { gap:5px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.workspace-title small i { width:7px; height:7px; border-radius:50%; background:var(--sage-border-strong); }.workspace-title small i.ready { background:var(--sage-success); }.title-mark { display:grid; place-items:center; width:34px; height:34px; flex:none; border-radius:var(--sage-radius); color:var(--sage-brand-strong); background:var(--sage-brand-bg); }.header-actions { gap:8px; }.header-actions code { max-width:180px; overflow:hidden; color:var(--sage-text-muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
 .icon-button,.primary-button,.secondary-button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:34px; border-radius:var(--sage-radius); padding:0 11px; font:inherit; font-size:var(--sage-font-sm); }.icon-button { width:34px; padding:0; border:0; color:var(--sage-text-secondary); background:transparent; }.icon-button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.primary-button { border:1px solid var(--sage-brand-strong); color:#fff; background:var(--sage-brand-strong); font-weight:650; }.secondary-button { border:1px solid var(--sage-border-strong); color:var(--sage-text-secondary); background:var(--sage-surface); }.primary-button:hover,.secondary-button:hover { filter:brightness(.97); }.primary-button:disabled,.secondary-button:disabled,.icon-button:disabled { cursor:not-allowed; opacity:.55; }
 .workspace-alert { position:absolute; z-index:45; top:66px; left:50%; display:flex; align-items:center; gap:8px; max-width:min(620px,calc(100% - 32px)); margin:0; padding:9px 11px; border:1px solid var(--sage-border); border-left:3px solid var(--sage-brand); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); font-size:var(--sage-font-sm); transform:translateX(-50%); }.workspace-alert.error { border-left-color:var(--sage-danger); }.workspace-alert button { margin-left:auto; border:0; color:var(--sage-source); background:transparent; }
-.workspace-body { position:relative; display:grid; grid-template-columns:238px minmax(0,1fr); min-width:0; min-height:0; overflow:hidden; }.workspace-body.is-loading { grid-template-columns:238px minmax(0,1fr); }
-.knowledge-harness { min-width:0; min-height:0; height:100%; }
-.knowledge-library { z-index:2; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); }.knowledge-library>header { display:flex; align-items:center; justify-content:space-between; min-height:58px; padding:0 14px; border-bottom:1px solid var(--sage-border); }.knowledge-library>header div { display:flex; flex-direction:column; }.knowledge-library>header strong { font-size:var(--sage-font-md); }.knowledge-library>header small { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.library-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; margin:12px; border:1px solid var(--sage-border); background:var(--sage-border); }.library-metrics button { min-width:0; min-height:62px; padding:8px 3px; border:0; color:var(--sage-text); background:var(--sage-surface); }.library-metrics button:hover { background:var(--sage-surface-muted); }.library-metrics strong,.library-metrics span { display:block; }.library-metrics strong { font-size:17px; }.library-metrics span { color:var(--sage-text-muted); font-size:11px; }.library-search { display:flex; align-items:center; gap:7px; margin:0 12px 12px; min-height:34px; padding:0 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:var(--sage-surface-raised); }.library-search:focus-within { border-color:var(--sage-source); }.library-search input { min-width:0; width:100%; border:0; outline:0; color:var(--sage-text); background:transparent; font-size:var(--sage-font-sm); }.goal-summary { margin:0 12px 12px; padding:11px; border-left:3px solid var(--sage-brand); background:var(--sage-brand-bg); }.goal-summary span { display:flex; align-items:center; gap:5px; color:var(--sage-brand-strong); font-size:11px; font-weight:700; }.goal-summary strong,.goal-summary small { display:block; }.goal-summary strong { margin-top:5px; font-size:var(--sage-font-sm); line-height:1.45; }.goal-summary small { margin-top:4px; color:var(--sage-text-muted); font-size:10px; }.library-nav { display:grid; gap:2px; padding:0 8px 10px; border-bottom:1px solid var(--sage-border); }.library-nav button { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; min-height:36px; padding:0 8px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; font-size:var(--sage-font-sm); }.library-nav button:hover,.library-nav button.active { color:var(--sage-text); background:var(--sage-surface-muted); }.library-nav button.active { color:var(--sage-brand-strong); font-weight:650; }.library-nav em { min-width:20px; padding:1px 5px; border-radius:9px; color:var(--sage-review-strong); background:var(--sage-review-bg); text-align:center; font-size:10px; font-style:normal; }.page-tree { min-height:0; flex:1; overflow:auto; padding:8px; }.tree-heading { display:flex; justify-content:space-between; padding:5px 7px 7px; color:var(--sage-text-muted); font-size:11px; }.page-tree button { display:grid; grid-template-columns:17px minmax(0,1fr); align-items:center; gap:6px; width:100%; min-height:43px; padding:5px 7px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; }.page-tree button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.page-tree button>span,.page-tree strong,.page-tree small { display:block; min-width:0; }.page-tree strong { overflow:hidden; font-size:var(--sage-font-xs); text-overflow:ellipsis; white-space:nowrap; }.page-tree small { margin-top:1px; color:var(--sage-text-muted); font-size:10px; }.page-tree>p { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-align:center; }.library-import { display:flex; align-items:center; gap:7px; min-height:40px; margin:8px 12px 12px; padding:0 10px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); }.library-import:hover { color:var(--sage-brand-strong); border-color:var(--sage-brand); }
+.workspace-body { position:relative; display:grid; grid-template-columns:214px minmax(0,1fr); min-width:0; min-height:0; overflow:hidden; }.workspace-body.is-loading { grid-template-columns:214px minmax(0,1fr); }
+.knowledge-canvas-shell { position:relative; display:grid; grid-template-columns:minmax(0,1fr); min-width:0; min-height:0; height:100%; overflow:hidden; }.knowledge-canvas-shell.has-selection { grid-template-columns:minmax(0,1fr) 320px; }.knowledge-detail-rail { z-index:8; display:grid; grid-template-rows:minmax(0,1fr) 66px; min-width:0; min-height:0; overflow:hidden; border-left:1px solid var(--sage-border); background:var(--sage-surface); }.continue-in-chat { grid-row:2; align-self:start; display:flex; align-items:center; justify-content:center; gap:7px; width:calc(100% - 20px); height:46px; min-height:46px; margin:10px; border:0; border-radius:var(--sage-radius); color:white; background:var(--sage-brand-strong); font-size:var(--sage-font-sm); font-weight:650; }
+.knowledge-library { z-index:2; display:flex; flex-direction:column; min-width:0; min-height:0; overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); }.knowledge-library>header { display:flex; align-items:center; justify-content:space-between; min-height:58px; padding:0 14px; border-bottom:1px solid var(--sage-border); }.knowledge-library>header div { display:flex; flex-direction:column; }.knowledge-library>header strong { font-size:var(--sage-font-md); }.knowledge-library>header small { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.library-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:1px; margin:12px; border:1px solid var(--sage-border); background:var(--sage-border); }.library-metrics button { min-width:0; min-height:62px; padding:8px 3px; border:0; color:var(--sage-text); background:var(--sage-surface); }.library-metrics button:hover { background:var(--sage-surface-muted); }.library-metrics strong,.library-metrics span { display:block; }.library-metrics strong { font-size:17px; }.library-metrics span { color:var(--sage-text-muted); font-size:11px; }.library-search { display:flex; align-items:center; gap:7px; margin:0 12px 12px; min-height:34px; padding:0 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:var(--sage-surface-raised); }.library-search:focus-within { border-color:var(--sage-source); }.library-search input { min-width:0; width:100%; border:0; outline:0; color:var(--sage-text); background:transparent; font-size:var(--sage-font-sm); }.goal-summary { margin:0 12px 12px; padding:11px; border-left:3px solid var(--sage-brand); background:var(--sage-brand-bg); }.goal-summary span { display:flex; align-items:center; gap:5px; color:var(--sage-brand-strong); font-size:11px; font-weight:700; }.goal-summary strong,.goal-summary small { display:block; }.goal-summary strong { margin-top:5px; font-size:var(--sage-font-sm); line-height:1.45; }.goal-summary small { margin-top:4px; color:var(--sage-text-muted); font-size:10px; }.library-nav { display:grid; gap:2px; padding:0 8px 10px; border-bottom:1px solid var(--sage-border); }.library-nav button { display:grid; grid-template-columns:20px minmax(0,1fr) auto; align-items:center; min-height:36px; padding:0 8px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; font-size:var(--sage-font-sm); }.library-nav button:hover,.library-nav button.active { color:var(--sage-text); background:var(--sage-surface-muted); }.library-nav button.active { color:var(--sage-brand-strong); font-weight:650; }.library-nav em { min-width:20px; padding:1px 5px; border-radius:9px; color:var(--sage-review-strong); background:var(--sage-review-bg); text-align:center; font-size:10px; font-style:normal; }.page-tree { min-height:0; flex:1; overflow:auto; padding:8px; }.tree-heading { display:flex; justify-content:space-between; padding:5px 7px 7px; color:var(--sage-text-muted); font-size:11px; }.page-tree button { display:grid; grid-template-columns:17px minmax(0,1fr); align-items:center; gap:6px; width:100%; min-height:43px; padding:5px 7px; border:0; border-radius:var(--sage-radius); color:var(--sage-text-secondary); text-align:left; background:transparent; }.page-tree button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.page-tree button>span,.page-tree strong,.page-tree small { display:block; min-width:0; }.page-tree strong { overflow:hidden; font-size:var(--sage-font-xs); text-overflow:ellipsis; white-space:nowrap; }.page-tree small { margin-top:1px; color:var(--sage-text-muted); font-size:10px; }.page-tree-more { grid-template-columns:minmax(0,1fr) auto !important; margin-top:5px; color:var(--sage-brand-strong) !important; background:var(--sage-brand-bg) !important; font-size:11px; }.page-tree>p { color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-align:center; }.library-import { display:flex; align-items:center; gap:7px; min-height:40px; margin:8px 12px 12px; padding:0 10px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); }.library-import:hover { color:var(--sage-brand-strong); border-color:var(--sage-brand); }
 .knowledge-stage { min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }.stage-toolbar { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:50px; padding:0 14px; overflow-x:auto; border-bottom:1px solid var(--sage-border); scrollbar-width:none; }.stage-toolbar::-webkit-scrollbar { display:none; }.stage-tabs { display:flex; align-self:stretch; min-width:0; flex:none; }.stage-tabs button { min-height:49px; padding:0 12px; border:0; border-bottom:2px solid transparent; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-sm); white-space:nowrap; }.stage-tabs button.active { border-color:var(--sage-brand); color:var(--sage-text); font-weight:650; }.graph-filters,.graph-filters label,.graph-filters summary { display:flex; align-items:center; }.graph-filters { flex:none; gap:6px; }.graph-filters>label,.graph-filters summary { gap:5px; min-height:32px; padding:0 8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-xs); }.graph-filters select { border:0; outline:0; color:inherit; background:transparent; }.graph-filters details { position:relative; }.graph-filters summary { cursor:pointer; list-style:none; }.graph-scope-control,.graph-depth-control { display:flex; align-items:center; height:32px; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-muted); }.graph-scope-control button,.graph-depth-control button,.goal-path-toggle { min-height:30px; padding:0 8px; border:0; color:var(--sage-text-muted); background:transparent; font-size:10px; white-space:nowrap; }.graph-scope-control button+button,.graph-depth-control button+button { border-left:1px solid var(--sage-border); }.graph-scope-control button.active,.graph-depth-control button.active { color:var(--sage-brand-strong); background:var(--sage-surface-raised); font-weight:700; }.graph-scope-control button:disabled,.goal-path-toggle:disabled { cursor:not-allowed; opacity:.45; }.graph-depth-control>span { padding:0 7px; color:var(--sage-text-muted); font-size:9px; }.goal-path-toggle { display:inline-flex; align-items:center; gap:5px; height:32px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); }.goal-path-toggle.active { border-color:var(--sage-review-strong); color:var(--sage-review-strong); background:var(--sage-review-bg); }.kind-menu { position:absolute; z-index:15; top:38px; right:0; display:grid; width:150px; padding:8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); }.kind-menu label { min-height:30px; border:0; padding:0 4px; }.kind-menu input { accent-color:var(--sage-brand); }
 .graph-stage { position:relative; display:grid; grid-template-rows:60px minmax(0,1fr); height:calc(100% - 50px); min-height:0; }.graph-heading { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:0 18px; border-bottom:1px solid var(--sage-border); }.graph-heading h1,.list-stage h1 { margin:0; font-size:18px; letter-spacing:0; }.graph-heading>div>span,.graph-reading-hint { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.graph-reading-hint { white-space:nowrap; }
 .stage-state { display:flex; align-items:center; justify-content:center; flex-direction:column; gap:7px; height:100%; color:var(--sage-text-muted); text-align:center; }.stage-state strong { color:var(--sage-text); font-size:var(--sage-font-md); }.stage-state span { max-width:440px; font-size:var(--sage-font-sm); }.stage-state.empty { min-height:260px; padding:24px; }.stage-state.empty .primary-button { margin-top:8px; }.list-stage { height:calc(100% - 50px); min-height:0; overflow:auto; padding:22px 24px 42px; }.list-stage>header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding-bottom:18px; border-bottom:1px solid var(--sage-border); }.list-stage>header p { margin:4px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); }.list-stage>header>strong { color:var(--sage-text-muted); font-size:24px; }.wiki-list article { display:grid; grid-template-columns:minmax(0,1fr) auto 34px; align-items:center; gap:16px; min-height:68px; border-bottom:1px solid var(--sage-border); }.wiki-main { display:grid; grid-template-columns:22px minmax(0,1fr); align-items:center; gap:9px; min-width:0; padding:7px 0; border:0; color:var(--sage-text-secondary); text-align:left; background:transparent; }.wiki-main span,.wiki-main strong,.wiki-main code { display:block; min-width:0; }.wiki-main strong { overflow:hidden; color:var(--sage-text); font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.wiki-main code { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.wiki-list article>div { display:flex; flex-direction:column; align-items:flex-end; color:var(--sage-text-muted); font-size:11px; }.empty-row { padding:28px 0; color:var(--sage-text-muted); font-size:var(--sage-font-sm); text-align:center; }
@@ -1191,14 +1008,15 @@ onBeforeUnmount(() => {
 .workspace-footer { display:flex; align-items:center; gap:18px; min-width:0; padding:0 14px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface); font-size:11px; }.workspace-footer span { display:flex; align-items:center; gap:5px; white-space:nowrap; }.workspace-footer i { width:7px; height:7px; border-radius:50%; background:var(--sage-success); }.workspace-footer i.active { background:var(--sage-review); }.footer-spacer { flex:1; }
 .panel-backdrop,.modal-backdrop { position:fixed; z-index:54; inset:0; background:var(--sage-overlay); }.modal-backdrop { z-index:80; display:grid; place-items:center; padding:20px; }.import-dialog { width:min(680px,100%); max-height:min(720px,calc(100dvh - 40px)); overflow:auto; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); }.import-dialog>header,.import-dialog>header>div { display:flex; align-items:flex-start; }.import-dialog>header { justify-content:space-between; gap:14px; padding:18px 20px; border-bottom:1px solid var(--sage-border); }.import-dialog>header>div { gap:11px; }.import-dialog>header>div>span { display:grid; place-items:center; width:34px; height:34px; border-radius:var(--sage-radius); color:var(--sage-brand-strong); background:var(--sage-brand-bg); }.import-dialog h2 { margin:0; font-size:18px; }.import-dialog header p { margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.field-label { display:grid; gap:6px; margin:16px 20px; color:var(--sage-text-secondary); font-size:var(--sage-font-xs); }.field-label select,.import-options input { min-width:0; height:38px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); padding:0 10px; outline:0; color:var(--sage-text); background:var(--sage-surface); }.field-label select:focus,.import-options input:focus { border-color:var(--sage-source); }.import-options { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; padding:0 20px 20px; }.import-options form { display:grid; grid-template-rows:auto auto auto auto; align-content:start; gap:10px; padding:15px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); }.import-options form>svg { color:var(--sage-source); }.import-options strong { font-size:var(--sage-font-md); }.import-options p { min-height:38px; margin:3px 0 0; color:var(--sage-text-muted); font-size:var(--sage-font-xs); line-height:1.5; }.import-dialog>footer { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:12px 20px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); background:var(--sage-surface-muted); font-size:11px; }.import-dialog>footer span { display:flex; align-items:center; gap:5px; }.import-dialog>footer p { margin:0; text-align:right; }
 .sync-preview { display:grid; gap:9px; min-width:0; padding:11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-muted); }.sync-preview>header { display:flex; align-items:center; justify-content:space-between; gap:8px; }.sync-preview>header strong { display:flex; align-items:center; gap:5px; font-size:var(--sage-font-sm); }.sync-preview>header code,.sync-preview>small { color:var(--sage-text-muted); font-size:10px; }.sync-counts { display:flex; flex-wrap:wrap; gap:6px; }.sync-counts span { padding:3px 6px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:10px; }.sync-preview ul { max-height:150px; overflow:auto; margin:0; padding:0; list-style:none; }.sync-preview li { display:grid; grid-template-columns:34px minmax(0,1fr); align-items:center; gap:7px; min-height:28px; border-top:1px solid var(--sage-border); }.sync-preview li em { color:var(--sage-source); font-size:10px; font-style:normal; }.sync-preview li em[data-kind="deleted"] { color:var(--sage-danger); }.sync-preview li em[data-kind="modified"] { color:var(--sage-review-strong); }.sync-preview li code { overflow:hidden; color:var(--sage-text-secondary); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }.sync-preview>.primary-button { width:100%; }
-.knowledge-chat-attention { display:grid; min-width:0; background:var(--sage-surface); }.knowledge-chat-attention>*+* { border-top:1px solid var(--sage-border); }
-.knowledge-chat-empty { display:flex; min-height:100%; flex-direction:column; align-items:center; justify-content:center; gap:7px; padding:24px; color:var(--sage-text-muted); text-align:center; }.knowledge-chat-empty strong { color:var(--sage-text-secondary); font-size:var(--sage-font-md); }.knowledge-chat-empty span { max-width:280px; font-size:var(--sage-font-sm); line-height:1.55; }.knowledge-chat-empty button { min-height:34px; margin-top:7px; padding:0 12px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius); color:var(--sage-surface); background:var(--sage-brand-strong); font-size:var(--sage-font-sm); }.knowledge-chat-empty button:disabled { color:var(--sage-text-muted); background:var(--sage-surface-muted); }
 .spinning { animation:spin .9s linear infinite; }@keyframes spin { to { transform:rotate(360deg); } }
 @media (max-width:1359px) {
   .workspace-body,.workspace-body.is-loading { grid-template-columns:minmax(0,1fr); }.knowledge-library.compact { position:absolute; z-index:55; inset:0 auto 0 0; width:min(280px,calc(100vw - 40px)); display:none; box-shadow:var(--sage-shadow-drawer); }.knowledge-library.compact.open { display:flex; }
 }
+@media (max-width:1100px) {
+  .knowledge-canvas-shell.has-selection { display:block; }.knowledge-detail-rail { position:absolute; inset:0 0 0 auto; width:min(360px,100%); box-shadow:var(--sage-shadow-drawer); }
+}
 @media (max-width:899px) {
-  .knowledge-workspace { grid-template-rows:58px minmax(0,1fr) 38px; }.workspace-header { padding-left:56px; }.workspace-body,.workspace-body.is-loading { display:block; }.knowledge-harness,.knowledge-stage { height:100%; }.header-actions code { display:none; }.workspace-footer span:nth-child(3),.workspace-footer span:nth-child(4) { display:none; }.list-stage { padding:18px 16px 36px; }.attention-grid { grid-template-columns:1fr; }.graph-stage { height:calc(100% - 50px); }
+  .knowledge-workspace { grid-template-rows:58px minmax(0,1fr) 38px; }.workspace-header { padding-left:56px; }.workspace-body,.workspace-body.is-loading { display:block; }.knowledge-canvas-shell,.knowledge-stage { height:100%; }.header-actions code { display:none; }.workspace-footer span:nth-child(3),.workspace-footer span:nth-child(4) { display:none; }.list-stage { padding:18px 16px 36px; }.attention-grid { grid-template-columns:1fr; }.graph-stage { height:calc(100% - 50px); }
 }
 @media (max-width:620px) {
   .workspace-header { padding-right:9px; }.title-mark { display:none; }.workspace-title strong { max-width:150px; }.header-actions .secondary-button { width:34px; padding:0; }.header-actions .secondary-button span { display:none; }.header-actions .primary-button span { display:none; }.header-actions .primary-button { width:34px; padding:0; }.stage-toolbar { padding:0 8px; overflow-x:auto; }.stage-toolbar:has(.graph-filters) { display:grid; grid-template-rows:50px 40px; gap:0; min-height:90px; padding:0; overflow:visible; }.stage-toolbar:has(.graph-filters)+.graph-stage { height:calc(100% - 90px); }.stage-tabs { max-width:100%; overflow-x:auto; padding:0 8px; scrollbar-width:none; }.stage-tabs::-webkit-scrollbar,.graph-filters::-webkit-scrollbar { display:none; }.stage-tabs button { padding:0 8px; font-size:var(--sage-font-xs); }.graph-filters { width:100%; overflow-x:auto; padding:4px 8px; border-top:1px solid var(--sage-border); scrollbar-width:none; }.graph-filters>label svg,.graph-filters details { display:none; }.graph-heading { min-height:70px; padding:0 12px; }.graph-reading-hint { display:none; }.list-stage>header p { display:none; }.wiki-list article { grid-template-columns:minmax(0,1fr) 34px; }.wiki-list article>div { display:none; }.index-line,.migration-line { grid-template-columns:auto minmax(0,1fr); }.index-line code,.migration-line button { grid-column:2; justify-self:start; }.import-options { grid-template-columns:1fr; }.import-dialog>footer { display:block; }.import-dialog>footer p { margin-top:5px; text-align:left; }.workspace-footer { gap:10px; }.workspace-footer span:nth-child(2) { display:none; }

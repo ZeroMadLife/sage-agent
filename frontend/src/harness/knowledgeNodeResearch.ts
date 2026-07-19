@@ -2,6 +2,7 @@ import type {
   KnowledgeGoalAlignment,
   KnowledgeGraphNeighborhood,
   KnowledgeGraphNode,
+  KnowledgePage,
 } from '../types/api'
 
 export type KnowledgeNodeResearchIntent = 'understand' | 'evidence' | 'practice'
@@ -55,4 +56,8 @@ export function buildKnowledgeNodeResearchPrompt(
   }
 
   return `请围绕已选知识节点「${model.label}」做一次概念梳理。\n\n${boundary}\n\n请先只使用提交时冻结的 Knowledge surface_context 检索已有证据，并完成：\n1. 解释这个学习点的核心概念、边界与常见误区；\n2. 说明它与一跳邻域中关键节点的关系；\n3. 区分已有证据、合理推断和仍缺少的证据；\n4. 为关键结论附上可追溯引用。\n\n若现有 revision 证据不足，先提出补证计划。不要自动写入 Wiki、Memory 或更新掌握度。`
+}
+
+export function buildKnowledgePageResearchPrompt(page: KnowledgePage): string {
+  return `请围绕已选 Wiki 页面「${page.title}」继续研究。\n\n当前提交会携带 page ${page.page_id} 与 revision ${page.current_revision} 的 Knowledge surface_context。\n\n请先只检索该冻结 revision 及其已有引用，并完成：\n1. 提炼页面覆盖的核心问题与当前结论；\n2. 区分可追溯事实、合理推断和仍缺少的证据；\n3. 说明它与当前学习目标的关系；\n4. 给出最值得继续追问或实践验证的下一步。\n\n若现有 revision 证据不足，先提出补证计划。不要自动写入 Wiki、Memory 或更新掌握度。`
 }

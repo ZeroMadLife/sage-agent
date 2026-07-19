@@ -17,6 +17,7 @@ import {
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { projectCodingReviewBundle } from '../harness/surfaces/codingReviewBundle'
+import { consumeHarnessChatDraft, stageHarnessChatDraft } from '../harness/chatDraftBridge'
 import type { HarnessOperationRef, HarnessSurfaceContext } from '../harness/types'
 import { useCodingStore } from '../stores/coding'
 import { useWorkbenchPreferences } from '../composables/useWorkbenchPreferences'
@@ -38,6 +39,12 @@ const leftSheetRef = ref<HTMLElement | null>(null)
 const leftCloseRef = ref<HTMLButtonElement | null>(null)
 const lastResolvedSessionId = ref<string | null>(null)
 const viewGeneration = ref(0)
+const composer = ref<{
+  setInput: (value: string) => void
+  focus: () => void
+  hasDraft: () => boolean
+} | null>(null)
+const bridgedContext = ref<HarnessSurfaceContext | null>(null)
 const { showToolProcess } = useWorkbenchPreferences()
 
 // Wire Naive UI message/dialog bridge for store-level notifications
@@ -95,6 +102,7 @@ const codingContext = computed<HarnessSurfaceContext | null>(() => {
     operationRefs: [],
   }
 })
+const activeChatContext = computed(() => bridgedContext.value ?? codingContext.value)
 const mainInert = computed(() => leftOpen.value)
 const drawerError = ref('')
 
@@ -145,6 +153,23 @@ const outputSignature = computed(() => JSON.stringify({
 
 function rememberSession(sessionId: string) {
   if (sessionId) localStorage.setItem('sage.coding.recentSessionId', sessionId)
+}
+
+async function hydratePendingDraft() {
+  const draft = consumeHarnessChatDraft()
+  if (!draft) return
+  await nextTick()
+  if (composer.value?.hasDraft()) {
+    stageHarnessChatDraft(draft.content, draft.context)
+    return
+  }
+  bridgedContext.value = draft.context
+  composer.value?.setInput(draft.content)
+  composer.value?.focus()
+}
+
+function clearBridgedContext() {
+  bridgedContext.value = null
 }
 
 function mostRecentActiveSessionId() {
@@ -339,6 +364,7 @@ watch(() => route.fullPath, () => { void synchronizeRoute() })
 onMounted(async () => {
   await store.bootstrapModelCatalog()
   await synchronizeRoute()
+  await hydratePendingDraft()
 })
 
 onBeforeUnmount(() => {
@@ -413,7 +439,7 @@ onBeforeUnmount(() => {
               :projection="harnessProjection"
               :connection-state="store.connectionState"
               surface-label="main"
-              :context="codingContext"
+              :context="activeChatContext"
               :output-signature="outputSignature"
               :message-count="store.messages.length"
               :session-key="store.sessionId"
@@ -456,7 +482,12 @@ onBeforeUnmount(() => {
               />
               <template #composer>
                 <CodingPlanApproval v-if="store.planReview" />
-                <CodingComposer density="compact" :surface-context="codingContext" />
+                <CodingComposer
+                  ref="composer"
+                  density="compact"
+                  :surface-context="activeChatContext"
+                  @sent="clearBridgedContext"
+                />
               </template>
             </ChatDock>
           </template>

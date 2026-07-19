@@ -22,8 +22,9 @@ it('keeps one shared assistant shell while personal routes change', async () => 
       { path: '/assistant', meta: { assistantShell: true }, component: { template: '<p>今天</p>' } },
       { path: '/coding', meta: { assistantShell: true }, component: { template: '<p>对话</p>' } },
       { path: '/knowledge', meta: { assistantShell: true }, component: { template: '<p>知识</p>' } },
-      { path: '/evolution', meta: { assistantShell: true }, component: { template: '<p>成长</p>' } },
-      { path: '/public', meta: { assistantShell: true }, component: { template: '<p>公开</p>' } },
+      { path: '/growth', meta: { assistantShell: true }, component: { template: '<p>成长</p>' } },
+      { path: '/publishing', meta: { assistantShell: true }, component: { template: '<p>发布</p>' } },
+      { path: '/public', component: { template: '<p>公开</p>' } },
       { path: '/settings/appearance', component: { template: '<p>设置</p>' } },
     ],
   })

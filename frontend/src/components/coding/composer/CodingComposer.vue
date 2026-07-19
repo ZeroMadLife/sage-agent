@@ -17,6 +17,9 @@ const props = withDefaults(defineProps<{
   surfaceContext: null,
   placeholder: '输入任务，或 /review 调用 skill',
 })
+const emit = defineEmits<{
+  sent: [content: string, context: HarnessSurfaceContext | null]
+}>()
 
 const store = useCodingStore()
 const router = useRouter()
@@ -71,6 +74,7 @@ function send() {
     ? store.sendMessage(content, props.surfaceContext)
     : store.sendMessage(content)
   if (!sent) return
+  emit('sent', content, props.surfaceContext)
   input.value = ''
   selectedIndex.value = 0
   skillMenuDismissed.value = false

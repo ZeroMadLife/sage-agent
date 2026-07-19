@@ -14,8 +14,8 @@ import {
   retryKnowledgeJobItem,
   transitionKnowledgeProposal,
 } from '../api/knowledge'
+import { consumeHarnessChatDraft } from '../harness/chatDraftBridge'
 import KnowledgeView from './KnowledgeView.vue'
-import { useCodingStore } from '../stores/coding'
 
 vi.mock('../components/knowledge', () => ({
   KnowledgeGraphCanvas: {
@@ -27,11 +27,6 @@ vi.mock('../components/knowledge', () => ({
     props: ['node', 'goal', 'alignments'],
     emits: ['close', 'select'],
     template: '<aside class="inspector-stub">{{ node?.label || goal?.title }} · 能力 {{ alignments.length }}<button class="select-source" type="button" @click="$emit(\'select\', \'node-source\')">查看来源</button></aside>',
-  },
-  KnowledgeNodeResearchPanel: {
-    props: ['model', 'loading'],
-    emits: ['choose'],
-    template: '<section class="node-research-panel">研究「{{ model.label }}」 · 1 跳 · {{ model.directConnectionCount }} 条连接 · 目标 · {{ model.goalCapability }}<button class="draft-evidence" type="button" @click="$emit(\'choose\', \'evidence\')">补充证据</button></section>',
   },
 }))
 
@@ -168,6 +163,7 @@ const syncPlan = {
 
 beforeEach(async () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+  window.sessionStorage.clear()
   vi.clearAllMocks()
   const api = await import('../api/knowledge')
   vi.mocked(api.fetchKnowledgeSummary).mockResolvedValue(summary)
@@ -225,7 +221,10 @@ beforeEach(async () => {
 async function mountKnowledge() {
   const router = createRouter({
     history: createMemoryHistory(),
-    routes: [{ path: '/knowledge', component: KnowledgeView }],
+    routes: [
+      { path: '/knowledge', component: KnowledgeView },
+      { path: '/coding', component: { template: '<div>主对话</div>' } },
+    ],
   })
   await router.push('/knowledge')
   const wrapper = mount(KnowledgeView, { global: { plugins: [createPinia(), router] } })
@@ -240,10 +239,10 @@ it('renders the versioned graph workspace without a duplicate RAG question form'
   expect(wrapper.text()).toContain('成为全栈 AI 应用工程师')
   expect(wrapper.text()).toContain('2 个节点 · 1 条证据连接 · 1 个社区')
   expect(wrapper.get('.graph-stub').text()).toContain('真实图谱 2')
-  expect(wrapper.find('[aria-label="Knowledge 主画布"]').exists()).toBe(true)
-  expect(wrapper.get('.workbench-dock [role="tab"][aria-selected="true"]').text()).toContain('对话')
-  expect(wrapper.text()).toContain('还没有可复用的对话')
-  expect(wrapper.get('.surface-context-bar').text()).toContain('surface_context 提交时冻结')
+  expect(wrapper.find('.knowledge-canvas-shell').exists()).toBe(true)
+  expect(wrapper.find('.workbench-dock').exists()).toBe(false)
+  expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(false)
+  expect(wrapper.find('textarea').exists()).toBe(false)
   expect(wrapper.find('input[aria-label="知识库问题"]').exists()).toBe(false)
   wrapper.unmount()
 })
@@ -255,33 +254,31 @@ it('loads revision-bound evidence when a graph node is selected', async () => {
   await flushPromises()
 
   expect(fetchKnowledgeGraphNeighborhood).toHaveBeenCalledWith('node-page')
-  expect(wrapper.get('.surface-context-bar').text()).toContain('Agent Harness')
-  expect(wrapper.get('.surface-context-bar').text()).toContain('surface_context 提交时冻结')
-  expect(wrapper.get('.node-research-panel').text()).toContain('研究「Agent Harness」')
-  expect(wrapper.get('.node-research-panel').text()).toContain('1 跳 · 1 条连接')
-  expect(wrapper.get('.node-research-panel').text()).toContain('目标 · Agent Harness')
-  expect(wrapper.get('.knowledge-harness').attributes('data-active-tab')).toBe('chat')
-  await wrapper.findAll('.workbench-dock [role="tab"]')[1].trigger('click')
+  expect(wrapper.get('.knowledge-canvas-shell').classes()).toContain('has-selection')
+  expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(true)
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')
+  expect(wrapper.get('.continue-in-chat').text()).toContain('回到主对话继续')
+  expect(wrapper.find('textarea').exists()).toBe(false)
   wrapper.unmount()
 })
 
-it('turns a selected node action into an editable draft without sending it', async () => {
+it('stages a revision-bound node draft for the canonical main chat without sending it', async () => {
   const wrapper = await mountKnowledge()
-  const store = useCodingStore((wrapper.vm as unknown as { $pinia: Parameters<typeof useCodingStore>[0] }).$pinia)
-  store.sessionId = 'session-1'
-  store.sendMessage = vi.fn().mockReturnValue(true)
 
   await wrapper.get('.graph-stub').trigger('click')
   await flushPromises()
-  await wrapper.get('.draft-evidence').trigger('click')
+  await wrapper.get('.continue-in-chat').trigger('click')
   await flushPromises()
 
-  const draft = (wrapper.get('textarea').element as HTMLTextAreaElement).value
-  expect(draft).toContain('请为已选知识节点「Agent Harness」草拟一份补证计划')
-  expect(draft).toContain('先等待我确认计划，再使用 Web/MCP')
-  expect(store.sendMessage).not.toHaveBeenCalled()
-  expect(wrapper.text()).toContain('检查后发送')
+  const draft = consumeHarnessChatDraft()
+  expect(draft?.content).toContain('请围绕已选知识节点「Agent Harness」做一次概念梳理')
+  expect(draft?.context.surface).toBe('knowledge')
+  expect(draft?.context.graphRevision).toBe('kgraph_1234567890')
+  expect(draft?.context.selection).toEqual({
+    type: 'graph_node', id: 'node-page', revision: 'krev-page', label: 'Agent Harness',
+  })
+  expect(draft?.context.resource?.revision).toBe('krev-page')
+  expect(wrapper.find('textarea').exists()).toBe(false)
   wrapper.unmount()
 })
 
@@ -291,7 +288,6 @@ it('reveals a source node when evidence navigation selects a hidden kind', async
   expect(wrapper.get('.graph-stub').text()).not.toContain('source')
   await wrapper.get('.graph-stub').trigger('click')
   await flushPromises()
-  await wrapper.findAll('.workbench-dock [role="tab"]')[1].trigger('click')
   await wrapper.get('.select-source').trigger('click')
   await flushPromises()
 
@@ -304,12 +300,12 @@ it('opens node details after selecting a graph node on mobile', async () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
   const wrapper = await mountKnowledge()
 
-  expect(wrapper.get('.knowledge-harness').attributes('data-mobile-pane')).toBe('canvas')
+  expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(false)
   await wrapper.get('.graph-stub').trigger('click')
   await flushPromises()
 
-  expect(wrapper.get('.knowledge-harness').attributes('data-mobile-pane')).toBe('details')
-  expect(wrapper.get('.knowledge-harness').attributes('data-active-tab')).toBe('details')
+  expect(wrapper.get('.knowledge-canvas-shell').classes()).toContain('has-selection')
+  expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(true)
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')
   wrapper.unmount()
 })
@@ -321,7 +317,7 @@ it('opens a Wiki page in the detail dock without leaving the Wiki view', async (
   await wrapper.get('.wiki-main').trigger('click')
   await flushPromises()
 
-  expect(wrapper.get('.knowledge-harness').attributes('data-active-tab')).toBe('details')
+  expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(true)
   expect(wrapper.findAll('.stage-tabs button')[1].attributes('aria-selected')).toBe('true')
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')
   wrapper.unmount()

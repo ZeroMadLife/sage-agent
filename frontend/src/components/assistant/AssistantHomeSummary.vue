@@ -41,7 +41,7 @@ defineProps<{ summary: AssistantHomeSummary }>()
 
   <section class="evolution-band" aria-labelledby="evolution-title">
     <div><span class="band-icon"><Sprout :size="18" /></span><span><strong id="evolution-title">待确认沉淀</strong><small>记忆 {{ summary.proposals.memory_pending }} · Wiki {{ summary.proposals.wiki_pending }} · 笔记 {{ summary.proposals.note_pending }}</small></span></div>
-    <RouterLink to="/evolution">查看成长记录<ArrowRight :size="15" /></RouterLink>
+    <RouterLink to="/growth">查看成长记录<ArrowRight :size="15" /></RouterLink>
   </section>
 
   <section class="knowledge-band" aria-labelledby="knowledge-title">
