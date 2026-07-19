@@ -585,6 +585,17 @@ class CanaryController:
             remote_status = {}
         current_deployed = str(remote_status.get("current") or "")
         if current_deployed == sha and remote_status.get("status") == "healthy":
+            state = load_state(self.config.state_path)
+            state.update(
+                {
+                    "last_deployed_sha": sha,
+                    "last_sync_at": self.clock(),
+                    "last_sync_error": None,
+                    "consecutive_sync_failures": 0,
+                    "auto_deploy_paused": False,
+                }
+            )
+            _write_json(self.config.state_path, state)
             return {"status": "up-to-date", "sha": sha}
         result = self._ssh_script(self._remote_deploy_script(sha), timeout=2400)
         if self._command_failed(result):

@@ -251,6 +251,63 @@ def test_run_once_reuses_proxy_free_probe_after_deploy(tmp_path: Path) -> None:
     assert curl_calls == 1
 
 
+def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+
+    def runner(command, input_text, timeout):
+        if command[:2] == ["/usr/bin/false", "api"]:
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        {
+                            "check_runs": [
+                                {
+                                    "name": name,
+                                    "status": "completed",
+                                    "conclusion": "success",
+                                }
+                                for name in (
+                                    "python",
+                                    "backend-quality",
+                                    "frontend-quality",
+                                )
+                            ]
+                        }
+                    ),
+                    "stderr": "",
+                },
+            )()
+        if command and command[0] == "/usr/bin/env":
+            script = input_text or ""
+            if "rev-parse HEAD" in script and "checkout" not in script:
+                stdout = f"{NEXT_SHA}\n"
+            elif "deployctl.py" in script and " status" in script:
+                stdout = json.dumps({"status": "healthy", "current": NEXT_SHA})
+            else:
+                raise AssertionError(script)
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": stdout,
+                    "stderr": "",
+                },
+            )()
+        raise AssertionError(command)
+
+    controller = CanaryController(config, runner=runner)
+    result = controller.deploy(NEXT_SHA)
+
+    assert result == {"status": "up-to-date", "sha": NEXT_SHA}
+    state = json.loads(config.state_path.read_text(encoding="utf-8"))
+    assert state["last_deployed_sha"] == NEXT_SHA
+    assert state["consecutive_sync_failures"] == 0
+
+
 def test_validate_commit_rejects_shell_text() -> None:
     with pytest.raises(CanaryError):
         validate_commit("a" * 40 + "; touch /tmp/pwned")
