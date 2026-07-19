@@ -3,6 +3,7 @@
 # ruff: noqa: I001 - Ruff 0.8 and 0.15 disagree on the tests/scripts import section.
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from scripts.deployctl import (
     deployment_visible_socket_requirements,
     parse_env_file,
     redact,
+    run_command,
     sandbox_limit_probe_command,
     validate_commit_tag,
     validate_environment,
@@ -152,6 +154,18 @@ def test_dry_run_plan_never_calls_external_commands(tmp_path: Path) -> None:
         "migration",
         "health",
     ]
+
+
+def test_run_command_returns_bounded_timeout(monkeypatch, tmp_path: Path) -> None:
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(["docker", "build"], 60)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+
+    result = run_command(["docker", "build"], cwd=tmp_path, env={}, timeout=60)
+
+    assert result.returncode == 124
+    assert result.stderr == "command timed out after 60s"
 
 
 def test_status_returns_bounded_service_summary_without_environment_values(

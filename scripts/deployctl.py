@@ -24,6 +24,7 @@ DEFAULT_COMPOSE_FILE = ROOT / "infra/compose/private-canary.yml"
 DEFAULT_ENV_FILE = Path("/etc/sage/env")
 DEFAULT_STATE_FILE = Path("/opt/sage/state/deployments.json")
 DEFAULT_BACKUP_ROOT = Path("/opt/sage/backups/postgres")
+BUILD_TIMEOUT_SECONDS = 60 * 60
 COMMIT_TAG = re.compile(r"[0-9a-f]{40}")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_$-]{0,62}")
 SECRET_KEYS = {
@@ -96,16 +97,21 @@ def run_command(
     stdout_file: TextIO | None = None,
 ) -> CommandResult:
     """Run one argv-only command without a shell."""
-    completed = subprocess.run(
-        list(command),
-        cwd=cwd,
-        env=dict(env),
-        stdout=stdout_file if stdout_file is not None else subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        completed = subprocess.run(
+            list(command),
+            cwd=cwd,
+            env=dict(env),
+            stdout=stdout_file if stdout_file is not None else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return CommandResult(124, stderr=f"command timed out after {timeout}s")
+    except OSError as exc:
+        return CommandResult(127, stderr=type(exc).__name__)
     return CommandResult(
         completed.returncode,
         "" if stdout_file is not None else completed.stdout,
@@ -447,7 +453,12 @@ class DeployController:
 
         state = self._load_state()
         previous = str(state.get("current", "")) or None
-        self._run(self._compose("build", "api", "web"), label="构建镜像", tag=tag, timeout=1800)
+        self._run(
+            self._compose("build", "api", "web"),
+            label="构建镜像",
+            tag=tag,
+            timeout=BUILD_TIMEOUT_SECONDS,
+        )
         self._run(
             self._compose("up", "-d", "--wait", "postgres", "redis"),
             label="启动数据服务",

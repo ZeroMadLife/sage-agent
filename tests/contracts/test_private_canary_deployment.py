@@ -1,5 +1,7 @@
 """Static release contracts for the private Canary deployment."""
 
+# ruff: noqa: I001 - Ruff 0.8 and 0.15 disagree on the local package import section.
+
 import subprocess
 from pathlib import Path
 
@@ -62,6 +64,8 @@ def test_api_image_uses_the_official_retrying_package_index() -> None:
 
     assert "PIP_INDEX_URL=https://pypi.org/simple" in dockerfile
     assert "PIP_RETRIES=10" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
+    assert "pip install -r requirements.txt" in dockerfile
     assert "pip install --no-cache-dir --upgrade pip" not in dockerfile
     assert "apt-get install --no-install-recommends -y git" in dockerfile
     assert "ARG SAGE_DOCKER_REGISTRY=docker.io" in dockerfile
@@ -112,6 +116,13 @@ def test_deployctl_uses_python_310_compatible_utc() -> None:
     assert "from datetime import UTC" not in source
     assert "_UTC = timezone.utc" in source
     assert "datetime.now(_UTC)" in source
+
+
+def test_deployctl_allows_slow_first_time_dependency_builds() -> None:
+    source = (ROOT / "scripts/deployctl.py").read_text(encoding="utf-8")
+
+    assert "BUILD_TIMEOUT_SECONDS = 60 * 60" in source
+    assert "timeout=BUILD_TIMEOUT_SECONDS" in source
 
 
 def test_production_paths_can_live_on_persistent_volumes(
