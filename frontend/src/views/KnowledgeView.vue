@@ -51,7 +51,11 @@ import {
   transitionKnowledgeProposal,
   undoKnowledgeAutoApply,
 } from '../api/knowledge'
-import { KnowledgeGraphCanvas, KnowledgeInspector } from '../components/knowledge'
+import {
+  KnowledgeGraphCanvas,
+  KnowledgeInspector,
+  KnowledgeNodeResearchPanel,
+} from '../components/knowledge'
 import {
   shortestGraphPath,
   type KnowledgeGraphScopeMode,
@@ -65,6 +69,11 @@ import {
 import { CodingApprovalCard, CodingComposer, CodingPlanApproval } from '../components/coding'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { knowledgeSurfaceAdapter } from '../harness/surfaces/knowledge'
+import {
+  buildKnowledgeNodeResearchModel,
+  buildKnowledgeNodeResearchPrompt,
+  type KnowledgeNodeResearchIntent,
+} from '../harness/knowledgeNodeResearch'
 import { useHarnessSession } from '../harness/useHarnessSession'
 import type {
   KnowledgeGoalAlignment,
@@ -89,6 +98,11 @@ type WorkspaceMode = 'graph' | 'wiki' | 'activity' | 'attention'
 type ChatHarnessLayoutHandle = {
   selectTab: (tab: 'chat' | 'details') => void
   showCanvas: () => void
+}
+type CodingComposerHandle = {
+  setInput: (value: string) => void
+  focus: () => void
+  hasDraft: () => boolean
 }
 
 const summary = ref<KnowledgeWorkspaceSummary | null>(null)
@@ -128,6 +142,7 @@ const busy = ref<Record<string, boolean>>({})
 const importOpen = ref(false)
 const libraryOpen = ref(false)
 const harnessLayout = ref<ChatHarnessLayoutHandle | null>(null)
+const knowledgeComposer = ref<CodingComposerHandle | null>(null)
 const harnessSession = useHarnessSession()
 const chat = harnessSession.store
 const selectedHarnessRunId = ref('')
@@ -187,6 +202,14 @@ const knowledgeContext = computed(() => knowledgeSurfaceAdapter.buildContext({
   selectedPage: selectedPage.value,
   activeJobs: activeJobs.value,
 }))
+const nodeResearchModel = computed(() => selectedNode.value
+  ? buildKnowledgeNodeResearchModel({
+    node: selectedNode.value,
+    graphRevision: graph.value?.snapshot.graph_revision,
+    neighborhood: neighborhood.value,
+    alignments: alignments.value,
+  })
+  : null)
 const harnessProjection = computed(() => projectLatestCodingHarness(
   chat.visibleTimeline,
   selectedHarnessRunId.value || chat.activeRun?.run_id || '',
@@ -230,18 +253,45 @@ async function connectHarnessSession() {
   }
 }
 
-async function createHarnessSession() {
-  if (harnessSessionStarting.value) return
+async function createHarnessSession(): Promise<boolean> {
+  if (harnessSessionStarting.value) return false
   harnessSessionStarting.value = true
   harnessSessionError.value = ''
   try {
     await chat.bootstrapModelCatalog()
-    await harnessSession.createSession()
+    return Boolean(await harnessSession.createSession())
   } catch (reason) {
     harnessSessionError.value = `无法新建对话：${explain(reason)}`
+    return false
   } finally {
     harnessSessionStarting.value = false
   }
+}
+
+function openNodeResearch() {
+  harnessLayout.value?.selectTab('chat')
+}
+
+async function prepareNodeResearch(intent: KnowledgeNodeResearchIntent) {
+  const model = nodeResearchModel.value
+  if (!model) {
+    notice.value = '先选择一个知识节点，再创建研究任务。'
+    return
+  }
+  if (knowledgeComposer.value?.hasDraft()) {
+    harnessLayout.value?.selectTab('chat')
+    knowledgeComposer.value.focus()
+    notice.value = '输入框里已有未发送草稿；为避免覆盖，请先发送或清空。'
+    return
+  }
+  if (!chat.sessionId && !await createHarnessSession()) return
+
+  harnessLayout.value?.selectTab('chat')
+  await nextTick()
+  knowledgeComposer.value?.setInput(buildKnowledgeNodeResearchPrompt(intent, model))
+  knowledgeComposer.value?.focus()
+  const label = { understand: '梳理概念', evidence: '补充证据', practice: '生成练习' }[intent]
+  notice.value = `已生成“${label}”草稿；检查后发送，提交时会冻结当前节点与 revision。`
 }
 
 const attentionCount = computed(() => proposals.value.length + insights.value.filter(
@@ -966,6 +1016,13 @@ onBeforeUnmount(() => {
             empty-description="选择节点后提问，本轮会冻结 graph、page 与 revision。"
             @anchor-change="chat.setScrollAnchor"
           >
+            <template v-if="nodeResearchModel" #contextTools>
+              <KnowledgeNodeResearchPanel
+                :model="nodeResearchModel"
+                :loading="nodeLoading"
+                @choose="prepareNodeResearch"
+              />
+            </template>
             <template v-if="chat.pendingApproval || chat.knowledgeSourceProposals.length || chat.knowledgeSourceProposalError" #attention>
               <div class="knowledge-chat-attention">
                 <CodingApprovalCard
@@ -1026,6 +1083,7 @@ onBeforeUnmount(() => {
             <template #composer>
               <CodingPlanApproval v-if="chat.planReview" />
               <CodingComposer
+                ref="knowledgeComposer"
                 density="compact"
                 :surface-context="knowledgeContext"
                 placeholder="围绕已选节点提问，或提出练习与沉淀任务"
@@ -1048,6 +1106,7 @@ onBeforeUnmount(() => {
             :compact="false"
             @close="closeInspector"
             @select="selectNode"
+            @research="openNodeResearch"
           />
         </template>
       </ChatHarnessLayout>

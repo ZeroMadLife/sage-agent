@@ -228,6 +228,8 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   await wrapper.findAll('.inspector-tabs button')[3].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
   expect(wrapper.emitted('select')).toEqual([['source-1']])
+  await wrapper.get('button[aria-label="在对话中研究此节点"]').trigger('click')
+  expect(wrapper.emitted('research')).toHaveLength(1)
   await wrapper.get('.knowledge-inspector').trigger('keydown', { key: 'Escape' })
   expect(wrapper.emitted('close')).toHaveLength(1)
   wrapper.unmount()

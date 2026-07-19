@@ -15,6 +15,7 @@ import {
   transitionKnowledgeProposal,
 } from '../api/knowledge'
 import KnowledgeView from './KnowledgeView.vue'
+import { useCodingStore } from '../stores/coding'
 
 vi.mock('../components/knowledge', () => ({
   KnowledgeGraphCanvas: {
@@ -26,6 +27,11 @@ vi.mock('../components/knowledge', () => ({
     props: ['node', 'goal', 'alignments'],
     emits: ['close', 'select'],
     template: '<aside class="inspector-stub">{{ node?.label || goal?.title }} · 能力 {{ alignments.length }}<button class="select-source" type="button" @click="$emit(\'select\', \'node-source\')">查看来源</button></aside>',
+  },
+  KnowledgeNodeResearchPanel: {
+    props: ['model', 'loading'],
+    emits: ['choose'],
+    template: '<section class="node-research-panel">研究「{{ model.label }}」 · 1 跳 · {{ model.directConnectionCount }} 条连接 · 目标 · {{ model.goalCapability }}<button class="draft-evidence" type="button" @click="$emit(\'choose\', \'evidence\')">补充证据</button></section>',
   },
 }))
 
@@ -251,9 +257,31 @@ it('loads revision-bound evidence when a graph node is selected', async () => {
   expect(fetchKnowledgeGraphNeighborhood).toHaveBeenCalledWith('node-page')
   expect(wrapper.get('.surface-context-bar').text()).toContain('Agent Harness')
   expect(wrapper.get('.surface-context-bar').text()).toContain('surface_context 提交时冻结')
+  expect(wrapper.get('.node-research-panel').text()).toContain('研究「Agent Harness」')
+  expect(wrapper.get('.node-research-panel').text()).toContain('1 跳 · 1 条连接')
+  expect(wrapper.get('.node-research-panel').text()).toContain('目标 · Agent Harness')
   expect(wrapper.get('.knowledge-harness').attributes('data-active-tab')).toBe('chat')
   await wrapper.findAll('.workbench-dock [role="tab"]')[1].trigger('click')
   expect(wrapper.get('.inspector-stub').text()).toContain('Agent Harness')
+  wrapper.unmount()
+})
+
+it('turns a selected node action into an editable draft without sending it', async () => {
+  const wrapper = await mountKnowledge()
+  const store = useCodingStore((wrapper.vm as unknown as { $pinia: Parameters<typeof useCodingStore>[0] }).$pinia)
+  store.sessionId = 'session-1'
+  store.sendMessage = vi.fn().mockReturnValue(true)
+
+  await wrapper.get('.graph-stub').trigger('click')
+  await flushPromises()
+  await wrapper.get('.draft-evidence').trigger('click')
+  await flushPromises()
+
+  const draft = (wrapper.get('textarea').element as HTMLTextAreaElement).value
+  expect(draft).toContain('请为已选知识节点「Agent Harness」草拟一份补证计划')
+  expect(draft).toContain('先等待我确认计划，再使用 Web/MCP')
+  expect(store.sendMessage).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('检查后发送')
   wrapper.unmount()
 })
 

@@ -21,6 +21,7 @@ const props = withDefaults(defineProps<{
 const store = useCodingStore()
 const router = useRouter()
 const input = ref('')
+const textareaElement = ref<HTMLTextAreaElement | null>(null)
 const currentModel = computed(() => store.models.find((model) => model.id === store.currentModelId))
 const reasoningModes = computed(() => currentModel.value?.reasoning_modes ?? [])
 const reasoningOptions = computed<Array<'off' | 'low' | 'medium' | 'high'>>(
@@ -133,6 +134,12 @@ defineExpose({
   setInput(value: string) {
     input.value = value
   },
+  focus() {
+    textareaElement.value?.focus()
+  },
+  hasDraft() {
+    return Boolean(input.value.trim())
+  },
 })
 </script>
 
@@ -143,6 +150,7 @@ defineExpose({
         <div class="composer-textarea-wrap">
           <div class="composer-meta"><CodingContextBudget /></div>
           <textarea
+            ref="textareaElement"
             v-model="input"
             rows="2"
             :disabled="!store.sessionId || store.isThinking"

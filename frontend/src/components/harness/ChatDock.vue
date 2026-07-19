@@ -114,6 +114,10 @@ function handleAnchorChange(eventId: string, offset: number) {
       </div>
     </header>
 
+    <aside v-if="$slots.contextTools" class="chat-context-tools" aria-label="当前上下文操作">
+      <slot name="contextTools" />
+    </aside>
+
     <aside v-if="$slots.attention" class="chat-attention" aria-label="需要你处理">
       <slot name="attention" />
     </aside>
@@ -166,6 +170,8 @@ function handleAnchorChange(eventId: string, offset: number) {
   background: var(--sage-surface);
 }
 .chat-dock:has(.chat-attention) { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
+.chat-dock:has(.chat-context-tools) { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
+.chat-dock:has(.chat-context-tools):has(.chat-attention) { grid-template-rows: auto auto auto minmax(0, 1fr) auto auto; }
 
 .chat-run-strip { padding: 10px 12px 9px; border-bottom: 1px solid var(--sage-border); background: var(--sage-surface-muted); }
 .chat-dock.compact .chat-run-strip { padding-top: 8px; padding-bottom: 7px; }
@@ -190,6 +196,7 @@ function handleAnchorChange(eventId: string, offset: number) {
 .run-stage-track i.running { background: var(--sage-success); }
 .run-stage-track i.blocked { background: var(--sage-warning); }
 .run-stage-track i.failed,.run-stage-track i.cancelled { background: var(--sage-danger); }
+.chat-context-tools { min-width:0; max-height:min(32dvh,250px); overflow:auto; border-bottom:1px solid var(--sage-border); background:var(--sage-surface); }
 .chat-attention { min-width: 0; max-height:min(44dvh,420px); overflow:auto; border-bottom: 1px solid color-mix(in srgb, var(--sage-warning) 48%, var(--sage-border)); background: var(--sage-warning-bg); }
 .chat-dock-timeline { padding: 14px 12px 16px; }
 .chat-dock-composer { min-width: 0; }

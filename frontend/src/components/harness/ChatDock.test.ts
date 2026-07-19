@@ -90,4 +90,22 @@ describe('ChatDock', () => {
     expect(wrapper.get('.chat-attention').text()).toContain('批准并继续')
     expect(wrapper.get('.chat-attention').element.nextElementSibling?.classList).toContain('chat-dock-timeline')
   })
+
+  it('keeps context actions separate from approval attention', () => {
+    const wrapper = mount(ChatDock, {
+      props: {
+        projection: projection('blocked', 'act'), connectionState: 'connected',
+        outputSignature: 'context-tools', messageCount: 1, sessionKey: 'session-1',
+        timelineReady: true,
+      },
+      slots: {
+        contextTools: '<button type="button">研究当前节点</button>',
+        attention: '<button type="button">批准并继续</button>',
+      },
+    })
+
+    expect(wrapper.get('.chat-context-tools').text()).toContain('研究当前节点')
+    expect(wrapper.get('.chat-attention').text()).toContain('批准并继续')
+    expect(wrapper.get('.chat-context-tools').element.nextElementSibling?.classList).toContain('chat-attention')
+  })
 })

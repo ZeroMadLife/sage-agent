@@ -143,6 +143,24 @@ it('supports a compact density for the chat dock without changing the default co
   expect(standard.get('.composer').classes()).toContain('default')
 })
 
+it('accepts and focuses an editable task draft through its public handle', async () => {
+  const { wrapper } = mountComposer()
+  const handle = wrapper.vm as unknown as {
+    setInput: (value: string) => void
+    focus: () => void
+    hasDraft: () => boolean
+  }
+  const focus = vi.spyOn(textarea(wrapper).element as HTMLTextAreaElement, 'focus')
+
+  handle.setInput('研究当前节点')
+  await nextTick()
+  handle.focus()
+
+  expect((textarea(wrapper).element as HTMLTextAreaElement).value).toBe('研究当前节点')
+  expect(focus).toHaveBeenCalledOnce()
+  expect(handle.hasDraft()).toBe(true)
+})
+
 it('shows configured context at the top-right and real reasoning controls in the rail', async () => {
   const { wrapper, store } = mountComposer()
   store.models = [{
