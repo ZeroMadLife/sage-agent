@@ -38,4 +38,3 @@ export async function runViewTransition(
     delete document.documentElement.dataset.viewTransition
   }
 }
-

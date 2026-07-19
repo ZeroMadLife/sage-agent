@@ -1,4 +1,6 @@
 import type { CodingServerEvent, CodingTimelineEvent } from '../types/api'
+import { serializeHarnessSurfaceContext } from '../harness/surfaceContext'
+import type { HarnessSurfaceContext } from '../harness/types'
 
 export type WebSocketLike = {
   readyState: number
@@ -17,14 +19,22 @@ export type CodingStreamOptions = {
   onEvent: (sessionId: string, event: CodingTimelineEvent) => void
   onRawEvent?: (event: CodingServerEvent) => void
   onOpen?: (sessionId: string) => void
+  onConnectionState?: (sessionId: string, state: CodingConnectionState) => void
   onError: (message: string) => void
 }
+
+export type CodingConnectionState =
+  | 'idle'
+  | 'connecting'
+  | 'connected'
+  | 'recovering'
+  | 'disconnected'
 
 const OPEN = 1
 const MAX_SEEN_EVENT_IDS = 2_048
 const TIMELINE_KINDS = new Set([
-  'user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory',
-  'agent', 'terminal', 'system', 'run',
+  'user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory', 'proposal',
+  'agent', 'terminal', 'system', 'run', 'harness',
 ])
 const TIMELINE_STATUSES = new Set([
   'pending', 'queued', 'running', 'blocked', 'done', 'completed', 'cancelled',
@@ -46,6 +56,9 @@ export class CodingStream {
   private readonly onEvent: (sessionId: string, event: CodingTimelineEvent) => void
   private readonly onRawEvent: ((event: CodingServerEvent) => void) | null
   private readonly onOpen: ((sessionId: string) => void) | null
+  private readonly onConnectionState: (
+    (sessionId: string, state: CodingConnectionState) => void
+  ) | null
   private readonly onError: (message: string) => void
 
   constructor(options: CodingStreamOptions) {
@@ -55,6 +68,7 @@ export class CodingStream {
     this.onEvent = options.onEvent
     this.onRawEvent = options.onRawEvent ?? null
     this.onOpen = options.onOpen ?? null
+    this.onConnectionState = options.onConnectionState ?? null
     this.onError = options.onError
   }
 
@@ -67,6 +81,7 @@ export class CodingStream {
     this.reconnectEnabled = true
     this.seenEventIds.clear()
     this.seenEventOrder.length = 0
+    this.onConnectionState?.(sessionId, 'connecting')
     this.openSocket()
   }
 
@@ -79,6 +94,7 @@ export class CodingStream {
     socket.onopen = () => {
       if (generation !== this.generation || this.socket !== socket) return
       this.reconnectAttempt = 0
+      this.onConnectionState?.(sessionId, 'connected')
       this.onOpen?.(sessionId)
     }
     socket.onmessage = (event) => {
@@ -109,6 +125,7 @@ export class CodingStream {
     }
     socket.onerror = () => {
       if (generation !== this.generation) return
+      this.onConnectionState?.(sessionId, 'recovering')
       this.onError('连接中断')
     }
     socket.onclose = (event) => {
@@ -116,7 +133,11 @@ export class CodingStream {
       if (this.socket === socket) this.socket = null
       if (!this.reconnectEnabled) return
       const code = event?.code ?? 1006
-      if (code === 1000 || code === 1008 || (event?.wasClean && code < 4000)) return
+      if (code === 1000 || code === 1008 || (event?.wasClean && code < 4000)) {
+        this.onConnectionState?.(sessionId, 'disconnected')
+        return
+      }
+      this.onConnectionState?.(sessionId, 'recovering')
       const delay = Math.min(8_000, 500 * 2 ** this.reconnectAttempt)
       this.reconnectAttempt += 1
       this.reconnectTimer = setTimeout(() => {
@@ -134,9 +155,14 @@ export class CodingStream {
     if (expired) this.seenEventIds.delete(expired)
   }
 
-  send(content: string): boolean {
+  send(content: string, surfaceContext?: HarnessSurfaceContext | null): boolean {
     if (!this.socket || this.socket.readyState !== OPEN) return false
-    this.socket.send(JSON.stringify({ content }))
+    this.socket.send(JSON.stringify({
+      content,
+      ...(surfaceContext
+        ? { surface_context: serializeHarnessSurfaceContext(surfaceContext) }
+        : {}),
+    }))
     return true
   }
 
@@ -152,6 +178,7 @@ export class CodingStream {
     const socket = this.socket
     this.socket = null
     socket?.close()
+    if (this.sessionId) this.onConnectionState?.(this.sessionId, 'disconnected')
   }
 }
 

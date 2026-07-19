@@ -5,6 +5,7 @@ export type ProgressEvent = {
 }
 
 export type PermissionMode = 'default' | 'accept_edits' | 'auto' | 'plan'
+export type CodingRuntimeProfile = 'legacy' | 'deerflow_v2'
 
 export type ToolCallEvent = {
   type: 'tool_call'
@@ -114,6 +115,9 @@ export type CodingSessionResponse = {
   workspace_root: string
   workspace_id: string
   permission_mode: PermissionMode
+  runtime_profile: CodingRuntimeProfile
+  sandbox_provider?: string
+  sandbox_image?: string
 }
 
 export type CodingSessionSummary = {
@@ -123,6 +127,7 @@ export type CodingSessionSummary = {
   created_at: string
   updated_at: string
   runtime_mode: string
+  runtime_profile: CodingRuntimeProfile
   message_count: number
   pinned?: boolean
   archived?: boolean
@@ -423,6 +428,26 @@ export type KnowledgeRetrieval = {
   citations: KnowledgeEvidence[]
 }
 
+export type KnowledgeCitation = {
+  citation_id: string
+  chunk_id: string
+  page_id: string
+  page_revision: string
+  page_path: string
+  source_id: string
+  source_revision: string
+  source_kind: string
+  source_relative_path: string
+  block_id: string
+  ordinal: number
+  title: string
+  heading_path: string[]
+  page_number: number | null
+  excerpt: string
+  token_count: number
+  truncated: boolean
+}
+
 export type KnowledgeMigrationPlanItem = {
   proposal_id: string
   source_root_id: string
@@ -601,6 +626,16 @@ export type KnowledgePage = {
   revisions: KnowledgePageRevision[]
 }
 
+export type KnowledgePageDocument = {
+  page_id: string
+  path: string
+  title: string
+  updated_at: string
+  revision: KnowledgePageRevision
+  content: string
+  truncated: boolean
+}
+
 export type CodingSessionMessage = {
   role: 'user' | 'assistant'
   content: string
@@ -619,10 +654,12 @@ export type CodingTimelineKind =
   | 'approval'
   | 'context'
   | 'memory'
+  | 'proposal'
   | 'agent'
   | 'terminal'
   | 'system'
   | 'run'
+  | 'harness'
 
 export type CodingTimelineStatus =
   | 'pending'
@@ -688,16 +725,20 @@ export type CodingEventMeta = {
 
 export type CodingToolCallEvent = CodingEventMeta & {
   type: 'tool_call'
+  tool_call_id?: string
   tool: string
   args: Record<string, unknown>
 }
 
 export type CodingToolResultEvent = CodingEventMeta & {
   type: 'tool_result'
+  tool_call_id?: string
   tool: string
   args: Record<string, unknown>
   content: string
   is_error: boolean
+  error_code?: string | null
+  retryable?: boolean | null
   policy_reason?: string | null
   security_event_type?: string | null
 }
@@ -784,6 +825,18 @@ export type CodingMemoryProposalReadyEvent = CodingEventMeta & {
   base_revision: number
 }
 
+export type CodingKnowledgeSourceProposalCreatedEvent = CodingEventMeta & {
+  type: 'knowledge_source_proposal_created'
+  session_id: string
+  run_id: string
+  proposal_id: string
+  proposal_type: 'knowledge_source'
+  source_kind: 'web'
+  content_hash: string
+  requires_user_confirmation: true
+  revision: number
+}
+
 export type CodingRunFinishedEvent = CodingEventMeta & {
   type: 'run_finished'
   status: string
@@ -854,6 +907,7 @@ export type CodingServerEvent =
   | CodingPlanReadyForReviewEvent
   | CodingWorkspaceDiffReadyEvent
   | CodingMemoryProposalReadyEvent
+  | CodingKnowledgeSourceProposalCreatedEvent
   | CodingRunFinishedEvent
   | CodingContextUsageEvent
   | CodingCompactionStartedEvent
@@ -897,6 +951,8 @@ export type CodingModelsResponse = {
   models: CodingModel[]
   current: string | null
   reasoning_mode: 'off' | 'low' | 'medium' | 'high'
+  runtime_profiles: CodingRuntimeProfile[]
+  default_runtime_profile: CodingRuntimeProfile
 }
 
 export type CodingProviderReasoning =
@@ -1099,6 +1155,52 @@ export type MemoryProposal = {
 
 export type MemoryProposalsResponse = {
   proposals: MemoryProposal[]
+}
+
+export type CodingKnowledgeSourceProposalStatus = 'pending' | 'applying' | 'approved' | 'rejected'
+
+export type CodingKnowledgeSourceProposal = {
+  proposal_id: string
+  thread_id: string
+  run_id: string
+  artifact_ref: string
+  source_kind: string
+  canonical_url: string
+  title: string
+  media_type: string
+  retrieved_at: string
+  content_hash: string
+  reason: string
+  evidence_refs: string[]
+  status: CodingKnowledgeSourceProposalStatus
+  revision: number
+  target_root_id: string
+  target_relative_path: string
+  job_id: string | null
+  last_error: string | null
+  decided_by: string | null
+  decided_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CodingKnowledgeSourceProposalEvent = {
+  event_id: string
+  proposal_id: string
+  sequence: number
+  event_type: string
+  revision: number
+  detail: Record<string, string>
+  created_at: string
+}
+
+export type CodingKnowledgeSourceProposalsResponse = {
+  proposals: CodingKnowledgeSourceProposal[]
+}
+
+export type CodingKnowledgeSourceProposalDetail = {
+  proposal: CodingKnowledgeSourceProposal
+  events: CodingKnowledgeSourceProposalEvent[]
 }
 
 export type CodingSkillSummary = {

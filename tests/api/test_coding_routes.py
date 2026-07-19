@@ -2,16 +2,23 @@
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage
 
+from api.coding import _coding_knowledge_store
 from api.main import create_app
 
 
 def _receive_runtime_event(websocket):
-    """Unwrap the next runtime event from the durable timeline envelope."""
+    """Unwrap the next Engine event, ignoring Harness projection facts."""
     while True:
         envelope = websocket.receive_json()
+        if envelope["kind"] == "harness":
+            continue
         payload = envelope["payload"]
         if "type" in payload and payload["type"] not in {"user"}:
             return payload
@@ -26,6 +33,23 @@ def _receive_until(websocket, event_type: str, *, limit: int = 20):
         if event["type"] == event_type:
             return events
     raise AssertionError(f"runtime did not emit {event_type} within {limit} events")
+
+
+def test_coding_runtime_does_not_bypass_production_knowledge_gate() -> None:
+    store = object()
+    development = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(cloud_app_env="development", knowledge_store=store)
+        )
+    )
+    production = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(cloud_app_env="production", knowledge_store=store)
+        )
+    )
+
+    assert _coding_knowledge_store(development) is store
+    assert _coding_knowledge_store(production) is None
 
 
 class FakeModel:
@@ -56,6 +80,136 @@ class FakeWriteModel:
         return self.responses.pop(0)
 
 
+class DeerflowFakeModel(FakeMessagesListChatModel):
+    """LangChain streaming model used by the explicit DeerFlow profile smoke."""
+
+    def __init__(self) -> None:
+        super().__init__(responses=[AIMessage(content="LangGraph 回答")])
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class DeerflowToolFakeModel(FakeMessagesListChatModel):
+    """Tool-capable fake that exercises the read-only Sage tool bridge."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "list_files",
+                            "args": {"path": "."},
+                            "id": "call-list-files",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="文件已列出"),
+            ]
+        )
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class DeerflowApprovalFakeModel(FakeMessagesListChatModel):
+    """Tool-capable fake used to verify the existing approval endpoint wakes graph runs."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "approved.txt", "content": "ok"},
+                            "id": "call-write-file",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="写入完成"),
+            ]
+        )
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class DeerflowMultiApprovalFakeModel(FakeMessagesListChatModel):
+    """Tool-capable fake that requires two graph checkpoint resumes."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "first.txt", "content": "one"},
+                            "id": "call-write-first",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"path": "second.txt", "content": "two"},
+                            "id": "call-write-second",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="两次写入完成"),
+            ]
+        )
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
+class DeerflowAgentFakeModel(FakeMessagesListChatModel):
+    """Tool-capable fake that awaits one bounded Explore child."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "读取 README",
+                                "prompt": "读取 README 并返回第一行",
+                                "subagent_type": "explore",
+                            },
+                            "id": "call-task",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="子任务结果已合并"),
+            ]
+        )
+
+    def bind_tools(self, tools, *, tool_choice=None, **kwargs):  # type: ignore[no-untyped-def]
+        _ = tools, tool_choice, kwargs
+        return self
+
+
 def test_create_coding_session(tmp_path: Path) -> None:
     """POST /api/v1/coding/session creates a coding runtime session."""
     client = TestClient(
@@ -73,6 +227,541 @@ def test_create_coding_session(tmp_path: Path) -> None:
     assert data["session_id"]
     assert data["workspace_root"] == str(tmp_path.resolve())
     assert data["permission_mode"] == "default"
+    assert data["runtime_profile"] == "legacy"
+    assert data["sandbox_provider"] == "local_workspace"
+    assert data["sandbox_image"] == "python:3.11-slim"
+
+
+def test_server_default_profile_applies_only_to_new_unspecified_sessions(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding-default-v2",
+        coding_deerflow_v2_enabled=True,
+        coding_default_runtime_profile="deerflow_v2",
+    )
+    client = TestClient(app)
+
+    default_session = client.post("/api/v1/coding/session", json={})
+    legacy_session = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "legacy"},
+    )
+
+    assert default_session.status_code == 200
+    assert default_session.json()["runtime_profile"] == "deerflow_v2"
+    assert legacy_session.status_code == 200
+    assert legacy_session.json()["runtime_profile"] == "legacy"
+
+    legacy_session_id = legacy_session.json()["session_id"]
+    app.state.coding_sessions.pop(legacy_session_id)
+    resumed = client.post(f"/api/v1/coding/session/{legacy_session_id}/resume")
+
+    assert resumed.status_code == 200
+    assert resumed.json()["runtime_profile"] == "legacy"
+
+
+def test_deerflow_profile_requires_server_rollout_gate(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding",
+        )
+    )
+
+    response = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "deerflow_v2"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "deerflow_v2 runtime profile is disabled"
+
+
+def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="container",
+        coding_sandbox_image="python:3.12-slim",
+    )
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "deerflow_v2"},
+    )
+
+    assert created.status_code == 200
+    session_id = created.json()["session_id"]
+    assert created.json()["runtime_profile"] == "deerflow_v2"
+    assert created.json()["sandbox_provider"] == "container"
+    assert created.json()["sandbox_image"] == "python:3.12-slim"
+    app.state.coding_sessions.pop(session_id)
+
+    resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+    assert resumed.status_code == 200
+    assert resumed.json()["runtime_profile"] == "deerflow_v2"
+    assert resumed.json()["sandbox_provider"] == "container"
+    assert resumed.json()["sandbox_image"] == "python:3.12-slim"
+    assert app.state.coding_sessions[session_id].runtime_profile == "deerflow_v2"
+
+
+def test_deerflow_profile_refuses_host_local_sandbox_outside_development(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        cloud_app_env="staging",
+    )
+
+    response = TestClient(app).post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "deerflow_v2"},
+    )
+
+    assert response.status_code == 422
+    assert "isolated sandbox" in response.json()["detail"]
+
+
+def test_container_sandbox_reconciles_terminal_resources_on_app_start(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[str] = []
+
+    def fake_reconcile(provider: str) -> int:
+        calls.append(provider)
+        return 3
+
+    monkeypatch.setattr("api.main.reconcile_coding_sandboxes", fake_reconcile)
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="container",
+    )
+
+    with TestClient(app):
+        pass
+
+    assert calls == ["container"]
+    assert app.state.coding_sandbox_reconciled == 3
+
+
+def test_enabled_deerflow_profile_streams_public_answer_and_replays_history(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2"},
+        )
+        assert created.status_code == 200
+        session_id = created.json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "回答一句话"})
+            events: list[dict] = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    break
+
+        payloads = [event["payload"] for event in events]
+        catalog = next(payload for payload in payloads if payload.get("type") == "mcp_catalog_updated")
+        assert {server["name"] for server in catalog["servers"]} == {
+            "amap",
+            "weather",
+            "scenic",
+        }
+        assert "test-amap-key" not in repr(catalog)
+        assert "test-weather-key" not in repr(catalog)
+        assert any(payload.get("type") == "text_delta" for payload in payloads)
+        assert any(payload.get("type") == "final" for payload in payloads)
+        assert events[-1]["status"] == "completed"
+        messages = client.get(f"/api/v1/coding/session/{session_id}/messages").json()["messages"]
+        assert [item["role"] for item in messages] == ["user", "assistant"]
+        assert messages[-1]["content"] == "LangGraph 回答"
+
+
+def test_enabled_deerflow_profile_streams_read_tool_summary(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
+    app = create_app(
+        coding_model_factory=DeerflowToolFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "列出文件"})
+            events: list[dict] = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    break
+        health = client.get(
+            "/api/v1/harness/capabilities/health",
+            params={"session_id": session_id, "surface": "coding", "range": "30d"},
+        )
+
+    payloads = [event["payload"] for event in events]
+    tool_calls = [payload for payload in payloads if payload.get("type") == "tool_call"]
+    tool_results = [payload for payload in payloads if payload.get("type") == "tool_result"]
+    assert tool_calls and tool_calls[0]["tool"] == "list_files"
+    assert tool_calls[0]["args"] == {"path": "."}
+    assert tool_calls[0]["tool_call_id"] == "call-list-files"
+    assert tool_results and "README.md" in tool_results[0]["content"]
+    assert any(payload.get("type") == "text_delta" for payload in payloads)
+    catalog_event = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "capability_catalog_updated"
+    )
+    invocation_event = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "capability_invocation_completed"
+    )
+    assert invocation_event["capability_id"] == "local:list_files"
+    assert invocation_event["status"] == "success"
+    assert "schema" not in str(catalog_event).lower()
+    assert "/Users/" not in str(catalog_event)
+    assert health.status_code == 200
+    metric = next(
+        item
+        for item in health.json()["capabilities"]
+        if item["capability_id"] == "local:list_files"
+    )
+    assert metric["invocation_count"] == 1
+    assert metric["success_count"] == 1
+
+
+def test_enabled_deerflow_profile_reuses_approval_endpoint_for_write_tool(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowApprovalFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "写一个文件"})
+            approval = None
+            while approval is None:
+                event = websocket.receive_json()
+                if event["payload"].get("type") == "approval_required":
+                    approval = event["payload"]
+            response = client.post(
+                f"/api/v1/coding/{session_id}/approval/respond",
+                json={"approval_id": approval["approval_id"], "choice": "once"},
+            )
+            assert response.status_code == 200
+            assert approval["tool_call_id"] == "call-write-file"
+            assert len(approval["args_digest"]) == 64
+            payloads: list[dict] = []
+            while True:
+                event = websocket.receive_json()
+                payloads.append(event["payload"])
+                if event["kind"] == "terminal":
+                    break
+        run_id = str(approval["run_id"])
+        diff_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{run_id}/diff"
+        )
+        runs_response = client.get(f"/api/v1/coding/{session_id}/runs")
+
+    assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "ok"
+    assert any(item.get("type") == "approval_granted" for item in payloads)
+    assert any(item.get("type") == "final" for item in payloads)
+    diff_events = [
+        item for item in payloads if item.get("type") == "workspace_diff_ready"
+    ]
+    assert len(diff_events) == 1
+    assert diff_events[0]["changed_files"] == ["approved.txt"]
+    assert diff_response.status_code == 200
+    assert diff_response.json()["changed_files"][0]["path"] == "approved.txt"
+    assert runs_response.status_code == 200
+    run = next(item for item in runs_response.json()["runs"] if item["run_id"] == run_id)
+    assert run["status"] == "completed"
+    assert run["changed_files"] == ["approved.txt"]
+
+
+def test_deerflow_approval_survives_app_restart_and_resumes_same_run(
+    tmp_path: Path,
+) -> None:
+    model = DeerflowApprovalFakeModel()
+
+    def model_factory():
+        return model
+
+    first_app = create_app(
+        coding_model_factory=model_factory,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(first_app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "重启后继续写文件"})
+            approval = None
+            while approval is None:
+                event = websocket.receive_json()
+                if event["payload"].get("type") == "approval_required":
+                    approval = event["payload"]
+        journal = first_app.state.coding_run_registry.get(session_id).journal
+        run_id = str(approval["run_id"])
+
+    assert journal.active_run_id() is None
+    assert journal.recoverable_approval(run_id)["approval_id"] == approval["approval_id"]
+    assert not any(
+        item.kind == "terminal" for item in journal.replay(after=0, limit=100).items
+    )
+
+    restarted = create_app(
+        coding_model_factory=model_factory,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(restarted) as client:
+        resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+        pending = client.get(f"/api/v1/coding/{session_id}/approval/pending")
+        approved = client.post(
+            f"/api/v1/coding/{session_id}/approval/respond",
+            json={"approval_id": approval["approval_id"], "choice": "once"},
+        )
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            events = []
+            while True:
+                event = websocket.receive_json()
+                events.append(event)
+                if event["kind"] == "terminal":
+                    break
+        diff_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{run_id}/diff"
+        )
+        runs_response = client.get(f"/api/v1/coding/{session_id}/runs")
+
+    assert resumed.status_code == 200
+    assert pending.status_code == 200
+    assert pending.json()["approval_id"] == approval["approval_id"]
+    assert approved.status_code == 200
+    assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "ok"
+    assert [item["payload"].get("event") for item in events].count("run_started") == 1
+    assert any(item["payload"].get("type") == "approval_granted" for item in events)
+    assert any(item["payload"].get("type") == "final" for item in events)
+    diff_events = [
+        item["payload"]
+        for item in events
+        if item["payload"].get("type") == "workspace_diff_ready"
+    ]
+    assert len(diff_events) == 1
+    assert diff_events[0]["changed_files"] == ["approved.txt"]
+    assert diff_response.status_code == 200
+    assert diff_response.json()["changed_files"][0]["path"] == "approved.txt"
+    assert runs_response.status_code == 200
+    run = next(item for item in runs_response.json()["runs"] if item["run_id"] == run_id)
+    assert run["status"] == "completed"
+    assert run["changed_files"] == ["approved.txt"]
+
+
+def test_enabled_deerflow_profile_resumes_graph_after_approval_denial(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowApprovalFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "不要写这个文件"})
+            approval = None
+            while approval is None:
+                event = websocket.receive_json()
+                if event["payload"].get("type") == "approval_required":
+                    approval = event["payload"]
+            response = client.post(
+                f"/api/v1/coding/{session_id}/approval/respond",
+                json={"approval_id": approval["approval_id"], "choice": "deny"},
+            )
+            assert response.status_code == 200
+            payloads: list[dict] = []
+            while True:
+                event = websocket.receive_json()
+                payloads.append(event["payload"])
+                if event["kind"] == "terminal":
+                    break
+
+    assert not (tmp_path / "approved.txt").exists()
+    assert any(
+        item.get("type") == "tool_result"
+        and item.get("content") == "approval denied"
+        for item in payloads
+    )
+    assert any(item.get("type") == "final" for item in payloads)
+
+
+def test_enabled_deerflow_profile_handles_multiple_graph_approval_resumes(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowMultiApprovalFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        approvals: list[str] = []
+        payloads: list[dict] = []
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "写两个文件"})
+            while True:
+                event = websocket.receive_json()
+                payload = event["payload"]
+                payloads.append(payload)
+                if payload.get("type") == "approval_required":
+                    approvals.append(str(payload["approval_id"]))
+                    response = client.post(
+                        f"/api/v1/coding/{session_id}/approval/respond",
+                        json={"approval_id": approvals[-1], "choice": "once"},
+                    )
+                    assert response.status_code == 200
+                if event["kind"] == "terminal":
+                    break
+
+    assert len(approvals) == 2
+    assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "one"
+    assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "two"
+    assert any(item.get("type") == "final" for item in payloads)
+
+
+def test_enabled_deerflow_profile_reuses_graph_session_approval(tmp_path: Path) -> None:
+    app = create_app(
+        coding_model_factory=DeerflowMultiApprovalFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2", "approval_policy": "ask"},
+        ).json()["session_id"]
+        approvals: list[str] = []
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "本会话写两个文件"})
+            while True:
+                event = websocket.receive_json()
+                payload = event["payload"]
+                if payload.get("type") == "approval_required":
+                    approvals.append(str(payload["approval_id"]))
+                    response = client.post(
+                        f"/api/v1/coding/{session_id}/approval/respond",
+                        json={"approval_id": approvals[-1], "choice": "session"},
+                    )
+                    assert response.status_code == 200
+                if event["kind"] == "terminal":
+                    break
+
+    assert len(approvals) == 1
+    assert (tmp_path / "first.txt").read_text(encoding="utf-8") == "one"
+    assert (tmp_path / "second.txt").read_text(encoding="utf-8") == "two"
+
+
+def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Sage\n", encoding="utf-8")
+    app = create_app(
+        coding_model_factory=DeerflowAgentFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+    )
+    with TestClient(app) as client:
+        session_id = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2"},
+        ).json()["session_id"]
+        app.state.coding_sessions[session_id].worker_manager.model_factory = lambda: FakeModel()
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "启动一个探索任务"})
+            payloads: list[dict] = []
+            agent_kinds: list[str] = []
+            while True:
+                event = websocket.receive_json()
+                payloads.append(event["payload"])
+                if str(event["payload"].get("type", "")).startswith("subagent_"):
+                    agent_kinds.append(event["kind"])
+                if event["kind"] == "terminal":
+                    break
+
+        child_run_id = str(
+            next(item for item in payloads if item.get("type") == "subagent_started")[
+                "child_run_id"
+            ]
+        )
+        child_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{child_run_id}"
+        )
+
+    agent_events = [
+        item for item in payloads if str(item.get("type", "")).startswith("subagent_")
+    ]
+    assert agent_events[0]["type"] == "subagent_started"
+    assert agent_events[-1]["type"] == "subagent_completed"
+    assert any(item["type"] == "subagent_progress" for item in agent_events)
+    assert agent_events[0]["child_run_id"].startswith("child_")
+    assert agent_events[-1]["child_run_id"] == agent_events[0]["child_run_id"]
+    assert agent_events[-1]["result_ref"].startswith("subagent://")
+    assert agent_kinds == ["agent"] * len(agent_events)
+    assert agent_events[0]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert agent_events[-1]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert child_response.status_code == 200
+    child_run = child_response.json()
+    assert child_run["run_id"] == child_run_id
+    assert child_run["events"][0]["parent_run_id"]
+    assert child_run["events"][-1]["type"] == "run_finished"
+    assert any(item.get("type") == "final" for item in payloads)
 
 
 def test_create_coding_session_accepts_approval_policy(tmp_path: Path) -> None:
@@ -715,8 +1404,8 @@ def test_coding_run_history_lists_and_reads_traces(tmp_path: Path) -> None:
     with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
         websocket.send_json({"content": "读 README.md"})
         while True:
-            event = _receive_runtime_event(websocket)
-            if event["type"] == "final":
+            envelope = websocket.receive_json()
+            if envelope["kind"] == "terminal":
                 break
 
     list_response = client.get(f"/api/v1/coding/{session_id}/runs")
@@ -782,6 +1471,9 @@ def _make_bare_client(tmp_path: Path) -> TestClient:
 def test_list_coding_files_returns_directory_entries(tmp_path: Path) -> None:
     """GET /files returns dirs first then files, ignoring noise."""
     client = _make_client(tmp_path)
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "usage.sqlite3").write_text("private", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=private\n", encoding="utf-8")
     session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
 
     response = client.get(f"/api/v1/coding/{session_id}/files", params={"path": "."})
@@ -791,6 +1483,8 @@ def test_list_coding_files_returns_directory_entries(tmp_path: Path) -> None:
     names = [entry["name"] for entry in entries]
     assert "src" in names
     assert "README.md" in names
+    assert ".sage" not in names
+    assert ".env" not in names
     src_entry = next(entry for entry in entries if entry["name"] == "src")
     assert src_entry["is_dir"] is True
 
@@ -866,6 +1560,94 @@ def test_list_coding_models_returns_providers(tmp_path: Path) -> None:
     assert all(m["context_window_tokens"] == 1_000_000 for m in models)
     assert all(m["reasoning_modes"] == [] for m in models)
     assert data["current"] == "deepseek:deepseek-v4-flash"
+    assert data["runtime_profiles"] == ["legacy"]
+    assert data["default_runtime_profile"] == "legacy"
+
+
+def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path) -> None:
+    development = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-dev",
+            coding_deerflow_v2_enabled=True,
+        )
+    )
+    staging = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-staging",
+            coding_deerflow_v2_enabled=True,
+            cloud_app_env="staging",
+        )
+    )
+    isolated_staging = TestClient(
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-staging-container",
+            coding_deerflow_v2_enabled=True,
+            coding_sandbox_provider="container",
+            cloud_app_env="staging",
+        )
+    )
+
+    development_models = development.get("/api/v1/coding/models").json()
+    staging_models = staging.get("/api/v1/coding/models").json()
+    isolated_staging_models = isolated_staging.get(
+        "/api/v1/coding/models"
+    ).json()
+
+    assert development_models["runtime_profiles"] == [
+        "legacy",
+        "deerflow_v2",
+    ]
+    assert development_models["default_runtime_profile"] == "deerflow_v2"
+    assert staging_models["runtime_profiles"] == ["legacy"]
+    assert staging_models["default_runtime_profile"] == "legacy"
+    assert isolated_staging_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
+    assert isolated_staging_models["default_runtime_profile"] == "deerflow_v2"
+
+    staging_session = staging.post("/api/v1/coding/session", json={})
+    assert staging_session.status_code == 200
+    assert staging_session.json()["runtime_profile"] == "legacy"
+
+
+def test_app_rejects_invalid_default_runtime_profile(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown runtime profile"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-invalid-default",
+            coding_default_runtime_profile="future",
+        )
+    with pytest.raises(ValueError, match="must not be empty"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-empty-default",
+            coding_default_runtime_profile=" ",
+        )
+
+
+def test_app_rejects_unknown_or_empty_sandbox_configuration(tmp_path: Path) -> None:
+    from sage_harness import SandboxPolicyError
+
+    with pytest.raises(SandboxPolicyError, match="unknown sandbox provider"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-unknown",
+            coding_sandbox_provider="host",
+        )
+    with pytest.raises(ValueError, match="image must not be empty"):
+        create_app(
+            coding_model_factory=FakeModel,
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding-empty-image",
+            coding_sandbox_image=" ",
+        )
 
 
 def test_list_coding_skills_returns_bundled_skills(tmp_path: Path) -> None:

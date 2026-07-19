@@ -17,8 +17,12 @@ import {
   stopCodingRun,
   fetchMemoryProposals,
   approveMemoryProposal,
+  approveKnowledgeSourceProposal,
   createCloudModelProvider,
   fetchCloudModelProviders,
+  fetchKnowledgeSourceProposal,
+  fetchKnowledgeSourceProposals,
+  rejectKnowledgeSourceProposal,
   rejectMemoryProposal,
   updateCloudModelProvider,
 } from './coding'
@@ -96,21 +100,75 @@ describe('coding API client', () => {
     await expect(approveMemoryProposal('c1', 'p1', 2)).rejects.toThrow('记忆候选已发生变化，请刷新后重试')
   })
 
+  it('lists and opens no-store knowledge source proposals', async () => {
+    const proposal = {
+      proposal_id: 'ksprop_1', thread_id: 'c1', run_id: 'run-1', status: 'pending', revision: 1,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ proposals: [proposal] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ proposal, events: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchKnowledgeSourceProposals('c1')).resolves.toMatchObject({
+      proposals: [expect.objectContaining({ proposal_id: 'ksprop_1' })],
+    })
+    await expect(fetchKnowledgeSourceProposal('c1', 'ksprop_1')).resolves.toMatchObject({
+      proposal: expect.objectContaining({ revision: 1 }), events: [],
+    })
+
+    const listUrl = fetchMock.mock.calls[0][0] as URL
+    const detailUrl = fetchMock.mock.calls[1][0] as URL
+    expect(listUrl.pathname).toBe('/api/v1/coding/c1/knowledge/source-proposals')
+    expect(listUrl.searchParams.get('status')).toBe('pending')
+    expect(detailUrl.pathname).toBe('/api/v1/coding/c1/knowledge/source-proposals/ksprop_1')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'no-store' })
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: 'no-store' })
+  })
+
+  it('approves and rejects source proposals with revision CAS', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ proposal_id: 'ksprop_1', status: 'approved', revision: 2 }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await approveKnowledgeSourceProposal('c1', 'ksprop_1', 1)
+    await rejectKnowledgeSourceProposal('c1', 'ksprop_2', 4)
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'POST', cache: 'no-store', body: JSON.stringify({ expected_revision: 1 }),
+    })
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'POST', cache: 'no-store', body: JSON.stringify({ expected_revision: 4 }),
+    })
+  })
+
+  it.each([
+    [409, '知识来源提案已发生变化，请刷新后重试'],
+    [404, '知识来源提案不存在、无权访问或已处理'],
+    [503, '知识来源审阅服务尚未就绪'],
+  ])('maps source proposal status %s to a stable Chinese error', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status }))
+    await expect(approveKnowledgeSourceProposal('c1', 'ksprop_1', 1)).rejects.toThrow(message)
+  })
+
   it('creates a coding session', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ session_id: 'c1', workspace_root: '/tmp/repo', permission_mode: 'default' }),
+      json: async () => ({ session_id: 'c1', workspace_root: '/tmp/repo', workspace_id: 'w1', permission_mode: 'default', runtime_profile: 'legacy', sandbox_provider: 'local_workspace', sandbox_image: 'python:3.11-slim' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
     const response = await startCodingSession('/tmp/repo')
 
     expect(response.session_id).toBe('c1')
+    expect(response.runtime_profile).toBe('legacy')
+    expect(response.sandbox_provider).toBe('local_workspace')
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), {
       credentials: 'include',
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ workspace_root: '/tmp/repo', approval_policy: 'ask' }),
+      body: JSON.stringify({ workspace_root: '/tmp/repo', approval_policy: 'ask', runtime_profile: null }),
     })
   })
 
@@ -139,6 +197,31 @@ describe('coding API client', () => {
     expect(url.searchParams.get('after')).toBe('4')
     expect(url.searchParams.get('limit')).toBe('25')
     expect(response.next_cursor).toBe(9)
+  })
+
+  it('accepts explicit Harness stage events in timeline replay', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        items: [{
+          event_id: 'event-harness-1', session_id: 'c1', run_id: 'run-1', sequence: 1,
+          kind: 'harness', status: 'running', timestamp: '2026-07-16T00:00:00Z',
+          payload: {
+            type: 'stage_started', definition_id: 'sage.coding.practice',
+            definition_version: 1, stage_id: 'plan',
+          },
+        }],
+        next_cursor: 1, has_more: false, older_cursor: null,
+        latest_cursor: 1, active_run: { run_id: 'run-1', status: 'running' },
+      }),
+    }))
+
+    const response = await fetchCodingTimeline('c1')
+
+    expect(response.items[0]).toMatchObject({
+      kind: 'harness',
+      payload: { type: 'stage_started', stage_id: 'plan' },
+    })
   })
 
   it('rejects malformed or cross-session timeline envelopes', async () => {
@@ -319,6 +402,7 @@ describe('coding API client', () => {
             created_at: '2026-07-08T10:00:00',
             updated_at: '2026-07-08T10:00:01',
             runtime_mode: 'default',
+            runtime_profile: 'legacy',
             message_count: 2,
           },
         ],
@@ -335,15 +419,30 @@ describe('coding API client', () => {
   it('resumes a coding session', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => ({ session_id: 's1', workspace_root: '/tmp/repo', permission_mode: 'auto' }),
+      json: async () => ({ session_id: 's1', workspace_root: '/tmp/repo', workspace_id: 'w1', permission_mode: 'auto', runtime_profile: 'legacy', sandbox_provider: 'local_workspace', sandbox_image: 'python:3.11-slim' }),
     })
     vi.stubGlobal('fetch', fetchMock)
 
     const response = await resumeCodingSession('s1')
 
     expect(response.session_id).toBe('s1')
+    expect(response.runtime_profile).toBe('legacy')
     expect(fetchMock).toHaveBeenCalledWith(expect.any(URL), {
       credentials: 'include', method: 'POST',
+    })
+  })
+
+  it('sends an explicit DeerFlow runtime profile when requested', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ session_id: 'deerflow-1', workspace_root: '/tmp/repo', workspace_id: 'w1', permission_mode: 'ask', runtime_profile: 'deerflow_v2' }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await startCodingSession('/tmp/repo', 'ask', 'deerflow_v2')
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1].body))).toMatchObject({
+      workspace_root: '/tmp/repo', approval_policy: 'ask', runtime_profile: 'deerflow_v2',
     })
   })
 

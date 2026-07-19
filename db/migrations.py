@@ -14,6 +14,7 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
     target = engine or default_engine
     async with target.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await _upgrade_canary_invite_device_columns(connection)
         await _upgrade_knowledge_sync_columns(connection)
         await _upgrade_knowledge_source_adapter_columns(connection)
         await connection.execute(
@@ -81,6 +82,69 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
                 "WHERE revision = '20260716_v7_5_4_source_connectors'"
                 ")"
             )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260718_h2_5b2_external_parse_tasks', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260718_h2_5b2_external_parse_tasks'"
+                ")"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260718_v7_canary_invite_device_login', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260718_v7_canary_invite_device_login'"
+                ")"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260718_h2_5c_knowledge_source_proposals', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260718_h2_5c_knowledge_source_proposals'"
+                ")"
+            )
+        )
+
+
+async def _upgrade_canary_invite_device_columns(connection: AsyncConnection) -> None:
+    """Add private-Canary account and device-session controls in place."""
+
+    user_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("cloud_users")
+        }
+    )
+    if "disabled_at" not in user_columns:
+        await connection.execute(
+            text("ALTER TABLE cloud_users ADD COLUMN disabled_at TIMESTAMP")
+        )
+
+    session_columns = await connection.run_sync(
+        lambda sync_connection: {
+            str(column["name"])
+            for column in inspect(sync_connection).get_columns("cloud_login_sessions")
+        }
+    )
+    if "device_name" not in session_columns:
+        await connection.execute(
+            text(
+                "ALTER TABLE cloud_login_sessions ADD COLUMN device_name "
+                "VARCHAR(120) NOT NULL DEFAULT 'Unknown device'"
+            )
+        )
+    if "last_seen_at" not in session_columns:
+        await connection.execute(
+            text("ALTER TABLE cloud_login_sessions ADD COLUMN last_seen_at TIMESTAMP")
         )
 
 

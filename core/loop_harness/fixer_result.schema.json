@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "changed_files", "tests", "risk_reasons"],
+  "properties": {
+    "summary": {"type": "string", "minLength": 1, "maxLength": 500},
+    "changed_files": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {"type": "string", "minLength": 1, "maxLength": 240}
+    },
+    "tests": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {"type": "string", "maxLength": 500}
+    },
+    "risk_reasons": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {"type": "string", "maxLength": 500}
+    }
+  }
+}

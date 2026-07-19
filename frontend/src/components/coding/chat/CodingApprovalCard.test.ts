@@ -17,13 +17,55 @@ it('renders approval details and emits supported approval choices', async () => 
   })
 
   expect(wrapper.text()).toContain('write_file')
-  expect(wrapper.text()).toContain('write_file requires approval.')
+  expect(wrapper.text()).toContain('写入文件前需要确认。')
+  expect(wrapper.text()).not.toContain('requires approval')
 
   await wrapper.find('button.allow').trigger('click')
   await wrapper.find('button.session').trigger('click')
   await wrapper.find('button.deny').trigger('click')
 
   expect(wrapper.emitted('respond')).toEqual([['once'], ['session'], ['deny']])
+})
+
+it('renders a localized shell approval with a distinct primary action', () => {
+  const wrapper = mount(CodingApprovalCard, {
+    props: {
+      approval: {
+        approval_id: 'appr_shell',
+        session_id: 'c1',
+        tool: 'run_shell',
+        args: { command: 'pwd' },
+        description: 'run_shell requires approval.',
+        pattern_key: 'tool:run_shell',
+      },
+    },
+  })
+
+  expect(wrapper.text()).toContain('执行 Shell 命令前需要确认。')
+  expect(wrapper.text()).not.toContain('requires approval')
+  expect(wrapper.get('button.allow').text()).toBe('允许一次')
+})
+
+it('redacts secret-shaped values from the shell command summary', () => {
+  const wrapper = mount(CodingApprovalCard, {
+    props: {
+      approval: {
+        approval_id: 'appr_secret',
+        session_id: 'c1',
+        tool: 'run_shell',
+        args: {
+          command: 'OPENAI_API_KEY=plain-secret curl -H "Authorization: Bearer bearer-secret" example.test',
+        },
+        description: 'run_shell requires approval.',
+        pattern_key: 'tool:run_shell',
+      },
+    },
+  })
+
+  expect(wrapper.text()).not.toContain('plain-secret')
+  expect(wrapper.text()).not.toContain('bearer-secret')
+  expect(wrapper.text()).toContain('OPENAI_API_KEY=[REDACTED]')
+  expect(wrapper.text()).toContain('Authorization: [REDACTED]')
 })
 
 it('renders diff preview when provided', () => {

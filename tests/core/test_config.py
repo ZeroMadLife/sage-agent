@@ -19,6 +19,22 @@ def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
     assert settings.knowledge_qwen_vl_enabled is False
 
 
+def test_sandbox_configuration_defaults_to_local_development() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_coding_sandbox_provider == "local_workspace"
+    assert settings.sage_coding_sandbox_image == "python:3.11-slim"
+
+
+def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_web_fetch_enabled is False
+    assert settings.sage_web_fetch_connect_timeout_seconds == 5.0
+    assert settings.sage_web_fetch_read_timeout_seconds == 10.0
+    assert settings.sage_web_fetch_total_timeout_seconds == 20.0
+
+
 def test_settings_has_amap_base_url() -> None:
     """Amap API base URL has a default value."""
     settings = Settings()
@@ -69,6 +85,26 @@ def test_production_cloud_settings_accept_distinct_configured_secrets() -> None:
     settings.validate_cloud_production_secrets()
 
 
+def test_production_rejects_canary_invite_login_on_public_hostname() -> None:
+    import pytest
+
+    settings = Settings(
+        app_env="production",
+        app_secret_key="application-secret-that-is-not-a-placeholder",
+        github_oauth_client_id="client-id",
+        github_oauth_client_secret="github-client-secret-that-is-long-enough-value",
+        github_oauth_transaction_secret="transaction-secret-that-is-long-enough",
+        github_token_encryption_secret="token-secret-that-is-long-enough-value",
+        model_provider_encryption_secret="provider-secret-that-is-long-enough-value",
+        cloud_frontend_url="https://sage.example.com",
+        github_oauth_redirect_uri="https://sage.example.com/api/v1/cloud/auth/github/callback",
+        cloud_canary_invite_login_enabled=True,
+    )
+
+    with pytest.raises(RuntimeError, match="outside private Canary"):
+        settings.validate_cloud_production_secrets()
+
+
 def test_resolve_llm_doubao(monkeypatch) -> None:
     """resolve_llm 正确解析 doubao provider。"""
     monkeypatch.setenv("DOUBAO_API_KEY", "test-doubao-key")
@@ -108,9 +144,10 @@ def test_resolve_llm_raises_on_unknown_provider() -> None:
         settings.resolve_llm("unknown:model")
 
 
-def test_resolve_llm_raises_on_missing_key() -> None:
+def test_resolve_llm_raises_on_missing_key(monkeypatch) -> None:
     """provider 的 key 未配置时抛出 ValueError。"""
-    settings = Settings()
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
     import pytest
 
     with pytest.raises(ValueError, match="API key 未配置"):

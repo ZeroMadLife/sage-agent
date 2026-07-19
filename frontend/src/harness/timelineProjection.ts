@@ -2,6 +2,7 @@ import type {
   HarnessDefinition,
   HarnessProjection,
   HarnessRunStatus,
+  HarnessStageEventViewModel,
   HarnessStageStatus,
   HarnessStageViewModel,
   HarnessTimelineEvent,
@@ -37,6 +38,8 @@ export function projectHarnessTimeline(
 
   const stages = new Map<string, HarnessStageViewModel>()
   const transitions = new Map<string, HarnessTransitionViewModel>()
+  const accumulatedDurations = new Map<string, number>()
+  const stageEvents: HarnessStageEventViewModel[] = []
   for (const stage of definitionMatches ? definition?.stages ?? [] : []) {
     stages.set(stage.id, createStage(stage.id, stage.label, stage.description, stage.terminal))
   }
@@ -53,10 +56,10 @@ export function projectHarnessTimeline(
       status = terminalRunStatus(event.status)
       if (activeStageId) {
         const active = stages.get(activeStageId)
-        if (active && active.status === 'running') {
+        if (active && (active.status === 'running' || active.status === 'blocked')) {
           active.status = status === 'completed' ? 'completed' : status
           active.completedAt = event.timestamp
-          active.durationMs = elapsed(active.startedAt, event.timestamp)
+          active.durationMs = completedDuration(active, event.timestamp, accumulatedDurations)
           active.lastSequence = event.sequence
         }
       }
@@ -91,24 +94,45 @@ export function projectHarnessTimeline(
     stage.lastSequence = event.sequence
     if (event.detail) stage.detail = event.detail
     if (event.operationRef) stage.operationRef = event.operationRef
+    stageEvents.push({
+      eventId: event.eventId,
+      stageId: event.stageId,
+      label: stage.label,
+      detail: event.detail,
+      status: event.type === 'stage_failed'
+        ? event.status === 'cancelled' ? 'cancelled' : 'failed'
+        : event.type === 'stage_completed'
+          ? 'completed'
+          : event.status === 'blocked' ? 'blocked' : 'running',
+      timestamp: event.timestamp,
+      sequence: event.sequence,
+    })
 
     if (event.type === 'stage_started') {
+      const previousStatus = stage.status
       const newVisit = stage.status !== 'running' && stage.status !== 'blocked'
-      stage.status = event.status === 'blocked' ? 'blocked' : 'running'
+      const nextStatus = event.status === 'blocked' ? 'blocked' : 'running'
       if (newVisit) {
         stage.visitCount += 1
-        stage.startedAt = event.timestamp
+        stage.startedAt = nextStatus === 'running' ? event.timestamp : undefined
         stage.completedAt = undefined
         stage.durationMs = undefined
+        accumulatedDurations.delete(stage.id)
         visitedPath.push(event.stageId)
+      } else if (previousStatus === 'running' && nextStatus === 'blocked') {
+        accumulateDuration(stage, event.timestamp, accumulatedDurations)
+        stage.startedAt = undefined
+      } else if (previousStatus === 'blocked' && nextStatus === 'running') {
+        stage.startedAt = event.timestamp
       }
+      stage.status = nextStatus
       activeStageId = event.stageId
       status = stage.status === 'blocked' ? 'blocked' : 'running'
       continue
     }
 
     stage.completedAt = event.timestamp
-    stage.durationMs = elapsed(stage.startedAt, event.timestamp)
+    stage.durationMs = completedDuration(stage, event.timestamp, accumulatedDurations)
     if (event.type === 'stage_failed') {
       stage.status = event.status === 'cancelled' ? 'cancelled' : 'failed'
       status = stage.status
@@ -136,6 +160,7 @@ export function projectHarnessTimeline(
     stages: [...stages.values()].sort((left, right) => stageOrder(definition, left.id) - stageOrder(definition, right.id) || left.lastSequence - right.lastSequence),
     transitions: [...transitions.values()].sort((left, right) => left.lastSequence - right.lastSequence),
     visitedPath,
+    stageEvents,
     lastSequence: events.at(-1)?.sequence || 0,
   }
 }
@@ -172,6 +197,28 @@ function elapsed(start?: string, end?: string) {
   if (!start || !end) return undefined
   const duration = Date.parse(end) - Date.parse(start)
   return Number.isFinite(duration) && duration >= 0 ? duration : undefined
+}
+
+function accumulateDuration(
+  stage: HarnessStageViewModel,
+  end: string,
+  accumulated: Map<string, number>,
+) {
+  const segment = elapsed(stage.startedAt, end)
+  if (segment === undefined) return
+  accumulated.set(stage.id, (accumulated.get(stage.id) || 0) + segment)
+}
+
+function completedDuration(
+  stage: HarnessStageViewModel,
+  end: string,
+  accumulated: Map<string, number>,
+) {
+  const prior = accumulated.get(stage.id)
+  const segment = elapsed(stage.startedAt, end)
+  accumulated.delete(stage.id)
+  if (prior === undefined && segment === undefined) return undefined
+  return (prior || 0) + (segment || 0)
 }
 
 function terminalRunStatus(status?: HarnessStageStatus): 'completed' | 'failed' | 'cancelled' {

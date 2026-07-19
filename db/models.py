@@ -75,6 +75,7 @@ class CloudUserRecord(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(200), default="")
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -126,8 +127,10 @@ class CloudLoginSessionRecord(Base):
         String(36), ForeignKey("cloud_users.id", ondelete="CASCADE"), index=True
     )
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(120), default="Unknown device")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -395,7 +398,10 @@ class KnowledgeIngestJobRecord(Base):
         String(36), ForeignKey("knowledge_source_roots.id", ondelete="CASCADE"), index=True
     )
     sync_plan_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("knowledge_sync_plans.id", ondelete="SET NULL"), unique=True, nullable=True
+        String(36),
+        ForeignKey("knowledge_sync_plans.id", ondelete="SET NULL"),
+        unique=True,
+        nullable=True,
     )
     relative_directory: Mapped[str] = mapped_column(String(1024), default=".")
     pipeline_version: Mapped[str] = mapped_column(String(64))
@@ -451,6 +457,109 @@ class KnowledgeIngestItemRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+
+
+class KnowledgeExternalParseRecord(Base):
+    """Server-only resumable parser ticket for one immutable ingest item."""
+
+    __tablename__ = "knowledge_external_parse_tasks"
+    __table_args__ = (
+        UniqueConstraint(
+            "adapter_id",
+            "task_id",
+            name="knowledge_external_parse_adapter_task_key",
+        ),
+    )
+
+    item_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_ingest_items.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    adapter_id: Mapped[str] = mapped_column(String(64))
+    adapter_version: Mapped[str] = mapped_column(String(64))
+    task_id: Mapped[str] = mapped_column(String(128))
+    state: Mapped[str] = mapped_column(String(32), default="queued", index=True)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KnowledgeSourceProposalRecord(Base):
+    """User-reviewable bridge from one private run artifact to Knowledge."""
+
+    __tablename__ = "knowledge_source_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "owner_id",
+            "thread_id",
+            "run_id",
+            "artifact_ref",
+            "content_hash",
+            name="knowledge_source_proposal_artifact_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("knowledge_workspaces.id", ondelete="CASCADE"), index=True
+    )
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    thread_id: Mapped[str] = mapped_column(String(128), index=True)
+    run_id: Mapped[str] = mapped_column(String(128), index=True)
+    artifact_ref: Mapped[str] = mapped_column(String(1000))
+    source_kind: Mapped[str] = mapped_column(String(32), default="web")
+    canonical_url: Mapped[str] = mapped_column(String(2000))
+    title: Mapped[str] = mapped_column(String(300))
+    media_type: Mapped[str] = mapped_column(String(120))
+    retrieved_at: Mapped[str] = mapped_column(String(64))
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    target_root_id: Mapped[str] = mapped_column(String(64), default="web-evidence")
+    target_relative_path: Mapped[str] = mapped_column(String(1024), default="")
+    job_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("knowledge_ingest_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class KnowledgeSourceProposalEventRecord(Base):
+    """Append-only lifecycle evidence for one Knowledge source proposal."""
+
+    __tablename__ = "knowledge_source_proposal_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "proposal_id",
+            "sequence",
+            name="knowledge_source_proposal_event_sequence_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    proposal_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("knowledge_source_proposals.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class KnowledgeIdempotencyRecord(Base):

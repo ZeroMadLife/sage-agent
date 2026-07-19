@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
 import secrets
 import stat
+from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote, unquote, urlsplit
+
+from sage_harness import ToolArtifactReceipt
 
 PERSIST_THRESHOLD_BYTES = 16 * 1024
 PREVIEW_LINES = 200
@@ -20,15 +25,11 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 _FILE_FLAGS = os.O_CLOEXEC | os.O_NOFOLLOW
 
 
-@dataclass(frozen=True)
-class ArchivedToolResult:
+@dataclass(frozen=True, slots=True)
+class ArchivedToolResult(ToolArtifactReceipt):
     """A persisted tool result and its bounded preview."""
 
-    artifact_ref: str
     artifact_path: Path
-    preview: str
-    original_chars: int
-    truncated: bool
 
 
 class ToolResultStore:
@@ -37,30 +38,126 @@ class ToolResultStore:
     def __init__(self, root: Path, session_id: str, run_id: str) -> None:
         _validate_scope_id(session_id, "session")
         _validate_scope_id(run_id, "run")
+        self._session_id = session_id
+        self._run_id = run_id
         self._root = _trusted_root(root)
         self._components = ("evidence", session_id, "runs", run_id, "tool-results")
         self.root = root.joinpath(*self._components)
         _reject_existing_symlinks(self._root, self._components)
 
-    def archive(self, call_id: str, content: str) -> ArchivedToolResult:
+    def archive(
+        self,
+        call_id: str,
+        content: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ArchivedToolResult:
         """Atomically persist ``content``, then return its transcript preview."""
         _validate_scope_id(call_id, "call")
-        artifact_ref = f"{call_id}.txt"
+        artifact_name = f"{call_id}.txt"
+        artifact_ref = self._artifact_ref(call_id)
+        metadata_content = _metadata_json(metadata) if metadata is not None else None
+        metadata_name = f"{call_id}.metadata.json"
         directory_fd = _open_directory(self._root, self._components)
         try:
-            _reject_symlink_file(directory_fd, artifact_ref)
-            self._replace_artifact(directory_fd, artifact_ref, content)
+            _reject_symlink_file(directory_fd, artifact_name)
+            _reject_symlink_file(directory_fd, metadata_name)
+            if metadata_content is None:
+                with suppress(FileNotFoundError):
+                    os.unlink(metadata_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+            self._replace_artifact(directory_fd, artifact_name, content)
+            if metadata_content is not None:
+                self._replace_artifact(
+                    directory_fd,
+                    metadata_name,
+                    metadata_content,
+                )
         finally:
             os.close(directory_fd)
 
-        preview = _bounded_preview(content, call_id)
+        preview = _bounded_preview(content, artifact_ref)
         return ArchivedToolResult(
             artifact_ref=artifact_ref,
-            artifact_path=self.root / artifact_ref,
             preview=preview,
             original_chars=len(content),
             truncated=preview != content,
+            artifact_path=self.root / artifact_name,
         )
+
+    def read(self, artifact_ref: str) -> str:
+        """Read only an artifact whose opaque reference matches this exact scope."""
+        artifact_name = self._artifact_name(artifact_ref)
+        directory_fd = _open_directory(self._root, self._components, create=False)
+        file_fd = -1
+        try:
+            file_fd = os.open(artifact_name, os.O_RDONLY | _FILE_FLAGS, dir_fd=directory_fd)
+            metadata = os.fstat(file_fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError("artifact file is not a private regular file")
+            chunks: list[bytes] = []
+            while chunk := os.read(file_fd, 64 * 1024):
+                chunks.append(chunk)
+            return b"".join(chunks).decode("utf-8")
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+            os.close(directory_fd)
+
+    def read_metadata(self, artifact_ref: str) -> dict[str, object]:
+        """Read bounded server-only metadata bound to this artifact scope."""
+
+        artifact_name = self._artifact_name(artifact_ref)
+        metadata_name = f"{artifact_name[:-4]}.metadata.json"
+        directory_fd = _open_directory(self._root, self._components, create=False)
+        file_fd = -1
+        try:
+            file_fd = os.open(metadata_name, os.O_RDONLY | _FILE_FLAGS, dir_fd=directory_fd)
+            metadata = os.fstat(file_fd)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+                or metadata.st_size > 16 * 1024
+            ):
+                raise ValueError("artifact metadata is not a bounded private regular file")
+            payload = bytearray()
+            while chunk := os.read(file_fd, 16 * 1024):
+                payload.extend(chunk)
+                if len(payload) > 16 * 1024:
+                    raise ValueError("artifact metadata exceeds its size limit")
+            value = json.loads(payload.decode("utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("artifact metadata must be an object")
+            return {str(key): item for key, item in value.items()}
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+            os.close(directory_fd)
+
+    def _artifact_ref(self, call_id: str) -> str:
+        segments = (self._session_id, self._run_id, f"{call_id}.txt")
+        session_id, run_id, artifact_name = (quote(item, safe="") for item in segments)
+        return f"sage://coding/{session_id}/runs/{run_id}/tool-results/{artifact_name}"
+
+    def _artifact_name(self, artifact_ref: str) -> str:
+        parsed = urlsplit(artifact_ref)
+        parts = [unquote(item) for item in parsed.path.split("/") if item]
+        if (
+            parsed.scheme != "sage"
+            or parsed.netloc != "coding"
+            or parsed.query
+            or parsed.fragment
+            or len(parts) != 5
+            or parts[1] != "runs"
+            or parts[3] != "tool-results"
+            or parts[0] != self._session_id
+            or parts[2] != self._run_id
+            or not parts[4].endswith(".txt")
+        ):
+            raise ValueError("artifact reference scope does not match store")
+        call_id = parts[4][:-4]
+        _validate_scope_id(call_id, "call")
+        return f"{call_id}.txt"
 
     def _replace_artifact(self, directory_fd: int, artifact_ref: str, content: str) -> None:
         temp_name = ""
@@ -96,7 +193,7 @@ class ToolResultStore:
                     os.unlink(temp_name, dir_fd=directory_fd)
 
 
-def _bounded_preview(content: str, call_id: str) -> str:
+def _bounded_preview(content: str, artifact_ref: str) -> str:
     lines = content.splitlines(keepends=True)
     selected = content
     if len(lines) > PREVIEW_LINES:
@@ -105,13 +202,25 @@ def _bounded_preview(content: str, call_id: str) -> str:
     if selected == content and len(selected) <= PREVIEW_CHARS:
         return content
 
-    marker = f"\n[full result: {call_id}]"
+    marker = f"\n[full result: {artifact_ref}]"
     budget = PREVIEW_CHARS - len(marker)
     if len(selected) > budget:
         head_chars = budget * _HEAD_LINES // PREVIEW_LINES
         tail_chars = budget - head_chars
         selected = selected[:head_chars] + selected[-tail_chars:]
     return selected + marker
+
+
+def _metadata_json(metadata: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        {str(key): value for key, value in metadata.items()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(encoded.encode("utf-8")) > 16 * 1024:
+        raise ValueError("artifact metadata exceeds its size limit")
+    return encoded
 
 
 def _trusted_root(root: Path) -> Path:
@@ -136,16 +245,22 @@ def _reject_existing_symlinks(root: Path, components: tuple[str, ...]) -> None:
             raise ValueError(f"symlink path component rejected: {current}")
 
 
-def _open_directory(root: Path, components: tuple[str, ...]) -> int:
+def _open_directory(
+    root: Path,
+    components: tuple[str, ...],
+    *,
+    create: bool = True,
+) -> int:
     directory_fd = os.open(root, _DIRECTORY_FLAGS)
     try:
         for component in components:
             created = False
-            try:
-                os.mkdir(component, mode=0o700, dir_fd=directory_fd)
-                created = True
-            except FileExistsError:
-                pass
+            if create:
+                try:
+                    os.mkdir(component, mode=0o700, dir_fd=directory_fd)
+                    created = True
+                except FileExistsError:
+                    pass
             if created:
                 os.fsync(directory_fd)
             try:

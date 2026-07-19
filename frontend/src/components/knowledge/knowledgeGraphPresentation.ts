@@ -10,6 +10,155 @@ export type KnowledgeGraphFocus = {
   labelNodeIds: Set<string>
 }
 
+export type KnowledgeGraphLegendItem = {
+  id: string
+  label: string
+  count: number
+  color: string
+}
+
+export type KnowledgeGraphPerformanceProfile = {
+  tier: 'small' | 'medium' | 'large' | 'fallback'
+  layoutDurationMs: number
+  maxRenderedEdges: number
+  labelDensity: number
+  labelRenderedSizeThreshold: number
+  hideEdgesOnMove: boolean
+  barnesHutOptimize: boolean
+  useListFallback: boolean
+}
+
+export type KnowledgeGraphScopeMode = 'global' | 'goal' | 'local'
+
+export type KnowledgeGraphPath = {
+  nodeIds: string[]
+  edgeIds: string[]
+}
+
+export function graphScopeNodeIds(
+  graph: KnowledgeGraph,
+  options: {
+    mode: KnowledgeGraphScopeMode
+    depth: number
+    anchorNodeId: string | null
+    goalNodeIds: readonly string[]
+  },
+) {
+  if (options.mode === 'global') return new Set(graph.nodes.map((node) => node.node_id))
+  const seeds = options.mode === 'local'
+    ? options.anchorNodeId ? [options.anchorNodeId] : []
+    : options.goalNodeIds
+  return expandNodeNeighborhood(graph, seeds, options.depth)
+}
+
+export function shortestGraphPath(
+  graph: KnowledgeGraph,
+  startNodeId: string | null,
+  goalNodeIds: readonly string[],
+): KnowledgeGraphPath | null {
+  if (!startNodeId) return null
+  const goals = new Set(goalNodeIds)
+  if (!goals.size) return null
+  if (goals.has(startNodeId)) return { nodeIds: [startNodeId], edgeIds: [] }
+
+  const adjacency = graphAdjacency(graph)
+  const queue = [startNodeId]
+  const visited = new Set(queue)
+  const previous = new Map<string, { nodeId: string; edgeId: string }>()
+  let target = ''
+  while (queue.length && !target) {
+    const current = queue.shift() as string
+    for (const relation of adjacency.get(current) ?? []) {
+      if (visited.has(relation.nodeId)) continue
+      visited.add(relation.nodeId)
+      previous.set(relation.nodeId, { nodeId: current, edgeId: relation.edgeId })
+      if (goals.has(relation.nodeId)) {
+        target = relation.nodeId
+        break
+      }
+      queue.push(relation.nodeId)
+    }
+  }
+  if (!target) return null
+
+  const nodeIds = [target]
+  const edgeIds: string[] = []
+  while (nodeIds[0] !== startNodeId) {
+    const parent = previous.get(nodeIds[0])
+    if (!parent) return null
+    nodeIds.unshift(parent.nodeId)
+    edgeIds.unshift(parent.edgeId)
+  }
+  return { nodeIds, edgeIds }
+}
+
+function expandNodeNeighborhood(graph: KnowledgeGraph, seeds: readonly string[], depth: number) {
+  const available = new Set(graph.nodes.map((node) => node.node_id))
+  const frontier = seeds.filter((nodeId) => available.has(nodeId))
+  const visible = new Set(frontier)
+  const adjacency = graphAdjacency(graph)
+  let current = frontier
+  for (let level = 0; level < Math.max(0, Math.floor(depth)); level += 1) {
+    const next: string[] = []
+    for (const nodeId of current) {
+      for (const relation of adjacency.get(nodeId) ?? []) {
+        if (visible.has(relation.nodeId)) continue
+        visible.add(relation.nodeId)
+        next.push(relation.nodeId)
+      }
+    }
+    current = next
+    if (!current.length) break
+  }
+  return visible
+}
+
+function graphAdjacency(graph: KnowledgeGraph) {
+  const adjacency = new Map<string, Array<{ nodeId: string; edgeId: string }>>()
+  for (const edge of graph.edges) {
+    const source = adjacency.get(edge.source_node_id) ?? []
+    source.push({ nodeId: edge.target_node_id, edgeId: edge.edge_id })
+    adjacency.set(edge.source_node_id, source)
+    const target = adjacency.get(edge.target_node_id) ?? []
+    target.push({ nodeId: edge.source_node_id, edgeId: edge.edge_id })
+    adjacency.set(edge.target_node_id, target)
+  }
+  return adjacency
+}
+
+export function graphPerformanceProfile(
+  nodeCount: number,
+  edgeCount: number,
+  compactViewport = false,
+): KnowledgeGraphPerformanceProfile {
+  if (nodeCount > 5_000 || (compactViewport && nodeCount > 1_200)) {
+    return {
+      tier: 'fallback', layoutDurationMs: 0, maxRenderedEdges: 0,
+      labelDensity: 0, labelRenderedSizeThreshold: 100,
+      hideEdgesOnMove: true, barnesHutOptimize: true, useListFallback: true,
+    }
+  }
+  if (nodeCount <= 200) {
+    return {
+      tier: 'small', layoutDurationMs: 1_600, maxRenderedEdges: edgeCount,
+      labelDensity: 0.075, labelRenderedSizeThreshold: 8,
+      hideEdgesOnMove: false, barnesHutOptimize: nodeCount > 100, useListFallback: false,
+    }
+  }
+  if (nodeCount <= 1_000) {
+    return {
+      tier: 'medium', layoutDurationMs: 1_200, maxRenderedEdges: edgeCount,
+      labelDensity: 0.04, labelRenderedSizeThreshold: 10,
+      hideEdgesOnMove: edgeCount > 3_000, barnesHutOptimize: true, useListFallback: false,
+    }
+  }
+  return {
+    tier: 'large', layoutDurationMs: 800, maxRenderedEdges: Math.min(edgeCount, 20_000),
+    labelDensity: 0.016, labelRenderedSizeThreshold: 12,
+    hideEdgesOnMove: true, barnesHutOptimize: true, useListFallback: false,
+  }
+}
+
 function stableFraction(value: string) {
   let hash = 2166136261
   for (let index = 0; index < value.length; index += 1) {
@@ -123,6 +272,44 @@ export function graphFocus(
   }
 }
 
+export function graphLegendItems(
+  graph: KnowledgeGraph,
+  communities: KnowledgeGraphCommunities | null,
+  colorMode: 'type' | 'community',
+  colors: { type: Record<string, string>; community: Map<string, string> },
+  limit = 6,
+): KnowledgeGraphLegendItem[] {
+  if (colorMode === 'community' && communities?.communities.length) {
+    return communities.communities
+      .slice()
+      .sort((left, right) => (
+        right.node_count - left.node_count || left.label.localeCompare(right.label, 'zh-CN')
+      ))
+      .slice(0, limit)
+      .map((community) => ({
+        id: community.community_id,
+        label: community.label.split(' / ')[0]?.trim() || community.label,
+        count: community.node_count,
+        color: colors.community.get(community.community_id) ?? '#8b5cf6',
+      }))
+  }
+
+  const counts = new Map<string, number>()
+  for (const node of graph.nodes) counts.set(node.kind, (counts.get(node.kind) ?? 0) + 1)
+  const labels: Record<string, string> = {
+    page: '页面', source: '来源', project: '项目', concept: '概念', decision: '决策', tool: '工具',
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, limit)
+    .map(([kind, count]) => ({
+      id: kind,
+      label: labels[kind] ?? kind,
+      count,
+      color: colors.type[kind] ?? '#829356',
+    }))
+}
+
 export function communitySeedPositions(
   graph: KnowledgeGraph,
   communities: KnowledgeGraphCommunities | null,
@@ -192,4 +379,13 @@ export function communitySeedPositions(
   })
 
   return positions
+}
+
+export function selectedNodePresentation(baseColor: string, baseSize: number) {
+  return {
+    color: baseColor,
+    size: baseSize * 1.38,
+    highlighted: false,
+    zIndex: 6,
+  }
 }

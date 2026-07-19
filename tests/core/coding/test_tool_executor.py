@@ -1,8 +1,10 @@
 """ToolExecutor pipeline tests."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
+from sage_harness import SandboxCapabilities, SandboxDescriptor, SandboxResult
 
 from core.coding.context import WorkspaceContext
 from core.coding.engine import (
@@ -28,6 +30,7 @@ def _executor(
     approval_manager: ApprovalManager | None = None,
     session_id: str = "coding_1",
     should_stop: bool = False,
+    sandbox: Any | None = None,
 ) -> ToolExecutor:
     workspace = WorkspaceContext(root=tmp_path)
     tools = build_tool_registry(workspace)
@@ -42,7 +45,38 @@ def _executor(
         session_id=session_id,
         should_stop=lambda: should_stop,
         run_id="run_1",
+        sandbox=sandbox,
     )
+
+
+class RecordingSandbox:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+        self.failure = failure
+        self._descriptor = SandboxDescriptor(
+            sandbox_id="test:sandbox",
+            provider="test",
+            workspace_id="workspace",
+            capabilities=SandboxCapabilities(
+                isolated=True,
+                host_access=False,
+                write_files=True,
+                shell=True,
+            ),
+        )
+
+    @property
+    def descriptor(self) -> SandboxDescriptor:
+        return self._descriptor
+
+    async def invoke(self, operation: str, arguments: dict[str, object]) -> SandboxResult:
+        self.calls.append((operation, arguments))
+        if self.failure is not None:
+            raise self.failure
+        return SandboxResult(operation=operation, content="sandbox-result")  # type: ignore[arg-type]
+
+    async def aclose(self) -> None:
+        return None
 
 
 async def test_unknown_tool_returns_error_event(tmp_path: Path) -> None:
@@ -113,6 +147,42 @@ async def test_auto_approval_path_executes_tool(tmp_path: Path) -> None:
     assert [event.type for event in events] == ["tool_call", "tool_result"]
     assert isinstance(events[0], ToolCallEvent)
     assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "approved"
+
+
+async def test_authorized_workspace_tool_is_delegated_to_the_sandbox(tmp_path: Path) -> None:
+    sandbox = RecordingSandbox()
+    executor = _executor(tmp_path, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "list_files", "args": {"path": "."}}
+        )
+    ]
+
+    assert [event.type for event in events] == ["tool_call", "tool_result"]
+    assert sandbox.calls == [("list_files", {"path": "."})]
+    assert events[-1].content == "sandbox-result"
+
+
+async def test_sandbox_provider_failure_is_normalized_without_leaking_details(
+    tmp_path: Path,
+) -> None:
+    sandbox = RecordingSandbox(failure=RuntimeError("private provider detail"))
+    executor = _executor(tmp_path, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "list_files", "args": {"path": "."}}
+        )
+    ]
+
+    result = events[-1]
+    assert isinstance(result, ToolResultEvent)
+    assert result.is_error is True
+    assert result.content == "sandbox operation failed"
+    assert "private provider detail" not in repr(events)
 
 
 @pytest.mark.parametrize(

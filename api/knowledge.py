@@ -8,7 +8,9 @@ from typing import Annotated, Any, Literal
 
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
+    Path,
     Query,
     Request,
     Response,
@@ -17,8 +19,10 @@ from fastapi import (
     status,
 )
 
+from api.cloud_dependencies import require_cloud_authentication_in_production
 from api.schemas import (
     KnowledgeBatchIngestRequest,
+    KnowledgeCitationResponse,
     KnowledgeEvidenceResponse,
     KnowledgeGoalAlignmentResponse,
     KnowledgeGraphAnalysisSnapshotResponse,
@@ -51,7 +55,9 @@ from api.schemas import (
     KnowledgeMigrationPlanResponse,
     KnowledgeMigrationResultItemResponse,
     KnowledgeMigrationResultResponse,
+    KnowledgePageDocumentResponse,
     KnowledgePageResponse,
+    KnowledgePageRevisionResponse,
     KnowledgePagesResponse,
     KnowledgeParseArtifactResponse,
     KnowledgeParseBlockResponse,
@@ -79,6 +85,7 @@ from api.schemas import (
     KnowledgeWorkspaceSynthesisResponse,
 )
 from core.knowledge import (
+    KnowledgeChunk,
     KnowledgeConflictError,
     KnowledgeEvidenceError,
     KnowledgeGoalAlignment,
@@ -98,6 +105,7 @@ from core.knowledge import (
     KnowledgeMigrationPlan,
     KnowledgeMigrationResult,
     KnowledgePage,
+    KnowledgePageDocument,
     KnowledgePolicyDecision,
     KnowledgeProjectionError,
     KnowledgeProposal,
@@ -124,8 +132,10 @@ from core.knowledge.jobs import (
 from core.knowledge.parsing import ParseArtifact
 from core.knowledge.sources import default_source_adapter_registry, fetch_source_by_key
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_cloud_authentication_in_production)])
 _MAX_DIFF_CHARS = 200_000
+_MAX_CITATION_EXCERPT_CHARS = 3_200
+_MAX_PAGE_CONTENT_CHARS = 200_000
 
 
 @router.get("/api/v1/knowledge", response_model=KnowledgeWorkspaceSummary)
@@ -487,6 +497,28 @@ async def search_knowledge(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response.headers["Cache-Control"] = "no-store"
     return _retrieval_response(bundle)
+
+
+@router.get(
+    "/api/v1/knowledge/citations/{citation_id}",
+    response_model=KnowledgeCitationResponse,
+)
+async def get_knowledge_citation(
+    citation_id: Annotated[
+        str,
+        Path(pattern=r"^kcite_[0-9a-f]{32}$", min_length=38, max_length=38),
+    ],
+    request: Request,
+    response: Response,
+) -> KnowledgeCitationResponse:
+    """Return one current indexed excerpt without exposing configured source roots."""
+
+    try:
+        chunk = await asyncio.to_thread(_require_store(request).citation, citation_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="knowledge citation is stale or unknown") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _citation_response(citation_id, chunk)
 
 
 @router.post(
@@ -872,6 +904,26 @@ async def undo_knowledge_auto_apply(
 async def list_knowledge_pages(request: Request) -> KnowledgePagesResponse:
     store = _require_store(request)
     return KnowledgePagesResponse(pages=[_page_response(page) for page in store.list_pages()])
+
+
+@router.get(
+    "/api/v1/knowledge/pages/{page_id}",
+    response_model=KnowledgePageDocumentResponse,
+)
+async def get_knowledge_page(
+    page_id: Annotated[
+        str,
+        Path(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$", max_length=128),
+    ],
+    request: Request,
+    response: Response,
+) -> KnowledgePageDocumentResponse:
+    try:
+        document = await asyncio.to_thread(_require_store(request).get_page_document, page_id)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="knowledge page not found") from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _page_document_response(document)
 
 
 @router.post(
@@ -1342,6 +1394,35 @@ def _retrieval_response(bundle: KnowledgeRetrievalBundle) -> KnowledgeRetrievalR
     )
 
 
+def _citation_response(
+    citation_id: str,
+    chunk: KnowledgeChunk,
+) -> KnowledgeCitationResponse:
+    truncated = len(chunk.text) > _MAX_CITATION_EXCERPT_CHARS
+    excerpt = chunk.text[:_MAX_CITATION_EXCERPT_CHARS].rstrip()
+    if truncated:
+        excerpt += "..."
+    return KnowledgeCitationResponse(
+        citation_id=citation_id,
+        chunk_id=chunk.chunk_id,
+        page_id=chunk.page_id,
+        page_revision=chunk.page_revision,
+        page_path=chunk.page_path,
+        source_id=chunk.source_id,
+        source_revision=chunk.source_revision,
+        source_kind=chunk.source_kind,
+        source_relative_path=chunk.source_relative_path,
+        block_id=chunk.block_id,
+        ordinal=chunk.ordinal,
+        title=chunk.title,
+        heading_path=list(chunk.heading_path),
+        page_number=chunk.page_number,
+        excerpt=excerpt,
+        token_count=chunk.token_count,
+        truncated=truncated,
+    )
+
+
 def _migration_result_response(
     result: KnowledgeMigrationResult,
 ) -> KnowledgeMigrationResultResponse:
@@ -1506,4 +1587,29 @@ def _page_response(page: KnowledgePage) -> KnowledgePageResponse:
                 for revision in page.revisions
             ],
         }
+    )
+
+
+def _page_document_response(document: KnowledgePageDocument) -> KnowledgePageDocumentResponse:
+    truncated = len(document.content) > _MAX_PAGE_CONTENT_CHARS
+    content = document.content[:_MAX_PAGE_CONTENT_CHARS]
+    return KnowledgePageDocumentResponse(
+        page_id=document.page_id,
+        path=document.path,
+        title=document.title,
+        updated_at=document.updated_at,
+        revision=KnowledgePageRevisionResponse.model_validate(
+            {
+                "revision_id": document.revision.revision_id,
+                "sequence": document.revision.sequence,
+                "content_hash": document.revision.content_hash,
+                "source_revision": document.revision.source_revision,
+                "proposal_id": document.revision.proposal_id,
+                "change_kind": document.revision.change_kind,
+                "git_commit": document.revision.git_commit,
+                "created_at": document.revision.created_at,
+            }
+        ),
+        content=content,
+        truncated=truncated,
     )

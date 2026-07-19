@@ -16,9 +16,12 @@ class ToolResult:
 
     content: str
     is_error: bool = False
+    error_code: str | None = None
+    retryable: bool | None = None
 
 
 ToolRunner = Callable[[dict[str, Any]], ToolResult | str]
+ToolArgumentValidator = Callable[[dict[str, Any]], dict[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -34,6 +37,7 @@ class RegisteredTool:
     requires_approval: bool | None = None
     timeout: float = 30.0
     deferred: bool = False
+    argument_validator: ToolArgumentValidator | None = None
 
     def __post_init__(self) -> None:
         """Default approval metadata follows risk metadata."""
@@ -47,16 +51,40 @@ class RegisteredTool:
 
     def execute(self, args: dict[str, Any] | None = None) -> ToolResult:
         """Execute the tool and convert validation/runtime failures to ToolResult."""
-        future = _TOOL_EXECUTOR.submit(self.runner, args or {})
+        try:
+            validated = self.validate_arguments(args or {})
+        except Exception as exc:
+            return ToolResult(
+                content=str(exc),
+                is_error=True,
+                error_code="invalid_arguments",
+                retryable=False,
+            )
+        future = _TOOL_EXECUTOR.submit(self.runner, validated)
         try:
             result = future.result(timeout=self.timeout)
         except TimeoutError:
-            return ToolResult(content=f"tool timed out after {self.timeout:g}s", is_error=True)
+            future.cancel()
+            return ToolResult(
+                content=f"tool timed out after {self.timeout:g}s",
+                is_error=True,
+                error_code="tool_timeout",
+                retryable=True,
+            )
         except Exception as exc:
-            return ToolResult(content=str(exc), is_error=True)
+            return ToolResult(
+                content=str(exc),
+                is_error=True,
+                error_code="tool_runtime_error",
+                retryable=False,
+            )
         if isinstance(result, ToolResult):
             return result
         return ToolResult(content=str(result))
+
+    def validate_arguments(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Validate server-bound arguments for static or dynamically adapted tools."""
+        return self.argument_validator(args) if self.argument_validator is not None else args
 
 
 @dataclass

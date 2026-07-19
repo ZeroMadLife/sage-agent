@@ -5,6 +5,21 @@ from pathlib import Path
 from core.coding.persistence import CodingSessionStore
 
 
+def test_historical_session_summary_defaults_to_legacy_profile(tmp_path: Path) -> None:
+    store = CodingSessionStore(tmp_path)
+    store.save(
+        {
+            "id": "legacy-session",
+            "workspace_root": str(tmp_path),
+            "created_at": "2026-07-16T00:00:00Z",
+            "updated_at": "2026-07-16T00:00:00Z",
+            "history": [{"role": "user", "content": "hello"}],
+        }
+    )
+
+    assert store.list_sessions()[0]["runtime_profile"] == "legacy"
+
+
 def test_session_store_lists_session_summaries(tmp_path: Path) -> None:
     """Session store exposes Hermes-style session summaries for the workbench."""
     store = CodingSessionStore(tmp_path)
@@ -41,6 +56,7 @@ def test_session_store_lists_session_summaries(tmp_path: Path) -> None:
             "created_at": "2026-07-08T10:00:00",
             "updated_at": "2026-07-08T10:20:00",
             "runtime_mode": "plan",
+            "runtime_profile": "legacy",
             "message_count": 1,
         },
         {
@@ -52,6 +68,7 @@ def test_session_store_lists_session_summaries(tmp_path: Path) -> None:
             "created_at": "2026-07-08T09:00:00",
             "updated_at": "2026-07-08T09:10:00",
             "runtime_mode": "default",
+            "runtime_profile": "legacy",
             "message_count": 1,
         },
     ]
@@ -88,6 +105,27 @@ def test_session_store_filters_out_empty_sessions(tmp_path: Path) -> None:
 
     assert "s-empty" not in session_ids
     assert "s-real" in session_ids
+
+
+def test_session_store_skips_sessions_with_unknown_runtime_profiles(tmp_path: Path) -> None:
+    store = CodingSessionStore(tmp_path)
+    store.save({
+        "id": "s-invalid",
+        "workspace_root": "/tmp/invalid",
+        "created_at": "2026-07-08T10:00:00",
+        "updated_at": "2026-07-08T10:20:00",
+        "runtime_profile": "future_profile",
+        "history": [{"role": "user", "content": "invalid"}],
+    })
+    store.save({
+        "id": "s-valid",
+        "workspace_root": "/tmp/valid",
+        "created_at": "2026-07-08T09:00:00",
+        "updated_at": "2026-07-08T09:10:00",
+        "history": [{"role": "user", "content": "valid"}],
+    })
+
+    assert [item["session_id"] for item in store.list_sessions()] == ["s-valid"]
 
 
 def test_session_store_empty_session_title_is_新会话(tmp_path: Path) -> None:

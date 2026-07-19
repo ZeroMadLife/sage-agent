@@ -67,6 +67,88 @@ async def test_development_login_sets_httponly_cookie_and_me_reads_server_sessio
     assert current.json() == {"user_id": login.json()["user_id"], "email": "dev@example.com", "display_name": "Dev"}
 
 
+async def test_canary_invite_login_sets_a_30_day_secure_device_session(
+    cloud_repository: CloudRepository,
+) -> None:
+    """Private Canary users can enter with one invite and no GitHub round trip."""
+    await cloud_repository.create_invite("phone-invite", email="owner@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+        ),
+        base_url="https://testserver",
+    )
+
+    login = client.post(
+        "/api/v1/cloud/auth/canary/login",
+        json={"invite_code": "phone-invite", "device_name": "iPhone Safari"},
+    )
+    current = client.get("/api/v1/cloud/me")
+
+    assert login.status_code == 200
+    assert login.json()["email"] == "owner@example.com"
+    assert current.status_code == 200
+    cookie = login.headers["set-cookie"]
+    assert "HttpOnly" in cookie
+    assert "Secure" in cookie
+    assert "SameSite=lax" in cookie
+    assert "Max-Age=2592000" in cookie
+
+
+async def test_canary_invite_login_is_hidden_unless_explicitly_enabled(
+    cloud_repository: CloudRepository,
+) -> None:
+    await cloud_repository.create_invite("hidden-invite", email="owner@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=False,
+            cloud_app_env="production",
+        )
+    )
+
+    response = client.post(
+        "/api/v1/cloud/auth/canary/login",
+        json={"invite_code": "hidden-invite", "device_name": "iPhone Safari"},
+    )
+
+    assert response.status_code == 404
+    assert await cloud_repository.invite_is_consumed("hidden-invite") is False
+
+
+async def test_canary_invite_login_rejects_a_fourth_device_without_consuming_invite(
+    cloud_repository: CloudRepository,
+) -> None:
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+        )
+    )
+    for index in range(1, 5):
+        await cloud_repository.create_invite(
+            f"device-invite-{index}", email="owner@example.com"
+        )
+        client.cookies.clear()
+        response = client.post(
+            "/api/v1/cloud/auth/canary/login",
+            json={
+                "invite_code": f"device-invite-{index}",
+                "device_name": f"Device {index}",
+            },
+        )
+        if index < 4:
+            assert response.status_code == 200
+        else:
+            assert response.status_code == 409
+            assert response.json()["detail"] == "最多允许 3 台设备保持登录"
+
+    assert await cloud_repository.invite_is_consumed("device-invite-4") is False
+
+
 async def test_logout_revokes_server_session_and_removes_cookie(
     cloud_repository: CloudRepository,
 ) -> None:

@@ -14,6 +14,7 @@ export type TimelineMessage = {
 
 export type TimelineTool = {
   id: string
+  tool_call_id?: string
   tool: string
   args: Record<string, unknown>
   status: CodingTimelineStatus
@@ -186,9 +187,20 @@ function projectAssistant(turn: TimelineTurn, event: CodingTimelineEvent, type: 
 function projectTool(turn: TimelineTurn, event: CodingTimelineEvent, type: string): void {
   const toolName = stringValue(event.payload.tool)
   const args = recordValue(event.payload.args)
+  const toolCallId = optionalString(event.payload.tool_call_id)
   if (type === 'tool_call') {
+    const existing = turn.tools.find((item) => (
+      (toolCallId !== undefined && item.tool_call_id === toolCallId) ||
+      (item.tool === toolName && isOpenStatus(item.status) && equalValue(item.args, args))
+    ))
+    if (existing) {
+      if (toolCallId) existing.tool_call_id = toolCallId
+      if (Object.keys(existing.args).length === 0) existing.args = args
+      return
+    }
     turn.tools.push({
       id: event.event_id,
+      tool_call_id: toolCallId,
       tool: toolName,
       args,
       status: event.status,
@@ -201,9 +213,10 @@ function projectTool(turn: TimelineTurn, event: CodingTimelineEvent, type: strin
     turn.system.push(detailFrom(event, type))
     return
   }
-  // TODO(v7): use a backend-provided call_id; args are only an unambiguous
-  // fallback while tool execution remains serial within a run.
   let target = [...turn.tools].reverse().find(
+    (item) => item.tool_call_id === toolCallId && item.tool_call_id !== undefined,
+  )
+  target ??= [...turn.tools].reverse().find(
     (item) => item.tool === toolName && isOpenStatus(item.status) && equalValue(item.args, args),
   )
   target ??= [...turn.tools].reverse().find(
@@ -212,6 +225,7 @@ function projectTool(turn: TimelineTurn, event: CodingTimelineEvent, type: strin
   if (!target) {
     target = {
       id: event.event_id,
+      tool_call_id: toolCallId,
       tool: toolName,
       args,
       status: event.status,

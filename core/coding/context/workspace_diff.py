@@ -6,6 +6,7 @@ import difflib
 import hashlib
 import json
 import os
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,11 @@ from typing import Any
 IGNORED_DIRS = {
     ".git",
     ".coding",
+    ".cache",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".tox",
     "__pycache__",
     "node_modules",
     ".venv",
@@ -30,6 +36,8 @@ SAGE_RUNTIME_FILES = {
 }
 MAX_FILE_SIZE = 256 * 1024  # 256KB - files larger than this are marked "truncated"
 MAX_DIFF_FILES = 50  # Maximum number of changed files to track
+MAX_SNAPSHOT_FILES = 20_000
+GIT_SCAN_TIMEOUT_SECONDS = 5.0
 # Small text files (<= this many bytes) have their before-content stored so a
 # real unified diff can be generated after the run.
 STORE_CONTENT_LIMIT = 16 * 1024  # 16KB
@@ -97,14 +105,23 @@ class WorkspaceDiffTracker:
     def __init__(self, workspace_root: Path) -> None:
         self.workspace_root = workspace_root
         self._before: dict[str, FileSnapshot] = {}
+        self._before_truncated = False
+        self._baseline_ready = False
+        self._baseline_run_id = ""
 
-    def snapshot_before_run(self) -> None:
+    def snapshot_before_run(self, run_id: str = "") -> None:
         """Capture workspace state before the run starts."""
-        self._before = self._scan_workspace()
+        self._before, self._before_truncated = self._scan_workspace()
+        self._baseline_ready = True
+        self._baseline_run_id = run_id
 
     def snapshot_after_run(self, run_id: str) -> WorkspaceDiff:
         """Compare current state with before snapshot, return diff artifact."""
-        after = self._scan_workspace()
+        if not self._baseline_ready:
+            raise RuntimeError("workspace diff baseline is unavailable")
+        if self._baseline_run_id and self._baseline_run_id != run_id:
+            raise RuntimeError("workspace diff baseline belongs to another run")
+        after, after_truncated = self._scan_workspace()
         changes: list[FileChange] = []
 
         all_paths = set(self._before.keys()) | set(after.keys())
@@ -165,13 +182,27 @@ class WorkspaceDiffTracker:
             if len(changes) >= MAX_DIFF_FILES:
                 break
 
-        truncated = total_changed > MAX_DIFF_FILES
-        return WorkspaceDiff(
-            run_id=run_id,
-            changed_files=changes,
-            file_count=len(changes),
-            truncated=truncated,
+        truncated = (
+            self._before_truncated
+            or after_truncated
+            or total_changed > MAX_DIFF_FILES
         )
+        try:
+            return WorkspaceDiff(
+                run_id=run_id,
+                changed_files=changes,
+                file_count=len(changes),
+                truncated=truncated,
+            )
+        finally:
+            self.clear_baseline()
+
+    def clear_baseline(self) -> None:
+        """Release per-run snapshot memory after completion or cancellation."""
+        self._before = {}
+        self._before_truncated = False
+        self._baseline_ready = False
+        self._baseline_run_id = ""
 
     def write_artifact(self, diff: WorkspaceDiff, evidence_root: Path) -> Path:
         """Write diff artifact to evidence directory."""
@@ -183,41 +214,115 @@ class WorkspaceDiffTracker:
         )
         return diff_path
 
-    def _scan_workspace(self) -> dict[str, FileSnapshot]:
+    def _scan_workspace(self) -> tuple[dict[str, FileSnapshot], bool]:
         """Scan workspace and return path -> snapshot mapping."""
         snapshots: dict[str, FileSnapshot] = {}
+        candidates = self._git_candidate_paths()
+        if candidates is None:
+            candidates, truncated = self._walk_candidate_paths()
+        else:
+            truncated = len(candidates) > MAX_SNAPSHOT_FILES
+            candidates = candidates[:MAX_SNAPSHOT_FILES]
+        for rel_path in candidates:
+            fpath = self.workspace_root / rel_path
+            if fpath.is_symlink() or not fpath.is_file():
+                continue
+            try:
+                stat = fpath.stat()
+            except OSError:
+                continue
+            snap = FileSnapshot(path=rel_path, size=stat.st_size)
+            try:
+                digest, content_bytes = self._hash_file(
+                    fpath,
+                    capture=stat.st_size <= MAX_FILE_SIZE,
+                )
+                snap.hash = digest
+                snap.is_text = (
+                    self._is_text(content_bytes) and stat.st_size <= MAX_FILE_SIZE
+                )
+                if snap.is_text and stat.st_size <= STORE_CONTENT_LIMIT:
+                    snap.content = content_bytes.decode("utf-8", errors="replace")
+            except (OSError, PermissionError):
+                snap.exists = False
+            snapshots[rel_path] = snap
+        return snapshots, truncated
+
+    def _git_candidate_paths(self) -> list[str] | None:
+        """Use Git's own tracked/untracked view instead of walking ignored trees."""
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.workspace_root),
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                    "--",
+                    ".",
+                ],
+                check=False,
+                capture_output=True,
+                timeout=GIT_SCAN_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if completed.returncode != 0:
+            return None
+        paths = {
+            os.fsdecode(raw)
+            for raw in completed.stdout.split(b"\0")
+            if raw
+        }
+        return sorted(
+            path
+            for path in paths
+            if self._valid_candidate(path) and not self._is_ignored_path(path)
+        )
+
+    def _walk_candidate_paths(self) -> tuple[list[str], bool]:
+        candidates: list[str] = []
         for root, dirs, files in os.walk(self.workspace_root):
-            # Filter ignored dirs in-place
-            dirs[:] = [d for d in dirs if d not in IGNORED_DIRS]
-            for fname in files:
-                if any(
-                    fname.endswith(pat) or fname.startswith(pat)
-                    for pat in IGNORED_FILE_PATTERNS
-                ):
+            dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS)
+            for fname in sorted(files):
+                rel_path = str((Path(root) / fname).relative_to(self.workspace_root))
+                if self._is_ignored_path(rel_path):
                     continue
-                fpath = Path(root) / fname
-                if fpath.is_symlink():
-                    continue  # never follow symlinks
-                rel_path = str(fpath.relative_to(self.workspace_root))
-                if self._is_runtime_path(rel_path):
-                    continue
-                try:
-                    stat = fpath.stat()
-                except OSError:
-                    continue
-                snap = FileSnapshot(path=rel_path, size=stat.st_size)
-                try:
-                    content_bytes = fpath.read_bytes()
-                    snap.hash = hashlib.sha256(content_bytes).hexdigest()
-                    snap.is_text = self._is_text(content_bytes) and stat.st_size <= MAX_FILE_SIZE
-                    # Store content for small text files so a real unified
-                    # diff can be generated after the run.
-                    if snap.is_text and stat.st_size <= STORE_CONTENT_LIMIT:
-                        snap.content = content_bytes.decode("utf-8", errors="replace")
-                except (OSError, PermissionError):
-                    snap.exists = False
-                snapshots[rel_path] = snap
-        return snapshots
+                if len(candidates) >= MAX_SNAPSHOT_FILES:
+                    return candidates, True
+                candidates.append(rel_path)
+        return candidates, False
+
+    @staticmethod
+    def _valid_candidate(value: str) -> bool:
+        path = Path(value)
+        return bool(value) and not path.is_absolute() and ".." not in path.parts
+
+    @staticmethod
+    def _is_ignored_path(rel_path: str) -> bool:
+        path = Path(rel_path)
+        if any(part in IGNORED_DIRS for part in path.parts[:-1]):
+            return True
+        if any(
+            path.name.endswith(pattern) or path.name.startswith(pattern)
+            for pattern in IGNORED_FILE_PATTERNS
+        ):
+            return True
+        return WorkspaceDiffTracker._is_runtime_path(rel_path)
+
+    @staticmethod
+    def _hash_file(path: Path, *, capture: bool) -> tuple[str, bytes]:
+        digest = hashlib.sha256()
+        captured = bytearray()
+        with path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+                if capture:
+                    captured.extend(chunk)
+        return digest.hexdigest(), bytes(captured)
 
     @staticmethod
     def _is_runtime_path(rel_path: str) -> bool:

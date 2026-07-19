@@ -1,0 +1,29 @@
+{
+	auto_https off
+	admin off
+}
+
+:8080 {
+	encode zstd gzip
+
+	handle /api/* {
+		reverse_proxy api:8000
+	}
+
+	handle /health {
+		reverse_proxy api:8000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

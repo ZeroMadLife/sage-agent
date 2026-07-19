@@ -156,6 +156,52 @@ describe('coding timeline projection', () => {
     ])
   })
 
+  it('prefers the backend tool call id when a result has no stable argument order', () => {
+    const projection = createTimelineProjection([
+      event(1, 'tool', {
+        type: 'tool_call', tool: 'run_shell', tool_call_id: 'call-1', args: { command: 'ls' },
+      }, { status: 'running' }),
+      event(2, 'tool', {
+        type: 'tool_call', tool: 'run_shell', tool_call_id: 'call-2', args: { command: 'pwd' },
+      }, { status: 'running' }),
+      event(3, 'tool', {
+        type: 'tool_result', tool: 'run_shell', tool_call_id: 'call-2', args: {},
+        content: 'workspace', is_error: false,
+      }),
+    ])
+
+    expect(projection.turns[0].tools).toEqual([
+      expect.objectContaining({ tool_call_id: 'call-1', result: '' }),
+      expect.objectContaining({ tool_call_id: 'call-2', result: 'workspace' }),
+    ])
+  })
+
+  it('merges generic graph and Sage executor events for the same tool call', () => {
+    const projection = createTimelineProjection([
+      event(1, 'tool', {
+        type: 'tool_call', tool: 'run_shell', tool_call_id: 'call-1',
+        args: { command: 'pwd' },
+      }, { status: 'running' }),
+      event(2, 'tool', {
+        type: 'tool_call', tool: 'run_shell', args: { command: 'pwd' },
+      }, { status: 'running' }),
+      event(3, 'tool', {
+        type: 'tool_result', tool: 'run_shell', args: { command: 'pwd' },
+        content: '/workspace', is_error: false,
+      }),
+      event(4, 'tool', {
+        type: 'tool_result', tool: 'run_shell', tool_call_id: 'call-1', args: {},
+        content: '/workspace', is_error: false,
+      }),
+    ])
+
+    expect(projection.turns[0].tools).toEqual([
+      expect.objectContaining({
+        tool_call_id: 'call-1', args: { command: 'pwd' }, result: '/workspace',
+      }),
+    ])
+  })
+
   it('keeps context, memory and agent events on their run turn', () => {
     const projection = createTimelineProjection([
       event(1, 'context', { type: 'context_usage_updated', used_tokens: 42 }),

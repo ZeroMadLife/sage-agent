@@ -28,6 +28,7 @@ function state() {
     diffInfoByRun: ref<Record<string, DiffInfo>>({}),
     memoryProposals: ref([]),
     memoryProposalRefresh: ref(0),
+    knowledgeSourceProposalRefresh: ref(0),
   }
 }
 
@@ -42,6 +43,18 @@ describe('codingEvents', () => {
     expect(effect.memoryProposalReady).toBe(true)
     expect(current.memoryProposalRefresh.value).toBe(1)
     expect(current.memoryProposals.value[0]).toMatchObject({ proposal_id: 'p1', status: 'pending', revision: 0, base_revision: 4 })
+  })
+
+  it('requests a source proposal refresh without inventing protected proposal fields', () => {
+    const current = state()
+    const effect = applyCodingEvent(current, {
+      type: 'knowledge_source_proposal_created', proposal_id: 'ksprop_1',
+      proposal_type: 'knowledge_source', source_kind: 'web', content_hash: 'a'.repeat(64),
+      requires_user_confirmation: true, revision: 1, session_id: 'coding_1', run_id: 'run_1',
+    } as never)
+
+    expect(effect.knowledgeSourceProposalReady).toBe(true)
+    expect(current.knowledgeSourceProposalRefresh.value).toBe(1)
   })
   it('tracks context usage and compaction lifecycle', () => {
     const current = state()

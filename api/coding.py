@@ -5,18 +5,44 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
 from inspect import signature
 from pathlib import Path
-from typing import Any, Literal, cast
-from uuid import uuid4
+from typing import Annotated, Any, Literal, cast
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+)
+from langchain_core.tools import BaseTool
+from sage_harness import (
+    CapabilityRegistry,
+    HarnessConfig,
+    McpCatalogPort,
+    McpManager,
+    McpScope,
+    McpToolSnapshot,
+    SubagentLimits,
+    SubagentToolConfig,
+    WebFetchPort,
+    WebSearchPort,
+    resolve_skill_allowed_tools,
+)
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import (
+    SESSION_COOKIE,
+    require_cloud_authentication_in_production,
+)
 from api.cloud_model_context import (
     combined_capabilities,
     combined_catalog,
@@ -36,6 +62,11 @@ from api.schemas import (
     CodingFileEntry,
     CodingFilesResponse,
     CodingGitStatusResponse,
+    CodingKnowledgeSourceProposal,
+    CodingKnowledgeSourceProposalDetail,
+    CodingKnowledgeSourceProposalEvent,
+    CodingKnowledgeSourceProposalsResponse,
+    CodingKnowledgeSourceProposalTransitionRequest,
     CodingMcpServer,
     CodingMcpServersResponse,
     CodingMemoryCandidate,
@@ -70,11 +101,16 @@ from api.schemas import (
     CodingTimelineResponse,
     CodingUsageSummary,
     ErrorEvent,
+    HarnessCapabilitiesResponse,
+    HarnessCapabilityHealthItem,
+    HarnessCapabilityHealthResponse,
+    HarnessCapabilityResponse,
     PermissionModeSwitchRequest,
     UserMessage,
 )
 from core.cloud.auth.repository import CloudRepository
 from core.coding.context import ContextBusyError
+from core.coding.harness import CodingHarnessStageProjector
 from core.coding.memory import workspace_id_from_path
 from core.coding.persistence import (
     CodingSessionStore,
@@ -84,11 +120,97 @@ from core.coding.persistence import (
     MemoryStoreError,
 )
 from core.coding.persistence.session_event_journal import SessionEvent
+from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
+from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.capability_adapter import build_sage_capability_registry
+from core.harness.context_adapter import (
+    build_deerflow_durable_context,
+    build_deerflow_system_prompt,
+    context_status_event,
+)
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
+from core.harness.knowledge_adapter import CodingKnowledgePort
+from core.harness.knowledge_source_proposal_adapter import (
+    CodingKnowledgeSourceProposalPort,
+    CodingKnowledgeSourceProposalService,
+)
+from core.harness.mcp_adapter import mcp_catalog_event
+from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
+from core.harness.sandbox_factory import create_coding_sandbox
+from core.harness.subagent_adapter import (
+    CodingSubagentExecutor,
+    build_coding_subagent_config,
+)
+from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
+from core.knowledge import KnowledgeStore
+from core.knowledge.source_proposals import (
+    KnowledgeSourceProposal,
+    KnowledgeSourceProposalConflictError,
+    KnowledgeSourceProposalEvent,
+    KnowledgeSourceProposalNotFoundError,
+)
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+def _port_available(port: object) -> bool:
+    return bool(port is not None and getattr(port, "available", True))
+
+
+def _require_enabled_runtime_profile(value: object, request: Request) -> RuntimeProfile:
+    """Resolve a requested profile and enforce the server-owned rollout gate."""
+    profile = normalize_runtime_profile(value)
+    if profile == "deerflow_v2" and not bool(request.app.state.coding_deerflow_v2_enabled):
+        raise HTTPException(status_code=422, detail="deerflow_v2 runtime profile is disabled")
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
+    sandbox_provider = str(
+        getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
+    ).strip().lower()
+    if (
+        profile == "deerflow_v2"
+        and app_env not in {"development", "test"}
+        and sandbox_provider != "container"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="deerflow_v2 requires an isolated sandbox outside development/test",
+        )
+    return profile
+
+
+def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
+    """Advertise only runtime profiles that this deployment can safely create."""
+    profiles: list[RuntimeProfile] = ["legacy"]
+    if not bool(getattr(request.app.state, "coding_deerflow_v2_enabled", False)):
+        return profiles
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
+    sandbox_provider = str(
+        getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
+    ).strip().lower()
+    if app_env in {"development", "test"} or sandbox_provider == "container":
+        profiles.append("deerflow_v2")
+    return profiles
+
+
+def _effective_default_runtime_profile(request: Request) -> RuntimeProfile:
+    """Return the configured default only when this deployment can create it safely."""
+    configured = normalize_runtime_profile(
+        getattr(request.app.state, "coding_default_runtime_profile", "legacy")
+    )
+    if configured in _available_runtime_profiles(request):
+        return configured
+    return "legacy"
+
+
+def _resolve_new_runtime_profile(value: object, request: Request) -> RuntimeProfile:
+    """Use the server default only for new sessions with no explicit profile."""
+    if value is None or value == "":
+        return _effective_default_runtime_profile(request)
+    return _require_enabled_runtime_profile(value, request)
 
 
 async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
@@ -122,7 +244,12 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
 
 
-router = APIRouter(dependencies=[Depends(_enforce_coding_session_owner)])
+router = APIRouter(
+    dependencies=[
+        Depends(require_cloud_authentication_in_production),
+        Depends(_enforce_coding_session_owner),
+    ]
+)
 
 
 def _valid_session_id(session_id: str) -> bool:
@@ -134,6 +261,13 @@ def _require_valid_session_id(session_id: str) -> None:
         raise HTTPException(status_code=422, detail="invalid coding session id")
 
 
+def _coding_knowledge_store(connection: HTTPConnection) -> Any | None:
+    """Do not bypass the Knowledge API's production tenant-isolation gate."""
+    if str(getattr(connection.app.state, "cloud_app_env", "development")) == "production":
+        return None
+    return getattr(connection.app.state, "knowledge_store", None)
+
+
 async def _runtime_timeline_events(
     runtime: CodingRuntime,
     *,
@@ -143,9 +277,85 @@ async def _runtime_timeline_events(
     arguments: str,
     run_id: str,
     surface_context: Mapping[str, Any] | None,
+    harness_checkpointer: Any | None = None,
+    harness_config: HarnessConfig | None = None,
+    mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
+    web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
+    app_env: str = "development",
+    resume_value: object | None = None,
+    resume_attempt: int = 0,
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
+    if runtime.runtime_profile == "deerflow_v2":
+        if harness_checkpointer is None:
+            raise RuntimeError("deerflow_v2 checkpointer is not configured")
+        evidence_started = False
+        evidence_finished = False
+        evidence_start_time = time.monotonic()
+        try:
+            await runtime.begin_harness_evidence(run_id)
+            evidence_started = True
+            async for graph_event in _deerflow_timeline_events(
+                runtime,
+                content=content,
+                run_id=run_id,
+                surface_context=surface_context,
+                checkpointer=harness_checkpointer,
+                harness_config=harness_config,
+                mcp_catalog=mcp_catalog,
+                web_fetch_port=web_fetch_port,
+                web_search_port=web_search_port,
+                knowledge_source_proposal_service=knowledge_source_proposal_service,
+                app_env=app_env,
+                resume_value=resume_value,
+                resume_attempt=resume_attempt,
+            ):
+                if graph_event.kind == "terminal":
+                    diff_payload = await runtime.finish_harness_evidence(
+                        run_id,
+                        status=graph_event.status,
+                        duration_ms=int(
+                            (time.monotonic() - evidence_start_time) * 1000
+                        ),
+                    )
+                    evidence_finished = True
+                    yield RunEvent(
+                        kind="tool",
+                        status="completed",
+                        payload=diff_payload,
+                        event_id=f"harness:{run_id}:workspace-diff",
+                    )
+                else:
+                    await runtime.append_harness_evidence(
+                        run_id,
+                        graph_event.payload,
+                    )
+                yield graph_event
+        except asyncio.CancelledError:
+            if evidence_started and not evidence_finished:
+                await runtime.abort_harness_evidence(
+                    run_id,
+                    status="cancelled",
+                    duration_ms=int(
+                        (time.monotonic() - evidence_start_time) * 1000
+                    ),
+                )
+            raise
+        except Exception:
+            if evidence_started and not evidence_finished:
+                await runtime.abort_harness_evidence(
+                    run_id,
+                    status="error",
+                    duration_ms=int(
+                        (time.monotonic() - evidence_start_time) * 1000
+                    ),
+                )
+            raise
+        return
     terminal_status = "completed"
+    harness = CodingHarnessStageProjector(run_id)
     yield RunEvent(
         kind="user",
         status="completed",
@@ -157,26 +367,40 @@ async def _runtime_timeline_events(
             status="completed",
             payload={"type": "skill_invoked", "skill": command, "arguments": arguments},
         )
-    async for event in runtime.run_turn(
-        content,
-        skill_prompt=skill_prompt,
-        surface_context=surface_context,
-        run_id=run_id,
-    ):
-        event_type = str(event.get("type", ""))
-        if event_type == "run_finished":
-            candidate = str(event.get("status", "completed"))
-            if candidate == "retryable":
-                terminal_status = "interrupted"
-            elif candidate in {"completed", "cancelled", "interrupted", "error"}:
-                terminal_status = candidate
-        elif event_type == "error":
-            terminal_status = "error"
-        yield RunEvent(
-            kind=_timeline_kind(event_type),
-            status=_timeline_status(event_type, event),
-            payload=dict(event),
-        )
+    for stage_event in harness.start():
+        yield stage_event
+    try:
+        async for raw_event in runtime.run_turn(
+            content,
+            skill_prompt=skill_prompt,
+            surface_context=surface_context,
+            run_id=run_id,
+        ):
+            event: dict[str, Any] = dict(raw_event)
+            event_type = str(event.get("type", ""))
+            if event_type == "run_finished":
+                candidate = str(event.get("status", "completed"))
+                if candidate == "retryable":
+                    terminal_status = "interrupted"
+                elif candidate in {"completed", "cancelled", "interrupted", "error"}:
+                    terminal_status = candidate
+            elif event_type == "error":
+                terminal_status = "error"
+            for stage_event in harness.before(event):
+                yield stage_event
+            yield RunEvent(
+                kind=_timeline_kind(event_type),
+                status=_timeline_status(event_type, event),
+                payload=dict(event),
+            )
+            for stage_event in harness.after(event):
+                yield stage_event
+    except Exception:
+        for stage_event in harness.finish("error"):
+            yield stage_event
+        raise
+    for stage_event in harness.finish(terminal_status):
+        yield stage_event
     yield RunEvent(
         kind="terminal",
         status=terminal_status,
@@ -184,6 +408,271 @@ async def _runtime_timeline_events(
             "event": "run_completed" if terminal_status == "completed" else f"run_{terminal_status}"
         },
     )
+
+
+async def _deerflow_timeline_events(
+    runtime: CodingRuntime,
+    *,
+    content: str,
+    run_id: str,
+    surface_context: Mapping[str, Any] | None,
+    checkpointer: Any,
+    harness_config: HarnessConfig | None = None,
+    mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
+    web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
+    app_env: str = "development",
+    resume_value: object | None = None,
+    resume_attempt: int = 0,
+) -> AsyncGenerator[RunEvent, None]:
+    """Run the explicit DeerFlow-compatible graph and project public output."""
+    async with runtime.harness_turn(run_id):
+        is_resume = resume_value is not None
+        prepared = None
+        if not is_resume:
+            prepared = await runtime.prepare_harness_context(
+                user_message=content,
+                run_id=run_id,
+            )
+            runtime.append_harness_message(role="user", content=content, run_id=run_id)
+            yield RunEvent(
+                kind="user",
+                status="completed",
+                payload={"type": "user", "content": content, "run_id": run_id},
+                event_id=f"harness:{run_id}:user",
+            )
+
+        durable_context = build_deerflow_durable_context(runtime)
+        context_event = None if is_resume else context_status_event(runtime, run_id, durable_context)
+        if prepared is not None:
+            for raw_event in prepared.events:
+                payload = raw_event.model_dump()
+                event_type = str(payload.get("type", ""))
+                if event_type == "context_usage_updated" and context_event is not None:
+                    continue
+                yield RunEvent(
+                    kind="context",
+                    status=_timeline_status(event_type, payload),
+                    payload=payload,
+                    event_id=(
+                        f"harness:{run_id}:{event_type}:"
+                        f"{payload.get('compaction_id', 'context')}"
+                    ),
+                )
+        if context_event is not None:
+            yield context_event
+
+        if prepared is not None and not prepared.allow_model_request:
+            message = "context emergency: model request blocked"
+            yield RunEvent(
+                kind="system",
+                status="error",
+                payload={"type": "error", "run_id": run_id, "message": message},
+                event_id=f"harness:{run_id}:context-emergency",
+            )
+            yield RunEvent(
+                kind="terminal",
+                status="error",
+                payload={
+                    "event": "run_error",
+                    "runtime_profile": "deerflow_v2",
+                    "error_type": "context_emergency",
+                },
+                event_id=f"harness:{run_id}:terminal",
+            )
+            return
+
+        mcp_tools: tuple[BaseTool, ...] = ()
+        mcp_snapshot: McpToolSnapshot | None = None
+        mcp_servers = None
+        if isinstance(mcp_catalog, McpManager):
+            mcp_scope = McpScope(
+                owner_id=runtime.owner_user_id or "local",
+                workspace_id=workspace_id_from_path(runtime.workspace.root),
+                thread_id=runtime.session_id,
+            )
+            mcp_snapshot = await mcp_catalog.load_tools(mcp_scope)
+            mcp_tools = mcp_snapshot.tools
+            mcp_servers = mcp_snapshot.catalog.servers
+        if mcp_catalog is not None and not is_resume:
+            yield await mcp_catalog_event(
+                mcp_catalog,
+                session_id=runtime.session_id,
+                run_id=run_id,
+                servers=mcp_servers,
+            )
+        workspace_id = workspace_id_from_path(runtime.workspace.root)
+        sandbox = create_coding_sandbox(
+            runtime.workspace,
+            thread_id=runtime.session_id,
+            app_env=app_env,
+            provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
+            allow_host_shell=True,
+            allow_writes=True,
+            container_image=str(
+                getattr(runtime, "sandbox_image", "python:3.11-slim")
+            ),
+        )
+        try:
+            knowledge_port = CodingKnowledgePort(runtime)
+            evidence_bundle_port = CodingEvidenceBundlePort(runtime)
+            subagent_config = build_coding_subagent_config(
+                knowledge_port,
+                web_search_port,
+                web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
+                base_config=SubagentToolConfig(),
+            )
+            subagent_executor = CodingSubagentExecutor(
+                runtime,
+                knowledge_port=knowledge_port,
+                web_search_port=web_search_port,
+                web_fetch_port=web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
+                sandbox=sandbox,
+            )
+            artifact_store = ToolResultStore(
+                runtime.storage_root,
+                runtime.session_id,
+                run_id,
+            )
+            tool_bundle = build_deerflow_coding_tool_bundle(
+                runtime,
+                run_id=run_id,
+                knowledge_port=knowledge_port,
+                memory_port=CodingMemoryPort(runtime),
+                sandbox=sandbox,
+                extra_deferred_tools=mcp_tools,
+                mcp_catalog=mcp_snapshot.catalog if mcp_snapshot is not None else None,
+                active_skill_allowed_tools=resolve_skill_allowed_tools(
+                    runtime.skill_registry,
+                    content,
+                ),
+                subagent_executor=subagent_executor,
+                subagent_config=subagent_config,
+                web_fetch_port=web_fetch_port,
+                web_search_port=web_search_port,
+                artifact_store=artifact_store,
+                knowledge_source_proposal_port=CodingKnowledgeSourceProposalPort(
+                    runtime,
+                    run_id,
+                    knowledge_source_proposal_service,
+                ),
+                graph_approvals=True,
+            )
+            if not is_resume:
+                yield RunEvent(
+                    kind="harness",
+                    status="completed",
+                    payload={
+                        "type": "capability_catalog_updated",
+                        "version": 1,
+                        "catalog_revision": tool_bundle.capability_revision,
+                        "catalog_hash": tool_bundle.deferred_setup.catalog_hash or "resident-only",
+                        "surface": "coding",
+                        "capability_count": tool_bundle.capability_count,
+                        "executable_count": len(tool_bundle.capability_ids_by_tool_name),
+                    },
+                    event_id=f"harness:{run_id}:capability-catalog",
+                )
+            adapter = SageHarnessRuntimeAdapter(
+                model=runtime.model,
+                checkpointer=checkpointer,
+                tools=tool_bundle.tools,
+                system_prompt=build_deerflow_system_prompt(runtime),
+                deferred_setup=tool_bundle.deferred_setup,
+                skill_catalog=runtime.skill_registry,
+                subagent_limits=SubagentLimits(),
+                subagent_tool_config=subagent_config,
+                config=harness_config,
+                artifact_store=artifact_store,
+                capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
+                capability_revision=tool_bundle.capability_revision,
+            )
+            graph_compaction: dict[str, object] | None = None
+            compaction_result = prepared.compaction_result if prepared is not None else None
+            summary_text = durable_context.get("summary_text")
+            if (
+                compaction_result is not None
+                and compaction_result.applied
+                and isinstance(summary_text, str)
+                and summary_text.strip()
+            ):
+                graph_compaction = {
+                    "compaction_id": compaction_result.compaction_id,
+                    "summary_text": summary_text,
+                }
+            response_parts: list[str] = []
+            current_resume_attempt = resume_attempt
+            resume = is_resume
+            current_resume_value = resume_value
+            while True:
+                approval_to_resume: str | None = None
+                async for event in adapter.stream_turn(
+                    session_id=runtime.session_id,
+                    run_id=run_id,
+                    owner_id=runtime.owner_user_id or "local",
+                    workspace_id=workspace_id,
+                    workspace_path=str(runtime.workspace.root),
+                    content=content,
+                    surface_context=surface_context,
+                    durable_context=durable_context,
+                    graph_compaction=graph_compaction if not resume else None,
+                    sandbox=sandbox.descriptor,
+                    resume=resume,
+                    resume_value=current_resume_value,
+                    resume_attempt=current_resume_attempt,
+                ):
+                    if event.payload.get("type") == "text_delta":
+                        response_parts.append(str(event.payload.get("delta", "")))
+                    yield event
+                    if (
+                        event.payload.get("type") == "approval_required"
+                        and event.payload.get("approval_scope") != "subagent"
+                    ):
+                        approval_to_resume = str(
+                            event.payload.get("approval_id", "")
+                        ).strip()
+                        if not approval_to_resume:
+                            raise RuntimeError("graph approval event is missing approval_id")
+                if approval_to_resume is None:
+                    break
+                choice = await runtime.approval_manager.wait_for(
+                    runtime.session_id,
+                    approval_to_resume,
+                )
+                if choice is None:
+                    raise RuntimeError("graph approval timed out or was cancelled")
+                if choice in {"session", "always"}:
+                    runtime.approval_manager.consume_resolution(
+                        runtime.session_id,
+                        approval_to_resume,
+                    )
+                resume = True
+                current_resume_attempt += 1
+                current_resume_value = {
+                    "approval_id": approval_to_resume,
+                    "choice": choice,
+                }
+        finally:
+            await sandbox.aclose()
+        answer = "".join(response_parts).strip()
+        if not answer:
+            raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
+        runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
+        yield RunEvent(
+            kind="assistant",
+            status="completed",
+            payload={"type": "final", "content": answer, "run_id": run_id},
+            event_id=f"harness:{run_id}:final",
+        )
+        yield RunEvent(
+            kind="terminal",
+            status="completed",
+            payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
+            event_id=f"harness:{run_id}:terminal",
+        )
 
 
 def _timeline_kind(event_type: str) -> str:
@@ -200,6 +689,8 @@ def _timeline_kind(event_type: str) -> str:
     if event_type.startswith("memory_"):
         return "memory"
     if event_type.startswith("agent_"):
+        return "agent"
+    if event_type.startswith("subagent_"):
         return "agent"
     if event_type in {"run_finished", "turn_started", "turn_finished"}:
         return "run"
@@ -266,6 +757,7 @@ async def create_coding_session(
     registry = combined_capabilities(request, account)
     reasoning_modes = combined_reasoning_modes(request, account)
     session_id = str(uuid4())
+    runtime_profile = _resolve_new_runtime_profile(payload.runtime_profile, request)
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=workspace_root,
@@ -283,7 +775,14 @@ async def create_coding_session(
         model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
         owner_user_id=account.user_id if account is not None else None,
-        knowledge_store=getattr(request.app.state, "knowledge_store", None),
+        knowledge_store=_coding_knowledge_store(request),
+        runtime_profile=runtime_profile,
+        sandbox_provider=str(
+            getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
+        ),
+        sandbox_image=str(
+            getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")
+        ),
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -293,6 +792,9 @@ async def create_coding_session(
         workspace_root=str(workspace_root.resolve()),
         workspace_id=workspace_id_from_path(workspace_root),
         permission_mode=runtime.permission_mode,
+        runtime_profile=runtime.runtime_profile,
+        sandbox_provider=runtime.sandbox_provider,
+        sandbox_image=runtime.sandbox_image,
     )
 
 
@@ -344,7 +846,180 @@ async def update_coding_session_metadata(
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.archived is True:
+        await _close_coding_mcp_scope(request, session_id)
     return CodingSessionSummary(**summary)
+
+
+async def _close_coding_mcp_scope(request: Request, session_id: str) -> None:
+    """Best-effort release of stateful MCP subprocesses for an archived chat."""
+    manager = getattr(request.app.state, "coding_mcp_manager", None)
+    runtime = request.app.state.coding_sessions.get(session_id)
+    if not isinstance(manager, McpManager) or not isinstance(runtime, CodingRuntime):
+        return
+    scope = McpScope(
+        owner_id=runtime.owner_user_id or "local",
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
+        thread_id=runtime.session_id,
+    )
+    with suppress(Exception):
+        await manager.close_scope(scope)
+
+
+def _harness_capability_context(
+    request: Request,
+    session_id: str,
+) -> tuple[str, str, CapabilityRegistry]:
+    """Resolve one authorized session into owner, workspace and current catalog."""
+    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
+    runtime = sessions.get(session_id)
+    store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
+    try:
+        persisted = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    workspace_root = _resolve_persisted_workspace_root(
+        default_workspace,
+        persisted.get("workspace_root"),
+    )
+    if runtime is not None:
+        tools: Mapping[str, object] = runtime.tools
+        skills = runtime.skill_registry.list()
+        owner_id = runtime.owner_user_id or "local"
+    else:
+        from core.coding.context import WorkspaceContext
+        from core.coding.skills import SkillRegistry
+        from core.coding.tools.registry import build_tool_registry
+
+        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        skills = SkillRegistry(root=workspace_root).list()
+        owner_id = str(persisted.get("owner_user_id") or "local")
+    workspace_id = workspace_id_from_path(workspace_root)
+    mcp_snapshot = None
+    manager = getattr(request.app.state, "coding_mcp_manager", None)
+    if isinstance(manager, McpManager):
+        mcp_snapshot = manager.cached_catalog(
+            McpScope(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                thread_id=session_id,
+            )
+        )
+    return (
+        owner_id,
+        workspace_id,
+        build_sage_capability_registry(
+            tools=tools,
+            skills=skills,
+            mcp_catalog=mcp_snapshot,
+            web_search_available=_port_available(
+                getattr(request.app.state, "coding_web_search_port", None)
+            ),
+            web_fetch_available=_port_available(
+                getattr(request.app.state, "coding_web_fetch_port", None)
+            ),
+            web_source_proposal_available=isinstance(
+                getattr(request.app.state, "knowledge_source_proposal_service", None),
+                CodingKnowledgeSourceProposalService,
+            ),
+            research_subagent_available=(
+                _port_available(getattr(request.app.state, "coding_web_search_port", None))
+                and isinstance(_coding_knowledge_store(request), KnowledgeStore)
+            ),
+        ),
+    )
+
+
+@router.get(
+    "/api/v1/harness/capabilities",
+    response_model=HarnessCapabilitiesResponse,
+)
+async def list_harness_capabilities(
+    request: Request,
+    session_id: str,
+    surface: Literal["growth", "knowledge", "coding"] = "coding",
+    origin: Annotated[
+        list[Literal["local", "mcp", "skill", "subagent", "web"]] | None,
+        Query(),
+    ] = None,
+    availability: Annotated[
+        list[Literal["available", "degraded", "unavailable", "disabled", "stale"]] | None,
+        Query(),
+    ] = None,
+    q: Annotated[str, Query(max_length=200)] = "",
+) -> HarnessCapabilitiesResponse:
+    """List safe metadata for capabilities visible to one authorized session."""
+    _require_valid_session_id(session_id)
+    _, workspace_id, registry = _harness_capability_context(request, session_id)
+    descriptors = registry.query(
+        surface=surface,
+        origins=frozenset(origin) if origin else None,
+        availability=frozenset(availability) if availability else None,
+        text=q,
+    )
+    capabilities = [
+        HarnessCapabilityResponse.model_validate(item.as_dict()) for item in descriptors
+    ]
+    return HarnessCapabilitiesResponse(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        surface=surface,
+        revision=registry.revision,
+        count=len(capabilities),
+        capabilities=capabilities,
+    )
+
+
+@router.get(
+    "/api/v1/harness/capabilities/health",
+    response_model=HarnessCapabilityHealthResponse,
+)
+async def harness_capability_health(
+    request: Request,
+    session_id: str,
+    surface: Literal["growth", "knowledge", "coding"] = "coding",
+    range: Literal["7d", "30d", "90d"] = "30d",
+) -> HarnessCapabilityHealthResponse:
+    """Return content-free metrics for capabilities visible to one authorized session."""
+    _require_valid_session_id(session_id)
+    owner_id, workspace_id, registry = _harness_capability_context(request, session_id)
+    days = {"7d": 7, "30d": 30, "90d": 90}[range]
+    aggregates = request.app.state.harness_capability_health_store.summary(
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        days=days,
+    )
+    empty: dict[str, Any] = {
+        "invocation_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "first_success_at": None,
+        "last_success_at": None,
+        "p50_latency_ms": None,
+        "p95_latency_ms": None,
+        "failure_categories": {},
+    }
+    descriptors = registry.query(surface=surface)
+    return HarnessCapabilityHealthResponse(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        surface=surface,
+        catalog_revision=registry.revision,
+        range_days=days,
+        capabilities=[
+            HarnessCapabilityHealthItem(
+                capability_id=descriptor.capability_id,
+                origin=descriptor.origin,
+                revision=descriptor.revision,
+                availability=descriptor.availability,
+                **aggregates.get(descriptor.capability_id, empty),
+            )
+            for descriptor in descriptors
+        ],
+    )
 
 
 @router.post("/api/v1/coding/session/{session_id}/resume")
@@ -380,7 +1055,14 @@ async def resume_coding_session(
             workspace_root=str(active_runtime.workspace.root.resolve()),
             workspace_id=workspace_id_from_path(active_runtime.workspace.root),
             permission_mode=active_runtime.permission_mode,
+            runtime_profile=active_runtime.runtime_profile,
+            sandbox_provider=active_runtime.sandbox_provider,
+            sandbox_image=active_runtime.sandbox_image,
         )
+    try:
+        runtime_profile = _require_enabled_runtime_profile(persisted.get("runtime_profile"), request)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid persisted runtime profile") from exc
     account = await load_account_model_context(request, include_credentials=True)
     catalog = combined_catalog(request, account)
     model_factory = combined_model_factory(request, account)
@@ -414,14 +1096,33 @@ async def resume_coding_session(
         reasoning_mode=reasoning_mode,
         model_reasoning_modes=reasoning_modes,
         usage_store=request.app.state.coding_usage_store,
-        knowledge_store=getattr(request.app.state, "knowledge_store", None),
+        knowledge_store=_coding_knowledge_store(request),
+        runtime_profile=runtime_profile,
+        sandbox_provider=str(
+            persisted.get(
+                "sandbox_provider",
+                getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
+            )
+        ),
+        sandbox_image=str(
+            persisted.get(
+                "sandbox_image",
+                getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim"),
+            )
+        ),
     )
     sessions[session_id] = runtime
+    pending_approval = coordinator.journal.recoverable_approval()
+    if pending_approval is not None:
+        runtime.approval_manager.restore_pending(pending_approval)
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(persisted_workspace),
         workspace_id=workspace_id_from_path(persisted_workspace),
         permission_mode=runtime.permission_mode,
+        runtime_profile=runtime.runtime_profile,
+        sandbox_provider=runtime.sandbox_provider,
+        sandbox_image=runtime.sandbox_image,
     )
 
 
@@ -612,6 +1313,19 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 arguments=args,
                 run_id=run_id,
                 surface_context=surface_context,
+                harness_checkpointer=getattr(websocket.app.state, "sage_harness_checkpointer", None),
+                harness_config=getattr(websocket.app.state, "coding_harness_config", None),
+                mcp_catalog=getattr(websocket.app.state, "coding_mcp_catalog", None),
+                web_fetch_port=getattr(
+                    websocket.app.state, "coding_web_fetch_port", None
+                ),
+                web_search_port=getattr(
+                    websocket.app.state, "coding_web_search_port", None
+                ),
+                knowledge_source_proposal_service=getattr(
+                    websocket.app.state, "knowledge_source_proposal_service", None
+                ),
+                app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
             )
             try:
                 task = await coordinator.start_run(
@@ -785,11 +1499,99 @@ async def coding_approval_respond(
     payload: CodingApprovalRespondRequest,
     request: Request,
 ) -> dict[str, bool]:
-    """Resolve a pending tool approval."""
+    """Resolve a pending tool approval and resume a recovered graph run."""
     runtime = _require_runtime(request, session_id)
+    coordinator = request.app.state.coding_run_registry.get(session_id)
+    run_id = runtime.approval_manager.run_id_for(session_id, payload.approval_id)
+    resume_plan: tuple[str, str, dict[str, Any], int] | None = None
+    durable_approval: dict[str, Any] | None = None
+    if (
+        run_id is not None
+        and coordinator.active_run_id is None
+        and runtime.runtime_profile == "deerflow_v2"
+    ):
+        durable_approval = coordinator.journal.recoverable_approval(run_id)
+        if (
+            durable_approval is None
+            or durable_approval.get("approval_id") != payload.approval_id
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="Durable approval checkpoint is unavailable",
+            )
+        resume_context = coordinator.journal.run_resume_context(run_id)
+        if resume_context is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Durable approval run context is unavailable",
+            )
+        content, surface_context = resume_context
+        resume_plan = (
+            run_id,
+            content,
+            surface_context,
+            max(1, int(durable_approval.get("resume_attempt", 1))),
+        )
     ok = runtime.approval_manager.resolve(session_id, payload.approval_id, payload.choice)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Unknown approval: {payload.approval_id}")
+    if resume_plan is not None:
+        resolved_choice = await runtime.approval_manager.wait_for(
+            session_id,
+            payload.approval_id,
+        )
+        if resolved_choice is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Approval resolution is unavailable",
+            )
+        resumed_run_id, content, surface_context, resume_attempt = resume_plan
+        stream = _runtime_timeline_events(
+            runtime,
+            content=content,
+            skill_prompt=None,
+            command="",
+            arguments="",
+            run_id=resumed_run_id,
+            surface_context=surface_context,
+            harness_checkpointer=getattr(
+                request.app.state,
+                "sage_harness_checkpointer",
+                None,
+            ),
+            harness_config=getattr(request.app.state, "coding_harness_config", None),
+            mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
+            web_fetch_port=getattr(request.app.state, "coding_web_fetch_port", None),
+            web_search_port=getattr(request.app.state, "coding_web_search_port", None),
+            knowledge_source_proposal_service=getattr(
+                request.app.state, "knowledge_source_proposal_service", None
+            ),
+            app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
+            resume_value={
+                "approval_id": payload.approval_id,
+                "choice": resolved_choice,
+            },
+            resume_attempt=resume_attempt,
+        )
+        try:
+            task = await coordinator.start_existing_run(resumed_run_id, stream)
+        except ActiveRunConflictError:
+            await stream.aclose()
+            if coordinator.active_run_id != resumed_run_id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Another coding run became active",
+                ) from None
+        except Exception:
+            runtime.approval_manager.consume_resolution(
+                session_id,
+                payload.approval_id,
+            )
+            if durable_approval is not None:
+                runtime.approval_manager.restore_pending(durable_approval)
+            raise
+        else:
+            task.add_done_callback(_observe_server_task)
     return {"ok": True}
 
 
@@ -802,9 +1604,41 @@ async def stop_coding_run(
     coordinator = request.app.state.coding_run_registry.get(session_id)
     if coordinator.active_run_id != payload.run_id:
         return {"ok": False}
+    child_run_ids = await asyncio.to_thread(
+        coordinator.journal.active_subagent_run_ids,
+        payload.run_id,
+    )
+    audit_events = tuple(
+        RunEvent(
+            kind="agent",
+            status="error",
+            payload={
+                "type": "subagent_cancelled",
+                "session_id": session_id,
+                "run_id": payload.run_id,
+                "parent_run_id": payload.run_id,
+                "child_run_id": child_run_id,
+                "agent_run_id": child_run_id,
+                "status": "cancelled",
+                "error_code": "parent_cancelled",
+            },
+            event_id=str(
+                uuid5(
+                    NAMESPACE_URL,
+                    f"sage://coding/{session_id}/{payload.run_id}/cancel/{child_run_id}",
+                )
+            ),
+        )
+        for child_run_id in child_run_ids
+    )
     if runtime.active_run_id == payload.run_id:
         runtime.request_stop(run_id=payload.run_id)
-    return {"ok": await coordinator.cancel(payload.run_id)}
+    return {
+        "ok": await coordinator.cancel(
+            payload.run_id,
+            audit_events=audit_events,
+        )
+    }
 
 
 @router.post("/api/v1/coding/{session_id}/plan/approve")
@@ -943,6 +1777,191 @@ async def reject_memory_proposal(
     )
 
 
+def _source_proposal_service(request: Request) -> CodingKnowledgeSourceProposalService:
+    service = getattr(request.app.state, "knowledge_source_proposal_service", None)
+    if not isinstance(service, CodingKnowledgeSourceProposalService):
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge source proposal service is unavailable",
+        )
+    return service
+
+
+def _source_proposal_scope(
+    request: Request,
+    session_id: str,
+) -> tuple[CodingKnowledgeSourceProposalService, str, str]:
+    owner_id, _, _ = _harness_capability_context(request, session_id)
+    service = _source_proposal_service(request)
+    return service, owner_id, service.job_service.workspace_id
+
+
+def _source_proposal_response(
+    proposal: KnowledgeSourceProposal,
+) -> CodingKnowledgeSourceProposal:
+    return CodingKnowledgeSourceProposal(
+        proposal_id=proposal.proposal_id,
+        thread_id=proposal.thread_id,
+        run_id=proposal.run_id,
+        artifact_ref=proposal.artifact_ref,
+        source_kind=proposal.source_kind,
+        canonical_url=proposal.canonical_url,
+        title=proposal.title,
+        media_type=proposal.media_type,
+        retrieved_at=proposal.retrieved_at,
+        content_hash=proposal.content_hash,
+        reason=proposal.reason,
+        evidence_refs=list(proposal.evidence_refs),
+        status=proposal.status,
+        revision=proposal.revision,
+        target_root_id=proposal.target_root_id,
+        target_relative_path=proposal.target_relative_path,
+        job_id=proposal.job_id,
+        last_error=proposal.last_error,
+        decided_by=proposal.decided_by,
+        decided_at=proposal.decided_at,
+        created_at=proposal.created_at,
+        updated_at=proposal.updated_at,
+    )
+
+
+def _source_proposal_event_response(
+    event: KnowledgeSourceProposalEvent,
+) -> CodingKnowledgeSourceProposalEvent:
+    return CodingKnowledgeSourceProposalEvent(
+        event_id=event.event_id,
+        proposal_id=event.proposal_id,
+        sequence=event.sequence,
+        event_type=event.event_type,
+        revision=event.revision,
+        detail=event.detail,
+        created_at=event.created_at,
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals",
+    response_model=CodingKnowledgeSourceProposalsResponse,
+)
+async def list_knowledge_source_proposals(
+    session_id: str,
+    request: Request,
+    response: Response,
+    status: Literal["pending", "applying", "approved", "rejected"] | None = None,
+) -> CodingKnowledgeSourceProposalsResponse:
+    """List source proposals scoped to the authorized Thread owner."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    proposals = await service.repository.list(
+        workspace_id=workspace_id,
+        owner_id=owner_id,
+        thread_id=session_id,
+        status=status,
+    )
+    return CodingKnowledgeSourceProposalsResponse(
+        proposals=[_source_proposal_response(item) for item in proposals]
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}",
+    response_model=CodingKnowledgeSourceProposalDetail,
+)
+async def get_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposalDetail:
+    """Return one source proposal and its append-only review trail."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.repository.get(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+        events = await service.repository.events(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    return CodingKnowledgeSourceProposalDetail(
+        proposal=_source_proposal_response(proposal),
+        events=[_source_proposal_event_response(item) for item in events],
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/approve",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def approve_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Approve one immutable source snapshot and schedule its durable ingest job."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.approve(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Source proposal artifact is no longer valid; refresh before retrying",
+        ) from exc
+    return _source_proposal_response(proposal)
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/reject",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def reject_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Reject one pending proposal with an optimistic revision guard."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.reject(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _source_proposal_response(proposal)
+
+
 @router.get("/api/v1/coding/{session_id}/runs", response_model=CodingRunsResponse)
 async def list_coding_runs(session_id: str, request: Request) -> CodingRunsResponse:
     """Return persisted run summaries for a coding session."""
@@ -1028,6 +2047,8 @@ async def list_coding_models(
         models=models,
         current=current,
         reasoning_mode=cast(Literal["off", "low", "medium", "high"], reasoning_mode),
+        runtime_profiles=_available_runtime_profiles(request),
+        default_runtime_profile=_effective_default_runtime_profile(request),
     )
 
 
@@ -1198,15 +2219,11 @@ async def get_coding_skill(name: str, request: Request) -> CodingSkillDetailResp
 @router.get("/api/v1/coding/mcp/servers", response_model=CodingMcpServersResponse)
 async def list_coding_mcp_servers(request: Request) -> CodingMcpServersResponse:
     """Return MCP server config (read-only, no live connection check)."""
-    from mcp_servers.registry import build_mcp_config
-
-    config = build_mcp_config(
-        amap_api_key="",
-        qweather_api_key="",
-    )
+    catalog: McpCatalogPort = request.app.state.coding_mcp_catalog
+    configured = await catalog.list_servers()
     servers = [
-        CodingMcpServer(name=name, transport=spec.get("transport", "stdio"), status="configured")
-        for name, spec in config.items()
+        CodingMcpServer(name=server.name, transport=server.transport, status=server.status)
+        for server in configured
     ]
     return CodingMcpServersResponse(servers=servers)
 

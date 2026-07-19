@@ -78,6 +78,7 @@ from core.knowledge.policy import (
     is_trusted_local_parser,
 )
 from core.knowledge.retrieval import (
+    KnowledgeChunk,
     KnowledgeIndexSummary,
     KnowledgeRetrievalBundle,
     KnowledgeSearchHit,
@@ -357,6 +358,16 @@ class KnowledgePage:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgePageDocument:
+    page_id: str
+    path: str
+    title: str
+    updated_at: str
+    revision: KnowledgePageRevision
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeSummary:
     status: str
     workspace_name: str
@@ -462,6 +473,17 @@ class KnowledgeStore:
             last_synced_at=str(last) if last else None,
             source_roots=tuple(self.source_roots.values()),
         )
+
+    def register_source_root(self, source: KnowledgeSourceRoot) -> KnowledgeSourceRoot:
+        """Register one server-owned connector root without rebuilding the store."""
+
+        validated = self._validate_source_roots({source.root_id: source})[source.root_id]
+        with self._lock:
+            existing = self.source_roots.get(validated.root_id)
+            if existing is not None and existing != validated:
+                raise KnowledgeConflictError("knowledge source root already exists")
+            self.source_roots[validated.root_id] = validated
+        return validated
 
     def ingest(self, source_root_id: str, relative_path: str) -> KnowledgeProposal:
         return self.ingest_prepared(self.prepare_ingest(source_root_id, relative_path))
@@ -1098,7 +1120,8 @@ class KnowledgeStore:
                 connection.rollback()
                 raise KnowledgeEvidenceError(str(exc)) from exc
             if any(
-                chunk.source_kind not in {"obsidian", "markdown", "github", "feishu"}
+                chunk.source_kind
+                not in {"obsidian", "markdown", "github", "feishu", "web"}
                 for _citation_id, chunk in resolved
             ):
                 connection.rollback()
@@ -1751,6 +1774,35 @@ class KnowledgeStore:
                 )
         return result
 
+    def get_page_document(self, page_id: str) -> KnowledgePageDocument:
+        """Load the current canonical Wiki revision without reading a source path."""
+
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT page.page_id, page.path, page.title, page.updated_at,
+                       revision.revision_id, revision.sequence, revision.content_hash,
+                       revision.content, revision.source_revision, revision.proposal_id,
+                       revision.change_kind, revision.git_commit, revision.created_at
+                FROM knowledge_pages AS page
+                JOIN knowledge_page_revisions AS revision
+                  ON revision.revision_id = page.current_revision
+                WHERE page.page_id=?
+                """,
+                (_bounded_id(page_id),),
+            ).fetchone()
+        if row is None:
+            raise KeyError(page_id)
+        return KnowledgePageDocument(
+            page_id=str(row["page_id"]),
+            path=str(row["path"]),
+            title=str(row["title"]),
+            updated_at=str(row["updated_at"]),
+            revision=_page_revision(row),
+            content=str(row["content"]),
+        )
+
     def index_summary(self) -> KnowledgeIndexSummary:
         self.initialize()
         with self._connect() as connection:
@@ -1977,6 +2029,22 @@ class KnowledgeStore:
             page_revisions=page_revisions,
         )
         return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
+
+    def citation(
+        self,
+        citation_id: str,
+        *,
+        visibility: str = "private",
+    ) -> KnowledgeChunk:
+        """Resolve one current indexed citation without reading its source path."""
+
+        self.initialize()
+        with self._connect() as connection:
+            return self.knowledge_index.resolve_citations(
+                connection,
+                (citation_id,),
+                visibility=visibility,
+            )[0][1]
 
     def propose_rollback(
         self,
@@ -2526,7 +2594,7 @@ class KnowledgeStore:
         for key, value in roots.items():
             if key != value.root_id or not _ROOT_ID.fullmatch(key):
                 raise ValueError("invalid knowledge source root id")
-            if value.kind not in {"obsidian", "markdown", "github", "feishu"}:
+            if value.kind not in {"obsidian", "markdown", "github", "feishu", "web"}:
                 raise ValueError("invalid knowledge source kind")
             path = value.path.expanduser().resolve()
             if not path.is_dir() or value.path.is_symlink():

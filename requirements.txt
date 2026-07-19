@@ -1,23 +1,20 @@
-# TourSwarm Python 依赖
-# Python >= 3.11
+# Sage Python dependencies
+# Python >= 3.12
+
+-e ./packages/sage_harness
 
 # ---------- Agent 编排 ----------
-langgraph==0.3.5
-langgraph-supervisor==0.0.10
-langchain==0.3.14
-langchain-core==0.3.53
-langchain-openai==0.2.14
-langchain-anthropic==0.3.12
-langchain-community==0.3.14
+langgraph==1.1.9
+langgraph-checkpoint-sqlite==3.1.0
+langchain==1.2.15
+langchain-core==1.4.9
+langchain-openai==1.2.1
+langchain-anthropic==1.4.1
+langchain-deepseek==1.0.1
 
 # ---------- MCP ----------
-mcp==1.7.0
-langchain-mcp-adapters==0.1.0
-
-# ---------- 记忆 ----------
-mem0ai==0.1.50
-qdrant-client==1.12.1
-sentence-transformers==3.4.1
+mcp==1.28.1
+langchain-mcp-adapters==0.2.2
 
 # ---------- Web 框架 ----------
 fastapi==0.115.6
@@ -25,6 +22,7 @@ uvicorn[standard]==0.34.0
 
 # ---------- 数据层 ----------
 sqlalchemy==2.0.36
+greenlet==3.5.3
 asyncpg==0.30.0
 psycopg2-binary==2.9.10
 pgvector==0.3.6
@@ -32,12 +30,12 @@ redis==5.2.1
 networkx==3.5
 
 # ---------- 工具 ----------
-pydantic==2.10.4
-pydantic-settings==2.7.1
+pydantic==2.12.5
+pydantic-settings==2.14.2
 httpx==0.28.1
-cryptography==46.0.3
+cryptography==49.0.0
 tenacity==9.0.0
-python-dotenv==1.0.1
+python-dotenv==1.2.2
 orjson==3.10.12
 pypdf==6.13.2
 pypdfium2==5.9.0

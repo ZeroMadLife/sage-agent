@@ -4,6 +4,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from core.state import TravelState
 from models.itinerary import BudgetBreakdown, Itinerary
 
 logger = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ def calculate_budget_breakdown(
     )
 
 
-async def budget_node(state: dict[str, Any], llm: Any) -> dict[str, Any]:
+async def budget_node(state: TravelState, llm: Any) -> dict[str, Any]:
     """Check itinerary spend against the user's total budget."""
     _ = llm
     itinerary = state["itinerary"]
@@ -74,10 +75,10 @@ async def budget_node(state: dict[str, Any], llm: Any) -> dict[str, Any]:
     }
 
 
-def create_budget_agent(llm: Any) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+def create_budget_agent(llm: Any) -> Callable[[TravelState], Awaitable[dict[str, Any]]]:
     """Create a LangGraph-compatible Budget Agent node."""
 
-    async def _node(state: dict[str, Any]) -> dict[str, Any]:
+    async def _node(state: TravelState) -> dict[str, Any]:
         return await budget_node(state, llm)
 
     return _node

@@ -10,7 +10,9 @@ import {
   FileText,
   FilePenLine,
   FolderSearch,
+  PauseCircle,
   Search,
+  ShieldAlert,
   Terminal,
   Wrench,
   XCircle,
@@ -33,21 +35,38 @@ const props = withDefaults(defineProps<{
 const expandedSteps = ref(new Set<string>())
 
 const steps = computed<CodingRunAuditStep[]>(() => {
-  if (props.audit?.steps.length) return props.audit.steps
+  if (props.audit?.steps.length) {
+    const occurrences = new Map<string, number>()
+    return props.audit.steps.map((step) => {
+      const occurrence = occurrences.get(step.tool) ?? 0
+      occurrences.set(step.tool, occurrence + 1)
+      const timelineTool = props.tools.filter((tool) => tool.tool === step.tool)[occurrence]
+      return presentStep(step, timelineTool)
+    })
+  }
   return props.tools.map((tool) => fallbackStep(tool))
 })
 
 const discoverySteps = computed(() => steps.value.filter((step) => step.tool === 'tool_search'))
 const executionSteps = computed(() => steps.value.filter((step) => step.tool !== 'tool_search'))
+const discoverySummary = computed(() => {
+  if (discoverySteps.value.some((step) => step.status !== 'completed')) return '执行中'
+  const informative = discoverySteps.value
+    .map((step) => stepResultSummary(step))
+    .filter((summary) => summary && summary !== '执行完成')
+  return informative.at(-1) || '已完成'
+})
 
 const currentStep = computed(() => [...steps.value].reverse().find((step) => (
-  step.status === 'running' || step.status === 'waiting'
+  step.status === 'running' || step.status === 'waiting' || step.status === 'approval-blocked'
 )))
 
 const headline = computed(() => {
   if (props.pendingTool) return `等待确认 · ${props.pendingTool}`
   if (props.active && currentStep.value) {
-    const prefix = currentStep.value.status === 'waiting' ? '等待确认' : '正在执行'
+    const prefix = currentStep.value.status === 'waiting' || currentStep.value.status === 'approval-blocked'
+      ? '等待确认'
+      : '正在执行'
     return `${prefix} · ${stepActionSummary(currentStep.value)}`
   }
   const status = runStatusLabel(props.active
@@ -68,13 +87,29 @@ const changedFiles = computed(() => props.audit?.changed_files ?? [])
 
 function fallbackStep(tool: TimelineTool): CodingRunAuditStep {
   const args = safeArguments(tool.tool, tool.args)
+  const policyBlocked = Boolean(tool.policy_reason?.trim())
+  const approvalBlocked = tool.status === 'blocked' && !policyBlocked
   return {
     tool: tool.tool,
-    status: tool.status === 'running' || tool.status === 'blocked'
-      ? (tool.status === 'blocked' ? 'waiting' : 'running')
+    status: policyBlocked
+      ? 'policy-blocked'
+      : approvalBlocked
+        ? 'approval-blocked'
+        : tool.status === 'running'
+          ? 'running'
       : tool.is_error || tool.status === 'error' ? 'error' : 'completed',
     action_summary: actionSummary(tool.tool, args),
-    result_summary: tool.is_error ? '执行失败' : tool.result ? shellResultSummary(tool.result) : '执行中',
+    result_summary: policyBlocked
+      ? policyReasonLabel(tool.policy_reason)
+      : approvalBlocked
+        ? '等待用户确认'
+        : tool.is_error
+      ? '执行失败'
+      : tool.status === 'completed'
+        ? (tool.result ? shellResultSummary(tool.result) : '执行完成')
+        : tool.result
+          ? shellResultSummary(tool.result)
+          : '执行中',
     duration_ms: 0,
     arguments_preview: JSON.stringify(args, null, 2),
     result_preview: tool.tool === 'read_file'
@@ -83,6 +118,33 @@ function fallbackStep(tool: TimelineTool): CodingRunAuditStep {
     arguments_truncated: false,
     result_truncated: tool.result.length > 1200,
   }
+}
+
+function presentStep(step: CodingRunAuditStep, tool?: TimelineTool): CodingRunAuditStep {
+  if (tool?.policy_reason?.trim()) {
+    return {
+      ...step,
+      status: 'policy-blocked',
+      result_summary: policyReasonLabel(tool.policy_reason),
+    }
+  }
+  if (tool?.status === 'blocked') {
+    return {
+      ...step,
+      status: 'approval-blocked',
+      result_summary: '等待用户确认',
+    }
+  }
+  return step
+}
+
+function policyReasonLabel(reason?: string) {
+  const normalized = reason?.trim().toLowerCase().replaceAll('-', '_') ?? ''
+  if (normalized.includes('prior_read') || normalized.includes('read_required')) return '需先读取目标文件，已请求调整'
+  if (normalized.includes('path') && (normalized.includes('allow') || normalized.includes('scope'))) return '路径不在允许范围，已请求调整'
+  if (normalized.includes('plan')) return '计划模式禁止执行，已请求调整'
+  if (normalized.includes('approval')) return '该操作需要确认，已请求调整'
+  return '策略约束未通过，已请求调整'
 }
 
 function safeArguments(tool: string, args: Record<string, unknown>) {
@@ -148,13 +210,16 @@ function formatDuration(milliseconds: number) {
 
 function statusLabel(status: string) {
   if (status === 'running') return '执行中'
-  if (status === 'waiting') return '等待确认'
+  if (status === 'waiting' || status === 'approval-blocked') return '等待确认'
+  if (status === 'policy-blocked') return '策略已阻断'
   if (status === 'error') return '失败'
   return '已完成'
 }
 
 function statusIcon(status: string) {
   if (status === 'error') return XCircle
+  if (status === 'policy-blocked') return ShieldAlert
+  if (status === 'waiting' || status === 'approval-blocked') return PauseCircle
   if (status === 'completed') return CheckCircle2
   return Circle
 }
@@ -202,12 +267,23 @@ function stepActionSummary(step: CodingRunAuditStep) {
 }
 
 function stepResultSummary(step: CodingRunAuditStep) {
-  if (step.tool !== 'tool_search') return step.result_summary
+  if (step.tool !== 'tool_search') {
+    if (step.status === 'completed' && (!step.result_summary || step.result_summary === '执行中')) {
+      return '执行完成'
+    }
+    return step.result_summary
+  }
   const preview = step.result_preview.trim()
   if (!preview) return step.result_summary
   if (/no matching deferred tools found/i.test(preview)) return '无匹配工具'
   try {
     const parsed: unknown = JSON.parse(preview)
+    if (
+      parsed !== null
+      && typeof parsed === 'object'
+      && !Array.isArray(parsed)
+      && (parsed as { status?: unknown }).status === 'no_match'
+    ) return '无匹配工具'
     if (!Array.isArray(parsed)) return step.result_summary
     const tools = parsed as Array<{ name?: unknown }>
     const names = tools
@@ -262,7 +338,7 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
         <li v-if="discoverySteps.length" class="trace-discovery">
           <Search :size="13" />
           <strong>工具探索 · {{ discoverySteps.length }} 次</strong>
-          <span>{{ discoverySteps.every((step) => step.status === 'completed') ? '已完成' : '执行中' }}</span>
+          <span>{{ discoverySummary }}</span>
         </li>
         <li v-for="(step, index) in executionSteps" :key="stepKey(step, index)" class="trace-step" :class="step.status">
           <header class="step-header">
@@ -324,6 +400,8 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
 .step-header span,.step-header time { font-size:var(--sage-font-xs); white-space:nowrap; }
 .trace-step.completed .step-header > svg:first-child { color:var(--sage-success); }
 .trace-step.running .step-header > svg:first-child,.trace-step.waiting .step-header > svg:first-child { color:var(--sage-warning); }
+.trace-step.policy-blocked .step-header > svg:first-child,.trace-step.approval-blocked .step-header > svg:first-child { color:var(--sage-warning); }
+.trace-step.policy-blocked { background:color-mix(in srgb, var(--sage-warning-bg) 28%, transparent); }
 .trace-step.error .step-header > svg:first-child { color:var(--sage-danger); }
 .step-meta { display:flex; align-items:center; gap:10px; min-height:22px; margin:2px 0 0 22px; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }
 .step-toggle { display:inline-flex; align-items:center; gap:2px; min-height:22px; margin-left:auto; padding:0 3px; border:0; color:var(--sage-text-muted); background:transparent; font-size:var(--sage-font-xs); }

@@ -4,11 +4,13 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from core.state import TravelState
+
 logger = logging.getLogger(__name__)
 
 
 async def info_node(
-    state: dict[str, Any],
+    state: TravelState,
     weather_client: Any,
     scenic_client: Any,
 ) -> dict[str, Any]:
@@ -55,10 +57,10 @@ async def info_node(
 def create_info_agent(
     weather_client: Any,
     scenic_client: Any,
-) -> Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]:
+) -> Callable[[TravelState], Awaitable[dict[str, Any]]]:
     """Create a LangGraph-compatible Info Agent node."""
 
-    async def _node(state: dict[str, Any]) -> dict[str, Any]:
+    async def _node(state: TravelState) -> dict[str, Any]:
         return await info_node(state, weather_client, scenic_client)
 
     return _node

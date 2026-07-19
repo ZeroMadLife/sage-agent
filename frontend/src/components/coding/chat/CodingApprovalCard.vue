@@ -3,10 +3,14 @@ import { Maximize2, X } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
 import type { CodingApproval, CodingApprovalChoice } from '../../../types/api'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   approval: CodingApproval
   busy?: boolean
-}>()
+  compact?: boolean
+}>(), {
+  busy: false,
+  compact: false,
+})
 
 const emit = defineEmits<{
   respond: [CodingApprovalChoice]
@@ -21,6 +25,17 @@ const diffPath = computed(() => {
   return typeof path === 'string' && path.trim() ? path : props.approval.tool
 })
 
+const approvalDescription = computed(() => {
+  const descriptions: Record<string, string> = {
+    write_file: '写入文件前需要确认。',
+    patch_file: '修改文件前需要确认。',
+    run_shell: '执行 Shell 命令前需要确认。',
+    knowledge_learn: '保存本轮引用证据到知识库前需要确认。',
+    remember: '保存事实到长期工作区记忆前需要确认。',
+  }
+  return descriptions[props.approval.tool] || props.approval.description
+})
+
 const approvalSummary = computed(() => {
   const content = props.approval.args.content
   if (props.approval.tool === 'write_file' && typeof content === 'string') {
@@ -28,7 +43,7 @@ const approvalSummary = computed(() => {
   }
   const command = props.approval.args.command
   if (props.approval.tool === 'run_shell' && typeof command === 'string') {
-    return command
+    return redactText(command)
   }
   if (props.approval.tool === 'knowledge_learn') {
     const topic = typeof props.approval.args.topic === 'string'
@@ -59,14 +74,21 @@ function compactArgs(args: Record<string, unknown>) {
     ]),
   )
 }
+
+function redactText(text: string) {
+  return text
+    .replace(/(authorization\s*:\s*)(?:bearer\s+|basic\s+)?[^\s'"\n]+/gi, '$1[REDACTED]')
+    .replace(/\bbearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))\s*=\s*[^\s]+/gi, '$1=[REDACTED]')
+}
 </script>
 
 <template>
-  <section class="approval-card" aria-label="Tool approval">
+  <section class="approval-card" :class="{ compact }" aria-label="Tool approval">
     <div class="approval-main">
       <p class="eyebrow">需要确认</p>
       <h2>{{ approval.tool }}</h2>
-      <p class="description">{{ approval.description }}</p>
+      <p class="description">{{ approvalDescription }}</p>
       <div v-if="approval.diff_preview?.length" class="diff-preview">
         <div class="diff-preview-header">
           <span>{{ diffPath }}</span>
@@ -133,7 +155,7 @@ function compactArgs(args: Record<string, unknown>) {
   grid-template-columns: 1fr auto;
   gap: 14px;
   align-items: end;
-  max-width: 760px;
+  width: min(100%, 760px);
   max-height: min(520px, calc(100vh - 132px));
   margin: 0 0 12px;
   padding: 12px;
@@ -142,6 +164,25 @@ function compactArgs(args: Record<string, unknown>) {
   background: var(--sage-warning-bg);
   box-shadow: var(--sage-shadow-drawer);
 }
+
+.approval-card.compact {
+  grid-template-columns: 1fr;
+  width: 100%;
+  max-height: 280px;
+  margin: 0;
+  padding: 10px 11px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.approval-card.compact .approval-main { max-height: 150px; }
+.approval-card.compact .eyebrow { margin-bottom: 2px; }
+.approval-card.compact h2 { display: inline; margin-right: 6px; font-size: 13px; }
+.approval-card.compact .description { display: inline; font-size: 11px; }
+.approval-card.compact pre { max-height: 54px; margin-top: 6px; font-size: 10px; }
+.approval-card.compact .actions { justify-content: flex-start; }
+.approval-card.compact button { min-height: 29px; padding: 0 9px; font-size: 10px; }
 
 .approval-main {
   min-width: 0;
@@ -217,9 +258,9 @@ button:disabled {
 }
 
 .allow {
-  border: 1px solid var(--sage-text);
-  color: #fff;
-  background: var(--sage-text);
+  border: 1px solid var(--sage-review-strong);
+  color: var(--sage-bg);
+  background: var(--sage-review-strong);
 }
 
 .session {

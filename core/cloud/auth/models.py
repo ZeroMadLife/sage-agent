@@ -20,7 +20,9 @@ class CloudLoginSession:
     session_id: str
     user_id: str
     token_hash: str
+    device_name: str
     expires_at: datetime
+    last_seen_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -16,12 +16,18 @@ const props = withDefaults(defineProps<{
   minDockWidth?: number
   maxDockWidth?: number
   initialTab?: WorkbenchTab
+  initialMobilePane?: MobilePane
+  showDetails?: boolean
+  chatLabel?: string
 }>(), {
   surfaceLabel: 'Sage',
   defaultDockWidth: 420,
   minDockWidth: 360,
   maxDockWidth: 520,
   initialTab: 'chat',
+  initialMobilePane: 'canvas',
+  showDetails: true,
+  chatLabel: '对话',
 })
 
 const emit = defineEmits<{
@@ -46,7 +52,7 @@ function initialDockWidth() {
 const dockWidth = ref(initialDockWidth())
 const dockOpen = ref(true)
 const activeTab = ref<WorkbenchTab>(props.initialTab)
-const mobilePane = ref<MobilePane>(props.initialTab)
+const mobilePane = ref<MobilePane>(props.initialMobilePane)
 const resizing = ref(false)
 const layoutStyle = computed(() => ({ '--harness-dock-width': `${dockWidth.value}px` }))
 
@@ -57,6 +63,7 @@ function persistDockWidth() {
 }
 
 function selectTab(tab: WorkbenchTab, focus = false) {
+  if (tab === 'details' && !props.showDetails) tab = 'chat'
   activeTab.value = tab
   mobilePane.value = tab
   dockOpen.value = true
@@ -81,6 +88,7 @@ function collapseDock() {
 }
 
 function openDock(tab: WorkbenchTab = 'chat') {
+  if (tab === 'details' && !props.showDetails) tab = 'chat'
   dockOpen.value = true
   activeTab.value = tab
   mobilePane.value = tab
@@ -132,6 +140,11 @@ function handleResizeKeydown(event: KeyboardEvent) {
 }
 
 onBeforeUnmount(stopResize)
+
+defineExpose({
+  selectTab,
+  showCanvas,
+})
 </script>
 
 <template>
@@ -142,6 +155,7 @@ onBeforeUnmount(stopResize)
     :data-dock-open="dockOpen"
     :data-active-tab="activeTab"
     :data-mobile-pane="mobilePane"
+    :data-has-details="showDetails"
   >
     <section class="harness-canvas" :aria-label="`${surfaceLabel} 主画布`">
       <slot name="canvas" />
@@ -175,8 +189,9 @@ onBeforeUnmount(stopResize)
             :tabindex="activeTab === 'chat' ? 0 : -1"
             @click="selectTab('chat')"
             @keydown="handleTabKeydown($event, 'chat')"
-          ><MessageSquareText :size="14" />对话</button>
+          ><MessageSquareText :size="14" />{{ chatLabel }}</button>
           <button
+            v-if="showDetails"
             :id="`${layoutId}-details-tab`"
             type="button"
             role="tab"
@@ -200,6 +215,7 @@ onBeforeUnmount(stopResize)
         :aria-labelledby="`${layoutId}-chat-tab`"
       ><slot name="chat" /></section>
       <section
+        v-if="showDetails"
         v-show="activeTab === 'details'"
         :id="`${layoutId}-details-panel`"
         class="dock-panel"
@@ -212,15 +228,15 @@ onBeforeUnmount(stopResize)
       <button ref="openChatButton" type="button" title="打开对话" aria-label="打开对话工作台" @click="openDock('chat')">
         <MessageSquareText :size="17" />
       </button>
-      <button type="button" title="打开详情" aria-label="打开详情工作台" @click="openDock('details')">
+      <button v-if="showDetails" type="button" title="打开详情" aria-label="打开详情工作台" @click="openDock('details')">
         <PanelRight :size="17" />
       </button>
     </aside>
 
     <nav class="mobile-surface-nav" aria-label="移动工作台视图">
       <button type="button" :aria-pressed="mobilePane === 'canvas'" @click="showCanvas"><PanelsTopLeft :size="16" />画布</button>
-      <button type="button" :aria-pressed="mobilePane === 'chat'" @click="selectTab('chat')"><MessageSquareText :size="16" />对话</button>
-      <button type="button" :aria-pressed="mobilePane === 'details'" @click="selectTab('details')"><PanelRight :size="16" />详情</button>
+      <button type="button" :aria-pressed="mobilePane === 'chat'" @click="selectTab('chat')"><MessageSquareText :size="16" />{{ chatLabel }}</button>
+      <button v-if="showDetails" type="button" :aria-pressed="mobilePane === 'details'" @click="selectTab('details')"><PanelRight :size="16" />详情</button>
     </nav>
   </div>
 </template>
@@ -378,7 +394,7 @@ onBeforeUnmount(stopResize)
   .dock-resize-handle,
   .dock-backdrop,
   .dock-rail { display: none; }
-  .mobile-surface-nav {
+.mobile-surface-nav {
     position: absolute;
     z-index: 8;
     inset: auto 0 0;
@@ -402,6 +418,8 @@ onBeforeUnmount(stopResize)
   }
   .mobile-surface-nav button[aria-pressed="true"] { color: var(--sage-success); }
 }
+
+.chat-harness-layout:not([data-has-details="true"]) .mobile-surface-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 @media (prefers-reduced-motion: reduce) {
   .workbench-dock { transition: none; }

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "verdict",
+    "summary",
+    "findings",
+    "tests",
+    "visual_evidence",
+    "clean_room",
+    "merge_recommendation"
+  ],
+  "properties": {
+    "verdict": {"enum": ["PASS", "REQUEST_CHANGES", "BLOCK"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "findings": {"type": "array", "maxItems": 20, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+    "tests": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "visual_evidence": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "clean_room": {"type": "string", "minLength": 1, "maxLength": 1000},
+    "merge_recommendation": {"type": "string", "minLength": 1, "maxLength": 1000}
+  }
+}

@@ -11,6 +11,9 @@ build/
 .venv/
 venv/
 env/
+!infra/env/
+infra/env/*
+!infra/env/private-canary.env.example
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -32,6 +35,7 @@ coverage.xml
 !/.vscode/
 !/.vscode/extensions.json
 !/.vscode/launch.json
+!/.vscode/settings.json
 !/.vscode/tasks.json
 .idea/
 *.swp

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
 from core.coding.context import now
+from core.harness import normalize_runtime_profile
 
 
 class CodingChatMessage(TypedDict):
@@ -63,7 +64,12 @@ class CodingSessionStore:
             except (OSError, json.JSONDecodeError):
                 continue
             if isinstance(data, dict):
-                summaries.append(_summarize_session(data))
+                try:
+                    summaries.append(_summarize_session(data))
+                except ValueError:
+                    # A future/invalid profile must not make all historical sessions
+                    # disappear; the session can be repaired or migrated explicitly.
+                    continue
         summaries = [
             s for s in summaries
             if s["message_count"] > 0 and (include_archived or not s["archived"])
@@ -147,6 +153,7 @@ def _summarize_session(data: dict[str, Any]) -> dict[str, Any]:
         "created_at": str(data.get("created_at", "")),
         "updated_at": str(data.get("updated_at", "")),
         "runtime_mode": str(mode),
+        "runtime_profile": normalize_runtime_profile(data.get("runtime_profile")),
         "message_count": len(history) if isinstance(history, list) else 0,
     }
 

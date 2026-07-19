@@ -31,7 +31,7 @@ _MAX_PAYLOAD_BYTES = 1024 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _KINDS = {
     "user", "assistant", "model", "tool", "approval", "context", "memory",
-    "agent", "terminal", "system", "run",
+    "agent", "terminal", "system", "run", "harness",
 }
 _STATUSES = {
     "pending", "queued", "running", "blocked", "done", "completed", "cancelled",
@@ -417,6 +417,74 @@ class SessionEventJournal:
                 connection.rollback()
                 raise
 
+    def resume_run(
+        self,
+        run_id: str,
+        *,
+        owner_id: str,
+        owner_pid: int,
+    ) -> int:
+        """Acquire a fresh lease for an existing nonterminal run.
+
+        Unlike :meth:`begin_run`, this does not append another ``run_started``
+        event. The durable timeline and LangGraph checkpoint already identify
+        the run being resumed.
+        """
+        validated_run = _validate_identifier("run_id", run_id)
+        validated_owner = _validate_identifier("owner_id", owner_id)
+        owner_process_start = _owner_process_start(owner_pid)
+        acquired_at = datetime.now(UTC).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                lease = connection.execute(
+                    "SELECT run_id FROM active_run_lease WHERE lease_key = 1"
+                ).fetchone()
+                if lease is not None:
+                    raise SessionRunLeaseConflictError(str(lease[0]))
+                existing = connection.execute(
+                    "SELECT 1 FROM session_events WHERE run_id = ? LIMIT 1",
+                    (validated_run,),
+                ).fetchone()
+                if existing is None:
+                    raise SessionEventJournalError(
+                        f"run {validated_run} has no durable history"
+                    )
+                terminal = connection.execute(
+                    "SELECT 1 FROM session_events WHERE run_id = ? AND kind = 'terminal'",
+                    (validated_run,),
+                ).fetchone()
+                if terminal is not None:
+                    raise SessionEventJournalError(
+                        f"run {validated_run} is already terminal"
+                    )
+                token = _allocate_fencing_token(connection)
+                connection.execute(
+                    "INSERT INTO active_run_lease "
+                    "(lease_key, run_id, owner_id, owner_pid, owner_process_start, "
+                    "fencing_token, acquired_at) VALUES (1, ?, ?, ?, ?, ?, ?)",
+                    (
+                        validated_run,
+                        validated_owner,
+                        owner_pid,
+                        owner_process_start,
+                        token,
+                        acquired_at,
+                    ),
+                )
+                connection.commit()
+                return token
+            except sqlite3.IntegrityError as exc:
+                connection.rollback()
+                row = connection.execute(
+                    "SELECT run_id FROM active_run_lease WHERE lease_key = 1"
+                ).fetchone()
+                active = str(row[0]) if row is not None else "unknown"
+                raise SessionRunLeaseConflictError(active) from exc
+            except Exception:
+                connection.rollback()
+                raise
+
     def release_run_lease(
         self, run_id: str, *, owner_id: str, fencing_token: int
     ) -> bool:
@@ -478,6 +546,15 @@ class SessionEventJournal:
                     identity.state is _ProcessIdentityState.PRESENT
                     and stored_process_start == identity.fingerprint
                 ):
+                    connection.commit()
+                    return None
+                if _has_unresolved_approval(connection, run_id):
+                    # Release the old owner without terminalizing the graph. The
+                    # LangGraph checkpoint remains resumable and hydrate() will
+                    # rebuild the approval queue from the durable event.
+                    connection.execute(
+                        "DELETE FROM active_run_lease WHERE lease_key = 1"
+                    )
                     connection.commit()
                     return None
                 existing = connection.execute(
@@ -574,11 +651,120 @@ class SessionEventJournal:
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
+    def active_subagent_run_ids(self, run_id: str) -> tuple[str, ...]:
+        """Return child runs started but not terminal in one parent timeline."""
+        validated_run = _validate_identifier("run_id", run_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM session_events WHERE run_id = ? AND kind = 'agent' "
+                "ORDER BY sequence",
+                (validated_run,),
+            ).fetchall()
+        active: dict[str, None] = {}
+        terminal_types = {
+            "subagent_completed",
+            "subagent_failed",
+            "subagent_cancelled",
+            "subagent_timed_out",
+        }
+        for row in rows:
+            event = _event_from_row(row, self.session_id)
+            event_type = str(event.payload.get("type", ""))
+            child_run_id = str(event.payload.get("child_run_id", "")).strip()
+            if not child_run_id:
+                continue
+            if event_type == "subagent_started":
+                active.setdefault(child_run_id, None)
+            elif event_type in terminal_types:
+                active.pop(child_run_id, None)
+        return tuple(active)
+
+    def recoverable_approval(self, run_id: str | None = None) -> dict[str, Any] | None:
+        """Return the newest unresolved graph approval from durable events."""
+        with self._connect() as connection:
+            if run_id is None:
+                rows = connection.execute(
+                    "SELECT * FROM session_events "
+                    "WHERE run_id NOT IN ("
+                    "SELECT run_id FROM session_events WHERE kind = 'terminal'"
+                    ") ORDER BY sequence"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM session_events WHERE run_id = ? "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM session_events AS terminal "
+                    "WHERE terminal.run_id = session_events.run_id "
+                    "AND terminal.kind = 'terminal'"
+                    ") ORDER BY sequence",
+                    (_validate_identifier("run_id", run_id),),
+                ).fetchall()
+        events = [_event_from_row(row, self.session_id) for row in rows]
+        pending: dict[str, Any] | None = None
+        approval_counts: dict[str, int] = {}
+        for index, event in enumerate(events):
+            payload = event.payload
+            if (
+                event.kind != "approval"
+                or event.status != "blocked"
+                or payload.get("type") != "approval_required"
+                or not _is_graph_approval_payload(payload)
+            ):
+                continue
+            approval_counts[event.run_id] = approval_counts.get(event.run_id, 0) + 1
+            approval_id = str(payload.get("approval_id", "")).strip()
+            tool_call_id = str(payload.get("tool_call_id", "")).strip()
+            tool_name = str(payload.get("tool", "")).strip()
+            resolved = False
+            for later in events[index + 1 :]:
+                if later.run_id != event.run_id:
+                    continue
+                later_payload = later.payload
+                later_type = str(later_payload.get("type", ""))
+                if later_type == "tool_result":
+                    later_call_id = str(later_payload.get("tool_call_id", "")).strip()
+                    if tool_call_id and later_call_id == tool_call_id:
+                        resolved = True
+                        break
+                if later_type == "approval_required" and str(
+                    later_payload.get("approval_id", "")
+                ).strip() == approval_id:
+                    resolved = False
+                    break
+            if not resolved:
+                pending = dict(payload)
+                pending["run_id"] = event.run_id
+                pending["session_id"] = event.session_id
+                pending["tool"] = tool_name
+                pending["resume_attempt"] = approval_counts[event.run_id]
+        return pending
+
     def latest_sequence(self) -> int:
         """Return the durable high-water sequence for this session."""
         with self._connect() as connection:
             row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM session_events").fetchone()
         return int(row[0])
+
+    def run_resume_context(self, run_id: str) -> tuple[str, dict[str, Any]] | None:
+        """Return the original user message and surface context for a run."""
+        validated_run = _validate_identifier("run_id", run_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT kind, payload_json FROM session_events "
+                "WHERE run_id = ? ORDER BY sequence",
+                (validated_run,),
+            ).fetchall()
+        content = ""
+        surface_context: dict[str, Any] = {}
+        for row in rows:
+            payload = json.loads(str(row[1]))
+            if payload.get("event") == "run_started":
+                value = payload.get("surface_context")
+                if isinstance(value, Mapping):
+                    surface_context = {str(key): item for key, item in value.items()}
+            if str(row[0]) == "user" and isinstance(payload.get("content"), str):
+                content = str(payload["content"])
+        return (content, surface_context) if content else None
 
     def _insert(
         self,
@@ -1024,6 +1210,44 @@ def _assert_run_lease(
         raise SessionRunLeaseLostError(
             f"run lease owner or fencing token was lost for {run_id}"
         )
+
+
+def _has_unresolved_approval(connection: sqlite3.Connection, run_id: str) -> bool:
+    rows = connection.execute(
+        "SELECT kind, status, payload_json FROM session_events "
+        "WHERE run_id = ? ORDER BY sequence",
+        (run_id,),
+    ).fetchall()
+    pending_call_id = ""
+    pending_approval_id = ""
+    for row in rows:
+        kind = str(row[0])
+        status = str(row[1])
+        payload = json.loads(str(row[2]))
+        event_type = str(payload.get("type", ""))
+        if (
+            kind == "approval"
+            and status == "blocked"
+            and event_type == "approval_required"
+            and _is_graph_approval_payload(payload)
+        ):
+            pending_approval_id = str(payload.get("approval_id", ""))
+            pending_call_id = str(payload.get("tool_call_id", ""))
+        elif event_type == "tool_result":
+            result_call_id = str(payload.get("tool_call_id", ""))
+            if pending_call_id and result_call_id == pending_call_id:
+                pending_approval_id = ""
+                pending_call_id = ""
+    return bool(pending_approval_id)
+
+
+def _is_graph_approval_payload(payload: Mapping[str, Any]) -> bool:
+    """Distinguish checkpoint-backed approvals from the legacy blocking queue."""
+    if payload.get("runtime_profile") == "deerflow_v2":
+        return True
+    tool_call_id = str(payload.get("tool_call_id", "")).strip()
+    args_digest = str(payload.get("args_digest", "")).strip()
+    return bool(tool_call_id and len(args_digest) == 64)
 
 
 def _is_busy_or_locked(exc: sqlite3.OperationalError) -> bool:

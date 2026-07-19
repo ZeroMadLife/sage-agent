@@ -71,6 +71,85 @@ describe('CodingStream', () => {
     expect(onEvent).toHaveBeenCalledWith('coding_1', envelope(1))
   })
 
+  it('freezes a surface context into the websocket message payload', () => {
+    const socket = new FakeSocket()
+    const stream = new CodingStream({
+      createSocket: () => socket,
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+    })
+    const context = {
+      surface: 'knowledge' as const,
+      workspaceId: 'knowledge-local',
+      resource: { type: 'knowledge_page' as const, id: 'page-1', revision: 'rev-1' },
+      selection: { type: 'graph_node' as const, id: 'node-1', revision: 'rev-1' },
+      graphRevision: 'graph-1',
+      operationRefs: [{ kind: 'knowledge_job' as const, id: 'job-1' }],
+    }
+
+    stream.connect('coding_1', 'ws://local/stream')
+    expect(stream.send('解释当前节点', context)).toBe(true)
+    context.selection.id = 'node-changed-after-send'
+
+    expect(JSON.parse(socket.sent[0])).toEqual({
+      content: '解释当前节点',
+      surface_context: {
+        surface: 'knowledge',
+        workspace_id: 'knowledge-local',
+        resource: { type: 'knowledge_page', id: 'page-1', revision: 'rev-1' },
+        selection: { type: 'graph_node', id: 'node-1', revision: 'rev-1' },
+        graph_revision: 'graph-1',
+        operation_refs: [{ kind: 'knowledge_job', id: 'job-1' }],
+      },
+    })
+  })
+
+  it('forwards explicit Harness stage events to the timeline store', () => {
+    const socket = new FakeSocket()
+    const onEvent = vi.fn()
+    const stream = new CodingStream({
+      createSocket: () => socket,
+      onEvent,
+      onError: vi.fn(),
+    })
+    const event: CodingTimelineEvent = {
+      ...envelope(1),
+      kind: 'harness',
+      status: 'running',
+      payload: {
+        type: 'stage_started',
+        definition_id: 'sage.coding.practice',
+        definition_version: 1,
+        stage_id: 'plan',
+      },
+    }
+
+    stream.connect('coding_1', 'ws://local/stream')
+    socket.emit(event)
+
+    expect(onEvent).toHaveBeenCalledWith('coding_1', event)
+  })
+
+  it('forwards browser-safe knowledge proposal envelopes', () => {
+    const socket = new FakeSocket()
+    const onEvent = vi.fn()
+    const stream = new CodingStream({ createSocket: () => socket, onEvent, onError: vi.fn() })
+    const event: CodingTimelineEvent = {
+      ...envelope(2),
+      kind: 'proposal',
+      status: 'pending',
+      payload: {
+        type: 'knowledge_source_proposal_created', proposal_id: 'ksprop_1',
+        content_hash: 'a'.repeat(64), revision: 1, requires_user_confirmation: true,
+      },
+    }
+
+    stream.connect('coding_1', 'ws://local/stream')
+    socket.emit(event)
+
+    expect(onEvent).toHaveBeenCalledWith('coding_1', event)
+  })
+
   it('disconnect closes the active socket and prevents sending', () => {
     const sockets: FakeSocket[] = []
     const stream = new CodingStream({
@@ -112,6 +191,41 @@ describe('CodingStream', () => {
 
     expect(onOpen).toHaveBeenCalledTimes(1)
     expect(onOpen).toHaveBeenCalledWith('coding_2')
+  })
+
+  it('reports transport recovery from websocket truth', () => {
+    vi.useFakeTimers()
+    const sockets: FakeSocket[] = []
+    const onConnectionState = vi.fn()
+    const stream = new CodingStream({
+      createSocket: () => {
+        const socket = new FakeSocket()
+        socket.readyState = 0
+        sockets.push(socket)
+        return socket
+      },
+      onEvent: vi.fn(),
+      onConnectionState,
+      onError: vi.fn(),
+    })
+
+    stream.connect('coding_1', 'ws://local/stream')
+    sockets[0].emitOpen()
+    sockets[0].onerror?.()
+    sockets[0].readyState = 3
+    sockets[0].onclose?.({ code: 1006, wasClean: false })
+    vi.advanceTimersByTime(500)
+
+    expect(onConnectionState.mock.calls).toEqual([
+      ['coding_1', 'connecting'],
+      ['coding_1', 'connected'],
+      ['coding_1', 'recovering'],
+      ['coding_1', 'recovering'],
+    ])
+    expect(sockets).toHaveLength(2)
+    stream.disconnect()
+    expect(onConnectionState).toHaveBeenLastCalledWith('coding_1', 'disconnected')
+    vi.useRealTimers()
   })
 
   it('ignores events from an old socket after session switch', () => {

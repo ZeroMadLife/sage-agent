@@ -1,5 +1,11 @@
 import type { CodingTimelineEvent, CodingTimelineStatus } from '../../types/api'
-import type { HarnessDefinition, HarnessStageStatus, HarnessTimelineEvent } from '../types'
+import { projectHarnessTimeline } from '../timelineProjection'
+import type {
+  HarnessDefinition,
+  HarnessRuntimeResource,
+  HarnessStageStatus,
+  HarnessTimelineEvent,
+} from '../types'
 
 export const codingHarnessDefinition: HarnessDefinition = {
   id: 'sage.coding.practice',
@@ -23,11 +29,20 @@ export const codingHarnessDefinition: HarnessDefinition = {
   ],
 }
 
+const TOOL_MODEL_KINDS = new Set(['tool', 'tools'])
+const NON_REPLY_MODEL_KINDS = new Set([...TOOL_MODEL_KINDS, 'retry'])
+
 export function adaptCodingTimeline(events: readonly CodingTimelineEvent[]): HarnessTimelineEvent[] {
   const output: HarnessTimelineEvent[] = []
-  let modelRequestCount = 0
+  const modelRequestCounts = new Map<string, number>()
+  const actPreparedRuns = new Set<string>()
+  const replyPreparedRuns = new Set<string>()
+  const replyStartedRuns = new Set<string>()
   const ordered = [...events].sort(
     (left, right) => left.sequence - right.sequence || left.event_id.localeCompare(right.event_id),
+  )
+  const explicitRuns = new Set(
+    ordered.filter((event) => adaptExplicitStageEvent(event)).map((event) => event.run_id),
   )
   for (const event of ordered) {
     const explicit = adaptExplicitStageEvent(event)
@@ -35,11 +50,43 @@ export function adaptCodingTimeline(events: readonly CodingTimelineEvent[]): Har
       output.push(explicit)
       continue
     }
+    if (explicitRuns.has(event.run_id) && event.kind !== 'terminal') continue
     const type = stringValue(event.payload.type) || stringValue(event.payload.event)
-    output.push(...adaptLegacyEvent(event, modelRequestCount === 0))
-    if (event.kind === 'model' && type === 'model_requested') modelRequestCount += 1
+    const modelRequestCount = modelRequestCounts.get(event.run_id) || 0
+    output.push(...adaptLegacyEvent(
+      event,
+      modelRequestCount === 0,
+      actPreparedRuns.has(event.run_id),
+      !replyStartedRuns.has(event.run_id),
+      replyPreparedRuns.has(event.run_id),
+    ))
+    if (event.kind === 'model' && type === 'model_requested') {
+      modelRequestCounts.set(event.run_id, modelRequestCount + 1)
+    }
+    if (event.kind === 'model' && type === 'model_parsed') {
+      const parsedKind = stringValue(event.payload.kind)
+      if (!NON_REPLY_MODEL_KINDS.has(parsedKind)) replyPreparedRuns.add(event.run_id)
+      if (TOOL_MODEL_KINDS.has(parsedKind)) actPreparedRuns.add(event.run_id)
+    }
+    if (event.kind === 'tool' && type === 'tool_call') actPreparedRuns.delete(event.run_id)
+    if (event.kind === 'assistant' && type === 'text_delta') replyStartedRuns.add(event.run_id)
   }
   return output
+}
+
+export function projectLatestCodingHarness(
+  events: readonly CodingTimelineEvent[],
+  preferredRunId = '',
+) {
+  const ordered = [...events].sort(
+    (left, right) => left.sequence - right.sequence || left.event_id.localeCompare(right.event_id),
+  )
+  const runId = preferredRunId || ordered.at(-1)?.run_id || ''
+  const runEvents = runId ? ordered.filter((event) => event.run_id === runId) : []
+  return {
+    ...projectHarnessTimeline(adaptCodingTimeline(runEvents), codingHarnessDefinition),
+    runtimeResources: projectCodingRuntimeResources(runEvents),
+  }
 }
 
 function adaptExplicitStageEvent(event: CodingTimelineEvent): HarnessTimelineEvent | null {
@@ -52,10 +99,18 @@ function adaptExplicitStageEvent(event: CodingTimelineEvent): HarnessTimelineEve
     detail: stringValue(event.payload.detail) || undefined,
     definitionId: stringValue(event.payload.definition_id) || codingHarnessDefinition.id,
     definitionVersion: numberValue(event.payload.definition_version) || codingHarnessDefinition.version,
+    status: explicitStatus(event.status),
+    operationRef: operationRef(event.payload.operation_ref),
   })
 }
 
-function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boolean): HarnessTimelineEvent[] {
+function adaptLegacyEvent(
+  event: CodingTimelineEvent,
+  initialModelRequest: boolean,
+  actPrepared: boolean,
+  initialAssistantDelta: boolean,
+  replyPrepared: boolean,
+): HarnessTimelineEvent[] {
   const type = stringValue(event.payload.type) || stringValue(event.payload.event)
   if (event.kind === 'user') {
     return [
@@ -68,6 +123,13 @@ function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boole
   if (event.kind === 'context') {
     return settleStageFromStatus(event, 'context', 0)
   }
+  if (event.kind === 'harness' && type === 'mcp_catalog_updated') {
+    return [
+      eventFrom(event, 'stage_completed', 0, { stageId: 'context' }),
+      transition(event, 1, 'context', 'plan'),
+      eventFrom(event, 'stage_started', 2, { stageId: 'plan' }),
+    ]
+  }
   if (event.kind === 'model' && type === 'model_requested') {
     return [
       ...(initialModelRequest ? [
@@ -78,18 +140,26 @@ function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boole
     ]
   }
   if (event.kind === 'model' && type === 'model_parsed') {
-    const target = event.payload.kind === 'tool' ? 'act' : 'reply'
+    const parsedKind = stringValue(event.payload.kind)
+    if (parsedKind === 'retry') return []
+    const target = TOOL_MODEL_KINDS.has(parsedKind) ? 'act' : 'reply'
     return [
       eventFrom(event, 'stage_completed', 0, { stageId: 'plan' }),
       transition(event, 1, 'plan', target),
     ]
   }
   if (event.kind === 'tool' && type === 'tool_call') {
-    return [eventFrom(event, 'stage_started', 0, {
-      stageId: 'act',
-      detail: toolDetail(event),
-      operationRef: { kind: 'coding_run', id: event.run_id },
-    })]
+    return [
+      ...(!actPrepared ? [
+        eventFrom(event, 'stage_completed', 0, { stageId: 'plan' }),
+        transition(event, 1, 'plan', 'act'),
+      ] : []),
+      eventFrom(event, 'stage_started', 2, {
+        stageId: 'act',
+        detail: toolDetail(event),
+        operationRef: { kind: 'coding_run', id: event.run_id },
+      }),
+    ]
   }
   if (event.kind === 'tool' && type === 'tool_result') {
     const failed = event.payload.is_error === true || event.status === 'error'
@@ -100,7 +170,10 @@ function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boole
         status: failed ? 'failed' : 'completed',
         operationRef: { kind: 'coding_run', id: event.run_id },
       }),
-      ...(failed ? [] : [transition(event, 1, 'act', 'plan')]),
+      ...(failed ? [] : [
+        transition(event, 1, 'act', 'plan'),
+        eventFrom(event, 'stage_started', 2, { stageId: 'plan' }),
+      ]),
     ]
   }
   if (event.kind === 'approval') {
@@ -111,7 +184,14 @@ function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boole
     })]
   }
   if (event.kind === 'assistant' && type === 'text_delta') {
-    return [eventFrom(event, 'stage_started', 0, { stageId: 'reply' })]
+    if (!initialAssistantDelta) return []
+    return [
+      ...(!replyPrepared ? [
+        eventFrom(event, 'stage_completed', 0, { stageId: 'plan' }),
+        transition(event, 1, 'plan', 'reply'),
+      ] : []),
+      eventFrom(event, 'stage_started', 2, { stageId: 'reply' }),
+    ]
   }
   if (event.kind === 'assistant') {
     return [eventFrom(event, 'stage_completed', 0, { stageId: 'reply' })]
@@ -123,6 +203,92 @@ function adaptLegacyEvent(event: CodingTimelineEvent, initialModelRequest: boole
     return [eventFrom(event, 'run_terminal', 0, { status: timelineStatus(event.status) })]
   }
   return []
+}
+
+function projectCodingRuntimeResources(
+  events: readonly CodingTimelineEvent[],
+): HarnessRuntimeResource[] {
+  const resources: HarnessRuntimeResource[] = []
+  const runBudget = [...events].reverse().find(
+    (event) => event.payload.type === 'run_budget_updated',
+  )
+  if (runBudget) {
+    const used = numberValue(runBudget.payload.used_tokens)
+    const limit = numberValue(runBudget.payload.limit_tokens)
+    const modelCalls = numberValue(runBudget.payload.model_calls)
+    const modelLimit = numberValue(runBudget.payload.model_call_limit)
+    const toolCalls = numberValue(runBudget.payload.tool_calls)
+    const toolLimit = numberValue(runBudget.payload.tool_call_limit)
+    resources.push({
+      id: 'run-budget',
+      kind: 'budget',
+      label: '本轮预算',
+      detail: `${compactNumber(used)} / ${compactNumber(limit)} tokens · ${modelCalls}/${modelLimit} 模型 · ${toolCalls}/${toolLimit} 工具`,
+      status: explicitStatus(runBudget.status),
+    })
+  }
+  const catalog = [...events].reverse().find(
+    (event) => event.payload.type === 'mcp_catalog_updated',
+  )
+  if (catalog) {
+    const servers = arrayValue(catalog.payload.servers).map(recordValue)
+    const connected = servers.filter((server) => stringValue(server.status) === 'connected').length
+    const configured = servers.filter((server) => (
+      stringValue(server.status) === 'configured' || stringValue(server.status) === 'connected'
+    )).length
+    const unavailable = servers.length - configured
+    const detail = [
+      `${servers.length} 个服务`,
+      connected ? `${connected} 已连接` : `${configured} 已配置`,
+      unavailable ? `${unavailable} 未配置` : '',
+    ].filter(Boolean).join(' · ')
+    resources.push({
+      id: 'mcp-catalog',
+      kind: 'mcp',
+      label: 'MCP 目录',
+      detail,
+      status: servers.some((server) => stringValue(server.status) === 'error')
+        ? 'failed'
+        : unavailable ? 'blocked' : 'completed',
+    })
+  }
+  const context = [...events].reverse().find((event) => event.kind === 'context')
+  if (context) {
+    const used = numberValue(context.payload.used_tokens)
+    const limit = numberValue(context.payload.effective_limit_tokens)
+    resources.push({
+      id: 'context-budget',
+      kind: 'context',
+      label: '上下文',
+      detail: limit ? `${used} / ${limit} tokens` : `${used} tokens`,
+      status: explicitStatus(context.status),
+    })
+  }
+  const agentResources = new Map<string, HarnessRuntimeResource>()
+  for (const event of events) {
+    const eventType = stringValue(event.payload.type)
+    if (event.kind !== 'agent' || (!eventType.startsWith('agent_') && !eventType.startsWith('subagent_'))) continue
+    const agentId = stringValue(event.payload.child_run_id)
+      || stringValue(event.payload.agent_run_id)
+      || event.event_id
+    const previous = agentResources.get(agentId)
+    agentResources.set(agentId, {
+      id: `agent:${agentId}`,
+      kind: 'agent',
+      label: '子代理',
+      detail: stringValue(event.payload.description) || previous?.detail || agentId,
+      status: explicitStatus(event.status),
+      operationRef: operationRef(event.payload.operation_ref) || previous?.operationRef,
+    })
+  }
+  resources.push(...agentResources.values())
+  return resources
+}
+
+function compactNumber(value: number) {
+  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}m`
+  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}k`
+  return String(value)
 }
 
 function settleStageFromStatus(event: CodingTimelineEvent, stageId: string, offset: number) {
@@ -170,6 +336,22 @@ function timelineStatus(status: CodingTimelineStatus): HarnessStageStatus {
   return 'completed'
 }
 
+function explicitStatus(status: CodingTimelineStatus): HarnessStageStatus {
+  if (status === 'blocked') return 'blocked'
+  if (status === 'running' || status === 'queued' || status === 'pending') return 'running'
+  if (status === 'error') return 'failed'
+  if (status === 'cancelled' || status === 'interrupted') return 'cancelled'
+  return 'completed'
+}
+
+function operationRef(value: unknown) {
+  const record = recordValue(value)
+  const kind = stringValue(record.kind)
+  const id = stringValue(record.id)
+  if ((kind === 'coding_run' || kind === 'knowledge_job') && id) return { kind, id } as const
+  return undefined
+}
+
 function toolDetail(event: CodingTimelineEvent) {
   const tool = stringValue(event.payload.tool)
   const args = recordValue(event.payload.args)
@@ -188,4 +370,8 @@ function numberValue(value: unknown) {
 
 function recordValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function arrayValue(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : []
 }

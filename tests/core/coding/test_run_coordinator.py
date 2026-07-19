@@ -73,6 +73,102 @@ async def test_closing_subscription_does_not_cancel_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_observer_runs_after_event_is_durable(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    observed: list[str] = []
+
+    async def observer(event):  # type: ignore[no-untyped-def]
+        persisted = journal.replay(after=0, limit=20).items
+        assert any(item.event_id == event.event_id for item in persisted)
+        observed.append(event.event_id)
+
+    coordinator = RunCoordinator(journal, event_observer=observer)
+    task = await coordinator.start_run(
+        "run-1",
+        _events(
+            RunEvent(
+                kind="harness",
+                status="completed",
+                payload={"type": "capability_invocation_completed"},
+                event_id="capability-event-1",
+            )
+        ),
+    )
+    await task
+
+    assert "capability-event-1" in observed
+
+
+@pytest.mark.asyncio
+async def test_event_observer_failure_does_not_interrupt_run(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+
+    async def observer(_event):  # type: ignore[no-untyped-def]
+        raise RuntimeError("projection unavailable")
+
+    coordinator = RunCoordinator(journal, event_observer=observer)
+    task = await coordinator.start_run(
+        "run-1",
+        _events(RunEvent(kind="assistant", status="done", payload={"answer": "ok"})),
+    )
+    await task
+
+    events = journal.replay(after=0, limit=20).items
+    assert [(event.kind, event.status) for event in events][-2:] == [
+        ("assistant", "done"),
+        ("terminal", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_suspend_and_resume_existing_run_preserves_one_start_event(
+    tmp_path: Path,
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    first = RunCoordinator(journal, owner_id="first-owner")
+    release = asyncio.Event()
+
+    async def blocked():
+        yield RunEvent(
+            kind="approval",
+            status="blocked",
+            payload={
+                "type": "approval_required",
+                "runtime_profile": "deerflow_v2",
+                "approval_id": "appr-1",
+                "tool": "write_file",
+                "tool_call_id": "call-1",
+                "args_digest": "a" * 64,
+            },
+        )
+        await release.wait()
+
+    task = await first.start_run("run-1", blocked())
+    while journal.recoverable_approval("run-1") is None:
+        await asyncio.sleep(0)
+    assert await first.suspend_for_restart("run-1") is True
+    assert task.cancelled()
+    assert journal.active_run_id() is None
+
+    second = RunCoordinator(
+        SessionEventJournal(tmp_path, "session-1"),
+        owner_id="second-owner",
+    )
+    with pytest.raises(ActiveRunConflictError, match="resumable approval"):
+        await second.start_run("run-2", _events())
+    resumed = await second.start_existing_run(
+        "run-1",
+        _events(RunEvent(kind="assistant", status="completed", payload={"content": "done"})),
+    )
+    await resumed
+
+    events = journal.replay(after=0, limit=20).items
+    assert [event.payload.get("event") for event in events].count("run_started") == 1
+    assert events[-1].kind == "terminal"
+    assert events[-1].status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_only_one_active_run_per_session(tmp_path: Path) -> None:
     coordinator = RunCoordinator(SessionEventJournal(tmp_path, "session-1"))
     release = asyncio.Event()
@@ -455,6 +551,41 @@ async def test_immediate_cancel_still_closes_run(tmp_path: Path) -> None:
         ("system", "running"),
         ("terminal", "cancelled"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_cancel_persists_audit_events_before_terminal(tmp_path: Path) -> None:
+    coordinator = RunCoordinator(SessionEventJournal(tmp_path, "session-1"))
+    entered = asyncio.Event()
+
+    async def blocked():
+        entered.set()
+        await asyncio.Event().wait()
+        if False:
+            yield RunEvent(kind="agent", status="running", payload={})
+
+    task = await coordinator.start_run("run-1", blocked())
+    await entered.wait()
+    cancelled_child = RunEvent(
+        kind="agent",
+        status="error",
+        payload={"type": "subagent_cancelled", "child_run_id": "child-1"},
+    )
+
+    assert await coordinator.cancel("run-1", audit_events=(cancelled_child,)) is True
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    events = coordinator.journal.replay(after=0, limit=20).items
+    assert [(item.kind, item.status) for item in events] == [
+        ("system", "running"),
+        ("agent", "error"),
+        ("terminal", "cancelled"),
+    ]
+    assert events[1].payload == {
+        "type": "subagent_cancelled",
+        "child_run_id": "child-1",
+    }
 
 
 @pytest.mark.asyncio

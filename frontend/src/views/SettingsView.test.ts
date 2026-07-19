@@ -50,11 +50,29 @@ it('shows memory review actions and read-only MCP state', async () => {
 it('does not archive the active session or leak rejected session mutations', async () => {
   const store = useCodingStore()
   store.sessionId = 'active'
-  store.codingSessions = [{ session_id: 'active', title: '当前会话', workspace_root: '', created_at: '', updated_at: '', runtime_mode: 'default', message_count: 0 }]
+  store.codingSessions = [{ session_id: 'active', title: '当前会话', workspace_root: '', created_at: '', updated_at: '', runtime_mode: 'default', runtime_profile: 'legacy', message_count: 0 }]
   store.setSessionArchived = vi.fn().mockRejectedValue(new Error('服务不可用'))
   const { root, view } = await mountSettings('/settings/sessions')
   const archive = view().get('button[title="请在聊天页归档当前会话"]')
   expect(archive.attributes('disabled')).toBeDefined()
+  root.unmount()
+})
+
+it('selects the runtime profile only for future sessions', async () => {
+  const store = useCodingStore()
+  store.sessionId = 'active'
+  store.runtimeProfile = 'legacy'
+  store.availableRuntimeProfiles = ['legacy', 'deerflow_v2']
+  store.bootstrapModelCatalog = vi.fn().mockResolvedValue(undefined)
+  const { root, view } = await mountSettings('/settings/sessions')
+
+  const harness = view().get('button[role="radio"][title="用于新会话"]')
+  await harness.trigger('click')
+
+  expect(store.newSessionRuntimeProfile).toBe('deerflow_v2')
+  expect(store.runtimeProfile).toBe('legacy')
+  expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBe('deerflow_v2')
+  expect(view().text()).toContain('当前会话：兼容运行时')
   root.unmount()
 })
 

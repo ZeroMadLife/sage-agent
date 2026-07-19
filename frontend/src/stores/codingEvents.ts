@@ -51,6 +51,7 @@ export type CodingEventState = {
   diffInfoByRun: Ref<Record<string, DiffInfo>>
   memoryProposals: Ref<MemoryProposal[]>
   memoryProposalRefresh: Ref<number>
+  knowledgeSourceProposalRefresh: Ref<number>
 }
 
 export type CodingEventEffect = {
@@ -58,6 +59,7 @@ export type CodingEventEffect = {
   terminal?: boolean
   toolResult?: CodingToolResultEvent
   memoryProposalReady?: boolean
+  knowledgeSourceProposalReady?: boolean
 }
 
 function contextReasonLabel(reason: string): string {
@@ -146,6 +148,11 @@ export function applyCodingEvent(
     }
     state.memoryProposalRefresh.value += 1
     return { memoryProposalReady: true }
+  }
+  if (event.type === 'knowledge_source_proposal_created') {
+    if (event.session_id !== state.sessionId.value) return {}
+    state.knowledgeSourceProposalRefresh.value += 1
+    return { knowledgeSourceProposalReady: true }
   }
   if (event.type === 'context_usage_updated') {
     state.contextChars.value = event.used_tokens

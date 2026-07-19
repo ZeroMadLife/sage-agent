@@ -17,6 +17,7 @@ __all__ = [
     "ApprovalCallback",
     "ApprovalEntry",
     "ApprovalManager",
+    "ApprovalRequirement",
     "PermissionChecker",
     "PermissionDecision",
     "PermissionMode",
@@ -33,4 +34,8 @@ def __getattr__(name: str) -> object:
         from core.coding.tool_executor.executor import ToolExecutor
 
         return ToolExecutor
+    if name == "ApprovalRequirement":
+        from core.coding.tool_executor.executor import ApprovalRequirement
+
+        return ApprovalRequirement
     raise AttributeError(name)

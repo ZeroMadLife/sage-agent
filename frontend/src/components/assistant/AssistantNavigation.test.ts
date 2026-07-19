@@ -15,8 +15,8 @@ it('uses an accessible full-screen navigation drawer on mobile', async () => {
       { path: '/assistant', component: { template: '<div />' } },
       { path: '/coding', component: { template: '<div />' } },
       { path: '/knowledge', component: { template: '<div />' } },
-      { path: '/evolution', component: { template: '<div />' } },
-      { path: '/public', component: { template: '<div />' } },
+      { path: '/growth', component: { template: '<div />' } },
+      { path: '/publishing', component: { template: '<div />' } },
       { path: '/settings/appearance', component: { template: '<div />' } },
     ],
   })

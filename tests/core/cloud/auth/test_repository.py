@@ -89,6 +89,122 @@ async def test_login_session_stores_only_a_hash_and_honors_revoke_and_expiry(
     assert await repository.authenticated_user("expired-token") is None
 
 
+async def test_revoking_one_device_frees_a_slot_without_affecting_other_devices(
+    repository: CloudRepository,
+) -> None:
+    """Operators can remove one lost device while preserving the other sessions."""
+    tokens: list[str] = []
+    for index in range(1, 4):
+        code = f"device-{index}"
+        token = f"device-token-{index}"
+        await repository.create_invite(code, email="owner@example.com")
+        await repository.create_canary_invite_session(
+            invite_code=code,
+            token=token,
+            device_name=f"Device {index}",
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+        )
+        tokens.append(token)
+
+    sessions = await repository.list_active_sessions("owner@example.com")
+    revoked_id = next(item.session_id for item in sessions if item.device_name == "Device 2")
+
+    assert await repository.revoke_device_session("other@example.com", revoked_id) is False
+    assert await repository.revoke_device_session("owner@example.com", revoked_id) is True
+    assert await repository.authenticated_user(tokens[0]) is not None
+    assert await repository.authenticated_user(tokens[1]) is None
+    assert await repository.authenticated_user(tokens[2]) is not None
+
+    await repository.create_invite("replacement", email="owner@example.com")
+    user, replacement = await repository.create_canary_invite_session(
+        invite_code="replacement",
+        token="replacement-token",
+        device_name="Replacement",
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+    )
+    assert user.email == "owner@example.com"
+    assert replacement.device_name == "Replacement"
+
+
+async def test_disabling_an_account_revokes_every_device_and_blocks_new_invites(
+    repository: CloudRepository,
+) -> None:
+    await repository.create_invite("disable-first", email="disabled@example.com")
+    await repository.create_canary_invite_session(
+        invite_code="disable-first",
+        token="disabled-token",
+        device_name="Phone",
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+    )
+
+    assert await repository.disable_user("disabled@example.com") is True
+    assert await repository.authenticated_user("disabled-token") is None
+
+    await repository.create_invite("disable-second", email="disabled@example.com")
+    with pytest.raises(PermissionError, match="disabled"):
+        await repository.create_canary_invite_session(
+            invite_code="disable-second",
+            token="new-token",
+            device_name="New phone",
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+        )
+    assert await repository.invite_is_consumed("disable-second") is False
+
+
+async def test_github_identity_reuses_existing_canary_account(
+    repository: CloudRepository,
+) -> None:
+    first_invite = "canary-first-device"
+    github_invite = "github-account-link"
+    email = "owner@example.com"
+    await repository.create_invite(first_invite, email=email)
+    canary_user, _ = await repository.create_canary_invite_session(
+        invite_code=first_invite,
+        token="canary-token",
+        device_name="iPhone Safari",
+        expires_at=datetime.now(UTC) + timedelta(days=30),
+    )
+    await repository.create_invite(github_invite, email=email)
+
+    github_user = await repository.get_or_create_identity(
+        provider="github",
+        provider_subject="github-owner-123",
+        email=email,
+        display_name="Owner",
+        invite_code=github_invite,
+    )
+
+    assert github_user.user_id == canary_user.user_id
+    assert await repository.invite_is_consumed(github_invite) is True
+
+
+async def test_canary_invite_creates_at_most_one_device_session_under_race(
+    repository: CloudRepository,
+) -> None:
+    invite = "one-device-only"
+    await repository.create_invite(invite, email="owner@example.com")
+
+    results = await asyncio.gather(
+        repository.create_canary_invite_session(
+            invite_code=invite,
+            token="first-device-token",
+            device_name="First phone",
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+        ),
+        repository.create_canary_invite_session(
+            invite_code=invite,
+            token="second-device-token",
+            device_name="Second phone",
+            expires_at=datetime.now(UTC) + timedelta(days=30),
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert sum(isinstance(result, PermissionError) for result in results) == 1
+    assert len(await repository.list_active_sessions("owner@example.com")) == 1
+
+
 async def test_workspace_lookup_is_scoped_to_its_project_owner(repository: CloudRepository) -> None:
     """Possessing an opaque workspace ID never grants cross-user access."""
     await repository.create_invite("invite-a")

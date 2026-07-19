@@ -31,12 +31,21 @@ describe('settings router', () => {
   })
 
   it('keeps personal assistant routes inside the shared Sage shell', async () => {
-    for (const path of ['/assistant', '/coding', '/coding/session/saved-session', '/knowledge', '/evolution', '/public']) {
+    for (const path of ['/assistant', '/coding', '/coding/session/saved-session', '/knowledge', '/growth', '/publishing']) {
       await router.push(path)
       expect(router.currentRoute.value.meta.assistantShell).toBe(true)
     }
 
+    await router.push('/public')
+    expect(router.currentRoute.value.meta.assistantShell).not.toBe(true)
+
     await router.push('/settings/appearance')
     expect(router.currentRoute.value.meta.assistantShell).not.toBe(true)
+  })
+
+  it('keeps the legacy evolution link compatible with growth', async () => {
+    await router.push('/evolution')
+    expect(router.currentRoute.value.fullPath).toBe('/growth')
+    expect(router.currentRoute.value.meta.assistantShell).toBe(true)
   })
 })

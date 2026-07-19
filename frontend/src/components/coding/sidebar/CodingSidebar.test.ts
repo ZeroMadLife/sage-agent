@@ -18,6 +18,7 @@ it('renders coding session history', () => {
       created_at: '2026-07-08T10:00:00',
       updated_at: '2026-07-08T10:00:01',
       runtime_mode: 'default',
+      runtime_profile: 'legacy',
       message_count: 2,
     },
   ]
@@ -41,6 +42,7 @@ it('filters sessions by title via the search box', async () => {
       created_at: '',
       updated_at: '',
       runtime_mode: 'default',
+      runtime_profile: 'legacy',
       message_count: 1,
     },
     {
@@ -50,6 +52,7 @@ it('filters sessions by title via the search box', async () => {
       created_at: '',
       updated_at: '',
       runtime_mode: 'default',
+      runtime_profile: 'legacy',
       message_count: 1,
     },
   ]
@@ -73,6 +76,7 @@ it('keeps a compact session list without truncating a normal history', () => {
     created_at: '',
     updated_at: '',
     runtime_mode: 'default',
+    runtime_profile: 'legacy',
     message_count: 1,
   }))
   const wrapper = mount(CodingSidebar)
@@ -94,6 +98,7 @@ it('requests a persisted coding session from the sidebar without mutating the st
       created_at: '2026-07-08T10:00:00',
       updated_at: '2026-07-08T10:00:01',
       runtime_mode: 'default',
+      runtime_profile: 'legacy',
       message_count: 4,
     },
   ]
@@ -132,7 +137,7 @@ it('pins, renames, archives, and restores a session through the store actions', 
   const store = useCodingStore()
   store.codingSessions = [{
     session_id: 's1', title: '旧名称', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1, pinned: false, archived: false,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1, pinned: false, archived: false,
   }]
   store.setSessionPinned = vi.fn().mockResolvedValue(undefined)
   store.renameSession = vi.fn().mockResolvedValue(undefined)
@@ -156,7 +161,7 @@ it('keeps focusable rename controls outside the session selection button', async
   const store = useCodingStore()
   store.codingSessions = [{
     session_id: 's1', title: '旧名称', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1, pinned: false, archived: false,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1, pinned: false, archived: false,
   }]
   const wrapper = mount(CodingSidebar)
 
@@ -170,7 +175,7 @@ it('emits navigation and creation intentions without calling the session store',
   const store = useCodingStore()
   store.codingSessions = [{
     session_id: 's1', title: '失败会话', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1,
   }]
   const wrapper = mount(CodingSidebar)
 
@@ -185,7 +190,7 @@ it('keeps rename editing open and reports a rejected metadata update', async () 
   const store = useCodingStore()
   store.codingSessions = [{
     session_id: 's1', title: '旧名称', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1, pinned: false, archived: false,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1, pinned: false, archived: false,
   }]
   store.renameSession = vi.fn().mockRejectedValue(new Error('保存失败'))
   const wrapper = mount(CodingSidebar)
@@ -203,7 +208,7 @@ it('reports rejected pin updates and delegates current-session archival to the v
   store.sessionId = 's1'
   store.codingSessions = [{
     session_id: 's1', title: '当前会话', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1, pinned: false, archived: false,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1, pinned: false, archived: false,
   }]
   store.setSessionPinned = vi.fn().mockRejectedValue(new Error('置顶失败'))
   store.setSessionArchived = vi.fn().mockRejectedValue(new Error('归档失败'))
@@ -225,7 +230,7 @@ it('reports a rejected restore action and keeps the archived session visible', a
   const store = useCodingStore()
   store.codingSessions = [{
     session_id: 's1', title: '归档会话', workspace_root: '/tmp', created_at: '', updated_at: '',
-    runtime_mode: 'default', message_count: 1, pinned: false, archived: true,
+    runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1, pinned: false, archived: true,
   }]
   store.setSessionArchived = vi.fn().mockRejectedValue(new Error('恢复失败'))
   store.loadSessions = vi.fn().mockResolvedValue(undefined)

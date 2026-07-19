@@ -1,5 +1,7 @@
 import type {
+  KnowledgeCitation,
   KnowledgePage,
+  KnowledgePageDocument,
   KnowledgeJob,
   KnowledgeJobEvent,
   KnowledgeJobItem,
@@ -99,6 +101,10 @@ export function searchKnowledge(
   })
 }
 
+export function fetchKnowledgeCitation(citationId: string): Promise<KnowledgeCitation> {
+  return request(`/api/v1/knowledge/citations/${encodeURIComponent(citationId)}`)
+}
+
 export function depositKnowledgeLearning(
   topic: string,
   citationIds: string[],
@@ -150,6 +156,10 @@ export function undoKnowledgeAutoApply(
 export function fetchKnowledgePages(): Promise<KnowledgePage[]> {
   return request<{ pages: KnowledgePage[] }>('/api/v1/knowledge/pages')
     .then((response) => response.pages)
+}
+
+export function fetchKnowledgePage(pageId: string): Promise<KnowledgePageDocument> {
+  return request(`/api/v1/knowledge/pages/${encodeURIComponent(pageId)}`)
 }
 
 export function ingestKnowledgeSource(

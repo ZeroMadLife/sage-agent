@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, expect, it, vi } from 'vitest'
+import { fetchKnowledgeCitation, fetchKnowledgePage } from '../../api/knowledge'
 import type {
   KnowledgeGraph,
   KnowledgeGraphCommunities,
@@ -7,6 +8,12 @@ import type {
 } from '../../types/api'
 import KnowledgeGraphCanvas from './KnowledgeGraphCanvas.vue'
 import KnowledgeInspector from './KnowledgeInspector.vue'
+import { selectedNodePresentation } from './knowledgeGraphPresentation'
+
+vi.mock('../../api/knowledge', () => ({
+  fetchKnowledgeCitation: vi.fn(),
+  fetchKnowledgePage: vi.fn(),
+}))
 
 vi.hoisted(() => {
   Object.defineProperty(globalThis, 'WebGLRenderingContext', {
@@ -74,9 +81,34 @@ const communities: KnowledgeGraphCommunities = {
 beforeEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
   localStorage.clear()
+  vi.mocked(fetchKnowledgeCitation).mockResolvedValue({
+    citation_id: 'kcite-1', chunk_id: 'chunk-1', page_id: 'page-1',
+    page_revision: 'krev-page', page_path: 'wiki/sources/harness.md',
+    source_id: 'source-1', source_revision: 'sha256:source', source_kind: 'obsidian',
+    source_relative_path: 'notes/harness.md', block_id: 'block-1', ordinal: 0,
+    title: 'Agent Harness', heading_path: ['Harness', 'Recovery'], page_number: null,
+    excerpt: 'Harness 使用可恢复的状态机保存执行证据。', token_count: 12, truncated: false,
+  })
+  vi.mocked(fetchKnowledgePage).mockResolvedValue({
+    page_id: 'page-1', path: 'wiki/sources/harness.md', title: 'Agent Harness',
+    updated_at: '', revision: {
+      revision_id: 'krev-page', sequence: 1, content_hash: 'sha256:page',
+      source_revision: 'sha256:source', proposal_id: 'kprop-1', change_kind: 'ingest',
+      git_commit: 'abc123', created_at: '',
+    },
+    content: '# Agent Harness\n\n可恢复执行。\n\n<script>alert(1)</script>', truncated: false,
+  })
 })
 
-it('degrades the graph to a searchable node list on mobile', async () => {
+it('keeps the selected node color and disables Sigma white highlight overlays', () => {
+  const presentation = selectedNodePresentation('#16a085', 5)
+  expect(presentation.color).toBe('#16a085')
+  expect(presentation.size).toBeCloseTo(6.9)
+  expect(presentation.highlighted).toBe(false)
+  expect(presentation.zIndex).toBe(6)
+})
+
+it('keeps the interactive graph on mobile within the compact performance budget', async () => {
   const wrapper = mount(KnowledgeGraphCanvas, {
     props: {
       graph, communities, selectedNodeId: null, colorMode: 'community',
@@ -84,8 +116,35 @@ it('degrades the graph to a searchable node list on mobile', async () => {
     },
   })
 
-  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(2)
-  await wrapper.setProps({ visibleKinds: ['page'], query: 'agent' })
+  expect(wrapper.find('.mobile-node-list').exists()).toBe(false)
+  expect(wrapper.get('.sigma-container').attributes('aria-label')).toBe('本地知识图谱')
+  wrapper.unmount()
+})
+
+it('degrades an oversized compact graph to a bounded node list', async () => {
+  const oversizedGraph: KnowledgeGraph = {
+    snapshot: { ...snapshot, node_count: 1201, edge_count: 0 },
+    nodes: Array.from({ length: 1201 }, (_, index) => ({
+      ...pageNode,
+      node_id: `page-${index + 1}`,
+      page_id: `page-${index + 1}`,
+      label: index === 0 ? 'Agent Harness' : `Page ${index + 1}`,
+    })),
+    edges: [],
+    offset: 0,
+    next_offset: null,
+    has_more: false,
+  }
+  const wrapper = mount(KnowledgeGraphCanvas, {
+    props: {
+      graph: oversizedGraph, communities: null, selectedNodeId: null, colorMode: 'community',
+      visibleKinds: ['page'], query: '',
+    },
+  })
+
+  expect(wrapper.find('.sigma-container').exists()).toBe(false)
+  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(80)
+  await wrapper.setProps({ query: 'agent' })
   await flushPromises()
   expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(1)
   await wrapper.get('.mobile-node-list button').trigger('click')
@@ -121,6 +180,8 @@ it('summarizes the selected neighborhood without exposing every graph label', ()
   expect(wrapper.get('.graph-focus-summary').text()).toContain('Agent Harness')
   expect(wrapper.get('.graph-focus-summary').text()).toContain('1 条直接连接')
   expect(wrapper.find('.graph-global-summary').exists()).toBe(false)
+  expect(wrapper.get('.graph-legend-panel').attributes('data-mode')).toBe('community')
+  expect(wrapper.get('.graph-legend-panel').text()).toContain('Harness2')
   wrapper.unmount()
 })
 
@@ -151,13 +212,53 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   await flushPromises()
   expect(document.activeElement).toBe(wrapper.get('button[aria-label="关闭知识详情"]').element)
   await wrapper.findAll('.inspector-tabs button')[1].trigger('click')
+  await flushPromises()
+  expect(fetchKnowledgePage).toHaveBeenCalledWith('page-1')
+  expect(wrapper.get('.wiki-content').text()).toContain('可恢复执行')
+  expect(wrapper.find('.wiki-content script').exists()).toBe(false)
+  await wrapper.findAll('.inspector-tabs button')[2].trigger('click')
   expect(wrapper.text()).toContain('notes/harness.md')
   expect(wrapper.text()).toContain('来源证据')
   expect(wrapper.text()).toContain('sha256:source')
-  await wrapper.findAll('.inspector-tabs button')[2].trigger('click')
+  await wrapper.get('button[aria-label="查看 notes/harness.md 的证据片段"]').trigger('click')
+  await flushPromises()
+  expect(fetchKnowledgeCitation).toHaveBeenCalledWith('kcite-1')
+  expect(wrapper.text()).toContain('Harness 使用可恢复的状态机保存执行证据。')
+  expect(wrapper.text()).toContain('Harness / Recovery')
+  await wrapper.findAll('.inspector-tabs button')[3].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
   expect(wrapper.emitted('select')).toEqual([['source-1']])
+  await wrapper.get('button[aria-label="在对话中研究此节点"]').trigger('click')
+  expect(wrapper.emitted('research')).toHaveLength(1)
   await wrapper.get('.knowledge-inspector').trigger('keydown', { key: 'Escape' })
   expect(wrapper.emitted('close')).toHaveLength(1)
+  wrapper.unmount()
+})
+
+it('reads a canonical Wiki page that is not yet projected into the graph', async () => {
+  const wrapper = mount(KnowledgeInspector, {
+    props: {
+      node: null,
+      page: {
+        page_id: 'page-1', path: 'wiki/sources/harness.md', title: 'Agent Harness',
+        current_revision: 'krev-page', updated_at: '', revisions: [],
+      },
+      neighborhood: null,
+      insights: [],
+      goal: null,
+      alignments: [],
+      communities: [],
+      communityId: null,
+      loading: false,
+      compact: false,
+    },
+  })
+
+  expect(wrapper.findAll('.inspector-tabs button')).toHaveLength(2)
+  await wrapper.findAll('.inspector-tabs button')[1].trigger('click')
+  await flushPromises()
+
+  expect(fetchKnowledgePage).toHaveBeenCalledWith('page-1')
+  expect(wrapper.get('.wiki-content').text()).toContain('可恢复执行')
   wrapper.unmount()
 })

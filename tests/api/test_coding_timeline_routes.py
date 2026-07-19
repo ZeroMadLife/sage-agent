@@ -190,6 +190,27 @@ def test_websocket_streams_envelopes_and_rest_replays_same_event_ids(tmp_path: P
     ]
     assert len(runtime_events) == 1
     assert runtime_events[0]["kind"] == "run"
+    stage_events = [
+        item
+        for item in streamed
+        if item["kind"] == "harness"
+        and item["payload"].get("type")
+        in {"stage_started", "stage_completed", "transition_taken"}
+    ]
+    assert stage_events
+    assert {item["payload"].get("stage_id") for item in stage_events} >= {
+        "receive",
+        "context",
+        "plan",
+        "act",
+        "reply",
+    }
+    retrieval_decisions = [
+        item
+        for item in streamed
+        if item["payload"].get("type") == "retrieval_decision"
+    ]
+    assert [item["payload"]["decision"] for item in retrieval_decisions] == ["skip"]
 
 
 def test_runtime_error_becomes_error_terminal_after_turn_stream_exhausts(
@@ -213,7 +234,18 @@ def test_runtime_error_becomes_error_terminal_after_turn_stream_exhausts(
 
     assert events[-1]["status"] == "error"
     assert events[-1]["payload"] == {"event": "run_error"}
-    assert events[-2]["payload"]["type"] == "turn_finished"
+    assert any(item["payload"].get("type") == "turn_finished" for item in events[:-1])
+    assert any(
+        item["kind"] == "harness"
+        and item["payload"].get("type") == "stage_failed"
+        and item["payload"].get("stage_id") == "plan"
+        for item in events[:-1]
+    )
+    assert any(
+        item["payload"].get("type") == "retrieval_decision"
+        and item["payload"].get("decision") == "skip"
+        for item in events[:-1]
+    )
 
 
 def test_runtime_busy_without_run_finished_becomes_error_terminal(tmp_path: Path) -> None:
@@ -292,6 +324,17 @@ def test_disconnect_does_not_cancel_approval_blocked_run_and_rest_can_resume(
             f"/api/v1/coding/session/{session_id}/timeline"
         ).json()["active_run"]
         assert active is not None
+        blocked_events = client.get(
+            f"/api/v1/coding/session/{session_id}/timeline?limit=100"
+        ).json()["items"]
+        assert any(
+            item["kind"] == "harness"
+            and item["status"] == "blocked"
+            and item["payload"].get("type") == "stage_started"
+            and item["payload"].get("stage_id") == "act"
+            and item["payload"].get("detail") == "write_file · note.txt"
+            for item in blocked_events
+        )
         response = client.post(
             f"/api/v1/coding/{session_id}/approval/respond",
             json={"approval_id": approval_id, "choice": "once"},

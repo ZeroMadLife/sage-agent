@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
@@ -74,6 +76,9 @@ class ApprovalManager:
     def __init__(self) -> None:
         self._queues: dict[str, list[ApprovalEntry]] = {}
         self._session_approved: dict[str, set[str]] = {}
+        self._graph_approval_ids: set[tuple[str, str]] = set()
+        self._resolved: dict[tuple[str, str], ApprovalChoice] = {}
+        self._run_ids: dict[tuple[str, str], str] = {}
         self._lock = threading.Lock()
 
     def submit(
@@ -83,19 +88,63 @@ class ApprovalManager:
         args: dict[str, Any],
         description: str,
         pattern_key: str,
+        approval_id: str | None = None,
+        run_id: str | None = None,
     ) -> ApprovalEntry:
         """Create and enqueue a pending approval."""
-        entry = ApprovalEntry(
-            approval_id=f"appr_{uuid4().hex[:12]}",
-            session_id=session_id,
-            tool=tool,
-            args=dict(args),
-            description=description,
-            pattern_key=pattern_key,
-        )
         with self._lock:
+            resolved_key = (session_id, approval_id) if approval_id else None
+            if resolved_key is not None:
+                assert approval_id is not None
+                existing = self._find_entry_locked(session_id, approval_id)
+                if existing is not None:
+                    return existing
+                resolved = self._resolved.get(resolved_key)
+                if resolved is not None:
+                    entry = ApprovalEntry(
+                        approval_id=approval_id,
+                        session_id=session_id,
+                        tool=tool,
+                        args=dict(args),
+                        description=description,
+                        pattern_key=pattern_key,
+                        result=resolved,
+                    )
+                    entry.event.set()
+                    return entry
+                self._graph_approval_ids.add(resolved_key)
+                if run_id:
+                    self._run_ids[resolved_key] = run_id
+            entry = ApprovalEntry(
+                approval_id=approval_id or f"appr_{uuid4().hex[:12]}",
+                session_id=session_id,
+                tool=tool,
+                args=dict(args),
+                description=description,
+                pattern_key=pattern_key,
+            )
             self._queues.setdefault(session_id, []).append(entry)
         return entry
+
+    def restore_pending(self, payload: Mapping[str, Any]) -> ApprovalEntry:
+        """Rehydrate one graph approval after process restart."""
+        required = ("session_id", "approval_id", "tool", "description", "pattern_key")
+        if any(not str(payload.get(key, "")).strip() for key in required):
+            raise ValueError("durable approval payload is incomplete")
+        return self.submit(
+            str(payload["session_id"]),
+            str(payload["tool"]),
+            dict(payload.get("args", {})) if isinstance(payload.get("args"), Mapping) else {},
+            str(payload["description"]),
+            str(payload["pattern_key"]),
+            approval_id=str(payload["approval_id"]),
+            run_id=str(payload.get("run_id", "")) or None,
+        )
+
+    def run_id_for(self, session_id: str, approval_id: str) -> str | None:
+        """Return the graph run bound to one approval."""
+        with self._lock:
+            return self._run_ids.get((session_id, approval_id))
 
     def resolve(self, session_id: str, approval_id: str, choice: ApprovalChoice) -> bool:
         """Resolve a pending approval and wake the waiting tool execution."""
@@ -111,6 +160,8 @@ class ApprovalManager:
             entry.result = choice
             if choice in {"session", "always"}:
                 self._session_approved.setdefault(session_id, set()).add(entry.pattern_key)
+            if (session_id, approval_id) in self._graph_approval_ids:
+                self._resolved[(session_id, approval_id)] = choice
             self._queues[session_id] = [
                 item for item in self._queues.get(session_id, []) if item.approval_id != approval_id
             ]
@@ -123,6 +174,26 @@ class ApprovalManager:
             queue = self._queues.get(session_id, [])
             return queue[0].to_dict() if queue else None
 
+    async def wait_for(
+        self, session_id: str, approval_id: str, *, timeout_seconds: float = 300
+    ) -> ApprovalChoice | None:
+        """Wait for one approval without exposing its threading primitive."""
+        with self._lock:
+            entry = self._find_entry_locked(session_id, approval_id)
+            if entry is None:
+                return self._resolved.get((session_id, approval_id))
+        completed = await asyncio.to_thread(entry.event.wait, timeout_seconds)
+        return entry.result if completed else None
+
+    def consume_resolution(self, session_id: str, approval_id: str) -> ApprovalChoice | None:
+        """Consume a graph approval decision after the checkpoint resumes."""
+        with self._lock:
+            key = (session_id, approval_id)
+            choice = self._resolved.pop(key, None)
+            self._graph_approval_ids.discard(key)
+            self._run_ids.pop(key, None)
+            return choice
+
     def cancel_session(self, session_id: str) -> None:
         """Wake and deny every pending approval for a stopped session."""
         with self._lock:
@@ -130,6 +201,9 @@ class ApprovalManager:
             self._queues[session_id] = []
             for entry in entries:
                 entry.result = "deny"
+                key = (session_id, entry.approval_id)
+                if key in self._graph_approval_ids:
+                    self._resolved[key] = "deny"
         for entry in entries:
             entry.event.set()
 

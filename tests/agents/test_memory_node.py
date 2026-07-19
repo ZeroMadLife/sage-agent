@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from agents.memory_node import create_memory_node
-from core.memory.long_term import MemoryFact
+from core.memory.extractor import MemoryFact
 
 
 @pytest.fixture

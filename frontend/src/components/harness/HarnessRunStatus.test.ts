@@ -36,6 +36,37 @@ describe('HarnessRunStatus', () => {
     expect(wrapper.get('[data-stage-id="plan"]').text()).toContain('2')
     expect(wrapper.get('[data-stage-id="act"]').text()).toContain('run_shell · npm test')
     expect(wrapper.get('.stage-edge').classes()).toContain('taken')
+    expect(wrapper.get('.stage-path').attributes('style')).toContain('--stage-count: 2')
+    expect(wrapper.find('.stage-path-scroller').exists()).toBe(true)
+    expect(wrapper.get('.stage-focus').text()).toContain('当前步骤')
+    expect(wrapper.get('.stage-focus').text()).toContain('调用工具')
+    expect(wrapper.get('.stage-focus').text()).toContain('run_shell · npm test')
+    expect(wrapper.get('.stage-focus').classes()).toContain('running')
+  })
+
+  it('renders sanitized runtime resources without connection configuration', () => {
+    const wrapper = mount(HarnessRunStatus, {
+      props: {
+        projection: projection({
+          runtimeResources: [
+            {
+              id: 'mcp-catalog', kind: 'mcp', label: 'MCP 目录',
+              detail: '3 个服务 · 2 已配置 · 1 未配置', status: 'blocked',
+            },
+            {
+              id: 'context-budget', kind: 'context', label: '上下文',
+              detail: '420 / 32000 tokens', status: 'completed',
+            },
+          ],
+        }),
+      },
+    })
+
+    expect(wrapper.get('.runtime-resources').text()).toContain('MCP 目录')
+    expect(wrapper.get('.runtime-resources').text()).toContain('1 未配置')
+    expect(wrapper.get('.runtime-resources').text()).toContain('420 / 32000 tokens')
+    expect(wrapper.text()).not.toContain('command')
+    expect(wrapper.text()).not.toContain('env')
   })
 
   it('shows an ordered replay notice when the historical definition is missing', () => {
@@ -50,5 +81,41 @@ describe('HarnessRunStatus', () => {
     })
 
     expect(wrapper.get('.definition-fallback').text()).toContain('legacy.flow v7')
+  })
+
+  it('does not repeat an internal coding run id in the visible stage copy', () => {
+    const wrapper = mount(HarnessRunStatus, {
+      props: {
+        projection: projection({
+          stages: [{
+            id: 'context', label: '组装上下文', status: 'completed',
+            visitCount: 1, lastSequence: 2,
+            operationRef: { kind: 'coding_run', id: 'run-internal' },
+          }],
+        }),
+      },
+    })
+
+    expect(wrapper.text()).not.toContain('run-internal')
+  })
+
+  it('keeps the last completed stage visible after the run finishes', () => {
+    const wrapper = mount(HarnessRunStatus, {
+      props: {
+        projection: projection({
+          status: 'completed',
+          activeStageId: undefined,
+          stages: [
+            { id: 'plan', label: '规划', status: 'completed', visitCount: 1, lastSequence: 2 },
+            { id: 'reply', label: '回答', status: 'completed', visitCount: 1, lastSequence: 4 },
+          ],
+        }),
+      },
+    })
+
+    expect(wrapper.get('.stage-focus').text()).toContain('最近步骤')
+    expect(wrapper.get('.stage-focus').text()).toContain('回答')
+    expect(wrapper.get('.stage-focus').text()).toContain('完成')
+    expect(wrapper.get('.stage-focus').classes()).toContain('completed')
   })
 })

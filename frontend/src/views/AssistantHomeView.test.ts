@@ -23,7 +23,7 @@ function summary(): AssistantHomeSummary {
     proposals: { status: 'ready', memory_pending: 1, wiki_pending: 0, note_pending: 0, error: null },
     suggested_actions: [{
       id: 'review-memory', kind: 'review', label: '查看待确认沉淀',
-      description: '有 1 条记忆提案等待处理。', target: '/evolution',
+      description: '有 1 条记忆提案等待处理。', target: '/growth',
     }],
   }
 }
@@ -36,7 +36,7 @@ async function mountHome() {
       { path: '/coding', component: { template: '<div />' } },
       { path: '/coding/session/:sessionId', component: { template: '<div />' } },
       { path: '/knowledge', component: { template: '<div />' } },
-      { path: '/evolution', component: { template: '<div />' } },
+      { path: '/growth', component: { template: '<div />' } },
       { path: '/public', component: { template: '<div />' } },
       { path: '/settings/appearance', component: { template: '<div />' } },
     ],

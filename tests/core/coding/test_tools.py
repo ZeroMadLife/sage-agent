@@ -95,6 +95,37 @@ def test_write_file_rejects_workspace_escape(tmp_path: Path) -> None:
     assert not (tmp_path.parent / "outside.txt").exists()
 
 
+def test_file_tools_hide_and_reject_workspace_credentials(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    tools = build_tool_registry(workspace)
+    (tmp_path / ".env").write_text("API_KEY=must-not-leak\n", encoding="utf-8")
+    (tmp_path / ".env.example").write_text("API_KEY=placeholder\n", encoding="utf-8")
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(
+        "control-marker = true\n", encoding="utf-8"
+    )
+    (tmp_path / ".sage").mkdir()
+    (tmp_path / ".sage" / "usage.sqlite3").write_text(
+        "usage-marker", encoding="utf-8"
+    )
+    (tmp_path / "README.md").write_text("public marker\n", encoding="utf-8")
+
+    listing = tools["list_files"].execute({"path": "."})
+    blocked = tools["read_file"].execute({"path": ".env"})
+    secret_search = tools["search"].execute({"path": ".", "pattern": "must-not-leak"})
+    control_search = tools["search"].execute({"path": ".", "pattern": "control-marker"})
+    public_search = tools["search"].execute({"path": ".", "pattern": "public marker"})
+
+    assert "[F] .env" not in listing.content.splitlines()
+    assert "[D] .codex" not in listing.content.splitlines()
+    assert "[D] .sage" not in listing.content.splitlines()
+    assert blocked.is_error is True
+    assert "protected by workspace policy" in blocked.content
+    assert "must-not-leak" not in secret_search.content
+    assert "control-marker" not in control_search.content
+    assert "README.md" in public_search.content
+
+
 def test_run_shell_uses_filtered_environment_and_reports_timeout(tmp_path: Path) -> None:
     """run_shell filters sensitive env vars and reports command timeout as an error."""
     workspace = _workspace(tmp_path)
@@ -121,6 +152,25 @@ def test_run_shell_uses_filtered_environment_and_reports_timeout(tmp_path: Path)
     assert "secret" not in env_result.content
     assert timeout_result.is_error is True
     assert "timed out" in timeout_result.content
+    assert timeout_result.error_code == "shell_timeout"
+    assert timeout_result.retryable is True
+
+
+def test_run_shell_timeout_terminates_the_whole_process_group(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    tools = build_tool_registry(workspace)
+    marker = tmp_path / "late-child.txt"
+
+    result = tools["run_shell"].execute(
+        {
+            "command": f"(sleep 2; touch {marker.name}) & wait",
+            "timeout": 1,
+        }
+    )
+    time.sleep(1.3)
+
+    assert result.error_code == "shell_timeout"
+    assert marker.exists() is False
 
 
 def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: Path) -> None:

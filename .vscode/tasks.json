@@ -13,7 +13,7 @@
     {
       "label": "dev: backend",
       "type": "shell",
-      "command": "python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env",
+      "command": ".venv/bin/python -m uvicorn api.main:app --host 127.0.0.1 --port 8000 --reload --env-file .env",
       "options": {
         "cwd": "${workspaceFolder}"
       },

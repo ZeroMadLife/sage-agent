@@ -1,7 +1,11 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useCodingStore } from './coding'
-import type { CodingTimelineEvent, MemoryProposal } from '../types/api'
+import type {
+  CodingKnowledgeSourceProposal,
+  CodingTimelineEvent,
+  MemoryProposal,
+} from '../types/api'
 
 function timelineEvent(
   sessionId: string,
@@ -36,9 +40,28 @@ function memoryProposal(proposalId: string, revision: number): MemoryProposal {
   }
 }
 
+function sourceProposal(
+  proposalId: string,
+  revision: number,
+  runId = 'run-web',
+): CodingKnowledgeSourceProposal {
+  return {
+    proposal_id: proposalId, thread_id: 'c1', run_id: runId,
+    artifact_ref: 'sage://coding/c1/run-web/artifacts/fetch-1', source_kind: 'web',
+    canonical_url: 'https://example.com/official', title: 'Official Evidence',
+    media_type: 'text/html', retrieved_at: '2026-07-18T09:30:00Z',
+    content_hash: 'a'.repeat(64), reason: '补充当前学习目标的官方证据',
+    evidence_refs: ['wcite_official'], status: 'pending', revision,
+    target_root_id: 'sage-learning', target_relative_path: '', job_id: null,
+    last_error: null, decided_by: null, decided_at: null,
+    created_at: '2026-07-18T09:31:00Z', updated_at: '2026-07-18T09:31:00Z',
+  }
+}
+
 describe('coding store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
+    localStorage.removeItem('sage.coding.newRuntimeProfile')
   })
 
   afterEach(() => {
@@ -110,6 +133,127 @@ describe('coding store', () => {
     await forced
 
     expect(store.currentModelId).toBe('account:p1:model-new')
+  })
+
+  it('uses only server-advertised runtime profiles for new sessions', async () => {
+    localStorage.setItem('sage.coding.newRuntimeProfile', 'deerflow_v2')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [], current: null, reasoning_mode: 'off', runtime_profiles: ['legacy'],
+        default_runtime_profile: 'legacy',
+      }),
+    }))
+    const store = useCodingStore()
+
+    await store.bootstrapModelCatalog()
+
+    expect(store.availableRuntimeProfiles).toEqual(['legacy'])
+    expect(store.newSessionRuntimeProfile).toBe('legacy')
+    expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBeNull()
+    expect(store.setNewSessionRuntimeProfile('deerflow_v2')).toBe(false)
+  })
+
+  it('lets the server default Harness 2.0 for a browser with no local preference', async () => {
+    class FakeSocket {
+      readyState = 0
+      onopen: (() => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    const empty = {
+      items: [], next_cursor: 0, has_more: false, older_cursor: null,
+      latest_cursor: 0, active_run: null, models: [], current: null,
+      reasoning_mode: 'off', runtime_profiles: ['legacy', 'deerflow_v2'],
+      default_runtime_profile: 'deerflow_v2', entries: [], path: '.',
+      is_git: false, branch: '', dirty_count: 0, changed_files: [], sessions: [],
+      runs: [], configured: false, used_tokens: 0,
+    }
+    const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 'server-default-v2', workspace_root: '/tmp/repo', workspace_id: 'w1',
+            permission_mode: 'default', runtime_profile: 'deerflow_v2',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => empty })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+
+    await store.initialize()
+
+    const creation = fetchMock.mock.calls.find(([input, init]) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      return init?.method === 'POST' && url.pathname.endsWith('/coding/session')
+    })
+    expect(creation).toBeDefined()
+    expect(JSON.parse(String(creation?.[1]?.body))).toMatchObject({ runtime_profile: null })
+    expect(store.newSessionRuntimeProfile).toBe('deerflow_v2')
+    expect(store.runtimeProfile).toBe('deerflow_v2')
+    expect(localStorage.getItem('sage.coding.newRuntimeProfile')).toBeNull()
+    store.disconnect()
+  })
+
+  it('creates initial and subsequent sessions with the opted-in Harness 2.0 profile', async () => {
+    localStorage.setItem('sage.coding.newRuntimeProfile', 'deerflow_v2')
+    class FakeSocket {
+      readyState = 0
+      onopen: (() => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+    }
+    const empty = {
+      items: [], next_cursor: 0, has_more: false, older_cursor: null,
+      latest_cursor: 0, active_run: null, models: [], current: null,
+      reasoning_mode: 'off', runtime_profiles: ['legacy', 'deerflow_v2'],
+      default_runtime_profile: 'deerflow_v2',
+      entries: [], path: '.', is_git: false, branch: '', dirty_count: 0,
+      changed_files: [], sessions: [], runs: [], configured: false, used_tokens: 0,
+    }
+    const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 'v2-session', workspace_root: '/tmp/repo', workspace_id: 'w1',
+            permission_mode: 'default', runtime_profile: 'deerflow_v2',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => empty })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+
+    await store.initialize()
+    await store.startNewSession()
+
+    const creations = fetchMock.mock.calls.filter(([input, init]) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      return init?.method === 'POST' && url.pathname.endsWith('/coding/session')
+    })
+    expect(creations).toHaveLength(2)
+    for (const creation of creations) {
+      expect(JSON.parse(String(creation[1]?.body))).toMatchObject({
+        runtime_profile: 'deerflow_v2',
+      })
+    }
+    expect(store.runtimeProfile).toBe('deerflow_v2')
+    store.disconnect()
   })
 
   it('keeps the latest usage range when responses finish out of order', async () => {
@@ -816,6 +960,105 @@ describe('coding store', () => {
     expect(store.memoryProposals).toEqual([])
   })
 
+  it('loads pending knowledge source proposals into the current shared session', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    const applying = { ...sourceProposal('ksprop_2', 2), status: 'applying' as const }
+    const approved = { ...sourceProposal('ksprop_3', 3), status: 'approved' as const }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ proposals: [approved, applying, proposal] }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    await store.loadKnowledgeSourceProposals()
+
+    expect(store.knowledgeSourceProposals.map((item) => item.proposal_id)).toEqual(['ksprop_2', 'ksprop_1'])
+    expect(store.knowledgeSourceProposalError).toBe('')
+  })
+
+  it('refreshes source proposals from a browser-safe timeline event', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ proposals: [proposal] }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    store.handleTimelineEvent('c1', timelineEvent('c1', 1, 'proposal', {
+      type: 'knowledge_source_proposal_created', proposal_id: proposal.proposal_id,
+      proposal_type: 'knowledge_source', source_kind: 'web',
+      content_hash: proposal.content_hash, requires_user_confirmation: true,
+      revision: proposal.revision, session_id: 'c1', run_id: proposal.run_id,
+    }, proposal.run_id))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(store.knowledgeSourceProposals[0].proposal_id).toBe('ksprop_1')
+  })
+
+  it('loads a source proposal review trail on demand', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        proposal,
+        events: [{
+          event_id: 'event-1', proposal_id: proposal.proposal_id, sequence: 1,
+          event_type: 'proposal_created', revision: 1, detail: {}, created_at: proposal.created_at,
+        }],
+      }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+
+    await store.loadKnowledgeSourceProposalDetail(proposal.proposal_id)
+
+    expect(store.knowledgeSourceProposalDetails[proposal.proposal_id].events[0].event_type)
+      .toBe('proposal_created')
+  })
+
+  it('approves a source proposal with CAS and removes it from pending review', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ ...proposal, status: 'approved', revision: 2, job_id: 'kjob_1' }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.knowledgeSourceProposals = [proposal]
+
+    await store.approveKnowledgeSourceProposal(proposal.proposal_id, proposal.revision)
+
+    expect(store.knowledgeSourceProposals).toEqual([])
+    expect(store.knowledgeSourceProposalBusy).toEqual({})
+  })
+
+  it('keeps an applying source proposal visible without allowing a second decision', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true, json: async () => ({ ...proposal, status: 'applying', revision: 2 }),
+    }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.knowledgeSourceProposals = [proposal]
+
+    await store.approveKnowledgeSourceProposal(proposal.proposal_id, proposal.revision)
+
+    expect(store.knowledgeSourceProposals[0]).toMatchObject({ status: 'applying', revision: 2 })
+  })
+
+  it('keeps a source proposal reviewable when its revision conflicts', async () => {
+    const proposal = sourceProposal('ksprop_1', 1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.knowledgeSourceProposals = [proposal]
+
+    await store.rejectKnowledgeSourceProposal(proposal.proposal_id, proposal.revision)
+
+    expect(store.knowledgeSourceProposals).toEqual([proposal])
+    expect(store.knowledgeSourceProposalError).toBe('知识来源提案已发生变化，请刷新后重试')
+    expect(store.knowledgeSourceProposalBusy).toEqual({})
+  })
+
   it('computes context percent from chars', () => {
     const store = useCodingStore()
     store.contextSnapshot = {
@@ -1291,18 +1534,24 @@ describe('coding store', () => {
   })
 
   it('shows the preparation phase as soon as a message is accepted by the stream', () => {
+    const sockets: FakeSocket[] = []
     class FakeSocket {
       readyState = 1
+      onopen: (() => void) | null = null
       onmessage: ((event: MessageEvent) => void) | null = null
       onerror: (() => void) | null = null
       onclose: (() => void) | null = null
       send = vi.fn()
       close = vi.fn()
+      constructor() {
+        sockets.push(this)
+      }
     }
     vi.stubGlobal('WebSocket', FakeSocket)
     const store = useCodingStore()
     store.sessionId = 'session-a'
     store.connectSocket()
+    sockets[0].onopen?.()
 
     store.sendMessage('检查这个模块')
 
@@ -1451,6 +1700,7 @@ describe('coding store', () => {
             created_at: '2026-07-08T10:00:00',
             updated_at: '2026-07-08T10:00:01',
             runtime_mode: 'default',
+            runtime_profile: 'legacy',
             message_count: 2,
           },
         ],
@@ -1468,7 +1718,7 @@ describe('coding store', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 503 }))
     const store = useCodingStore()
     store.codingSessions = [{
-      session_id: 'existing', title: '保留会话', workspace_root: '/tmp', created_at: '', updated_at: '', runtime_mode: 'default', message_count: 1,
+      session_id: 'existing', title: '保留会话', workspace_root: '/tmp', created_at: '', updated_at: '', runtime_mode: 'default', runtime_profile: 'legacy', message_count: 1,
     }]
 
     await expect(store.loadSessions()).rejects.toThrow('fetch sessions failed')
@@ -1754,16 +2004,24 @@ describe('coding store', () => {
         socketInstances.push(this)
       }
     }
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({
+    const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/coding/session')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 's-new', workspace_root: '/tmp/repo', runtime_profile: 'deerflow_v2',
+          }),
+        })
+      }
+      return Promise.resolve({
         ok: true,
-        json: async () => ({ session_id: 's-new', workspace_root: '/tmp/repo' }),
+        json: async () => ({
+          runs: [], sessions: [], models: [], current: null, reasoning_mode: 'off',
+          runtime_profiles: ['legacy', 'deerflow_v2'], default_runtime_profile: 'deerflow_v2',
+        }),
       })
-      .mockResolvedValue({
-        ok: true,
-        json: async () => ({ runs: [], sessions: [] }),
-      })
+    })
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('WebSocket', FakeSocket)
     const store = useCodingStore()

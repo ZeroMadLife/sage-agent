@@ -4,6 +4,7 @@ Configuration is loaded from environment variables and an optional ``.env`` file
 """
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,34 +22,34 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    amap_api_key: str = Field(default="", description="Amap Web Service API key")
+    amap_api_key: str = Field(default="", description="Amap Web Service API key", repr=False)
     amap_base_url: str = "https://restapi.amap.com/v3"
 
-    qweather_api_key: str = Field(default="", description="QWeather API key")
+    qweather_api_key: str = Field(default="", description="QWeather API key", repr=False)
     qweather_base_url: str = DEFAULT_QWEATHER_BASE_URL
     qweather_geo_url: str = DEFAULT_QWEATHER_GEO_URL
 
-    caiyun_api_key: str = ""
+    caiyun_api_key: str = Field(default="", repr=False)
 
     llm_provider: str = "doubao"
 
     # DeepSeek
-    deepseek_api_key: str = Field(default="", description="DeepSeek API key")
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key", repr=False)
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-v4-flash"
 
     # 火山引擎豆包（OpenAI 兼容格式，多模态）
-    doubao_api_key: str = Field(default="", description="Volcengine Doubao API key")
+    doubao_api_key: str = Field(default="", description="Volcengine Doubao API key", repr=False)
     doubao_base_url: str = "https://ark.cn-beijing.volces.com/api/coding/v3"
     doubao_model: str = "Doubao-Seed-2.0-pro"
 
     # 180txt 中转站（OpenAI 兼容格式）
-    openai_proxy_api_key: str = Field(default="", description="180txt proxy API key")
+    openai_proxy_api_key: str = Field(default="", description="180txt proxy API key", repr=False)
     openai_proxy_base_url: str = "https://serve.wzjself.org/v1"
     openai_proxy_model: str = "gpt-5.4-mini"
 
     # OpenAI 官方
-    openai_api_key: str = ""
+    openai_api_key: str = Field(default="", repr=False)
     openai_base_url: str = "https://api.openai.com/v1"
 
     # 主模型 / 轻量模型，格式 provider:model
@@ -104,9 +105,6 @@ class Settings(BaseSettings):
     redis_password: str = ""
     redis_db: int = 0
 
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
-
     app_env: str = "development"
     app_debug: bool = True
     app_host: str = "0.0.0.0"
@@ -115,10 +113,28 @@ class Settings(BaseSettings):
     app_access_codes: str = ""
 
     cloud_dev_login_enabled: bool = False
+    cloud_canary_invite_login_enabled: bool = False
     # Local HTTP development needs a non-Secure cookie; non-development is
     # forced to Secure by the app factory regardless of this value.
     cloud_secure_cookies: bool = False
     cloud_frontend_url: str = "http://localhost:5173"
+    # Local development may repair additive PostgreSQL schema changes on startup.
+    # Production deployment keeps migrations explicit in the release runbook.
+    sage_auto_migrate: bool = True
+    sage_deerflow_v2_enabled: bool = True
+    sage_coding_default_runtime_profile: str = "deerflow_v2"
+    sage_mcp_live_enabled: bool = False
+    sage_coding_sandbox_provider: str = "local_workspace"
+    sage_coding_sandbox_image: str = "python:3.11-slim"
+    sage_web_search_enabled: bool = False
+    sage_web_search_endpoint: str = ""
+    sage_web_search_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_enabled: bool = False
+    sage_web_fetch_connect_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
+    sage_web_fetch_read_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_total_timeout_seconds: float = Field(default=20.0, ge=2.0, le=90.0)
+    sage_coding_workspace_root: str = ""
+    sage_coding_storage_root: str = ""
 
     # GitHub OAuth is used for identity only. Repository authorization is
     # handled separately by a GitHub App so private repository access can be
@@ -158,9 +174,6 @@ class Settings(BaseSettings):
 
     langsmith_api_key: str = ""
     langsmith_project: str = "tourswarm"
-
-    mem0_vector_store: str = "qdrant"
-    mem0_embedder_model: str = "BAAI/bge-large-zh-v1.5"
 
     @property
     def postgres_dsn(self) -> str:
@@ -202,6 +215,9 @@ class Settings(BaseSettings):
             missing.append("GITHUB_OAUTH_REDIRECT_URI(HTTPS)")
         if self.cloud_dev_login_enabled:
             missing.append("CLOUD_DEV_LOGIN_ENABLED=false")
+        frontend_hostname = (urlparse(self.cloud_frontend_url).hostname or "").lower()
+        if self.cloud_canary_invite_login_enabled and not frontend_hostname.endswith(".ts.net"):
+            missing.append("CLOUD_CANARY_INVITE_LOGIN_ENABLED=false outside private Canary")
         if missing:
             raise RuntimeError(f"production cloud secrets are missing: {', '.join(missing)}")
 

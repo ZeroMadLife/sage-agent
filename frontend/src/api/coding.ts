@@ -6,6 +6,10 @@ import type {
   CodingFileContentResponse,
   CodingFilesResponse,
   CodingGitStatusResponse,
+  CodingKnowledgeSourceProposal,
+  CodingKnowledgeSourceProposalDetail,
+  CodingKnowledgeSourceProposalsResponse,
+  CodingKnowledgeSourceProposalStatus,
   CodingMcpServersResponse,
   CodingModelsResponse,
   CodingProviderSettings,
@@ -23,6 +27,7 @@ import type {
   CodingRunDetailResponse,
   CodingRunDiff,
   CodingRunsResponse,
+  CodingRuntimeProfile,
   CodingSessionMessagesResponse,
   CodingSessionResponse,
   CodingSessionSummary,
@@ -34,7 +39,7 @@ import type {
 } from '../types/api'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
-const TIMELINE_KINDS = new Set(['user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory', 'agent', 'terminal', 'system', 'run'])
+const TIMELINE_KINDS = new Set(['user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory', 'proposal', 'agent', 'terminal', 'system', 'run', 'harness'])
 const TIMELINE_STATUSES = new Set(['pending', 'queued', 'running', 'blocked', 'done', 'completed', 'cancelled', 'error', 'interrupted', 'retryable'])
 
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
@@ -86,11 +91,16 @@ function isTimelineEvent(value: unknown, sessionId: string): value is CodingTime
 export async function startCodingSession(
   workspaceRoot?: string,
   approvalPolicy: 'auto' | 'ask' | 'never' = 'ask',
+  runtimeProfile?: CodingRuntimeProfile,
 ): Promise<CodingSessionResponse> {
   const response = await apiFetch(new URL('/api/v1/coding/session', API_BASE_URL), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ workspace_root: workspaceRoot || null, approval_policy: approvalPolicy }),
+    body: JSON.stringify({
+      workspace_root: workspaceRoot || null,
+      approval_policy: approvalPolicy,
+      runtime_profile: runtimeProfile ?? null,
+    }),
   })
 
   if (!response.ok) {
@@ -552,6 +562,72 @@ export function approveMemoryProposal(sessionId: string, proposalId: string, exp
 
 export function rejectMemoryProposal(sessionId: string, proposalId: string, expectedRevision: number) {
   return transitionMemoryProposal(sessionId, proposalId, expectedRevision, 'reject')
+}
+
+function knowledgeSourceProposalError(status: number): Error {
+  if (status === 409) return new Error('知识来源提案已发生变化，请刷新后重试')
+  if (status === 404) return new Error('知识来源提案不存在、无权访问或已处理')
+  if (status === 422) return new Error('知识来源提案版本无效')
+  if (status === 503) return new Error('知识来源审阅服务尚未就绪')
+  return new Error('知识来源审阅暂时不可用，请稍后重试')
+}
+
+export async function fetchKnowledgeSourceProposals(
+  sessionId: string,
+  status: CodingKnowledgeSourceProposalStatus | null = 'pending',
+): Promise<CodingKnowledgeSourceProposalsResponse> {
+  const url = new URL(`/api/v1/coding/${sessionId}/knowledge/source-proposals`, API_BASE_URL)
+  if (status) url.searchParams.set('status', status)
+  const response = await apiFetch(url, { cache: 'no-store' })
+  if (!response.ok) throw knowledgeSourceProposalError(response.status)
+  return (await response.json()) as CodingKnowledgeSourceProposalsResponse
+}
+
+export async function fetchKnowledgeSourceProposal(
+  sessionId: string,
+  proposalId: string,
+): Promise<CodingKnowledgeSourceProposalDetail> {
+  const response = await apiFetch(
+    new URL(`/api/v1/coding/${sessionId}/knowledge/source-proposals/${encodeURIComponent(proposalId)}`, API_BASE_URL),
+    { cache: 'no-store' },
+  )
+  if (!response.ok) throw knowledgeSourceProposalError(response.status)
+  return (await response.json()) as CodingKnowledgeSourceProposalDetail
+}
+
+async function transitionKnowledgeSourceProposal(
+  sessionId: string,
+  proposalId: string,
+  expectedRevision: number,
+  action: 'approve' | 'reject',
+): Promise<CodingKnowledgeSourceProposal> {
+  const response = await apiFetch(
+    new URL(`/api/v1/coding/${sessionId}/knowledge/source-proposals/${encodeURIComponent(proposalId)}/${action}`, API_BASE_URL),
+    {
+      method: 'POST',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expected_revision: expectedRevision }),
+    },
+  )
+  if (!response.ok) throw knowledgeSourceProposalError(response.status)
+  return (await response.json()) as CodingKnowledgeSourceProposal
+}
+
+export function approveKnowledgeSourceProposal(
+  sessionId: string,
+  proposalId: string,
+  expectedRevision: number,
+) {
+  return transitionKnowledgeSourceProposal(sessionId, proposalId, expectedRevision, 'approve')
+}
+
+export function rejectKnowledgeSourceProposal(
+  sessionId: string,
+  proposalId: string,
+  expectedRevision: number,
+) {
+  return transitionKnowledgeSourceProposal(sessionId, proposalId, expectedRevision, 'reject')
 }
 
 export async function fetchCodingRuns(sessionId: string): Promise<CodingRunsResponse> {

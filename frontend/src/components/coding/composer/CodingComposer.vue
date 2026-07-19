@@ -4,12 +4,27 @@ import { BrainCircuit, Send, Settings, Square } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { useCodingStore } from '../../../stores/coding'
 import type { CodingSkillSummary } from '../../../types/api'
+import type { HarnessSurfaceContext } from '../../../harness/types'
 import CodingContextBudget from '../chat/CodingContextBudget.vue'
 import CodingPermissionModeDrawer from './CodingPermissionModeDrawer.vue'
+
+const props = withDefaults(defineProps<{
+  density?: 'default' | 'compact'
+  surfaceContext?: HarnessSurfaceContext | null
+  placeholder?: string
+}>(), {
+  density: 'default',
+  surfaceContext: null,
+  placeholder: '输入任务，或 /review 调用 skill',
+})
+const emit = defineEmits<{
+  sent: [content: string, context: HarnessSurfaceContext | null]
+}>()
 
 const store = useCodingStore()
 const router = useRouter()
 const input = ref('')
+const textareaElement = ref<HTMLTextAreaElement | null>(null)
 const currentModel = computed(() => store.models.find((model) => model.id === store.currentModelId))
 const reasoningModes = computed(() => currentModel.value?.reasoning_modes ?? [])
 const reasoningOptions = computed<Array<'off' | 'low' | 'medium' | 'high'>>(
@@ -55,7 +70,11 @@ function onInput() {
 function send() {
   const content = input.value.trim()
   if (!content) return
-  store.sendMessage(content)
+  const sent = props.surfaceContext
+    ? store.sendMessage(content, props.surfaceContext)
+    : store.sendMessage(content)
+  if (!sent) return
+  emit('sent', content, props.surfaceContext)
   input.value = ''
   selectedIndex.value = 0
   skillMenuDismissed.value = false
@@ -119,20 +138,27 @@ defineExpose({
   setInput(value: string) {
     input.value = value
   },
+  focus() {
+    textareaElement.value?.focus()
+  },
+  hasDraft() {
+    return Boolean(input.value.trim())
+  },
 })
 </script>
 
 <template>
-  <div class="composer">
+  <div class="composer" :class="props.density">
     <div class="composer-frame">
       <div class="composer-input">
         <div class="composer-textarea-wrap">
           <div class="composer-meta"><CodingContextBudget /></div>
           <textarea
+            ref="textareaElement"
             v-model="input"
             rows="2"
             :disabled="!store.sessionId || store.isThinking"
-            placeholder="输入任务，或 /review 调用 skill"
+            :placeholder="placeholder"
             @keydown="onKeydown"
             @input="onInput"
           />
@@ -218,6 +244,35 @@ defineExpose({
   border-color: var(--sage-focus);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--sage-focus) 14%, transparent);
 }
+
+.composer.compact {
+  padding-right: 10px;
+  padding-left: 10px;
+  padding-bottom: 10px;
+}
+
+.composer.compact .composer-frame { border-radius: var(--sage-radius); }
+.composer.compact .composer-input textarea {
+  min-height: 58px;
+  max-height: 160px;
+  padding-top: 11px;
+  padding-bottom: 7px;
+  border-radius: var(--sage-radius) var(--sage-radius) 0 0;
+  resize: none;
+  line-height: 1.5;
+}
+.composer.compact .composer-controls {
+  gap: 4px;
+  min-height: 36px;
+  padding: 0 6px 6px;
+}
+.composer.compact .model-select { max-width: 126px; padding-right: 4px; padding-left: 4px; }
+.composer.compact .composer-meta { top: 8px; right: 9px; max-width: 132px; }
+.composer.compact .composer-meta :deep(.context-copy-desktop) { display: none; }
+.composer.compact .composer-meta :deep(.context-copy-mobile) { display: block; }
+.composer.compact .composer-meta :deep(.context-summary) { grid-template-columns: minmax(0, 1fr) 28px; width: 116px; }
+.composer.compact .composer-meta :deep(.context-track) { width: 28px; }
+.composer.compact .composer-meta :deep(.compact-context) { display: none; }
 
 .composer-controls {
   display: flex;
@@ -411,7 +466,22 @@ defineExpose({
 
 @media (max-width: 720px) {
   .composer { padding-right:12px; padding-left:12px; }
-  .composer-controls { overflow-x:auto; scrollbar-width:none; }
+  .composer.compact .composer-controls {
+    display:grid;
+    grid-template-columns:28px auto minmax(0,1fr) 32px;
+    grid-template-areas:
+      "settings permission model send"
+      "reasoning reasoning reasoning reasoning";
+    gap:4px;
+    overflow:visible;
+  }
+  .composer.compact .rail-icon { grid-area:settings; }
+  .composer.compact :deep(.permission-mode-control) { grid-area:permission; min-width:0; }
+  .composer.compact .model-select { grid-area:model; width:100%; max-width:none; min-width:0; }
+  .composer.compact .reasoning-control { grid-area:reasoning; justify-content:stretch; min-width:0; padding-left:3px; }
+  .composer.compact .reasoning-control button { flex:1; min-width:0; }
+  .composer.compact .send-btn,.composer.compact .stop-btn { grid-area:send; margin-left:0; }
+  .composer.compact .context-error { grid-column:1 / -1; }
   .composer-input textarea { padding-right:128px; }
   .reasoning-control svg { display:none; }
 }

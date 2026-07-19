@@ -9,7 +9,7 @@ import subprocess
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Mapping
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from inspect import signature
@@ -73,6 +73,7 @@ from core.coding.tool_executor import (
 from core.coding.tools.base import ToolContext
 from core.coding.tools.registry import build_tool_registry
 from core.coding.usage_store import UsageSample, UsageStore
+from core.harness import RuntimeProfile, normalize_runtime_profile
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,9 @@ class CodingRuntime:
         usage_store: UsageStore | None = None,
         owner_user_id: str | None = None,
         knowledge_store: Any | None = None,
+        runtime_profile: RuntimeProfile | None = None,
+        sandbox_provider: str = "local_workspace",
+        sandbox_image: str = "python:3.11-slim",
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -128,9 +132,18 @@ class CodingRuntime:
                 "updated_at": now(),
                 "history": [],
                 "runtime_mode": {"mode": "default"},
+                "runtime_profile": normalize_runtime_profile(runtime_profile),
                 "todos": {"next_id": 1, "items": []},
             }
         )
+        self.sandbox_provider = str(
+            self.session.get("sandbox_provider", sandbox_provider)
+        ).strip() or "local_workspace"
+        self.session["sandbox_provider"] = self.sandbox_provider
+        self.sandbox_image = str(
+            self.session.get("sandbox_image", sandbox_image)
+        ).strip() or "python:3.11-slim"
+        self.session["sandbox_image"] = self.sandbox_image
         self.session["id"] = session_id
         self.session["workspace_root"] = str(self.workspace.root)
         persisted_owner = str(self.session.get("owner_user_id", "")).strip()
@@ -140,6 +153,11 @@ class CodingRuntime:
             raise ValueError("coding session owner does not match persisted state")
         self.session.setdefault("history", [])
         self.session.setdefault("runtime_mode", {"mode": "default"})
+        persisted_runtime_profile = normalize_runtime_profile(self.session.get("runtime_profile"))
+        if runtime_profile is not None and persisted_runtime_profile != runtime_profile:
+            raise ValueError("coding session runtime profile does not match persisted state")
+        self._runtime_profile = persisted_runtime_profile
+        self.session["runtime_profile"] = self._runtime_profile
         self.session.setdefault("todos", {"next_id": 1, "items": []})
         self.session.setdefault("activated_tools", [])
         self.activated_tools = {
@@ -224,6 +242,9 @@ class CodingRuntime:
         model_reasoning_modes: Mapping[str, tuple[str, ...] | list[str]] | None = None,
         usage_store: UsageStore | None = None,
         knowledge_store: Any | None = None,
+        runtime_profile: RuntimeProfile | None = None,
+        sandbox_provider: str = "local_workspace",
+        sandbox_image: str = "python:3.11-slim",
     ) -> CodingRuntime:
         """Rehydrate a persisted coding runtime for a new WebSocket connection."""
         storage_path = Path(storage_root)
@@ -249,7 +270,15 @@ class CodingRuntime:
             model_reasoning_modes=model_reasoning_modes,
             usage_store=usage_store,
             knowledge_store=knowledge_store,
+            runtime_profile=runtime_profile,
+            sandbox_provider=str(session_state.get("sandbox_provider", sandbox_provider)),
+            sandbox_image=str(session_state.get("sandbox_image", sandbox_image)),
         )
+
+    @property
+    def runtime_profile(self) -> RuntimeProfile:
+        """Return the creation-time runtime profile; it has no mutable setter."""
+        return self._runtime_profile
 
     def list_files(self, path: str = ".") -> list[dict[str, Any]]:
         """Return directory entries (dirs first, then files), workspace-safe."""
@@ -262,6 +291,7 @@ class CodingRuntime:
                 target.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
             )
             if item.name not in IGNORED_PATH_NAMES
+            and not self.workspace.is_protected(item)
         ]
         return [{"name": item.name, "is_dir": item.is_dir()} for item in entries[:200]]
 
@@ -502,7 +532,7 @@ class CodingRuntime:
         """Return the first 2000 characters of the plan file (best-effort)."""
         if not plan_path:
             return ""
-        target = self.workspace.path(plan_path)
+        target = self.workspace.internal_path(plan_path)
         if not target.is_file():
             return ""
         content = target.read_text(encoding="utf-8", errors="replace")
@@ -670,6 +700,170 @@ class CodingRuntime:
             self._active_projection.append(deepcopy(enriched))
         return enriched
 
+    def append_harness_message(self, *, role: str, content: str, run_id: str) -> dict[str, Any]:
+        """Persist one public Harness message into the existing session transcript."""
+        if role not in {"user", "assistant"}:
+            raise ValueError("harness messages must be user or assistant")
+        text = content.strip()
+        if not text:
+            raise ValueError("harness message content must not be empty")
+        item = self._append_canonical_item(
+            {"role": role, "content": text, "run_id": run_id},
+        )
+        self._save_session()
+        return item
+
+    @asynccontextmanager
+    async def harness_turn(self, run_id: str) -> AsyncIterator[None]:
+        """Own the runtime-side lease for one externally coordinated graph turn."""
+        if not run_id.strip():
+            raise ValueError("run_id must not be empty")
+        if self.active_run_id is not None:
+            raise ContextBusyError("active run")
+        await self._acquire_context_operation()
+        if self._has_active_run():
+            self._context_operation_lock.release()
+            raise ContextBusyError("active run")
+        self.stop_requested = False
+        self._turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+        self.active_run_id = run_id
+        try:
+            yield
+        finally:
+            self.stop_requested = False
+            self.active_run_id = None
+            self._turn_id = ""
+            if self._context_operation_lock.locked():
+                self._context_operation_lock.release()
+            self._save_session()
+
+    async def prepare_harness_context(
+        self,
+        *,
+        user_message: str,
+        run_id: str,
+    ) -> PreparedContext | None:
+        """Prepare and apply Sage context compaction before a graph turn starts."""
+        if self.active_run_id != run_id or not self._context_operation_lock.locked():
+            raise ContextBusyError("harness turn is not active")
+        if self.context_controller is None:
+            return None
+        prepared = await self.context_controller.on_turn_start(
+            deepcopy(self._active_projection),
+            user_message,
+            run_id,
+            previous_checkpoint=self._active_checkpoint,
+            transcript_range=self._active_transcript_range(),
+        )
+        result = prepared.compaction_result
+        if result is not None and result.applied:
+            self._apply_compaction_result(result)
+            self._save_session()
+        return prepared
+
+    async def begin_harness_evidence(self, run_id: str) -> None:
+        """Start a V2 run trace and capture its bounded workspace baseline."""
+        await asyncio.to_thread(
+            self.run_store.start_run,
+            run_id,
+            self.session_id,
+        )
+        try:
+            await asyncio.to_thread(
+                self.diff_tracker.snapshot_before_run,
+                run_id,
+            )
+        except Exception:
+            self.diff_tracker.clear_baseline()
+            finished = event_to_dict(
+                RunFinishedEvent(
+                    run_id=run_id,
+                    status="error",
+                    duration_ms=0,
+                    tool_steps=0,
+                )
+            )
+            await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+            raise
+
+    async def append_harness_evidence(
+        self,
+        run_id: str,
+        payload: Mapping[str, Any],
+    ) -> None:
+        """Mirror a public V2 event into the existing bounded RunStore trace."""
+        event = {"run_id": run_id, **dict(payload)}
+        if not str(event.get("type", "")).strip():
+            return
+        event.setdefault("created_at", now())
+        await asyncio.to_thread(self.run_store.append_trace, run_id, event)
+
+    async def finish_harness_evidence(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+    ) -> dict[str, Any]:
+        """Persist V2 workspace diff and the RunStore-compatible terminal trace."""
+        diff_event = await self._capture_workspace_diff_event(run_id)
+        await asyncio.to_thread(self.run_store.append_trace, run_id, diff_event)
+        tool_steps = await asyncio.to_thread(
+            self.run_store.run_tool_count,
+            run_id,
+        )
+        finished = event_to_dict(
+            RunFinishedEvent(
+                run_id=run_id,
+                status=status,
+                duration_ms=max(0, duration_ms),
+                tool_steps=tool_steps,
+            )
+        )
+        await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+        return diff_event
+
+    async def abort_harness_evidence(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        duration_ms: int,
+    ) -> None:
+        """Close a V2 RunStore trace without inventing a partial workspace diff."""
+        self.diff_tracker.clear_baseline()
+        finished = event_to_dict(
+            RunFinishedEvent(
+                run_id=run_id,
+                status=status,
+                duration_ms=max(0, duration_ms),
+                tool_steps=await asyncio.to_thread(
+                    self.run_store.run_tool_count,
+                    run_id,
+                ),
+            )
+        )
+        await asyncio.to_thread(self.run_store.append_trace, run_id, finished)
+
+    async def _capture_workspace_diff_event(self, run_id: str) -> dict[str, Any]:
+        diff = await asyncio.to_thread(self.diff_tracker.snapshot_after_run, run_id)
+        await asyncio.to_thread(
+            self.diff_tracker.write_artifact,
+            diff,
+            self.run_store.evidence_root,
+        )
+        return {
+            "run_id": run_id,
+            **event_to_dict(
+                WorkspaceDiffReadyEvent(
+                    run_id=run_id,
+                    changed_files=[file.path for file in diff.changed_files],
+                    file_count=diff.file_count,
+                    truncated=diff.truncated,
+                )
+            ),
+        }
+
     @staticmethod
     def _history_to_transcript_item(enriched: dict[str, Any]) -> TranscriptItem:
         return TranscriptItem(
@@ -824,6 +1018,10 @@ class CodingRuntime:
             raise ContextBusyError("context operation is active")
         await self._context_operation_lock.acquire()
 
+    def _has_active_run(self) -> bool:
+        """Re-read the active lease after an await without static narrowing."""
+        return self.active_run_id is not None
+
     def _active_transcript_range(self) -> tuple[int, int] | None:
         sequences = [
             int(item["sequence"])
@@ -959,8 +1157,15 @@ class CodingRuntime:
         prepared_events: list[dict[str, Any]] = []
         current_message_id = f"msg_{uuid.uuid4().hex}"
         try:
-            self.run_store.start_run(run_id, session_id=self.session_id)
-            self.diff_tracker.snapshot_before_run()
+            await asyncio.to_thread(
+                self.run_store.start_run,
+                run_id,
+                self.session_id,
+            )
+            await asyncio.to_thread(
+                self.diff_tracker.snapshot_before_run,
+                run_id,
+            )
             self.memory_manager.build_working_memory(
                 self.session, self.runtime_mode, self.permission_mode
             )
@@ -1142,17 +1347,7 @@ class CodingRuntime:
             # artifact from before/after snapshots and surface it as a
             # workspace_diff_ready event before run_finished.
             try:
-                diff = self.diff_tracker.snapshot_after_run(run_id)
-                self.diff_tracker.write_artifact(diff, self.run_store.evidence_root)
-                diff_event = event_to_dict(
-                    WorkspaceDiffReadyEvent(
-                        run_id=run_id,
-                        changed_files=[f.path for f in diff.changed_files],
-                        file_count=diff.file_count,
-                        truncated=diff.truncated,
-                    )
-                )
-                diff_event = {"run_id": run_id, **diff_event}
+                diff_event = await self._capture_workspace_diff_event(run_id)
                 self.run_store.append_trace(run_id, diff_event)
                 self.session_event_bus.emit("workspace_diff_ready", diff_event)
                 yield diff_event
@@ -1193,6 +1388,7 @@ class CodingRuntime:
             # yield is allowed inside finally for an async generator.
             with suppress(Exception):
                 await cast(Any, engine_stream).aclose()
+            self.diff_tracker.clear_baseline()
             with suppress(Exception):
                 self._persist_run_terminal(run_id, run_start_time)
             self.stop_requested = False
@@ -1248,6 +1444,9 @@ class CodingRuntime:
         self.session["permission_mode"] = self.permission_mode
         self.session["model_spec"] = self.model_spec
         self.session["reasoning_mode"] = self.reasoning_mode
+        self.session["runtime_profile"] = self.runtime_profile
+        self.session["sandbox_provider"] = self.sandbox_provider
+        self.session["sandbox_image"] = self.sandbox_image
         if self.owner_user_id is not None:
             self.session["owner_user_id"] = self.owner_user_id
 

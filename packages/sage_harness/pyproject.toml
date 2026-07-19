@@ -1,0 +1,18 @@
+[project]
+name = "sage-harness"
+version = "0.1.0"
+description = "Reusable agent harness contracts for Sage"
+requires-python = ">=3.12"
+dependencies = [
+    "langchain==1.2.15",
+    "langchain-core==1.4.9",
+    "langgraph==1.1.9",
+    "langgraph-checkpoint-sqlite==3.1.0",
+]
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sage_harness"]

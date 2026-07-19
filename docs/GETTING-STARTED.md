@@ -1,4 +1,4 @@
-# TourSwarm 开发环境启动指南
+# Sage 开发环境启动指南
 
 > 本指南帮你从零搭建本地开发环境，包括 API Key 申请、Docker 基础设施启动、MCP Server 验证。
 > 按顺序执行即可，预计 30-60 分钟（不含 API Key 审核等待时间）。
@@ -10,9 +10,12 @@
 ### 1.1 必需软件
 
 ```bash
-# Python 3.11+
+# Python 3.12+
 python3 --version
-# 预期输出: Python 3.11.x 或更高
+# 预期输出: Python 3.12.x 或更高
+
+# uv（负责创建统一的项目 .venv）
+uv --version
 
 # Docker + Docker Compose
 docker --version
@@ -28,8 +31,12 @@ node --version
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
-pip install -r requirements.txt
+bash scripts/bootstrap-dev-env.sh
+source .venv/bin/activate
 ```
+
+PyCharm 和 VS Code 都应选择项目内的 `.venv/bin/python`。Harness 2.0 依赖
+Python 3.12 与 LangChain 1.x，旧的 `tour-agent-phase1` Python 3.11 环境不再兼容。
 
 ### 1.3 验证代码质量工具链
 
@@ -174,9 +181,6 @@ POSTGRES_DB=tourswarm
 REDIS_HOST=localhost
 REDIS_PORT=6379
 
-# Qdrant（Docker 默认值，不用改）
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
 ```
 
 > ⚠️ `.env` 已在 `.gitignore` 中，不会被提交到 Git。**永远不要把真实 Key 提交到代码仓库。**
@@ -186,7 +190,7 @@ QDRANT_PORT=6333
 ## 四、启动 Docker 基础设施
 
 ```bash
-# 启动 PostgreSQL + Redis + Qdrant
+# 启动 PostgreSQL/pgvector + Redis
 docker compose up -d
 
 # 查看服务状态（等待变为 healthy）
@@ -198,7 +202,6 @@ docker compose ps
 ```
 NAME                  IMAGE                       STATUS                   PORTS
 tourswarm-postgres    pgvector/pgvector:pg16      Up (healthy)             0.0.0.0:5432->5432/tcp
-tourswarm-qdrant      qdrant/qdrant:v1.12.1       Up (healthy)             0.0.0.0:6333->6333/tcp, 0.0.0.0:6334->6334/tcp
 tourswarm-redis       redis:7.2-alpine            Up (healthy)             0.0.0.0:6379->6379/tcp
 ```
 
@@ -212,10 +215,17 @@ docker exec tourswarm-postgres psql -U tourswarm -d tourswarm -c "SELECT version
 docker exec tourswarm-redis redis-cli ping
 # 预期: PONG
 
-# Qdrant
-curl http://localhost:6333/health
-# 预期: {"title":"qdrant","status":"ok"}
 ```
+
+开发环境启动 FastAPI 时会默认执行幂等 PostgreSQL schema 迁移，IDE 直接启动也会
+补齐新版本增加的表和字段。若需要单独修复或确认迁移，可运行：
+
+```bash
+.venv/bin/python -m db.migrations
+```
+
+`SAGE_AUTO_MIGRATE=false` 可关闭开发环境自动迁移。生产环境不会在应用启动时迁移，
+仍由发布流程在启动新版本前显式执行迁移、检查结果并保留回滚点。
 
 **停止服务：**
 
@@ -331,7 +341,7 @@ bash scripts/check.sh
 
 ### Q: `pip install` 报错怎么办？
 ```bash
-# 确保 Python 版本 >= 3.11
+# 确保 Python 版本 >= 3.12
 python3 --version
 
 # 如果有多个 Python 版本，用虚拟环境
@@ -345,7 +355,6 @@ pip install -r requirements.txt
 # 检查谁占用了端口
 lsof -i :5432  # PostgreSQL
 lsof -i :6379  # Redis
-lsof -i :6333  # Qdrant
 
 # 方案1：停掉占用端口的服务
 # 方案2：修改 docker-compose.yml 中的端口映射
@@ -366,10 +375,9 @@ stdio 模式下 Server 会等待输入，这是正常的。用 MCP Inspector 或
 
 ## 九、当前阶段完成情况
 
-- [x] Phase 1: MCP Server 开发（3个 Server + MCP 工具链）
-- [x] Phase 2: Agent 编排核心（Supervisor + 4 Agent + CLI demo）
-- [ ] Phase 3: 记忆系统（Mem0 + Redis）
-- [ ] Phase 4: 前端（Vue3 + UniApp）
-- [ ] Phase 5: 部署上线
+- [x] Sage Coding、Knowledge、durable timeline、审批与 Vue 主界面
+- [x] Python 3.12 + LangChain/LangGraph 1.x 依赖基线
+- [ ] DeerFlow 方向的 `sage_harness` 分波迁移
+- [ ] 服务器 Container Sandbox 与发布门禁
 
-**下一步：** 开始 Phase 3 记忆系统开发。
+**下一步：** 按 `docs/superpowers/plans/2026-07-16-sage-deerflow-harness-migration.md` 执行 Harness 迁移。

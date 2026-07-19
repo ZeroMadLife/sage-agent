@@ -18,7 +18,7 @@ def test_large_tool_result_is_written_before_preview(tmp_path):
 
     assert result.artifact_path.is_file()
     assert result.artifact_path.read_text(encoding="utf-8") == "x" * 20_000
-    assert result.preview.endswith("[full result: call_1]")
+    assert result.preview.endswith(f"[full result: {result.artifact_ref}]")
     assert len(result.preview) < 20_000
 
 
@@ -43,7 +43,7 @@ def test_preview_keeps_head_and_tail_lines(tmp_path):
     assert "line-169" not in result.preview
     assert "line-170" in result.preview
     assert "line-249" in result.preview
-    assert result.preview.endswith("[full result: call_1]")
+    assert result.preview.endswith(f"[full result: {result.artifact_ref}]")
     assert result.truncated is True
     assert result.original_chars == len(content)
 
@@ -53,7 +53,7 @@ def test_preview_is_bounded_by_character_cap(tmp_path):
     result = ToolResultStore(tmp_path, "s1", "run_1").archive("call_1", content)
 
     assert len(result.preview) <= PREVIEW_CHARS
-    assert result.preview.endswith("[full result: call_1]")
+    assert result.preview.endswith(f"[full result: {result.artifact_ref}]")
     assert result.truncated is True
 
 
@@ -62,7 +62,71 @@ def test_small_result_is_not_truncated(tmp_path):
 
     assert result.preview == "short"
     assert result.truncated is False
-    assert result.artifact_ref == "call_1.txt"
+    assert result.artifact_ref == "sage://coding/s1/runs/run_1/tool-results/call_1.txt"
+
+
+def test_artifact_reference_is_bound_to_its_session_and_run(tmp_path):
+    first = ToolResultStore(tmp_path, "s1", "run_1")
+    second = ToolResultStore(tmp_path, "s2", "run_2")
+    archived = first.archive("call_1", "private result")
+
+    assert first.read(archived.artifact_ref) == "private result"
+    with pytest.raises(ValueError, match="scope"):
+        second.read(archived.artifact_ref)
+
+
+def test_artifact_metadata_is_bounded_private_and_scope_bound(tmp_path):
+    first = ToolResultStore(tmp_path, "s1", "run_1")
+    second = ToolResultStore(tmp_path, "s2", "run_2")
+    archived = first.archive(
+        "call_1",
+        "verified evidence",
+        metadata={"artifact_kind": "web_fetch", "canonical_url": "https://example.com/"},
+    )
+    metadata_path = first.root / "call_1.metadata.json"
+
+    assert first.read_metadata(archived.artifact_ref) == {
+        "artifact_kind": "web_fetch",
+        "canonical_url": "https://example.com/",
+    }
+    assert stat.S_IMODE(metadata_path.stat().st_mode) == 0o600
+    with pytest.raises(ValueError, match="scope"):
+        second.read_metadata(archived.artifact_ref)
+
+
+def test_archive_rejects_oversized_metadata_before_replacing_content(tmp_path):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    first = store.archive("call_1", "original")
+
+    with pytest.raises(ValueError, match="size limit"):
+        store.archive("call_1", "replacement", metadata={"value": "x" * 20_000})
+
+    assert store.read(first.artifact_ref) == "original"
+
+
+def test_archive_without_metadata_removes_stale_sidecar(tmp_path):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    archived = store.archive(
+        "call_1",
+        "web evidence",
+        metadata={"artifact_kind": "web_fetch"},
+    )
+    store.archive("call_1", "ordinary result")
+
+    assert store.read(archived.artifact_ref) == "ordinary result"
+    with pytest.raises(FileNotFoundError):
+        store.read_metadata(archived.artifact_ref)
+
+
+def test_metadata_reader_rejects_symlink_without_reading_outside(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text('{"secret":"outside"}', encoding="utf-8")
+    store = ToolResultStore(tmp_path / "trusted", "s1", "run_1")
+    archived = store.archive("call_1", "evidence")
+    (store.root / "call_1.metadata.json").symlink_to(outside)
+
+    with pytest.raises(OSError):
+        store.read_metadata(archived.artifact_ref)
 
 
 @pytest.mark.parametrize(

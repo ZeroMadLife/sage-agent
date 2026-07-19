@@ -165,7 +165,14 @@ onMounted(() => {
         </section>
 
         <section v-else-if="activeSection === 'sessions'" class="settings-section">
-          <h2>会话</h2><p class="section-note">管理会话名称、置顶和归档状态。</p>
+          <h2>新会话运行时</h2><p class="section-note">仅影响之后创建的会话，当前会话保持原运行时。</p>
+          <div class="runtime-profile-control" role="radiogroup" aria-label="新会话运行时">
+            <button type="button" role="radio" :aria-checked="store.newSessionRuntimeProfile === 'legacy'" :class="{ active: store.newSessionRuntimeProfile === 'legacy' }" @click="store.setNewSessionRuntimeProfile('legacy')">兼容运行时</button>
+            <button type="button" role="radio" :aria-checked="store.newSessionRuntimeProfile === 'deerflow_v2'" :class="{ active: store.newSessionRuntimeProfile === 'deerflow_v2' }" :disabled="!store.availableRuntimeProfiles.includes('deerflow_v2')" :title="store.availableRuntimeProfiles.includes('deerflow_v2') ? '用于新会话' : '服务端尚未开放 Harness 2.0'" @click="store.setNewSessionRuntimeProfile('deerflow_v2')">Harness 2.0</button>
+          </div>
+          <p class="runtime-profile-state">当前会话：{{ store.runtimeProfile === 'deerflow_v2' ? 'Harness 2.0' : '兼容运行时' }}</p>
+          <div class="section-divider"></div>
+          <h2>已有会话</h2><p class="section-note">管理会话名称、置顶和归档状态。</p>
           <p v-if="store.codingSessions.length === 0" class="empty">暂无会话</p>
           <article v-for="session in store.codingSessions" :key="session.session_id" class="session-row"><div><strong>{{ session.title || '未命名会话' }}</strong><small>{{ session.message_count }} 条消息 · {{ session.updated_at || '时间未知' }}</small></div><span v-if="session.archived" class="read-only">已归档</span><button type="button" @click="toggleSessionPinned(session.session_id, !session.pinned)">{{ session.pinned ? '取消置顶' : '置顶' }}</button><button type="button" :disabled="session.session_id === store.sessionId && !session.archived" :title="session.session_id === store.sessionId && !session.archived ? '请在聊天页归档当前会话' : undefined" @click="toggleSessionArchived(session.session_id, !session.archived)">{{ session.archived ? '恢复' : '归档' }}</button></article>
           <p v-if="sessionError" class="error" role="alert">{{ sessionError }}</p>
@@ -195,6 +202,12 @@ onMounted(() => {
 .range-control { display:flex; width:fit-content; margin:0 0 16px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); padding:2px; }
 .range-control button { min-width:42px; height:26px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:10px; }
 .range-control button.active { color:var(--sage-text); background:var(--sage-surface-muted); font-weight:700; }
+.runtime-profile-control { display:inline-flex; width:fit-content; max-width:100%; padding:3px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface-raised); }
+.runtime-profile-control button { min-height:30px; padding:0 12px; border:0; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; font-size:11px; }
+.runtime-profile-control button.active { color:var(--sage-text); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); font-weight:700; }
+.runtime-profile-control button:disabled { cursor:not-allowed; opacity:.45; }
+.runtime-profile-state { margin:8px 0 0; color:var(--sage-text-muted); font-size:11px; }
+.section-divider { height:1px; margin:24px 0; background:var(--sage-border); }
 .usage-facts { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .usage-list { display:grid; gap:0; border-top:1px solid var(--sage-border); }
 .usage-list > div { display:flex; align-items:center; justify-content:space-between; gap:16px; min-height:46px; border-bottom:1px solid var(--sage-border); }

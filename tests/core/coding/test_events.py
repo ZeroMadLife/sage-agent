@@ -100,6 +100,22 @@ def test_policy_and_security_fields_are_optional_and_serializable() -> None:
     assert data["security_event_type"] == "write_scope_guard"
 
 
+def test_tool_error_classification_is_serialized_only_when_present() -> None:
+    event = ToolResultEvent(
+        tool="run_shell",
+        args={"command": "pytest -q"},
+        content="command timed out",
+        is_error=True,
+        error_code="shell_timeout",
+        retryable=True,
+    )
+
+    data = event_to_dict(event)
+
+    assert data["error_code"] == "shell_timeout"
+    assert data["retryable"] is True
+
+
 def test_runtime_mode_changed_event_serializes_plan_state() -> None:
     """Runtime mode change events carry mode, topic, and plan_path to the UI."""
     event = RuntimeModeChangedEvent(

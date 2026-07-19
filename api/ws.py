@@ -3,7 +3,8 @@
 import logging
 from typing import Any
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, Depends, WebSocket, WebSocketException, status
+from starlette.requests import HTTPConnection
 
 from api.routes import SESSIONS
 from api.schemas import BusyEvent, ErrorEvent, UserMessage
@@ -11,7 +12,16 @@ from api.services.chat_runner import run_agent_chat
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+async def _reject_legacy_chat_in_production(connection: HTTPConnection) -> None:
+    app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
+    if app_env == "production":
+        raise WebSocketException(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="legacy chat is unavailable in production",
+        )
+
+
+router = APIRouter(dependencies=[Depends(_reject_legacy_chat_in_production)])
 
 
 @router.websocket("/api/v1/chat/{session_id}/stream")

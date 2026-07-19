@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from agents.graph import build_graph
-from core.memory.long_term import MemoryFact
+from core.memory.extractor import MemoryFact
 from mcp_servers.scenic.client import ScenicClient
 
 

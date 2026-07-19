@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, toRef } from 'vue'
 import {
+  approveKnowledgeSourceProposal as approveKnowledgeSourceProposalRequest,
   approveCodingPlan,
   approveMemoryProposal,
   buildCodingStreamUrl,
@@ -15,6 +16,8 @@ import {
   fetchCloudModelProviders,
   fetchCodingUsage,
   fetchMemoryProposals,
+  fetchKnowledgeSourceProposal,
+  fetchKnowledgeSourceProposals,
   fetchCodingRun,
   fetchCodingRunDiff,
   fetchCodingRuns,
@@ -26,6 +29,7 @@ import {
   fetchOlderCodingTimeline,
   rejectCodingPlan,
   rejectMemoryProposal,
+  rejectKnowledgeSourceProposal as rejectKnowledgeSourceProposalRequest,
   requestCodingCompaction,
   respondCodingApproval,
   resumeCodingSession,
@@ -44,6 +48,8 @@ import type {
   CodingDiffLine,
   CodingFileEntry,
   CodingGitStatusResponse,
+  CodingKnowledgeSourceProposal,
+  CodingKnowledgeSourceProposalDetail,
   CodingMcpServer,
   CodingModel,
   CodingProviderSettings,
@@ -53,6 +59,7 @@ import type {
   CodingRunSummary,
   CodingServerEvent,
   CodingSessionSummary,
+  CodingRuntimeProfile,
   CodingSkillSummary,
   CodingToolResultEvent,
   CodingTimelineEvent,
@@ -64,18 +71,48 @@ import type {
 } from '../types/api'
 import { applyCodingEvent } from './codingEvents'
 import type { ChatMessage, DiffInfo, PlanReviewState } from './codingEvents'
-import { CodingStream } from './codingStream'
+import { CodingStream, type CodingConnectionState } from './codingStream'
 import {
   createTimelineProjection,
   mergeTimelineEvents,
   type TimelineTurn,
 } from './codingTimeline'
+import type { HarnessSurfaceContext } from '../harness/types'
 
 export type { ChatMessage, ToolActivity } from './codingEvents'
 
+const NEW_SESSION_RUNTIME_PROFILE_KEY = 'sage.coding.newRuntimeProfile'
+
+function storedNewSessionRuntimeProfile(): CodingRuntimeProfile | null {
+  try {
+    const stored = window.localStorage.getItem(NEW_SESSION_RUNTIME_PROFILE_KEY)
+    return stored === 'legacy' || stored === 'deerflow_v2' ? stored : null
+  } catch {
+    return null
+  }
+}
+
+function persistNewSessionRuntimeProfile(profile: CodingRuntimeProfile) {
+  try {
+    window.localStorage.setItem(NEW_SESSION_RUNTIME_PROFILE_KEY, profile)
+  } catch {
+    // Storage can be unavailable in hardened browser contexts; the in-memory choice still works.
+  }
+}
+
+function clearStoredNewSessionRuntimeProfile() {
+  try {
+    window.localStorage.removeItem(NEW_SESSION_RUNTIME_PROFILE_KEY)
+  } catch {
+    // The in-memory selection remains authoritative for this browser session.
+  }
+}
+
 export type CodingSessionUiState = {
   workspaceRoot: string
+  workspaceId: string
   permissionMode: PermissionMode
+  runtimeProfile: CodingRuntimeProfile
   timeline: CodingTimelineEvent[]
   olderTimeline: CodingTimelineEvent[]
   turns: TimelineTurn[]
@@ -85,12 +122,16 @@ export type CodingSessionUiState = {
   timelineInitialized: boolean
   timelineLoading: boolean
   activeRun: CodingActiveRun | null
+  connectionState: CodingConnectionState
   stateSequence: number
   currentModelId: string
   reasoningMode: 'off' | 'low' | 'medium' | 'high'
   contextRequestGeneration: number
   memoryRequestGeneration: number
   memoryMutationGeneration: number
+  knowledgeSourceProposalRequestGeneration: number
+  knowledgeSourceProposalMutationGeneration: Record<string, number>
+  knowledgeSourceProposalDetailGeneration: Record<string, number>
   compactionGeneration: number
   modelMutationGeneration: number
   permissionMutationGeneration: number
@@ -119,12 +160,20 @@ export type CodingSessionUiState = {
   memoryProposalBusy: Record<string, boolean>
   memoryProposalError: string
   memoryProposalRefresh: number
+  knowledgeSourceProposals: CodingKnowledgeSourceProposal[]
+  knowledgeSourceProposalDetails: Record<string, CodingKnowledgeSourceProposalDetail>
+  knowledgeSourceProposalBusy: Record<string, boolean>
+  knowledgeSourceProposalDetailBusy: Record<string, boolean>
+  knowledgeSourceProposalError: string
+  knowledgeSourceProposalRefresh: number
 }
 
 function createSessionUiState(): CodingSessionUiState {
   return {
     workspaceRoot: '',
+    workspaceId: '',
     permissionMode: 'default',
+    runtimeProfile: 'legacy',
     timeline: [],
     olderTimeline: [],
     turns: [],
@@ -134,12 +183,16 @@ function createSessionUiState(): CodingSessionUiState {
     timelineInitialized: false,
     timelineLoading: false,
     activeRun: null,
+    connectionState: 'idle',
     stateSequence: 0,
     currentModelId: '',
     reasoningMode: 'off',
     contextRequestGeneration: 0,
     memoryRequestGeneration: 0,
     memoryMutationGeneration: 0,
+    knowledgeSourceProposalRequestGeneration: 0,
+    knowledgeSourceProposalMutationGeneration: {},
+    knowledgeSourceProposalDetailGeneration: {},
     compactionGeneration: 0,
     modelMutationGeneration: 0,
     permissionMutationGeneration: 0,
@@ -168,6 +221,12 @@ function createSessionUiState(): CodingSessionUiState {
     memoryProposalBusy: {},
     memoryProposalError: '',
     memoryProposalRefresh: 0,
+    knowledgeSourceProposals: [],
+    knowledgeSourceProposalDetails: {},
+    knowledgeSourceProposalBusy: {},
+    knowledgeSourceProposalDetailBusy: {},
+    knowledgeSourceProposalError: '',
+    knowledgeSourceProposalRefresh: 0,
   }
 }
 
@@ -256,6 +315,7 @@ export const useCodingStore = defineStore('coding', () => {
     })
   }
   const workspaceRoot = sessionField('workspaceRoot')
+  const workspaceId = sessionField('workspaceId')
   const messages = sessionField('messages')
   const optimisticMessage = sessionField('optimisticMessage')
   const legacyMessages = sessionField('legacyMessages')
@@ -272,6 +332,7 @@ export const useCodingStore = defineStore('coding', () => {
   const thinkingPhase = sessionField('thinkingPhase')
   const runtimeMode = sessionField('runtimeMode')
   const permissionMode = sessionField('permissionMode')
+  const runtimeProfile = sessionField('runtimeProfile')
   const planTopic = sessionField('planTopic')
   const planPath = sessionField('planPath')
   const planReview = sessionField('planReview')
@@ -286,6 +347,12 @@ export const useCodingStore = defineStore('coding', () => {
   const memoryProposalBusy = sessionField('memoryProposalBusy')
   const memoryProposalError = sessionField('memoryProposalError')
   const memoryProposalRefresh = sessionField('memoryProposalRefresh')
+  const knowledgeSourceProposals = sessionField('knowledgeSourceProposals')
+  const knowledgeSourceProposalDetails = sessionField('knowledgeSourceProposalDetails')
+  const knowledgeSourceProposalBusy = sessionField('knowledgeSourceProposalBusy')
+  const knowledgeSourceProposalDetailBusy = sessionField('knowledgeSourceProposalDetailBusy')
+  const knowledgeSourceProposalError = sessionField('knowledgeSourceProposalError')
+  const knowledgeSourceProposalRefresh = sessionField('knowledgeSourceProposalRefresh')
   const timeline = sessionField('timeline')
   const olderTimeline = sessionField('olderTimeline')
   const visibleTimeline = computed(() => mergeTimelineEvents(olderTimeline.value, timeline.value))
@@ -296,11 +363,17 @@ export const useCodingStore = defineStore('coding', () => {
   const timelineInitialized = sessionField('timelineInitialized')
   const timelineLoading = sessionField('timelineLoading')
   const activeRun = sessionField('activeRun')
+  const connectionState = sessionField('connectionState')
   const scrollAnchor = sessionField('scrollAnchor')
 
   const skills = ref<CodingSkillSummary[]>([])
   const mcpServers = ref<CodingMcpServer[]>([])
   const models = ref<CodingModel[]>([])
+  const initialRuntimeProfilePreference = storedNewSessionRuntimeProfile()
+  const availableRuntimeProfiles = ref<CodingRuntimeProfile[]>(['legacy'])
+  const newSessionRuntimeProfile = ref<CodingRuntimeProfile>(
+    initialRuntimeProfilePreference ?? 'legacy',
+  )
   const providerSettings = ref<CodingProviderSettings | null>(null)
   const accountProviders = ref<CloudModelProvider[]>([])
   const accountDefaultModel = ref<string | null>(null)
@@ -315,6 +388,7 @@ export const useCodingStore = defineStore('coding', () => {
   let modelRequestGeneration = 0
   let modelCatalogBootstrapped = false
   let modelCatalogPromise: Promise<void> | null = null
+  let hasNewSessionRuntimePreference = initialRuntimeProfilePreference !== null
   const gitStatus = ref<CodingGitStatusResponse>({
     is_git: false,
     branch: '',
@@ -330,7 +404,10 @@ export const useCodingStore = defineStore('coding', () => {
   const breadcrumb = computed(() => fileTreePath.value.split('/').filter(Boolean))
 
   let stream: CodingStream | null = null
-  const pendingInitialPrompts = new Map<string, string>()
+  const pendingInitialPrompts = new Map<string, {
+    content: string
+    surfaceContext?: HarnessSurfaceContext | null
+  }>()
   let approvalPollTimer: number | null = null
   let fileTreeGeneration = 0
   let runsRequestGeneration = 0
@@ -343,6 +420,7 @@ export const useCodingStore = defineStore('coding', () => {
   const dirCache = new Map<string, CodingFileEntry[]>()
   const liveRefreshPending = new Set<string>()
   const memoryRefreshPending = new Set<string>()
+  const sourceProposalRefreshPending = new Set<string>()
   const terminalRefreshPending = new Set<string>()
   const scheduledTimeouts = new Set<number>()
   let approvalPollSessionId = ''
@@ -480,6 +558,7 @@ export const useCodingStore = defineStore('coding', () => {
           diffInfoByRun: toRef(state, 'diffInfoByRun'),
           memoryProposals: toRef(state, 'memoryProposals'),
           memoryProposalRefresh: toRef(state, 'memoryProposalRefresh'),
+          knowledgeSourceProposalRefresh: toRef(state, 'knowledgeSourceProposalRefresh'),
         },
         event.payload as unknown as CodingServerEvent,
       )
@@ -505,6 +584,7 @@ export const useCodingStore = defineStore('coding', () => {
       startApprovalPolling(targetSessionId)
     }
     if (effect.memoryProposalReady) scheduleMemoryRefresh(targetSessionId)
+    if (effect.knowledgeSourceProposalReady) scheduleSourceProposalRefresh(targetSessionId)
     if (effect.toolResult && !effect.toolResult.is_error &&
       ['write_file', 'patch_file', 'run_shell'].includes(effect.toolResult.tool)) {
       scheduleWorkspaceRefresh(targetSessionId)
@@ -543,6 +623,15 @@ export const useCodingStore = defineStore('coding', () => {
     schedule(() => {
       memoryRefreshPending.delete(targetSessionId)
       void loadMemoryProposals(targetSessionId)
+    })
+  }
+
+  function scheduleSourceProposalRefresh(targetSessionId: string) {
+    if (sourceProposalRefreshPending.has(targetSessionId)) return
+    sourceProposalRefreshPending.add(targetSessionId)
+    schedule(() => {
+      sourceProposalRefreshPending.delete(targetSessionId)
+      void loadKnowledgeSourceProposals(targetSessionId)
     })
   }
 
@@ -707,12 +796,20 @@ export const useCodingStore = defineStore('coding', () => {
   async function initialize() {
     if (sessionId.value) return
     const selection = ++selectionGeneration
-    const session = await startCodingSession()
+    await bootstrapModelCatalog()
+    if (selection !== selectionGeneration) return
+    const session = await startCodingSession(
+      undefined,
+      'ask',
+      hasNewSessionRuntimePreference ? newSessionRuntimeProfile.value : undefined,
+    )
     if (selection !== selectionGeneration) return
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
+    runtimeProfile.value = session.runtime_profile || 'legacy'
     await Promise.all([
       loadSkills(),
       loadMcpServers(),
@@ -733,6 +830,7 @@ export const useCodingStore = defineStore('coding', () => {
     const targetSessionId = sessionId.value
     const state = ensureSession(targetSessionId)
     void loadMemoryProposals()
+    void loadKnowledgeSourceProposals()
     stream?.disconnect()
     stream = new CodingStream({
       onEvent: handleTimelineEvent,
@@ -740,7 +838,12 @@ export const useCodingStore = defineStore('coding', () => {
       onOpen: (openedSessionId) => {
         if (openedSessionId !== sessionId.value) return
         const prompt = pendingInitialPrompts.get(openedSessionId)
-        if (prompt && sendMessage(prompt)) pendingInitialPrompts.delete(openedSessionId)
+        if (prompt && sendMessage(prompt.content, prompt.surfaceContext)) {
+          pendingInitialPrompts.delete(openedSessionId)
+        }
+      },
+      onConnectionState: (openedSessionId, state) => {
+        ensureSession(openedSessionId).connectionState = state
       },
       onError: (message) => {
         ensureSession(targetSessionId).errorMessage = message
@@ -780,10 +883,12 @@ export const useCodingStore = defineStore('coding', () => {
         diffInfoByRun,
         memoryProposals,
         memoryProposalRefresh,
+        knowledgeSourceProposalRefresh,
       },
       event,
     )
     if (effect.memoryProposalReady) void loadMemoryProposals()
+    if (effect.knowledgeSourceProposalReady) void loadKnowledgeSourceProposals()
     if (event.type === 'turn_finished') {
       schedule(() => void loadContext(targetSessionId))
     }
@@ -805,9 +910,17 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
-  function sendMessage(content: string): boolean {
-    if (!content.trim() || !stream) return false
-    const sent = stream.send(content)
+  function sendMessage(
+    content: string,
+    surfaceContext?: HarnessSurfaceContext | null,
+  ): boolean {
+    if (!content.trim()) return false
+    if (!stream || connectionState.value !== 'connected') {
+      errorMessage.value = '连接正在恢复，消息已保留，请稍后重试'
+      if (!stream || connectionState.value === 'disconnected') connectSocket()
+      return false
+    }
+    const sent = stream.send(content, surfaceContext)
     if (!sent) return false
     const optimistic = {
       id: `optimistic:${sessionId.value}:${Date.now()}`,
@@ -1018,6 +1131,7 @@ export const useCodingStore = defineStore('coding', () => {
       const res = await fetchCodingModels(targetSessionId || undefined)
       if (generation !== modelRequestGeneration) return false
       models.value = res.models
+      reconcileRuntimeProfiles(res.runtime_profiles, res.default_runtime_profile)
       if (res.current) currentModelId.value = res.current
       else if (res.models.length > 0) currentModelId.value = res.models[0].id
       reasoningMode.value = res.reasoning_mode || 'off'
@@ -1026,6 +1140,47 @@ export const useCodingStore = defineStore('coding', () => {
       if (generation === modelRequestGeneration) models.value = []
       return false
     }
+  }
+
+  function reconcileRuntimeProfiles(profiles: unknown, serverDefault: unknown) {
+    const advertised = Array.isArray(profiles)
+      ? profiles.filter((profile): profile is CodingRuntimeProfile =>
+          profile === 'legacy' || profile === 'deerflow_v2')
+      : []
+    availableRuntimeProfiles.value = [
+      'legacy',
+      ...(advertised.includes('deerflow_v2') ? ['deerflow_v2' as const] : []),
+    ]
+    const effectiveServerDefault = (
+      (serverDefault === 'legacy' || serverDefault === 'deerflow_v2')
+      && availableRuntimeProfiles.value.includes(serverDefault)
+    ) ? serverDefault : 'legacy'
+    const storedPreference = storedNewSessionRuntimeProfile()
+    if (storedPreference && availableRuntimeProfiles.value.includes(storedPreference)) {
+      hasNewSessionRuntimePreference = true
+      newSessionRuntimeProfile.value = storedPreference
+      return
+    }
+    if (storedPreference) {
+      clearStoredNewSessionRuntimeProfile()
+      hasNewSessionRuntimePreference = false
+    }
+    if (
+      hasNewSessionRuntimePreference
+      && availableRuntimeProfiles.value.includes(newSessionRuntimeProfile.value)
+    ) {
+      return
+    }
+    hasNewSessionRuntimePreference = false
+    newSessionRuntimeProfile.value = effectiveServerDefault
+  }
+
+  function setNewSessionRuntimeProfile(profile: CodingRuntimeProfile): boolean {
+    if (!availableRuntimeProfiles.value.includes(profile)) return false
+    newSessionRuntimeProfile.value = profile
+    hasNewSessionRuntimePreference = true
+    persistNewSessionRuntimeProfile(profile)
+    return true
   }
 
   async function bootstrapModelCatalog(force = false) {
@@ -1201,6 +1356,123 @@ export const useCodingStore = defineStore('coding', () => {
     return transitionMemoryProposal(proposalId, expectedRevision, 'reject')
   }
 
+  async function loadKnowledgeSourceProposals(targetSessionId = sessionId.value) {
+    if (!targetSessionId) return
+    const state = ensureSession(targetSessionId)
+    const generation = ++state.knowledgeSourceProposalRequestGeneration
+    try {
+      const response = await fetchKnowledgeSourceProposals(targetSessionId, null)
+      if (generation !== state.knowledgeSourceProposalRequestGeneration) return
+      state.knowledgeSourceProposals = response.proposals
+        .filter((proposal) => proposal.status === 'pending' || proposal.status === 'applying')
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+      state.knowledgeSourceProposalError = ''
+    } catch (error) {
+      if (generation === state.knowledgeSourceProposalRequestGeneration) {
+        state.knowledgeSourceProposalError = error instanceof Error ? error.message : String(error)
+      }
+    }
+  }
+
+  async function loadKnowledgeSourceProposalDetail(
+    proposalId: string,
+    targetSessionId = sessionId.value,
+  ) {
+    if (!targetSessionId || !proposalId) return
+    const state = ensureSession(targetSessionId)
+    const generation = (state.knowledgeSourceProposalDetailGeneration[proposalId] ?? 0) + 1
+    state.knowledgeSourceProposalDetailGeneration = {
+      ...state.knowledgeSourceProposalDetailGeneration,
+      [proposalId]: generation,
+    }
+    state.knowledgeSourceProposalDetailBusy = {
+      ...state.knowledgeSourceProposalDetailBusy,
+      [proposalId]: true,
+    }
+    try {
+      const detail = await fetchKnowledgeSourceProposal(targetSessionId, proposalId)
+      if (state.knowledgeSourceProposalDetailGeneration[proposalId] !== generation) return
+      state.knowledgeSourceProposalDetails = {
+        ...state.knowledgeSourceProposalDetails,
+        [proposalId]: detail,
+      }
+      state.knowledgeSourceProposalError = ''
+    } catch (error) {
+      if (state.knowledgeSourceProposalDetailGeneration[proposalId] === generation) {
+        state.knowledgeSourceProposalError = error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      if (state.knowledgeSourceProposalDetailGeneration[proposalId] !== generation) return
+      const next = { ...state.knowledgeSourceProposalDetailBusy }
+      delete next[proposalId]
+      state.knowledgeSourceProposalDetailBusy = next
+    }
+  }
+
+  async function transitionKnowledgeSourceProposal(
+    proposalId: string,
+    expectedRevision: number,
+    action: 'approve' | 'reject',
+  ) {
+    if (!sessionId.value || !proposalId) return
+    const targetSessionId = sessionId.value
+    const state = ensureSession(targetSessionId)
+    if (state.knowledgeSourceProposalBusy[proposalId]) return
+    const generation = (state.knowledgeSourceProposalMutationGeneration[proposalId] ?? 0) + 1
+    state.knowledgeSourceProposalMutationGeneration = {
+      ...state.knowledgeSourceProposalMutationGeneration,
+      [proposalId]: generation,
+    }
+    state.knowledgeSourceProposalBusy = {
+      ...state.knowledgeSourceProposalBusy,
+      [proposalId]: true,
+    }
+    state.knowledgeSourceProposalError = ''
+    try {
+      let transitioned: CodingKnowledgeSourceProposal
+      if (action === 'approve') {
+        transitioned = await approveKnowledgeSourceProposalRequest(
+          targetSessionId, proposalId, expectedRevision,
+        )
+      } else {
+        transitioned = await rejectKnowledgeSourceProposalRequest(
+          targetSessionId, proposalId, expectedRevision,
+        )
+      }
+      if (state.knowledgeSourceProposalMutationGeneration[proposalId] !== generation) return
+      state.knowledgeSourceProposalRequestGeneration += 1
+      if (transitioned.status === 'pending' || transitioned.status === 'applying') {
+        state.knowledgeSourceProposals = state.knowledgeSourceProposals.map(
+          (proposal) => proposal.proposal_id === proposalId ? transitioned : proposal,
+        )
+      } else {
+        state.knowledgeSourceProposals = state.knowledgeSourceProposals.filter(
+          (proposal) => proposal.proposal_id !== proposalId,
+        )
+      }
+      const details = { ...state.knowledgeSourceProposalDetails }
+      delete details[proposalId]
+      state.knowledgeSourceProposalDetails = details
+    } catch (error) {
+      if (state.knowledgeSourceProposalMutationGeneration[proposalId] === generation) {
+        state.knowledgeSourceProposalError = error instanceof Error ? error.message : String(error)
+      }
+    } finally {
+      if (state.knowledgeSourceProposalMutationGeneration[proposalId] !== generation) return
+      const next = { ...state.knowledgeSourceProposalBusy }
+      delete next[proposalId]
+      state.knowledgeSourceProposalBusy = next
+    }
+  }
+
+  function approveKnowledgeSourceProposalAction(proposalId: string, expectedRevision: number) {
+    return transitionKnowledgeSourceProposal(proposalId, expectedRevision, 'approve')
+  }
+
+  function rejectKnowledgeSourceProposalAction(proposalId: string, expectedRevision: number) {
+    return transitionKnowledgeSourceProposal(proposalId, expectedRevision, 'reject')
+  }
+
   async function loadSessions() {
     const generation = ++sessionsRequestGeneration
     try {
@@ -1246,7 +1518,9 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
+    runtimeProfile.value = session.runtime_profile || 'legacy'
     runs.value = []
     selectedRun.value = null
     diffDrawerVisible.value = false
@@ -1265,15 +1539,26 @@ export const useCodingStore = defineStore('coding', () => {
     connectSocket()
   }
 
-  async function createNewSession(initialPrompt = ''): Promise<string> {
+  async function createNewSession(
+    initialPrompt = '',
+    initialSurfaceContext?: HarnessSurfaceContext | null,
+  ): Promise<string> {
     const selection = ++selectionGeneration
-    const session = await startCodingSession()
+    await bootstrapModelCatalog()
+    if (selection !== selectionGeneration) return ''
+    const session = await startCodingSession(
+      undefined,
+      'ask',
+      hasNewSessionRuntimePreference ? newSessionRuntimeProfile.value : undefined,
+    )
     if (selection !== selectionGeneration) return ''
     stopSessionTransport()
     sessionId.value = session.session_id
     ensureSession(session.session_id)
     workspaceRoot.value = session.workspace_root
+    workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
+    runtimeProfile.value = session.runtime_profile || 'legacy'
     runs.value = []
     selectedRun.value = null
     diffDrawerVisible.value = false
@@ -1289,19 +1574,27 @@ export const useCodingStore = defineStore('coding', () => {
       loadContext(),
     ])
     if (selection !== selectionGeneration || sessionId.value !== session.session_id) return ''
-    if (initialPrompt) pendingInitialPrompts.set(session.session_id, initialPrompt)
+    if (initialPrompt) {
+      pendingInitialPrompts.set(session.session_id, {
+        content: initialPrompt,
+        surfaceContext: initialSurfaceContext,
+      })
+    }
     connectSocket()
     return session.session_id
   }
 
-  async function startNewSession() {
-    await createNewSession()
+  function startNewSession(): Promise<string> {
+    return createNewSession()
   }
 
-  async function startSessionWithPrompt(content: string): Promise<string> {
+  async function startSessionWithPrompt(
+    content: string,
+    surfaceContext?: HarnessSurfaceContext | null,
+  ): Promise<string> {
     const prompt = content.trim()
     if (!prompt) throw new Error('请输入内容后再开始对话')
-    return createNewSession(prompt)
+    return createNewSession(prompt, surfaceContext)
   }
 
   async function restoreCurrentSession() {
@@ -1335,15 +1628,17 @@ export const useCodingStore = defineStore('coding', () => {
 
   async function loadRunDetail(runId: string) {
     const targetSessionId = sessionId.value
-    if (!targetSessionId) return
+    if (!targetSessionId) return false
     const generation = ++runDetailGeneration
     try {
       const detail = await fetchCodingRun(targetSessionId, runId)
-      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return false
       selectedRun.value = detail
+      return true
     } catch {
-      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return
+      if (targetSessionId !== sessionId.value || generation !== runDetailGeneration) return false
       selectedRun.value = null
+      return false
     }
   }
 
@@ -1533,6 +1828,7 @@ export const useCodingStore = defineStore('coding', () => {
     sessionId,
     sessionsById,
     workspaceRoot,
+    workspaceId,
     messages,
     optimisticMessage,
     legacyMessages,
@@ -1546,6 +1842,7 @@ export const useCodingStore = defineStore('coding', () => {
     timelineInitialized,
     timelineLoading,
     activeRun,
+    connectionState,
     scrollAnchor,
     isThinking,
     errorMessage,
@@ -1565,6 +1862,7 @@ export const useCodingStore = defineStore('coding', () => {
     thinkingPhase,
     runtimeMode,
     permissionMode,
+    runtimeProfile,
     planTopic,
     planPath,
     planReview,
@@ -1578,9 +1876,16 @@ export const useCodingStore = defineStore('coding', () => {
     memoryProposals,
     memoryProposalBusy,
     memoryProposalError,
+    knowledgeSourceProposals,
+    knowledgeSourceProposalDetails,
+    knowledgeSourceProposalBusy,
+    knowledgeSourceProposalDetailBusy,
+    knowledgeSourceProposalError,
     skills,
     mcpServers,
     models,
+    availableRuntimeProfiles,
+    newSessionRuntimeProfile,
     providerSettings,
     accountProviders,
     accountDefaultModel,
@@ -1620,6 +1925,7 @@ export const useCodingStore = defineStore('coding', () => {
     loadMcpServers,
     loadModels,
     bootstrapModelCatalog,
+    setNewSessionRuntimeProfile,
     loadProviderSettings,
     loadModelProviderSettings,
     loadUsage,
@@ -1634,6 +1940,10 @@ export const useCodingStore = defineStore('coding', () => {
     loadMemoryProposals,
     approveMemoryProposal: approveMemoryProposalAction,
     rejectMemoryProposal: rejectMemoryProposalAction,
+    loadKnowledgeSourceProposals,
+    loadKnowledgeSourceProposalDetail,
+    approveKnowledgeSourceProposal: approveKnowledgeSourceProposalAction,
+    rejectKnowledgeSourceProposal: rejectKnowledgeSourceProposalAction,
     loadRunDetail,
     loadRunDiff,
     openDiffDrawer,

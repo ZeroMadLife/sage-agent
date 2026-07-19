@@ -17,6 +17,7 @@ from api.harness_context import validate_surface_context
 from api.main import create_app
 from api.schemas import HarnessSurfaceContext
 from core.cloud.auth.repository import CloudRepository
+from core.cloud.model_providers import ModelProviderRepository
 from core.knowledge import KnowledgeSourceRoot
 from core.knowledge.jobs import KnowledgeJobService
 from db.database import create_engine, create_session_factory
@@ -91,12 +92,20 @@ def _knowledge_app(tmp_path: Path):
 
 
 @pytest.fixture
-async def cloud_repository() -> AsyncIterator[CloudRepository]:
+async def cloud_repositories() -> AsyncIterator[
+    tuple[CloudRepository, ModelProviderRepository]
+]:
     engine = create_engine("sqlite+aiosqlite:///:memory:")
     factory = create_session_factory(engine)
     await init_db(engine)
     try:
-        yield CloudRepository(factory)
+        yield (
+            CloudRepository(factory),
+            ModelProviderRepository(
+                factory,
+                encryption_secret="test-provider-secret-" * 4,
+            ),
+        )
     finally:
         await engine.dispose()
 
@@ -317,14 +326,16 @@ def test_knowledge_job_reference_is_verified_against_its_workspace(tmp_path: Pat
 
 async def test_coding_stream_rejects_a_session_from_another_owner(
     tmp_path: Path,
-    cloud_repository: CloudRepository,
+    cloud_repositories: tuple[CloudRepository, ModelProviderRepository],
 ) -> None:
+    cloud_repository, model_provider_repository = cloud_repositories
     await cloud_repository.create_invite("owner-invite", email="owner@example.com")
     await cloud_repository.create_invite("other-invite", email="other@example.com")
     workspace = tmp_path / "coding"
     workspace.mkdir()
     app_kwargs = {
         "cloud_repository": cloud_repository,
+        "cloud_model_provider_repository": model_provider_repository,
         "cloud_dev_login_enabled": True,
         "cloud_app_env": "development",
         "coding_model_factory": FinalModel,
