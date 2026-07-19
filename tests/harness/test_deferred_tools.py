@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from unittest.mock import MagicMock
 
 import pytest
@@ -156,6 +157,28 @@ def test_tool_search_returns_metadata_before_stable_id_schema_promotion() -> Non
         "names": ["deferred_tool"],
         "capability_ids": ["local:deferred_tool"],
     }
+
+
+def test_tool_search_tells_model_not_to_select_unavailable_capability() -> None:
+    unavailable = replace(
+        _descriptor("subagent:research", "Research", origin="subagent", kind="delegate"),
+        availability="unavailable",
+    )
+    registry = _registry(unavailable)
+    search_tool = assemble_deferred_tools(
+        [resident_tool],
+        [deferred_tool],
+        enabled=True,
+        capability_registry=registry,
+    )[1].tool_search
+    assert search_tool is not None
+
+    result = search_tool.func(query="research", tool_call_id="call-research")
+    payload = json.loads(str(result.update["messages"][0].content))
+
+    assert payload["status"] == "matches"
+    assert payload["results"][0]["availability"] == "unavailable"
+    assert "Do not select or retry" in payload["instruction"]
 
 
 def test_tool_search_emits_only_safe_selection_audit(

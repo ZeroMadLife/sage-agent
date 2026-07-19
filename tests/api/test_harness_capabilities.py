@@ -233,20 +233,25 @@ def test_capability_api_exposes_web_tools_only_with_server_ports(tmp_path: Path)
         coding_web_search_port=FakeWebSearchPort(),
     )
 
-    def capability_ids(app) -> set[str]:  # type: ignore[no-untyped-def]
+    def capabilities(app) -> dict[str, str]:  # type: ignore[no-untyped-def]
         with TestClient(app) as client:
             session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
             payload = client.get(
                 "/api/v1/harness/capabilities",
                 params={"session_id": session_id, "surface": "coding"},
             ).json()
-        return {item["capability_id"] for item in payload["capabilities"]}
+        return {
+            item["capability_id"]: item["availability"]
+            for item in payload["capabilities"]
+        }
 
-    assert "web:search" not in capability_ids(disabled_app)
-    assert "web:fetch" not in capability_ids(disabled_app)
-    assert "web:search" in capability_ids(enabled_app)
-    assert "web:fetch" in capability_ids(enabled_app)
-    assert "subagent:research" not in capability_ids(enabled_app)
+    disabled = capabilities(disabled_app)
+    enabled = capabilities(enabled_app)
+    assert "web:search" not in disabled
+    assert "web:fetch" not in disabled
+    assert "web:search" in enabled
+    assert "web:fetch" in enabled
+    assert enabled["subagent:research"] == "unavailable"
 
 
 def test_capability_api_exposes_research_only_with_knowledge_and_web_search(

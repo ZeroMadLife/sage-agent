@@ -810,3 +810,10 @@ def test_task_tool_rejects_unconfigured_child_type_without_execution() -> None:
     assert executor.requests == []
     assert result["delegations"][0]["status"] == "failed"
     assert result["delegations"][0]["result_ref"] == ""
+    assert result["delegations"][0]["error_code"] == "subagent_type_not_allowed"
+    tool_message = next(
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    )
+    assert "requested subagent profile is unavailable" in str(tool_message.content)
+    assert "Available profiles: explore" in str(tool_message.content)
+    assert "Do not retry" in str(tool_message.content)

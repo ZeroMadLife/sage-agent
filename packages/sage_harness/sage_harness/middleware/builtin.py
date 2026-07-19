@@ -41,6 +41,14 @@ _END_INPUT = "--- END USER INPUT ---"
 _BEGIN_REMOTE = "--- BEGIN REMOTE TOOL CONTENT ---"
 _END_REMOTE = "--- END REMOTE TOOL CONTENT ---"
 _MAX_REMOTE_CONTENT_CHARS = 12_000
+_LEGACY_TOOL_BLOCK = re.compile(
+    r"<tool>\s*\{.*?\}\s*</tool>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEGACY_FINAL_BLOCK = re.compile(
+    r"<final>(.*?)</final>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class MissingRunContextError(RuntimeError):
@@ -463,6 +471,33 @@ def _append_budget_notice(content: object, notice: str) -> object:
     return notice
 
 
+def _public_budget_content(content: object) -> object:
+    """Remove legacy tool protocol from a budget-stopped public response."""
+    if isinstance(content, str):
+        final_blocks = _LEGACY_FINAL_BLOCK.findall(content)
+        cleaned = final_blocks[-1] if final_blocks else _LEGACY_TOOL_BLOCK.sub("", content)
+        return cleaned.replace("<final>", "").replace("</final>", "").strip()
+    if isinstance(content, list):
+        projected: list[object] = []
+        for block in content:
+            if isinstance(block, str):
+                cleaned = _public_budget_content(block)
+                if cleaned:
+                    projected.append(cleaned)
+            elif (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
+                cleaned = _public_budget_content(block["text"])
+                if cleaned:
+                    projected.append({**block, "text": cleaned})
+            else:
+                projected.append(block)
+        return projected
+    return ""
+
+
 def _budget_stop_message(
     message: AIMessage,
     *,
@@ -490,7 +525,7 @@ def _budget_stop_message(
         response_metadata["finish_reason"] = "stop"
     return message.model_copy(
         update={
-            "content": _append_budget_notice(message.content, notice),
+            "content": _append_budget_notice(_public_budget_content(message.content), notice),
             "tool_calls": [],
             "invalid_tool_calls": [],
             "additional_kwargs": additional_kwargs,

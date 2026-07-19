@@ -197,17 +197,28 @@ def build_tool_search_tool(catalog: DeferredToolCatalog) -> BaseTool:
                     )
         else:
             matched = catalog.discover(normalized)
+            available = [
+                item for item in matched if item.descriptor.availability == "available"
+            ]
+            if available:
+                instruction = (
+                    "Call tool_search again with select:<capability_id> to promote one "
+                    "exact schema. Select only results whose availability is available."
+                )
+            elif matched:
+                instruction = (
+                    "No executable capability is currently available in these results. "
+                    "Do not select or retry an unavailable capability."
+                )
+            else:
+                instruction = "Choose another bounded search query."
             content = json.dumps(
                 {
                     "status": "matches" if matched else "no_match",
                     "catalog_revision": catalog.selection_index.revision,
                     "query": normalized,
                     "results": [item.as_dict() for item in matched],
-                    "instruction": (
-                        "Call tool_search again with select:<capability_id> to promote one exact schema."
-                        if matched
-                        else "Choose another bounded search query."
-                    ),
+                    "instruction": instruction,
                 },
                 ensure_ascii=False,
                 indent=2,

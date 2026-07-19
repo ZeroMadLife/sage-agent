@@ -431,7 +431,12 @@ def create_app(
     app.state.coding_default_runtime_profile = normalize_runtime_profile(
         configured_default_runtime_profile
     )
-    app.state.coding_harness_config = coding_harness_config or HarnessConfig()
+    app.state.coding_harness_config = coding_harness_config or HarnessConfig(
+        max_model_calls=settings.sage_harness_max_model_calls,
+        max_tool_calls=settings.sage_harness_max_tool_calls,
+        max_run_tokens=settings.sage_harness_max_run_tokens,
+        max_run_seconds=settings.sage_harness_max_run_seconds,
+    )
     app.state.coding_sandbox_provider = normalize_sandbox_provider(
         settings.sage_coding_sandbox_provider
         if coding_sandbox_provider is None

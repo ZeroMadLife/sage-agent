@@ -123,6 +123,10 @@ class Settings(BaseSettings):
     sage_auto_migrate: bool = True
     sage_deerflow_v2_enabled: bool = True
     sage_coding_default_runtime_profile: str = "deerflow_v2"
+    sage_harness_max_model_calls: int = Field(default=24, ge=1, le=128)
+    sage_harness_max_tool_calls: int = Field(default=64, ge=1, le=512)
+    sage_harness_max_run_tokens: int = Field(default=250_000, ge=1_000, le=5_000_000)
+    sage_harness_max_run_seconds: float = Field(default=1_800.0, ge=30.0, le=7_200.0)
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"

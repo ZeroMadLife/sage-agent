@@ -38,6 +38,10 @@ def _context(run_id: str = "run-1") -> HarnessRunContext:
     )
 
 
+def test_default_run_token_budget_supports_long_evidence_workflows() -> None:
+    assert HarnessConfig().max_run_tokens == 250_000
+
+
 def test_factory_builds_a_real_graph_with_server_owned_context() -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="ready")])
     graph = create_sage_agent(model, middleware=[])
@@ -445,6 +449,39 @@ def test_run_budget_strips_tools_from_the_response_that_exhausts_tokens() -> Non
     assert update["run_model_calls"] == 1
     assert update["run_tool_calls"] == 0
     assert update["run_token_usage"] == 10
+
+
+def test_run_budget_removes_legacy_tool_protocol_from_public_notice() -> None:
+    middleware = RunBudgetMiddleware(
+        max_model_calls=3,
+        max_tool_calls=3,
+        max_tokens=10,
+    )
+    response = AIMessage(
+        content=(
+            '<tool>{"name":"search_web","args":{"query":"private"}}</tool>'
+            '<final>Unable to finish the requested research.</final>'
+        ),
+        usage_metadata={"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+    )
+
+    update = middleware.after_model(
+        {
+            "messages": [response],
+            "budget_run_id": "run-1",
+            "run_token_usage": 0,
+            "run_model_calls": 0,
+            "run_tool_calls": 0,
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    content = str(update["messages"][0].content)
+    assert "<tool>" not in content
+    assert "<final>" not in content
+    assert "Unable to finish the requested research." in content
+    assert "token 安全上限" in content
 
 
 def test_run_budget_publishes_limits_without_resetting_a_resumed_run() -> None:

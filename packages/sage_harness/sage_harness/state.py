@@ -79,6 +79,7 @@ class DelegationEntry(TypedDict, total=False):
     status: DelegationStatus
     result_brief: str
     result_ref: str
+    error_code: str
     tool_scope: list[str]
     token_budget: int
     timeout_seconds: float
