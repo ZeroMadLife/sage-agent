@@ -146,7 +146,10 @@ class CapabilitySelectionIndex:
         ranked: list[tuple[int, str, CapabilityMatch]] = []
         for descriptor in self.registry.list():
             rejection = self._rejection(descriptor)
-            if rejection is not None:
+            if rejection is not None and not self._visible_unavailable(
+                descriptor,
+                rejection,
+            ):
                 continue
             searchable = " ".join(
                 (
@@ -175,6 +178,20 @@ class CapabilitySelectionIndex:
             )
         ranked.sort(key=lambda item: (-item[0], item[1]))
         return tuple(item for _, _, item in ranked[: min(limit, MAX_SELECTION_RESULTS)])
+
+    def _visible_unavailable(
+        self,
+        descriptor: CapabilityDescriptor,
+        rejection: SelectionRejectionCode,
+    ) -> bool:
+        """Expose unavailable metadata for diagnosis while selection stays fail-closed."""
+        return (
+            rejection == "unavailable"
+            and descriptor.availability == "unavailable"
+            and self.surface in descriptor.surfaces
+            and descriptor.deferred
+            and self.allowed_tool_names is None
+        )
 
     def list_discoverable(self, *, limit: int = 100) -> tuple[CapabilityMatch, ...]:
         """List scoped available entries for a schema-free prompt index."""

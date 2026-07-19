@@ -57,7 +57,16 @@ def _result_content(result: SubagentResult) -> str:
         return "Task timed out before producing a usable result."
     if result.status == "cancelled":
         return "Task was cancelled with its parent run."
-    return "Task failed without exposing internal error details."
+    if result.error_code == "subagent_type_not_allowed":
+        detail = result.result.strip()[:500]
+        suffix = f" {detail}" if detail else ""
+        return (
+            "Task was not started because the requested subagent profile is unavailable "
+            f"for this run.{suffix} Do not retry the same profile."
+        )
+    if result.error_code == "executor_failed":
+        return "Task failed inside the child runtime. Use another available capability."
+    return "Task failed safely without exposing internal error details."
 
 
 def _terminal_command(
@@ -86,6 +95,8 @@ def _terminal_command(
     }
     if result_brief:
         entry["result_brief"] = result_brief
+    if result.error_code:
+        entry["error_code"] = result.error_code
     if result.evidence_refs:
         entry["evidence_refs"] = list(result.evidence_refs)
         entry["evidence_count"] = len(result.evidence_refs)
@@ -375,6 +386,11 @@ def build_task_tool(
             result = SubagentResult(
                 child_run_id=child_run_id,
                 status="failed",
+                result=(
+                    "Available profiles: "
+                    + ", ".join(sorted(effective.allowed_types))
+                    + "."
+                ),
                 error_code="subagent_type_not_allowed",
             )
         else:
@@ -440,6 +456,8 @@ def build_task_tool(
                 "type": event_type,
                 "child_run_id": child_run_id,
                 "parent_run_id": request.parent_run_id,
+                "subagent_type": request.subagent_type,
+                "description": request.description,
                 "status": result.status,
                 "result_brief": result.result.strip()[:500],
                 "result_ref": result.result_ref,

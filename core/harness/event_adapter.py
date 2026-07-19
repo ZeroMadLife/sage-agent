@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -35,6 +36,14 @@ _RUN_BUDGET_NOTICES = {
     "step_capped": "本轮已达到执行步数安全上限，已停止继续执行。",
     "time_capped": "本轮已达到执行时长安全上限，已停止继续执行。",
 }
+_LEGACY_TOOL_PROTOCOL = re.compile(
+    r"<tool>\s*\{.*?\}\s*</tool>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEGACY_FINAL_PROTOCOL = re.compile(
+    r"<final>(.*?)</final>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class HarnessEventAdapter:
@@ -100,6 +109,7 @@ class HarnessEventAdapter:
                         "message_id": projected.get("id", ""),
                     }
                 return ()
+            content = _public_assistant_content(content)
             if content:
                 return (
                     self._event(
@@ -581,6 +591,16 @@ def _public_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _bounded_value(item) for key, item in value.items() if key in allowed}
 
 
+def _public_assistant_content(value: object) -> object:
+    """Hide complete legacy protocol blocks from the browser timeline."""
+    if not isinstance(value, str):
+        return value
+    final_blocks = _LEGACY_FINAL_PROTOCOL.findall(value)
+    if final_blocks:
+        return final_blocks[-1].strip()
+    return _LEGACY_TOOL_PROTOCOL.sub("", value).strip()
+
+
 def _tool_result_payload(
     projected: Mapping[str, Any],
     tool_name: str,
@@ -608,6 +628,22 @@ def _tool_result_payload(
                     "truncated": artifact.get("truncated") is True,
                 }
             )
+    subagent = projected.get("sage_subagent")
+    if tool_name == "task" and isinstance(subagent, Mapping):
+        operation_id = _public_string(subagent.get("child_run_id"), 256)
+        payload["subagent"] = {
+            "child_run_id": operation_id,
+            "parent_run_id": _public_string(subagent.get("parent_run_id"), 256),
+            "status": _public_string(subagent.get("status"), 32),
+            "result_ref": _public_string(subagent.get("result_ref"), 1_000),
+            "error_code": _public_string(subagent.get("error_code"), 128),
+            "evidence_count": _public_non_negative_int(subagent.get("evidence_count")),
+            "token_usage": _public_non_negative_int(subagent.get("token_usage")),
+            "model_calls": _public_non_negative_int(subagent.get("model_calls")),
+            "tool_count": _public_non_negative_int(subagent.get("tool_count")),
+        }
+        if operation_id:
+            payload["operation_ref"] = {"kind": "coding_run", "id": operation_id}
     return payload
 
 
@@ -711,10 +747,15 @@ def _public_capability_payload(payload: Mapping[str, Any]) -> dict[str, Any] | N
 def _public_subagent_progress(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Project child progress without exposing prompts, arguments, or tool output."""
     phase = _public_string(payload.get("phase"), 32)
-    if phase not in {"model_requested", "tool_started", "tool_completed"}:
+    if phase not in {
+        "model_requested",
+        "tool_started",
+        "tool_completed",
+        "approval_required",
+    }:
         phase = "model_requested"
     status = _public_string(payload.get("status"), 16)
-    if status not in {"running", "completed", "error"}:
+    if status not in {"running", "waiting", "completed", "error"}:
         status = "running"
     public: dict[str, Any] = {
         "type": "subagent_progress",

@@ -13,7 +13,7 @@ class HarnessConfig:
 
     max_model_calls: int = 24
     max_tool_calls: int = 64
-    max_run_tokens: int = 100_000
+    max_run_tokens: int = 250_000
     recursion_limit: int = 100
     max_run_seconds: float = 1_800.0
 

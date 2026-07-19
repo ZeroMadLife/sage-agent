@@ -95,6 +95,81 @@ def test_event_adapter_exposes_ai_delta_and_tool_result_without_private_state() 
     assert "analysis" not in str(ai_events[0].payload)
 
 
+def test_event_adapter_does_not_stream_legacy_tool_protocol_as_answer_text() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    ai = AIMessage(
+        content=(
+            '<tool>{"name":"search_web","args":{"query":"private"}}</tool>'
+            '<final>Public answer only.</final>'
+        ),
+        id="ai-legacy",
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (ai, {}), "source-legacy"))
+
+    assert len(events) == 1
+    assert events[0].payload["delta"] == "Public answer only."
+    assert "<tool>" not in str(events[0].payload)
+
+
+def test_event_adapter_drops_tool_only_legacy_protocol_message() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    ai = AIMessage(
+        content='<tool>{"name":"search_web","args":{"query":"private"}}</tool>',
+        id="ai-tool-only",
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (ai, {}), "source-tool-only"))
+
+    assert events == ()
+
+
+def test_event_adapter_projects_safe_subagent_receipt_on_task_result() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    tool = ToolMessage(
+        content="Requested profile is unavailable.",
+        tool_call_id="call-task",
+        name="task",
+        status="error",
+        additional_kwargs={
+            "sage_subagent": {
+                "child_run_id": "child-1",
+                "parent_run_id": "r1",
+                "status": "failed",
+                "result_ref": "",
+                "error_code": "subagent_type_not_allowed",
+                "evidence_count": 0,
+                "token_usage": 0,
+                "model_calls": 0,
+                "tool_count": 0,
+                "prompt": "must-not-leak",
+            }
+        },
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (tool, {}), "source-task"))
+
+    assert len(events) == 1
+    assert events[0].kind == "tool"
+    assert events[0].status == "error"
+    assert events[0].payload["operation_ref"] == {
+        "kind": "coding_run",
+        "id": "child-1",
+    }
+    assert events[0].payload["subagent"] == {
+        "child_run_id": "child-1",
+        "parent_run_id": "r1",
+        "status": "failed",
+        "result_ref": "",
+        "error_code": "subagent_type_not_allowed",
+        "evidence_count": 0,
+        "token_usage": 0,
+        "model_calls": 0,
+        "tool_count": 0,
+    }
+    assert "must-not-leak" not in str(events[0].payload)
+
+
 def test_event_adapter_projects_a_bounded_run_budget_stop_and_notice() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
 
@@ -1211,6 +1286,34 @@ def test_event_adapter_projects_only_public_subagent_progress_fields() -> None:
     }
 
 
+def test_event_adapter_preserves_subagent_approval_waiting_progress() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "subagent_progress",
+                "child_run_id": "child_1",
+                "parent_run_id": "parent_1",
+                "subagent_type": "practice",
+                "phase": "approval_required",
+                "status": "waiting",
+                "tool": "run_shell",
+                "operation_ref": {"kind": "coding_run", "id": "child_1"},
+            },
+            "source-child-approval",
+        )
+    )
+
+    assert events[0].payload["phase"] == "approval_required"
+    assert events[0].payload["status"] == "waiting"
+    assert events[0].payload["operation_ref"] == {
+        "kind": "coding_run",
+        "id": "child_1",
+    }
+
+
 @pytest.mark.parametrize(
     ("event_type", "child_status", "error_code"),
     [
@@ -1307,6 +1410,9 @@ def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> No
     prompt = build_deerflow_system_prompt(runtime)
     assert "untrusted reference" in prompt
     assert "继续实现 harness" in prompt
+    assert "never print legacy <tool> or <final> protocol tags" in prompt
+    assert "never assume /workspace exists" in prompt
+    assert "do not retry the same selection" in prompt
     assert context_status_event(runtime, "r1") is None
 
 

@@ -205,7 +205,7 @@ def _explore_descriptor() -> CapabilityDescriptor:
     )
 
 
-def _research_descriptor() -> CapabilityDescriptor:
+def _research_descriptor(*, available: bool) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         capability_id="subagent:research",
         name="Research",
@@ -218,7 +218,7 @@ def _research_descriptor() -> CapabilityDescriptor:
         permission="runtime",
         deferred=True,
         remote_content=True,
-        availability="available",
+        availability="available" if available else "unavailable",
         timeout_seconds=180.0,
         tags=("research", "read-only", "evidence"),
     )
@@ -322,8 +322,7 @@ def build_sage_capability_registry(
     if mcp_catalog is not None:
         descriptors.extend(_mcp_descriptors(mcp_catalog))
     descriptors.append(_explore_descriptor())
-    if research_subagent_available:
-        descriptors.append(_research_descriptor())
+    descriptors.append(_research_descriptor(available=research_subagent_available))
     if practice_subagent_available:
         descriptors.append(_practice_descriptor())
     if web_search_available:

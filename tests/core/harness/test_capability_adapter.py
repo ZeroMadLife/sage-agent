@@ -112,7 +112,7 @@ def test_adapter_exposes_web_search_only_when_server_port_is_available(tmp_path)
     assert descriptor.permission == "runtime"
 
 
-def test_adapter_exposes_research_subagent_only_when_server_profile_is_available(
+def test_adapter_marks_research_subagent_unavailable_until_server_profile_is_ready(
     tmp_path,
 ) -> None:  # type: ignore[no-untyped-def]
     tools = build_tool_registry(WorkspaceContext(tmp_path))
@@ -124,9 +124,12 @@ def test_adapter_exposes_research_subagent_only_when_server_profile_is_available
         research_subagent_available=True,
     )
 
-    assert disabled.get("subagent:research") is None
+    unavailable = disabled.get("subagent:research")
+    assert unavailable is not None
+    assert unavailable.availability == "unavailable"
     descriptor = enabled.get("subagent:research")
     assert descriptor is not None
+    assert descriptor.availability == "available"
     assert descriptor.kind == "delegate"
     assert descriptor.remote_content is True
     assert descriptor.permission == "runtime"
