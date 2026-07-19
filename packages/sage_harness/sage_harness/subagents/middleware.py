@@ -142,6 +142,13 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
         ]
         prior_by_id = {str(entry["id"]): entry for entry in prior if entry.get("id")}
         prior_ids = set(prior_by_id)
+        active_practice_ids = {
+            str(entry["id"])
+            for entry in prior
+            if entry.get("id")
+            and str(entry.get("subagent_type", "")).casefold() == "practice"
+            and entry.get("status") in {"pending", "running"}
+        }
         remaining_total = max(0, self.limits.max_total_per_run - len(prior_ids))
         parent_token_usage = _non_negative_int(state.get("run_token_usage"))
         parent_token_limit = _non_negative_int(state.get("run_token_limit"))
@@ -203,6 +210,7 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
         dropped = 0
         reserved_count = 0
         seen_batch_ids: set[str] = set()
+        kept_practice_ids: set[str] = set()
 
         for call in calls:
             if _tool_call_name(call) != "task":
@@ -215,6 +223,8 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
                 call_id,
             )
             known = child_run_id in prior_ids
+            args = _tool_call_args(call)
+            requested_type = str(args.get("subagent_type") or "").casefold()
             if child_run_id in seen_batch_ids:
                 dropped += 1
                 continue
@@ -222,6 +232,16 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
                 bool(call_id)
                 and kept_task_count < self.limits.max_concurrent
                 and (known or remaining_total > 0)
+                and (
+                    requested_type != "practice"
+                    or (
+                        not kept_practice_ids
+                        and (
+                            not active_practice_ids
+                            or child_run_id in active_practice_ids
+                        )
+                    )
+                )
             )
             if not allowed:
                 dropped += 1
@@ -229,12 +249,13 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
             kept.append(call)
             kept_task_count += 1
             seen_batch_ids.add(child_run_id)
+            if requested_type == "practice":
+                kept_practice_ids.add(child_run_id)
             previous = prior_by_id.get(child_run_id)
             if known and previous is not None and not _needs_reservation(previous):
                 continue
             if not known:
                 remaining_total -= 1
-            args = _tool_call_args(call)
             requested_profile = self.tool_config.resolve(str(args.get("subagent_type") or ""))
             if parent_token_limit > 0:
                 reserved_count += 1

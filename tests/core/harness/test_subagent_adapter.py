@@ -199,6 +199,29 @@ def test_synthesize_profile_is_read_only_and_requires_evidence_bundle_port() -> 
     assert disabled.resolve("synthesize") is None
 
 
+def test_practice_profile_is_server_owned_and_available_without_research_ports() -> None:
+    config = build_coding_subagent_config(
+        UnavailableKnowledgePort(),
+        None,
+        None,
+    )
+
+    practice = config.resolve("practice")
+
+    assert practice is not None
+    assert practice.tool_scope == (
+        "list_files",
+        "read_file",
+        "search",
+        "write_file",
+        "patch_file",
+        "run_shell",
+    )
+    assert practice.token_budget == 24_000
+    assert practice.timeout_seconds == 300
+    assert practice.max_steps == 20
+
+
 def _runtime(tmp_path: Path, model: object) -> CodingRuntime:
     runtime = CodingRuntime(
         session_id="session-parent",
@@ -226,6 +249,26 @@ def _request(tmp_path: Path, child_run_id: str = "child_test") -> SubagentReques
         token_budget=10_000,
         timeout_seconds=10,
         max_steps=8,
+    )
+
+
+def _practice_request(tmp_path: Path, child_run_id: str) -> SubagentRequest:
+    return replace(
+        _request(tmp_path, child_run_id),
+        description="run one deterministic practice test",
+        prompt="Run the existing deterministic test and report the observed result.",
+        subagent_type="practice",
+        tool_scope=(
+            "list_files",
+            "read_file",
+            "search",
+            "write_file",
+            "patch_file",
+            "run_shell",
+        ),
+        token_budget=24_000,
+        timeout_seconds=30,
+        max_steps=20,
     )
 
 
@@ -266,6 +309,187 @@ def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path:
     }
 
 
+def test_practice_subagent_records_passing_test_as_candidate_and_replays_it(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_practice.py").write_text(
+        "import unittest\n\n"
+        "class PracticeTest(unittest.TestCase):\n"
+        "    def test_value(self):\n"
+        "        self.assertEqual(2 + 2, 4)\n",
+        encoding="utf-8",
+    )
+    model = FakeModel(
+        [
+            '<tool>{"name":"run_shell","args":{"command":'
+            '"python3 -m unittest -q test_practice.py"}}</tool>',
+            "<final>The deterministic test passed.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    runtime.set_permission_mode("auto")
+    executor = CodingSubagentExecutor(runtime)
+    request = _practice_request(tmp_path, "child_practice_pass")
+
+    first = asyncio.run(executor.execute(request))
+    replayed = asyncio.run(executor.execute(request))
+
+    assert first.status == "succeeded"
+    assert replayed == first
+    assert len(first.mastery_evidence) == 1
+    candidate = first.mastery_evidence[0]
+    assert candidate.kind == "code_test"
+    assert candidate.result == "pass"
+    assert candidate.metadata["exit_code"] == 0
+    assert "command" not in candidate.metadata
+    terminal = runtime.run_store.get_run(request.child_run_id)["events"][-2]
+    assert terminal["mastery_evidence_count"] == 1
+    assert terminal["mastery_evidence"][0]["result"] == "pass"
+
+
+def test_practice_subagent_records_failing_test_without_claiming_mastery(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "test_practice.py").write_text(
+        "import unittest\n\n"
+        "class PracticeTest(unittest.TestCase):\n"
+        "    def test_value(self):\n"
+        "        self.assertEqual(2 + 2, 5)\n",
+        encoding="utf-8",
+    )
+    model = FakeModel(
+        [
+            '<tool>{"name":"run_shell","args":{"command":'
+            '"python3 -m unittest -q test_practice.py"}}</tool>',
+            "<final>The deterministic test failed; no mastery is claimed.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    runtime.set_permission_mode("auto")
+    result = asyncio.run(
+        CodingSubagentExecutor(runtime).execute(
+            _practice_request(tmp_path, "child_practice_fail")
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert len(result.mastery_evidence) == 1
+    assert result.mastery_evidence[0].result == "fail"
+    assert result.mastery_evidence[0].metadata["exit_code"] != 0
+
+
+def test_practice_subagent_rejects_shell_commands_that_mask_test_exit_code(
+    tmp_path: Path,
+) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"run_shell","args":{"command":'
+            '"python3 -m unittest -q missing_test.py || true"}}</tool>',
+            "<final>The command completed, but it is not valid mastery evidence.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    runtime.set_permission_mode("auto")
+
+    result = asyncio.run(
+        CodingSubagentExecutor(runtime).execute(
+            _practice_request(tmp_path, "child_practice_masked")
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.mastery_evidence == ()
+
+
+def test_practice_subagent_rejects_background_test_commands(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"run_shell","args":{"command":'
+            '"python3 -m unittest -q test_practice.py & true"}}</tool>',
+            "<final>No deterministic receipt was recorded.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    runtime.set_permission_mode("auto")
+
+    result = asyncio.run(
+        CodingSubagentExecutor(runtime).execute(
+            _practice_request(tmp_path, "child_practice_background")
+        )
+    )
+
+    assert result.mastery_evidence == ()
+
+
+def test_practice_subagent_reuses_parent_plan_mode_and_cannot_write(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"write_file","args":'
+            '{"path":"blocked.txt","content":"must not exist"}}</tool>',
+            "<final>The parent policy blocked the write.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    runtime.set_permission_mode("plan")
+    request = _practice_request(tmp_path, "child_practice_plan")
+
+    result = asyncio.run(CodingSubagentExecutor(runtime).execute(request))
+
+    assert result.status == "succeeded"
+    assert result.mastery_evidence == ()
+    assert not (tmp_path / "blocked.txt").exists()
+    tool_result = next(
+        event
+        for event in runtime.run_store.get_run(request.child_run_id)["events"]
+        if event["type"] == "tool_result"
+    )
+    assert tool_result["is_error"] is True
+    assert tool_result["content"] == "plan_mode_tool_not_allowed"
+
+
+def test_practice_subagent_surfaces_parent_approval_and_continues_in_place(
+    tmp_path: Path,
+) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"write_file","args":'
+            '{"path":"approved.txt","content":"approved"}}</tool>',
+            "<final>The approved edit completed.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    request = _practice_request(tmp_path, "child_practice_approval")
+    progress_events: list[dict[str, object]] = []
+
+    async def run() -> object:
+        execution = asyncio.create_task(
+            CodingSubagentExecutor(runtime).execute(request, progress_events.append)
+        )
+        for _ in range(100):
+            pending = runtime.approval_manager.pending(runtime.session_id)
+            if pending is not None:
+                break
+            await asyncio.sleep(0.01)
+        else:
+            raise AssertionError("practice approval was not surfaced")
+        assert runtime.approval_manager.resolve(
+            runtime.session_id,
+            str(pending["approval_id"]),
+            "once",
+        )
+        return await asyncio.wait_for(execution, timeout=2)
+
+    result = asyncio.run(run())
+
+    assert result.status == "succeeded"  # type: ignore[union-attr]
+    assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "approved"
+    approval = next(
+        event for event in progress_events if event.get("phase") == "approval_required"
+    )
+    assert approval["status"] == "waiting"
+    assert approval["tool"] == "write_file"
+
+
 def test_coding_subagent_fails_closed_for_legacy_cached_usage(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
     executor = CodingSubagentExecutor(runtime)
@@ -296,7 +520,7 @@ def test_coding_subagent_rejects_write_capability_before_execution(tmp_path: Pat
         tool_scope=("read_file", "write_file"),
     )
 
-    with pytest.raises(ValueError, match="read-only scope"):
+    with pytest.raises(ValueError, match="server-owned scope"):
         asyncio.run(executor.execute(request))
 
     with pytest.raises(FileNotFoundError):

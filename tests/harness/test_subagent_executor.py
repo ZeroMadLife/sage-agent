@@ -10,6 +10,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from sage_harness import (
     HarnessRunContext,
+    MasteryEvidenceCandidate,
     SubagentLifecycleMiddleware,
     SubagentLimits,
     SubagentProfile,
@@ -33,6 +34,7 @@ class FakeExecutor:
     evidence_refs: tuple[str, ...] = ()
     query_fingerprints: tuple[str, ...] = ()
     source_fingerprints: tuple[str, ...] = ()
+    mastery_evidence: tuple[MasteryEvidenceCandidate, ...] = ()
     requests: list[SubagentRequest] = field(default_factory=list)
     cancelled: list[tuple[str, str]] = field(default_factory=list)
     active: int = 0
@@ -58,12 +60,38 @@ class FakeExecutor:
                 tool_count=self.tool_count,
                 query_fingerprints=self.query_fingerprints,
                 source_fingerprints=self.source_fingerprints,
+                mastery_evidence=self.mastery_evidence,
             )
         finally:
             self.active -= 1
 
     async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
         self.cancelled.append((child_run_id, reason))
+
+
+@dataclass
+class ApprovalProgressExecutor(FakeExecutor):
+    async def execute(self, request: SubagentRequest, progress=None) -> SubagentResult:  # type: ignore[no-untyped-def]
+        self.requests.append(request)
+        if progress is not None:
+            progress(
+                {
+                    "phase": "approval_required",
+                    "status": "waiting",
+                    "approval_id": "appr_child",
+                    "tool": "run_shell",
+                    "args": {
+                        "command": "API_KEY=super-secret python3 -m unittest -q",
+                    },
+                    "description": "Run with token=must-not-leak",
+                }
+            )
+        return SubagentResult(
+            child_run_id=request.child_run_id,
+            status="succeeded",
+            result="Approved command completed.",
+            result_ref=f"subagent://{request.child_run_id}/result",
+        )
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -116,6 +144,36 @@ def test_subagent_limits_record_only_allowed_task_calls() -> None:
     assert isinstance(replacement, AIMessage)
     assert [call["id"] for call in replacement.tool_calls] == ["call-0", "call-1"]
     assert "SUBAGENT LIMIT REACHED" in str(replacement.content)
+
+
+def test_subagent_limits_allow_only_one_concurrent_practice_child() -> None:
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "practice"}),
+        profiles=(
+            SubagentProfile(
+                name="practice",
+                tool_scope=("read_file", "write_file", "run_shell"),
+                token_budget=24_000,
+                timeout_seconds=300,
+                max_steps=20,
+            ),
+        ),
+    )
+    middleware = SubagentLifecycleMiddleware(tool_config=config)
+    calls = [_task_call(f"call-practice-{index}") for index in range(3)]
+    for call in calls:
+        call["args"] = {**call["args"], "subagent_type": "practice"}  # type: ignore[index]
+
+    update = middleware.after_model(
+        {"messages": [AIMessage(content="", tool_calls=calls)]},
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    assert len(update["delegations"]) == 1
+    replacement = update["messages"][0]
+    assert isinstance(replacement, AIMessage)
+    assert [call["id"] for call in replacement.tool_calls] == ["call-practice-0"]
 
 
 def test_subagent_limits_reserve_one_shared_parent_token_budget() -> None:
@@ -376,6 +434,51 @@ def test_task_tool_accepts_lowercase_explore_profile_from_model() -> None:
     assert result["delegations"][0]["status"] == "succeeded"
 
 
+def test_task_tool_projects_subagent_approval_scope_and_redacts_arguments() -> None:
+    executor = ApprovalProgressExecutor()
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[_task_call("call-approval")]),
+            AIMessage(content="The child continued after approval."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_tool(executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    async def run() -> tuple[dict[str, object], list[dict[str, object]]]:
+        events: list[dict[str, object]] = []
+        final: dict[str, object] = {}
+        async for mode, chunk in graph.astream(
+            {"messages": [HumanMessage(content="Inspect the repository")]},
+            context=_context(),
+            stream_mode=["custom", "values"],
+        ):
+            if mode == "custom" and isinstance(chunk, dict):
+                events.append(chunk)
+            elif mode == "values" and isinstance(chunk, dict):
+                final = chunk
+        return final, events
+
+    result, events = asyncio.run(run())
+
+    approval = next(event for event in events if event.get("type") == "approval_required")
+    assert approval["approval_scope"] == "subagent"
+    assert approval["resume_required"] is False
+    assert "super-secret" not in str(approval)
+    assert "must-not-leak" not in str(approval)
+    assert "[REDACTED]" in str(approval)
+    assert result["delegations"][0]["status"] == "succeeded"  # type: ignore[index]
+
+
 def test_task_tool_freezes_parent_evidence_receipts_into_synthesis_request() -> None:
     executor = FakeExecutor(
         evidence_refs=("kcite_a",),
@@ -547,6 +650,78 @@ def test_task_tool_applies_server_owned_research_profile() -> None:
     assert request.timeout_seconds == 180
     assert request.max_steps == 16
     assert result["delegations"][0]["status"] == "succeeded"
+
+
+def test_task_tool_records_practice_evidence_candidate_without_applying_mastery() -> None:
+    candidate = MasteryEvidenceCandidate(
+        evidence_id="practice_evidence_1",
+        kind="code_test",
+        result="pass",
+        source_ref="subagent://thread-parent/child-practice/tool-results/1",
+        summary="Deterministic test command passed.",
+        metadata={"exit_code": 0, "command_digest": "abc"},
+    )
+    executor = FakeExecutor(mastery_evidence=(candidate,))
+    call = _task_call("call-practice")
+    call["args"] = {**call["args"], "subagent_type": "practice"}  # type: ignore[index]
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "practice"}),
+        profiles=(
+            SubagentProfile(
+                name="practice",
+                tool_scope=(
+                    "list_files",
+                    "read_file",
+                    "search",
+                    "write_file",
+                    "patch_file",
+                    "run_shell",
+                ),
+                token_budget=24_000,
+                timeout_seconds=300,
+                max_steps=20,
+            ),
+        ),
+    )
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="The observed test receipt was recorded as a candidate."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_tool(executor, config)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(tool_config=config),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Run one bounded practice exercise")]},
+            context=_context(),
+        )
+    )
+
+    request = executor.requests[0]
+    assert request.subagent_type == "practice"
+    assert request.tool_scope[-3:] == ("write_file", "patch_file", "run_shell")
+    assert result["delegations"][0]["mastery_evidence"] == [
+        {
+            "evidence_id": "practice_evidence_1",
+            "kind": "code_test",
+            "result": "pass",
+            "source_ref": "subagent://thread-parent/child-practice/tool-results/1",
+            "summary": "Deterministic test command passed.",
+            "metadata": {"exit_code": 0, "command_digest": "abc"},
+        }
+    ]
+    assert "mastery" not in result
 
 
 def test_task_tool_times_out_and_requests_child_cancellation() -> None:

@@ -4,12 +4,55 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 SubagentTerminalStatus = Literal["succeeded", "failed", "cancelled", "timed_out"]
 SubagentCancelReason = Literal["parent_cancelled", "timeout"]
 SubagentProgressSink = Callable[[Mapping[str, object]], None]
+MasteryEvidenceKind = Literal["code_test"]
+MasteryEvidenceResult = Literal["pass", "fail"]
+
+
+@dataclass(frozen=True, slots=True)
+class MasteryEvidenceCandidate:
+    """Deterministic practice evidence awaiting a future Mastery Ledger decision."""
+
+    evidence_id: str
+    kind: MasteryEvidenceKind
+    result: MasteryEvidenceResult
+    source_ref: str
+    summary: str
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.kind != "code_test":
+            raise ValueError("unsupported mastery evidence candidate kind")
+        if self.result not in {"pass", "fail"}:
+            raise ValueError("unsupported mastery evidence candidate result")
+        for field_name, maximum in (
+            ("evidence_id", 256),
+            ("source_ref", 1_000),
+            ("summary", 500),
+        ):
+            value = str(getattr(self, field_name)).strip()
+            if not value or len(value) > maximum:
+                raise ValueError(f"{field_name} must be non-empty and bounded")
+            object.__setattr__(self, field_name, value)
+        if not self.source_ref.startswith("subagent://"):
+            raise ValueError("practice evidence source_ref must use the subagent scheme")
+        if not isinstance(self.metadata, Mapping):
+            raise ValueError("practice evidence metadata must be a mapping")
+        bounded_metadata: dict[str, object] = {}
+        for raw_key, raw_value in list(self.metadata.items())[:16]:
+            key = str(raw_key).strip()[:128]
+            if not key:
+                continue
+            if isinstance(raw_value, str):
+                bounded_metadata[key] = raw_value[:1_000]
+            elif isinstance(raw_value, bool | int | float) or raw_value is None:
+                bounded_metadata[key] = raw_value
+        object.__setattr__(self, "metadata", bounded_metadata)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +231,7 @@ class SubagentResult:
     tool_count: int = 0
     query_fingerprints: tuple[str, ...] = ()
     source_fingerprints: tuple[str, ...] = ()
+    mastery_evidence: tuple[MasteryEvidenceCandidate, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.child_run_id.strip():
@@ -209,6 +253,9 @@ class SubagentResult:
             "source_fingerprints",
             tuple(dict.fromkeys(item for item in self.source_fingerprints if item.strip())),
         )
+        evidence_ids = tuple(item.evidence_id for item in self.mastery_evidence)
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("mastery evidence candidates must have unique IDs")
 
 
 class SubagentExecutorPort(Protocol):
@@ -238,6 +285,9 @@ def derive_child_run_id(thread_id: str, run_id: str, tool_call_id: str) -> str:
 
 __all__ = [
     "CancelCheck",
+    "MasteryEvidenceCandidate",
+    "MasteryEvidenceKind",
+    "MasteryEvidenceResult",
     "SubagentCancelReason",
     "SubagentExecutorPort",
     "SubagentLimits",

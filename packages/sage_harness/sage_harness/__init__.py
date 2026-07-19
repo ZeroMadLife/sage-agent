@@ -103,6 +103,9 @@ from sage_harness.skills import (
 from sage_harness.state import SageThreadState
 from sage_harness.subagents import (
     CancelCheck,
+    MasteryEvidenceCandidate,
+    MasteryEvidenceKind,
+    MasteryEvidenceResult,
     SubagentCancelReason,
     SubagentExecutorPort,
     SubagentLifecycleMiddleware,
@@ -160,6 +163,9 @@ __all__ = [
     "KnowledgeRetrievalResult",
     "KnowledgeSourceProposalPort",
     "KnowledgeSourceProposalReceipt",
+    "MasteryEvidenceCandidate",
+    "MasteryEvidenceKind",
+    "MasteryEvidenceResult",
     "McpCatalogPort",
     "McpCatalogSnapshot",
     "McpConfigSnapshot",

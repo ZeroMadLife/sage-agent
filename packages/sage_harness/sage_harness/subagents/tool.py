@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import Mapping
 from contextlib import suppress
 from typing import Annotated, Any
@@ -26,8 +27,14 @@ _DESCRIPTION_MAX = 200
 _PROMPT_MAX = 12_000
 _RESULT_MAX = 8_000
 _RESULT_BRIEF_MAX = 2_000
-_PROGRESS_PHASES = frozenset({"model_requested", "tool_started", "tool_completed"})
-_PROGRESS_STATUSES = frozenset({"running", "completed", "error"})
+_PROGRESS_PHASES = frozenset(
+    {"model_requested", "tool_started", "tool_completed", "approval_required"}
+)
+_PROGRESS_STATUSES = frozenset({"running", "waiting", "completed", "error"})
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|secret)\s*=\s*)"
+    r"(?:'[^']*'|\"[^\"]*\"|[^\s;&|]+)"
+)
 
 
 def _result_content(result: SubagentResult) -> str:
@@ -36,7 +43,16 @@ def _result_content(result: SubagentResult) -> str:
         evidence = (
             "\nEvidence refs: " + ", ".join(result.evidence_refs) if result.evidence_refs else ""
         )
-        return f"Task succeeded. Result:\n{body}{evidence}"
+        mastery = ""
+        if result.mastery_evidence:
+            items = ", ".join(
+                f"{item.kind}:{item.result}:{item.evidence_id}"
+                for item in result.mastery_evidence
+            )
+            mastery = (
+                "\nMastery evidence candidates (not applied to mastery): " + items
+            )
+        return f"Task succeeded. Result:\n{body}{evidence}{mastery}"
     if result.status == "timed_out":
         return "Task timed out before producing a usable result."
     if result.status == "cancelled":
@@ -77,6 +93,10 @@ def _terminal_command(
         entry["query_fingerprints"] = list(result.query_fingerprints)
     if result.source_fingerprints:
         entry["source_fingerprints"] = list(result.source_fingerprints)
+    if result.mastery_evidence:
+        entry["mastery_evidence"] = [
+            _mastery_evidence_payload(item) for item in result.mastery_evidence
+        ]
     metadata = {
         "child_run_id": request.child_run_id,
         "parent_run_id": request.parent_run_id,
@@ -88,6 +108,10 @@ def _terminal_command(
         "token_usage": result.token_usage,
         "model_calls": result.model_calls,
         "tool_count": result.tool_count,
+        "mastery_evidence": [
+            _mastery_evidence_payload(item) for item in result.mastery_evidence
+        ],
+        "mastery_evidence_count": len(result.mastery_evidence),
     }
     return Command(
         update={
@@ -117,6 +141,20 @@ def _progress_event(
 ) -> dict[str, object]:
     phase = str(event.get("phase", ""))
     status = str(event.get("status", ""))
+    if phase == "approval_required":
+        return {
+            "type": "approval_required",
+            "approval_id": _bounded_text(event.get("approval_id"), 256),
+            "tool": _bounded_text(event.get("tool"), 128),
+            "args": _bounded_arguments(event.get("args")),
+            "description": _redact_text(_bounded_text(event.get("description"), 500)),
+            "child_run_id": child_run_id,
+            "parent_run_id": parent_run_id,
+            "subagent_type": subagent_type,
+            "approval_scope": "subagent",
+            "resume_required": False,
+            "operation_ref": {"kind": "coding_run", "id": child_run_id},
+        }
     payload: dict[str, object] = {
         "type": "subagent_progress",
         "child_run_id": child_run_id,
@@ -132,6 +170,49 @@ def _progress_event(
     if tool_name:
         payload["tool"] = tool_name
     return payload
+
+
+def _bounded_text(value: object, maximum: int) -> str:
+    return " ".join(str(value or "").split())[:maximum]
+
+
+def _redact_text(value: str) -> str:
+    return _SECRET_ASSIGNMENT.sub(r"\1[REDACTED]", value)
+
+
+def _bounded_arguments(value: object) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        return {}
+    bounded: dict[str, object] = {}
+    for key, item in list(value.items())[:20]:
+        name = _bounded_text(key, 128)
+        if not name:
+            continue
+        if isinstance(item, bool | int | float):
+            bounded[name] = item
+        elif isinstance(item, str):
+            bounded[name] = _redact_text(item)[:4_000]
+        elif isinstance(item, list | tuple):
+            bounded[name] = [
+                (
+                    candidate
+                    if isinstance(candidate, bool | int | float)
+                    else _redact_text(str(candidate))[:500]
+                )
+                for candidate in item[:20]
+            ]
+    return bounded
+
+
+def _mastery_evidence_payload(item: object) -> dict[str, object]:
+    return {
+        "evidence_id": str(getattr(item, "evidence_id", "")),
+        "kind": str(getattr(item, "kind", "")),
+        "result": str(getattr(item, "result", "")),
+        "source_ref": str(getattr(item, "source_ref", "")),
+        "summary": str(getattr(item, "summary", "")),
+        "metadata": dict(getattr(item, "metadata", {})),
+    }
 
 
 def _non_negative_int(value: object) -> int:
@@ -224,10 +305,12 @@ def build_task_tool(
         """Delegate a bounded task and wait for its terminal result.
 
         Choose only a server-registered profile: explore for bounded local
-        inspection, research for Knowledge and public web evidence, or
-        synthesize for an already-authorized Research evidence bundle. Children
-        cannot write, persist Memory/Knowledge, launch another child, or expand
-        server-owned tools and budgets.
+        inspection, research for Knowledge and public web evidence, practice for
+        bounded workspace exercises, or synthesize for an already-authorized
+        Research evidence bundle. Practice may write or run shell only through
+        the parent runtime's policy, approval, and sandbox. No child may persist
+        Memory/Knowledge, launch another child, or expand server-owned tools and
+        budgets.
         """
         description = " ".join(str(description).split())[:_DESCRIPTION_MAX]
         prompt = str(prompt).strip()[:_PROMPT_MAX]
@@ -366,6 +449,10 @@ def build_task_tool(
                 "token_usage": result.token_usage,
                 "model_calls": result.model_calls,
                 "tool_count": result.tool_count,
+                "mastery_evidence": [
+                    _mastery_evidence_payload(item) for item in result.mastery_evidence
+                ],
+                "mastery_evidence_count": len(result.mastery_evidence),
                 "operation_ref": {"kind": "coding_run", "id": child_run_id},
             }
         )

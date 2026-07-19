@@ -2,6 +2,9 @@
 
 from sage_harness.subagents.contracts import (
     CancelCheck,
+    MasteryEvidenceCandidate,
+    MasteryEvidenceKind,
+    MasteryEvidenceResult,
     SubagentCancelReason,
     SubagentExecutorPort,
     SubagentLimits,
@@ -18,6 +21,9 @@ from sage_harness.subagents.tool import build_task_tool
 
 __all__ = [
     "CancelCheck",
+    "MasteryEvidenceCandidate",
+    "MasteryEvidenceKind",
+    "MasteryEvidenceResult",
     "SubagentCancelReason",
     "SubagentExecutorPort",
     "SubagentLifecycleMiddleware",

@@ -130,3 +130,24 @@ def test_adapter_exposes_research_subagent_only_when_server_profile_is_available
     assert descriptor.kind == "delegate"
     assert descriptor.remote_content is True
     assert descriptor.permission == "runtime"
+
+
+def test_adapter_exposes_practice_subagent_only_when_server_profile_is_available(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
+    tools = build_tool_registry(WorkspaceContext(tmp_path))
+
+    disabled = build_sage_capability_registry(tools=tools, skills=[])
+    enabled = build_sage_capability_registry(
+        tools=tools,
+        skills=[],
+        practice_subagent_available=True,
+    )
+
+    assert disabled.get("subagent:practice") is None
+    descriptor = enabled.get("subagent:practice")
+    assert descriptor is not None
+    assert descriptor.kind == "delegate"
+    assert descriptor.remote_content is False
+    assert descriptor.permission == "approval"
+    assert descriptor.risk == "high"

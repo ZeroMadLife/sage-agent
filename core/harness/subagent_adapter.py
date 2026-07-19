@@ -1,4 +1,4 @@
-"""Sage application adapter for awaited read-only Harness children."""
+"""Sage application adapter for awaited bounded Harness children."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -15,6 +16,8 @@ from pydantic import BaseModel, Field, ValidationError
 from sage_harness import (
     EvidenceBundlePort,
     KnowledgePort,
+    MasteryEvidenceCandidate,
+    SandboxPort,
     SubagentCancelReason,
     SubagentProfile,
     SubagentProgressSink,
@@ -35,6 +38,7 @@ from core.coding.multiagent.runtime import (
 )
 from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.runtime import CodingRuntime
+from core.coding.tool_executor.executor import ToolExecutor
 from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import (
     ToolArgumentValidationError,
@@ -53,6 +57,15 @@ _RESEARCH_CHILD_TOOLS = frozenset(
 )
 _SYNTHESIZE_CHILD_TOOL_SCOPE = ("read_evidence_bundle",)
 _SYNTHESIZE_CHILD_TOOLS = frozenset(_SYNTHESIZE_CHILD_TOOL_SCOPE)
+_PRACTICE_CHILD_TOOL_SCOPE = (
+    "list_files",
+    "read_file",
+    "search",
+    "write_file",
+    "patch_file",
+    "run_shell",
+)
+_PRACTICE_CHILD_TOOLS = frozenset(_PRACTICE_CHILD_TOOL_SCOPE)
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled", "timed_out"})
 _RESEARCH_PROMPT = """You are Sage's bounded Research child. Gather evidence for exactly the
 delegated question. You may inspect the workspace, approved Knowledge, and public web evidence
@@ -65,6 +78,21 @@ evidence bundle before answering. Reconcile only the returned evidence, preserve
 separate agreement from conflict and missing evidence, and produce a concise synthesis for the
 delegated question. Never search the web, inspect local files, execute shell commands, write or
 persist anything, delegate another agent, or claim evidence absent from the bundle."""
+_PRACTICE_PROMPT = """You are Sage's bounded Practice child. Complete exactly the delegated
+exercise inside the current workspace using only the provided tools. Existing workspace policy,
+approval, sandbox, and cancellation rules remain authoritative. Run a relevant deterministic test
+when the task permits it and report the observed result honestly. Never access Web or Knowledge,
+persist Memory, delegate another agent, or claim mastery. A successful model answer is not proof;
+only server-recorded test receipts may become Mastery Evidence candidates."""
+_EXIT_CODE = re.compile(r"(?m)^exit_code:\s*(-?\d+)\s*$")
+_TEST_COMMAND_START = re.compile(
+    r"^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)?"
+    r"(?:python(?:3(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)|pytest|"
+    r"npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|"
+    r"go\s+test|cargo\s+test|dotnet\s+test|swift\s+test|"
+    r"(?:\./)?gradlew?\b.*\btest\b|mvn\b.*\btest\b|xcodebuild\b.*\btest\b)",
+    re.IGNORECASE,
+)
 
 
 class ReadEvidenceBundleArgs(BaseModel):
@@ -91,9 +119,21 @@ def build_coding_subagent_config(
     """Expose only profiles whose server-owned evidence ports are available."""
     base = base_config or SubagentToolConfig()
     profiles = [
-        profile for profile in base.profiles if profile.name not in {"research", "synthesize"}
+        profile
+        for profile in base.profiles
+        if profile.name not in {"research", "synthesize", "practice"}
     ]
-    allowed_types = set(base.allowed_types) - {"research", "synthesize"}
+    allowed_types = set(base.allowed_types) - {"research", "synthesize", "practice"}
+    allowed_types.add("practice")
+    profiles.append(
+        SubagentProfile(
+            name="practice",
+            tool_scope=_PRACTICE_CHILD_TOOL_SCOPE,
+            token_budget=24_000,
+            timeout_seconds=300,
+            max_steps=20,
+        )
+    )
     research_available = (
         knowledge_port.available and web_search_port is not None and web_search_port.available
     )
@@ -143,12 +183,14 @@ class CodingSubagentExecutor:
         web_search_port: WebSearchPort | None = None,
         web_fetch_port: WebFetchPort | None = None,
         evidence_bundle_port: EvidenceBundlePort | None = None,
+        sandbox: SandboxPort | None = None,
     ) -> None:
         self.runtime = runtime
         self.knowledge_port = knowledge_port
         self.web_search_port = web_search_port
         self.web_fetch_port = web_fetch_port
         self.evidence_bundle_port = evidence_bundle_port
+        self.sandbox = sandbox
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._cancel_reasons: dict[str, SubagentCancelReason] = {}
 
@@ -189,7 +231,7 @@ class CodingSubagentExecutor:
             description=request.description,
             # The legacy worker runtime still uses the display spelling for
             # plan-mode selection; the public Harness contract is lowercase.
-            subagent_type="Explore",
+            subagent_type="Practice" if request.subagent_type == "practice" else "Explore",
             write_scope=(),
             prompt=_child_prompt(request),
             status="running",
@@ -199,6 +241,7 @@ class CodingSubagentExecutor:
         query_fingerprints: dict[str, None] = {}
         source_fingerprints: dict[str, None] = {}
         successful_bundle_reads = 0
+        mastery_evidence: dict[str, MasteryEvidenceCandidate] = {}
         model_calls = 0
         tool_count = 0
         token_usage = 0
@@ -241,6 +284,14 @@ class CodingSubagentExecutor:
                 )
             elif event_type == "tool_result":
                 tool_name = str(event.get("tool", ""))
+                if request.subagent_type == "practice":
+                    candidate = _practice_evidence_candidate(
+                        request,
+                        event,
+                        ordinal=tool_count,
+                    )
+                    if candidate is not None:
+                        mastery_evidence[candidate.evidence_id] = candidate
                 if tool_name in {
                     "knowledge_search",
                     "search_web",
@@ -270,46 +321,69 @@ class CodingSubagentExecutor:
                     tool_count=tool_count,
                     evidence_count=len(evidence_refs),
                 )
-            elif event_type == "model_requested":
+            elif event_type == "approval_required":
                 _emit_progress(
                     progress,
-                    phase="model_requested",
-                    status="running",
+                    phase="approval_required",
+                    status="waiting",
+                    tool=str(event.get("tool", "")),
+                    approval_id=str(event.get("approval_id", "")),
+                    description=str(event.get("description", "")),
+                    args=event.get("args", {}),
                     tool_count=tool_count,
                     evidence_count=len(evidence_refs),
                 )
-
         try:
+            child_tools = self._tools(
+                request,
+                query_fingerprints=query_fingerprints,
+                source_fingerprints=source_fingerprints,
+            )
+            def child_should_stop() -> bool:
+                return cancel_event.is_set() or self.runtime.stop_requested
+            tool_executor = (
+                ToolExecutor(
+                    tools=child_tools,
+                    workspace=self.runtime.workspace,
+                    permission_checker=self.runtime.permission_checker,
+                    policy_checker=self.runtime.policy_checker,
+                    approval_manager=self.runtime.approval_manager,
+                    session_id=self.runtime.session_id,
+                    should_stop=child_should_stop,
+                    run_id=request.child_run_id,
+                    sandbox=self.sandbox,
+                )
+                if request.subagent_type == "practice"
+                else None
+            )
             final = await run_worker_task(
                 task,
                 self.runtime.workspace,
                 self.runtime.worker_manager.model_factory,
                 tool_scope=request.tool_scope,
-                should_stop=lambda: cancel_event.is_set() or self.runtime.stop_requested,
+                should_stop=child_should_stop,
                 token_budget=request.token_budget,
                 max_steps=request.max_steps,
                 event_sink=emit_child_event,
-                tools=self._tools(
-                    request,
-                    query_fingerprints=query_fingerprints,
-                    source_fingerprints=source_fingerprints,
-                ),
+                tools=child_tools,
                 usage_sink=record_usage,
+                tool_executor=tool_executor,
+            )
+            succeeded = bool(final.strip()) and (
+                request.subagent_type != "synthesize" or successful_bundle_reads > 0
             )
             result = SubagentResult(
                 child_run_id=request.child_run_id,
                 status=(
                     "succeeded"
-                    if final.strip()
-                    and (request.subagent_type != "synthesize" or successful_bundle_reads > 0)
+                    if succeeded
                     else "failed"
                 ),
                 result=final,
                 result_ref=result_ref,
                 error_code=(
                     ""
-                    if final.strip()
-                    and (request.subagent_type != "synthesize" or successful_bundle_reads > 0)
+                    if succeeded
                     else (
                         "evidence_bundle_not_read"
                         if request.subagent_type == "synthesize"
@@ -322,6 +396,7 @@ class CodingSubagentExecutor:
                 tool_count=tool_count,
                 query_fingerprints=tuple(query_fingerprints),
                 source_fingerprints=tuple(source_fingerprints),
+                mastery_evidence=(tuple(mastery_evidence.values()) if succeeded else ()),
             )
         except WorkerTaskBudgetExceeded:
             result = SubagentResult(
@@ -406,11 +481,12 @@ class CodingSubagentExecutor:
             "explore": _READ_ONLY_CHILD_TOOLS,
             "research": _RESEARCH_CHILD_TOOLS,
             "synthesize": _SYNTHESIZE_CHILD_TOOLS,
+            "practice": _PRACTICE_CHILD_TOOLS,
         }.get(profile, frozenset())
-        if profile not in {"explore", "research", "synthesize"}:
+        if profile not in {"explore", "research", "synthesize", "practice"}:
             raise ValueError("unknown server-owned subagent profile")
         if not set(request.tool_scope).issubset(allowed_scope):
-            raise ValueError("subagent requested tools outside the read-only scope")
+            raise ValueError("subagent requested tools outside its server-owned scope")
         if profile == "research":
             if self.knowledge_port is None or not self.knowledge_port.available:
                 raise ValueError("research subagent requires Knowledge retrieval")
@@ -477,6 +553,10 @@ class CodingSubagentExecutor:
                 "token_usage": result.token_usage,
                 "model_calls": result.model_calls,
                 "tool_count": result.tool_count,
+                "mastery_evidence": [
+                    _mastery_evidence_payload(item) for item in result.mastery_evidence
+                ],
+                "mastery_evidence_count": len(result.mastery_evidence),
             },
         )
         self.runtime.run_store.append_trace(
@@ -522,6 +602,12 @@ class CodingSubagentExecutor:
                 token_usage=int(event.get("token_usage") or 0),
                 model_calls=int(event.get("model_calls") or 0),
                 tool_count=int(event.get("tool_count") or 0),
+                mastery_evidence=tuple(
+                    candidate
+                    for item in event.get("mastery_evidence", ())
+                    if isinstance(item, Mapping)
+                    and (candidate := _mastery_evidence_from_payload(item)) is not None
+                ),
             )
         return None
 
@@ -745,7 +831,98 @@ def _child_prompt(request: SubagentRequest) -> str:
             f"{_SYNTHESIZE_PROMPT}\n\n<delegated-question>\n{request.prompt}\n"
             "</delegated-question>"
         )
+    if request.subagent_type == "practice":
+        return (
+            f"{_PRACTICE_PROMPT}\n\n<delegated-exercise>\n{request.prompt}\n"
+            "</delegated-exercise>"
+        )
     return request.prompt
+
+
+def _practice_evidence_candidate(
+    request: SubagentRequest,
+    event: Mapping[str, Any],
+    *,
+    ordinal: int,
+) -> MasteryEvidenceCandidate | None:
+    if str(event.get("tool", "")) != "run_shell":
+        return None
+    args = event.get("args")
+    if not isinstance(args, Mapping):
+        return None
+    command = str(args.get("command", "")).strip()
+    if not _is_test_command(command):
+        return None
+    match = _EXIT_CODE.search(str(event.get("content", "")))
+    if match is None:
+        return None
+    exit_code = int(match.group(1))
+    command_digest = hashlib.sha256(command.encode("utf-8", "replace")).hexdigest()[:24]
+    identity = f"{request.child_run_id}\0{ordinal}\0{command_digest}\0{exit_code}"
+    evidence_id = f"practice_{hashlib.sha256(identity.encode()).hexdigest()[:24]}"
+    return MasteryEvidenceCandidate(
+        evidence_id=evidence_id,
+        kind="code_test",
+        result="pass" if exit_code == 0 else "fail",
+        source_ref=(
+            f"subagent://{request.parent_thread_id}/{request.child_run_id}/tool-results/{ordinal}"
+        ),
+        summary=(
+            "Deterministic test command passed."
+            if exit_code == 0
+            else "Deterministic test command failed."
+        ),
+        metadata={
+            "exit_code": exit_code,
+            "command_digest": command_digest,
+            "tool": "run_shell",
+        },
+    )
+
+
+def _is_test_command(command: str) -> bool:
+    if not command or re.search(
+        r"(?:\|\||(?<!\|)\|(?!\|)|(?<![><])&(?![>&])|;|\n|\r)",
+        command,
+    ):
+        return False
+    final_segment = command.rsplit("&&", 1)[-1].strip()
+    if final_segment.startswith("("):
+        final_segment = final_segment[1:].lstrip()
+    return bool(_TEST_COMMAND_START.search(final_segment))
+
+
+def _mastery_evidence_payload(item: MasteryEvidenceCandidate) -> dict[str, object]:
+    return {
+        "evidence_id": item.evidence_id,
+        "kind": item.kind,
+        "result": item.result,
+        "source_ref": item.source_ref,
+        "summary": item.summary,
+        "metadata": dict(item.metadata),
+    }
+
+
+def _mastery_evidence_from_payload(
+    value: Mapping[str, object],
+) -> MasteryEvidenceCandidate | None:
+    raw_metadata = value.get("metadata", {})
+    metadata = (
+        {str(key): item for key, item in raw_metadata.items()}
+        if isinstance(raw_metadata, Mapping)
+        else {}
+    )
+    try:
+        return MasteryEvidenceCandidate(
+            evidence_id=str(value.get("evidence_id", "")),
+            kind=cast(Any, value.get("kind", "")),
+            result=cast(Any, value.get("result", "")),
+            source_ref=str(value.get("source_ref", "")),
+            summary=str(value.get("summary", "")),
+            metadata=metadata,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 def _query_fingerprint(parent_run_id: str, tool_name: str, query: str) -> str:

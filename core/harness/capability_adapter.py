@@ -224,6 +224,28 @@ def _research_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _practice_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="subagent:practice",
+        name="Practice",
+        origin="subagent",
+        kind="delegate",
+        revision="practice-code-test-v1",
+        description=(
+            "Bounded workspace exercise child that can edit and run deterministic tests "
+            "under the parent policy, approval, and sandbox."
+        ),
+        surfaces=_ALL_SURFACES,
+        risk="high",
+        permission="approval",
+        deferred=True,
+        remote_content=False,
+        availability="available",
+        timeout_seconds=300.0,
+        tags=("practice", "workspace", "evidence"),
+    )
+
+
 def _web_search_descriptor() -> CapabilityDescriptor:
     return CapabilityDescriptor(
         capability_id="web:search",
@@ -292,6 +314,7 @@ def build_sage_capability_registry(
     web_fetch_available: bool = False,
     web_source_proposal_available: bool = False,
     research_subagent_available: bool = False,
+    practice_subagent_available: bool = False,
 ) -> CapabilityRegistry:
     """Build a public catalog from current runtime-owned source metadata."""
     descriptors = [_tool_descriptor(name, tool) for name, tool in tools.items()]
@@ -301,6 +324,8 @@ def build_sage_capability_registry(
     descriptors.append(_explore_descriptor())
     if research_subagent_available:
         descriptors.append(_research_descriptor())
+    if practice_subagent_available:
+        descriptors.append(_practice_descriptor())
     if web_search_available:
         descriptors.append(_web_search_descriptor())
     if web_fetch_available:

@@ -350,6 +350,10 @@ def build_deerflow_coding_tool_bundle(
             subagent_config is not None
             and "research" in subagent_config.allowed_types
         ),
+        practice_subagent_available=(
+            subagent_config is not None
+            and "practice" in subagent_config.allowed_types
+        ),
     )
 
     graph_tools, deferred_setup = assemble_deferred_tools(

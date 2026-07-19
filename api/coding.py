@@ -530,6 +530,7 @@ async def _deerflow_timeline_events(
                 web_search_port=web_search_port,
                 web_fetch_port=web_fetch_port,
                 evidence_bundle_port=evidence_bundle_port,
+                sandbox=sandbox,
             )
             artifact_store = ToolResultStore(
                 runtime.storage_root,
@@ -626,7 +627,10 @@ async def _deerflow_timeline_events(
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
                     yield event
-                    if event.payload.get("type") == "approval_required":
+                    if (
+                        event.payload.get("type") == "approval_required"
+                        and event.payload.get("approval_scope") != "subagent"
+                    ):
                         approval_to_resume = str(
                             event.payload.get("approval_id", "")
                         ).strip()

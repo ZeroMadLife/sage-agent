@@ -9,6 +9,7 @@ from core.coding.context import ContextManager, WorkspaceContext
 from core.coding.engine.engine import Engine
 from core.coding.multiagent.execution import WorkerTask
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
+from core.coding.tool_executor.executor import ToolExecutor
 from core.coding.tools.registry import build_tool_registry
 from core.coding.usage_store import UsageSample
 
@@ -33,6 +34,7 @@ async def run_worker_task(
     event_sink: Callable[[dict[str, Any]], None] | None = None,
     tools: dict[str, Any] | None = None,
     usage_sink: Callable[[UsageSample], None] | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> str:
     """Run one worker task and return its final response."""
     if tools is None:
@@ -71,6 +73,7 @@ async def run_worker_task(
         run_id=task.id,
         max_steps=max_steps,
         model_usage_sink=record_usage,
+        tool_executor=tool_executor,
     )
     final = ""
     async for event in engine.run_turn(task.prompt):

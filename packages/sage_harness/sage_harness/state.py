@@ -91,6 +91,7 @@ class DelegationEntry(TypedDict, total=False):
     evidence_refs: list[str]
     query_fingerprints: list[str]
     source_fingerprints: list[str]
+    mastery_evidence: list[dict[str, object]]
     created_at: str
 
 
