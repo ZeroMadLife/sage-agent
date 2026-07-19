@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts.canaryctl import (
+    DEFAULT_REMOTE_HOST,
     CanaryConfig,
     CanaryController,
     CanaryError,
@@ -18,6 +19,10 @@ from scripts.canaryctl import (
 
 SHA = "a" * 40
 NEXT_SHA = "b" * 40
+
+
+def test_default_management_channel_uses_public_key_only_ssh() -> None:
+    assert DEFAULT_REMOTE_HOST == "sage-deploy@121.40.185.188"
 
 
 def _config(tmp_path: Path, **overrides: object) -> CanaryConfig:
@@ -127,10 +132,10 @@ def test_remote_deploy_script_has_fixed_order_and_quoted_sha(tmp_path: Path) -> 
 
 def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    calls: list[tuple[list[str], str | None]] = []
+    calls: list[tuple[list[str], str | None, int]] = []
 
     def runner(command, input_text, timeout):
-        calls.append((list(command), input_text))
+        calls.append((list(command), input_text, timeout))
         if (
             command[:2] == ["/usr/bin/false", "api"]
             and f"commits/{NEXT_SHA}" in command[2]
@@ -157,7 +162,20 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
     state = json.loads(config.state_path.read_text(encoding="utf-8"))
     assert state["last_deployed_sha"] == NEXT_SHA
     assert config.state_path.stat().st_mode & 0o777 == 0o600
-    assert all("APP_SECRET_KEY" not in (input_text or "") for _, input_text in calls)
+    deploy_calls = [
+        (command, timeout)
+        for command, input_text, timeout in calls
+        if input_text and "checkout --detach" in input_text
+    ]
+    assert len(deploy_calls) == 1
+    deploy_command, deploy_timeout = deploy_calls[0]
+    assert "ServerAliveInterval=30" in deploy_command
+    assert "ServerAliveCountMax=20" in deploy_command
+    assert deploy_timeout == 7200
+    assert all(
+        "APP_SECRET_KEY" not in (input_text or "")
+        for _, input_text, _ in calls
+    )
 
 
 def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:

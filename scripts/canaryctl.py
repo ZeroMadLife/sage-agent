@@ -34,7 +34,7 @@ LABEL = "com.sage.canaryctl"
 DEFAULT_STATE_ROOT = Path.home() / ".local/state/sage-canary"
 DEFAULT_LAUNCHER = Path.home() / ".local/bin/sage-canaryctl"
 DEFAULT_PLIST = Path.home() / "Library/LaunchAgents" / f"{LABEL}.plist"
-DEFAULT_REMOTE_HOST = "sage-deploy@sage-agent-canary.tail74531c.ts.net"
+DEFAULT_REMOTE_HOST = "sage-deploy@121.40.185.188"
 DEFAULT_REMOTE_APP = "/opt/sage/app"
 DEFAULT_ENV_FILE = "/etc/sage/env"
 DEFAULT_DOCKER_HOST = "unix:///run/user/1002/docker.sock"
@@ -345,6 +345,10 @@ class CanaryController:
                 "-o",
                 "ConnectTimeout=10",
                 "-o",
+                "ServerAliveInterval=30",
+                "-o",
+                "ServerAliveCountMax=20",
+                "-o",
                 "StrictHostKeyChecking=yes",
                 "-o",
                 f"HostKeyAlias={self.config.host_key_alias}",
@@ -597,7 +601,7 @@ class CanaryController:
             )
             _write_json(self.config.state_path, state)
             return {"status": "up-to-date", "sha": sha}
-        result = self._ssh_script(self._remote_deploy_script(sha), timeout=2400)
+        result = self._ssh_script(self._remote_deploy_script(sha), timeout=7200)
         if self._command_failed(result):
             raise CanaryError("Canary 部署失败；旧服务应保持不变，请查看服务器 deployctl 状态")
         state = load_state(self.config.state_path)
