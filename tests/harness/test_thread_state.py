@@ -10,6 +10,7 @@ from sage_harness.state import (
     merge_approval_context,
     merge_artifacts,
     merge_delegations,
+    merge_evidence_fingerprints,
     merge_evidence_refs,
     merge_goal,
     merge_memory_refs,
@@ -78,6 +79,16 @@ def test_evidence_refs_merge_deterministically_across_child_completion_order() -
     assert first == second == ["kcite_a", "wcite_b"]
 
 
+def test_evidence_fingerprints_are_deduplicated_and_bounded() -> None:
+    fingerprints = [f"query_{index:03d}" for index in range(300)]
+
+    merged = merge_evidence_fingerprints(fingerprints[:200], fingerprints[100:])
+
+    assert len(merged) == 256
+    assert merged[0] == "query_044"
+    assert merged[-1] == "query_299"
+
+
 def test_delegation_budget_usage_supports_reservations_actuals_and_legacy_state() -> None:
     assert delegation_budget_usage(
         {
@@ -95,9 +106,11 @@ def test_delegation_budget_usage_supports_reservations_actuals_and_legacy_state(
             "tool_count": 1,
         }
     ) == (600, 2, 1)
-    assert delegation_budget_usage(
-        {"status": "succeeded", "token_budget": 24_000}
-    ) == (24_000, 18, 16)
+    assert delegation_budget_usage({"status": "succeeded", "token_budget": 24_000}) == (
+        24_000,
+        18,
+        16,
+    )
     assert delegation_budget_usage(
         {
             "status": "failed",

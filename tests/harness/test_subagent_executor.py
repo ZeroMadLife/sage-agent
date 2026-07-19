@@ -31,6 +31,8 @@ class FakeExecutor:
     model_calls: int = 0
     tool_count: int = 0
     evidence_refs: tuple[str, ...] = ()
+    query_fingerprints: tuple[str, ...] = ()
+    source_fingerprints: tuple[str, ...] = ()
     requests: list[SubagentRequest] = field(default_factory=list)
     cancelled: list[tuple[str, str]] = field(default_factory=list)
     active: int = 0
@@ -54,6 +56,8 @@ class FakeExecutor:
                 token_usage=self.token_usage,
                 model_calls=self.model_calls,
                 tool_count=self.tool_count,
+                query_fingerprints=self.query_fingerprints,
+                source_fingerprints=self.source_fingerprints,
             )
         finally:
             self.active -= 1
@@ -370,6 +374,81 @@ def test_task_tool_accepts_lowercase_explore_profile_from_model() -> None:
 
     assert executor.requests[0].subagent_type == "explore"
     assert result["delegations"][0]["status"] == "succeeded"
+
+
+def test_task_tool_freezes_parent_evidence_receipts_into_synthesis_request() -> None:
+    executor = FakeExecutor(
+        evidence_refs=("kcite_a",),
+        query_fingerprints=("query_a",),
+        source_fingerprints=("source_a",),
+    )
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "synthesize"}),
+        profiles=(
+            SubagentProfile(
+                name="synthesize",
+                tool_scope=("read_evidence_bundle",),
+                token_budget=16_000,
+                timeout_seconds=90,
+                max_steps=8,
+            ),
+        ),
+    )
+    call = _task_call("call-synthesis")
+    call["args"] = {
+        **call["args"],
+        "subagent_type": "synthesize",
+        "prompt": "Synthesize the current Research receipts.",
+    }
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="Synthesis complete."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_tool(executor, config)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(tool_config=config),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="Synthesize the current research")],
+                "evidence_refs": ["kcite_a"],
+                "evidence_query_fingerprints": ["query_a"],
+                "evidence_source_fingerprints": ["source_a"],
+                "delegations": [
+                    {
+                        "id": "child-research",
+                        "run_id": "run-parent",
+                        "subagent_type": "research",
+                        "status": "succeeded",
+                        "evidence_refs": ["kcite_a"],
+                    }
+                ],
+            },
+            context=_context(),
+        )
+    )
+
+    request = executor.requests[0]
+    assert request.subagent_type == "synthesize"
+    assert request.evidence_refs == ("kcite_a",)
+    assert request.evidence_child_run_ids == ("child-research",)
+    assert request.query_fingerprints == ("query_a",)
+    assert request.source_fingerprints == ("source_a",)
+    synthesis_entry = next(
+        item for item in result["delegations"] if item["subagent_type"] == "synthesize"
+    )
+    assert synthesis_entry["query_fingerprints"] == ["query_a"]
 
 
 def test_real_graph_runs_three_bounded_children_concurrently() -> None:

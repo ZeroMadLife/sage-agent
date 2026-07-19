@@ -8,10 +8,14 @@ from pathlib import Path
 
 import pytest
 from sage_harness import (
+    EvidenceBundle,
+    EvidenceBundleItem,
     KnowledgeEvidence,
     KnowledgeRetrievalResult,
     SubagentRequest,
     WebEvidence,
+    WebFetchedDocument,
+    WebFetchResult,
     WebSearchResult,
 )
 
@@ -90,8 +94,63 @@ class FakeWebSearchPort:
         )
 
 
+class CountingWebSearchPort(FakeWebSearchPort):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def search(self, query: str, **kwargs) -> WebSearchResult:  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return await super().search(query, **kwargs)
+
+
+class CountingWebFetchPort:
+    available = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def fetch(self, url: str) -> WebFetchResult:
+        self.calls += 1
+        return WebFetchResult(
+            status="evidence_found",
+            document=WebFetchedDocument(
+                canonical_url=url,
+                title="Fetched research",
+                text="Full fetched public evidence.",
+                media_type="text/html",
+                retrieved_at="2026-07-19T00:00:00Z",
+                content_hash="b" * 64,
+                wire_bytes=100,
+            ),
+        )
+
+
 class UnavailableKnowledgePort(FakeKnowledgePort):
     available = False
+
+
+class FakeEvidenceBundlePort:
+    available = True
+
+    async def read(self, thread_id: str, parent_run_id: str, **kwargs) -> EvidenceBundle:  # type: ignore[no-untyped-def]
+        assert thread_id == "session-parent"
+        assert parent_run_id == "run-parent"
+        return EvidenceBundle(
+            status="evidence_found",
+            items=(
+                EvidenceBundleItem(
+                    evidence_ref="kcite_research",
+                    kind="knowledge",
+                    title="Approved evidence",
+                    content="Approved project evidence.",
+                    source_ref="source_approved",
+                    token_count=6,
+                ),
+            ),
+            requested_refs=tuple(kwargs["evidence_refs"]),
+            token_budget=int(kwargs["token_budget"]),
+            used_tokens=6,
+        )
 
 
 def test_research_profile_is_server_owned_and_fails_closed_when_ports_are_unavailable() -> None:
@@ -118,6 +177,26 @@ def test_research_profile_is_server_owned_and_fails_closed_when_ports_are_unavai
     assert research.token_budget == 24_000
     assert research.max_steps == 16
     assert disabled.resolve("research") is None
+
+
+def test_synthesize_profile_is_read_only_and_requires_evidence_bundle_port() -> None:
+    enabled = build_coding_subagent_config(
+        FakeKnowledgePort(),
+        FakeWebSearchPort(),
+        None,
+        evidence_bundle_port=FakeEvidenceBundlePort(),
+    )
+    disabled = build_coding_subagent_config(
+        FakeKnowledgePort(),
+        FakeWebSearchPort(),
+        None,
+    )
+
+    synthesize = enabled.resolve("synthesize")
+    assert synthesize is not None
+    assert synthesize.tool_scope == ("read_evidence_bundle",)
+    assert synthesize.token_budget == 16_000
+    assert disabled.resolve("synthesize") is None
 
 
 def _runtime(tmp_path: Path, model: object) -> CodingRuntime:
@@ -282,6 +361,9 @@ def test_research_subagent_uses_bounded_evidence_tools_and_records_progress(
 
     assert result.status == "succeeded"
     assert result.evidence_refs == ("kcite_research", "wcite_research")
+    assert len(result.query_fingerprints) == 2
+    assert all(item.startswith("query_") for item in result.query_fingerprints)
+    assert len(result.source_fingerprints) == 2
     assert result.model_calls == 3
     assert result.tool_count == 2
     assert result.token_usage == request.token_budget
@@ -290,6 +372,7 @@ def test_research_subagent_uses_bounded_evidence_tools_and_records_progress(
     trace = runtime.run_store.get_run("child_research")["events"]
     terminal = next(event for event in reversed(trace) if event["type"] == "subagent_terminal")
     assert terminal["evidence_refs"] == ["kcite_research", "wcite_research"]
+    assert terminal["query_fingerprints"] == list(result.query_fingerprints)
 
 
 def test_research_subagent_does_not_treat_local_file_content_as_evidence(tmp_path: Path) -> None:
@@ -348,6 +431,88 @@ def test_research_subagent_retries_invalid_evidence_tool_arguments(tmp_path: Pat
     assert model.calls == 3
 
 
+def test_research_subagent_breaks_duplicate_queries_from_parent_state(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"search_web","args":{"query":"Harness evidence"}}</tool>',
+            '<tool>{"name":"search_web","args":{"query":"Harness evidence"}}</tool>',
+            "<final>First pass [wcite_research].</final>",
+            '<tool>{"name":"search_web","args":{"query":"Harness evidence"}}</tool>',
+            "<final>The duplicate query was skipped.</final>",
+            '<tool>{"name":"search_web","args":{"query":"Harness evidence"}}</tool>',
+            "<final>A later run refreshed [wcite_research].</final>",
+        ]
+    )
+    port = CountingWebSearchPort()
+    runtime = _runtime(tmp_path, model)
+    executor = CodingSubagentExecutor(
+        runtime,
+        knowledge_port=FakeKnowledgePort(),
+        web_search_port=port,
+    )
+    first_request = replace(
+        _request(tmp_path, "child_first_query"),
+        subagent_type="research",
+        tool_scope=("knowledge_search", "search_web"),
+    )
+    first = asyncio.run(executor.execute(first_request))
+    second_request = replace(
+        first_request,
+        child_run_id="child_duplicate_query",
+        query_fingerprints=first.query_fingerprints,
+    )
+
+    second = asyncio.run(executor.execute(second_request))
+
+    runtime.active_run_id = "run-next"
+    third_request = replace(
+        first_request,
+        parent_run_id="run-next",
+        child_run_id="child_refresh_query",
+        query_fingerprints=first.query_fingerprints,
+    )
+    third = asyncio.run(executor.execute(third_request))
+
+    assert port.calls == 2
+    assert second.status == "succeeded"
+    assert second.evidence_refs == ()
+    assert third.evidence_refs == ("wcite_research",)
+
+
+def test_research_subagent_allows_first_fetch_after_search_then_breaks_repeat(
+    tmp_path: Path,
+) -> None:
+    url = "https://example.com/research"
+    model = FakeModel(
+        [
+            '<tool>{"name":"search_web","args":{"query":"Harness evidence"}}</tool>',
+            f'<tool>{{"name":"fetch_web","args":{{"url":"{url}"}}}}</tool>',
+            f'<tool>{{"name":"fetch_web","args":{{"url":"{url}"}}}}</tool>',
+            "<final>The fetched citation is current.</final>",
+        ]
+    )
+    fetch_port = CountingWebFetchPort()
+    runtime = _runtime(tmp_path, model)
+    executor = CodingSubagentExecutor(
+        runtime,
+        knowledge_port=FakeKnowledgePort(),
+        web_search_port=FakeWebSearchPort(),
+        web_fetch_port=fetch_port,
+    )
+    request = replace(
+        _request(tmp_path, "child_fetch_breaker"),
+        subagent_type="research",
+        tool_scope=("knowledge_search", "search_web", "fetch_web"),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert fetch_port.calls == 1
+    assert "wcite_research" in result.evidence_refs
+    assert any(reference.startswith("sage://coding/") for reference in result.evidence_refs)
+
+
 def test_research_subagent_fails_closed_without_required_ports(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, FakeModel(["<final>unused</final>"]))
     executor = CodingSubagentExecutor(runtime)
@@ -359,3 +524,52 @@ def test_research_subagent_fails_closed_without_required_ports(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="requires Knowledge retrieval"):
         asyncio.run(executor.execute(request))
+
+
+def test_synthesize_subagent_can_only_read_parent_research_bundle(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"read_evidence_bundle","args":{"token_budget":512}}</tool>',
+            "<final>Approved [kcite_research] supports the conclusion.</final>",
+        ]
+    )
+    runtime = _runtime(tmp_path, model)
+    executor = CodingSubagentExecutor(
+        runtime,
+        evidence_bundle_port=FakeEvidenceBundlePort(),
+    )
+    request = replace(
+        _request(tmp_path, "child_synthesis"),
+        description="synthesize research",
+        prompt="Summarize only the approved evidence.",
+        subagent_type="synthesize",
+        tool_scope=("read_evidence_bundle",),
+        evidence_refs=("kcite_research",),
+        evidence_child_run_ids=("child_research",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert result.evidence_refs == ("kcite_research",)
+    assert result.tool_count == 1
+    trace = runtime.run_store.get_run("child_synthesis")["events"]
+    assert trace[-2]["status"] == "succeeded"
+    assert trace[-2]["evidence_refs"] == ["kcite_research"]
+
+
+def test_synthesize_subagent_fails_if_it_skips_the_bundle(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, FakeModel(["<final>unsupported claim</final>"]))
+    executor = CodingSubagentExecutor(runtime, evidence_bundle_port=FakeEvidenceBundlePort())
+    request = replace(
+        _request(tmp_path, "child_synthesis_no_read"),
+        subagent_type="synthesize",
+        tool_scope=("read_evidence_bundle",),
+        evidence_refs=("kcite_research",),
+        evidence_child_run_ids=("child_research",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "failed"
+    assert result.error_code == "evidence_bundle_not_read"

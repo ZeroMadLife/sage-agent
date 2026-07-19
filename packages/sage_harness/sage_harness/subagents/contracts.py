@@ -134,6 +134,10 @@ class SubagentRequest:
     timeout_seconds: float
     max_steps: int
     depth: int = 1
+    evidence_refs: tuple[str, ...] = ()
+    evidence_child_run_ids: tuple[str, ...] = ()
+    query_fingerprints: tuple[str, ...] = ()
+    source_fingerprints: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         for field_name in (
@@ -155,6 +159,18 @@ class SubagentRequest:
         if self.depth < 1:
             raise ValueError("depth must be positive")
         object.__setattr__(self, "subagent_type", self.subagent_type.strip().casefold())
+        for field_name in (
+            "evidence_refs",
+            "evidence_child_run_ids",
+            "query_fingerprints",
+            "source_fingerprints",
+        ):
+            values = tuple(
+                dict.fromkeys(
+                    str(item).strip() for item in getattr(self, field_name) if str(item).strip()
+                )
+            )
+            object.__setattr__(self, field_name, values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +186,8 @@ class SubagentResult:
     token_usage: int = 0
     model_calls: int = 0
     tool_count: int = 0
+    query_fingerprints: tuple[str, ...] = ()
+    source_fingerprints: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.child_run_id.strip():
@@ -181,6 +199,16 @@ class SubagentResult:
         if self.token_usage < 0 or self.model_calls < 0 or self.tool_count < 0:
             raise ValueError("subagent usage counters must be non-negative")
         object.__setattr__(self, "evidence_refs", tuple(dict.fromkeys(self.evidence_refs)))
+        object.__setattr__(
+            self,
+            "query_fingerprints",
+            tuple(dict.fromkeys(item for item in self.query_fingerprints if item.strip())),
+        )
+        object.__setattr__(
+            self,
+            "source_fingerprints",
+            tuple(dict.fromkeys(item for item in self.source_fingerprints if item.strip())),
+        )
 
 
 class SubagentExecutorPort(Protocol):

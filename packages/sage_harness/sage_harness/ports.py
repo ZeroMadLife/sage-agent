@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 ToolExecutionStatus = Literal["succeeded", "failed", "rejected"]
+EvidenceKind = Literal["knowledge", "web_search", "web_fetch"]
 ApprovalAction = Literal["once", "session", "reject"]
 McpConnectionStatus = Literal[
     "configured",
@@ -169,6 +170,38 @@ class WebFetchResult:
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceBundleItem:
+    """One bounded evidence receipt that can be safely consumed by a child."""
+
+    evidence_ref: str
+    kind: EvidenceKind
+    content: str
+    title: str = ""
+    source_ref: str = ""
+    canonical_url: str = ""
+    page_revision: str = ""
+    source_revision: str = ""
+    content_hash: str = ""
+    token_count: int = 0
+    truncated: bool = False
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBundle:
+    """Token-bounded, read-only evidence selected from durable child receipts."""
+
+    status: Literal["evidence_found", "no_evidence", "unavailable"]
+    items: tuple[EvidenceBundleItem, ...] = ()
+    requested_refs: tuple[str, ...] = ()
+    missing_refs: tuple[str, ...] = ()
+    duplicate_count: int = 0
+    token_budget: int = 0
+    used_tokens: int = 0
+    omitted_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryReference:
     """Small durable-memory reference safe to assemble into context."""
 
@@ -300,6 +333,23 @@ class WebFetchPort(Protocol):
     def available(self) -> bool: ...
 
     async def fetch(self, url: str) -> WebFetchResult: ...
+
+
+class EvidenceBundlePort(Protocol):
+    """Read only evidence already recorded by the current parent run."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def read(
+        self,
+        thread_id: str,
+        parent_run_id: str,
+        *,
+        child_run_ids: Sequence[str],
+        evidence_refs: Sequence[str],
+        token_budget: int,
+    ) -> EvidenceBundle: ...
 
 
 class KnowledgeSourceProposalPort(Protocol):
