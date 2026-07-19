@@ -23,7 +23,6 @@ import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -45,6 +44,7 @@ DEFAULT_HOST_KEY_ALIAS = "121.40.185.188"
 DEFAULT_GIT_BIN = shutil.which("git") or "/usr/bin/git"
 DEFAULT_GH_BIN = shutil.which("gh") or "gh"
 DEFAULT_SSH_BIN = shutil.which("ssh") or "/usr/bin/ssh"
+DEFAULT_CURL_BIN = shutil.which("curl") or "/usr/bin/curl"
 
 
 class CanaryError(RuntimeError):
@@ -74,9 +74,10 @@ class CanaryConfig:
     git_bin: str = DEFAULT_GIT_BIN
     gh_bin: str = DEFAULT_GH_BIN
     ssh_bin: str = DEFAULT_SSH_BIN
+    curl_bin: str = DEFAULT_CURL_BIN
     cc_connect_bin: str = "cc-connect"
-    notify_project: Optional[str] = None  # noqa: UP045 - Python 3.9 runtime
-    notify_session: Optional[str] = None  # noqa: UP045 - Python 3.9 runtime
+    notify_project: str | None = None
+    notify_session: str | None = None
     auto_deploy: bool = True
 
     @property
@@ -88,13 +89,13 @@ class CanaryConfig:
         return self.state_root / "config.json"
 
 
-Runner = Callable[[Sequence[str], Optional[str], int], CommandResult]  # noqa: UP045
+Runner = Callable[[Sequence[str], str | None, int], CommandResult]
 HttpProbe = Callable[[str], bool]
 
 
 def run_command(
     command: Sequence[str],
-    input_text: Optional[str] = None,  # noqa: UP045 - Python 3.9 runtime
+    input_text: str | None = None,
     timeout: int = 30,
 ) -> CommandResult:
     """Run an argv-only command without a shell."""
@@ -151,7 +152,7 @@ def _load_json(path: Path) -> dict[str, object]:
     return value
 
 
-def _lock_or_skip(path: Path) -> Optional[int]:  # noqa: UP045 - Python 3.9 runtime
+def _lock_or_skip(path: Path) -> int | None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(path.parent, 0o700)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
@@ -191,6 +192,7 @@ def validate_config(config: CanaryConfig) -> None:
         ("git", config.git_bin),
         ("gh", config.gh_bin),
         ("ssh", config.ssh_bin),
+        ("curl", config.curl_bin),
         ("cc-connect", config.cc_connect_bin),
     ):
         path = Path(executable).expanduser()
@@ -220,6 +222,7 @@ def config_from_values(values: Mapping[str, object]) -> CanaryConfig:
         git_bin=string("git_bin", DEFAULT_GIT_BIN),
         gh_bin=string("gh_bin", DEFAULT_GH_BIN),
         ssh_bin=string("ssh_bin", DEFAULT_SSH_BIN),
+        curl_bin=string("curl_bin", DEFAULT_CURL_BIN),
         cc_connect_bin=string("cc_connect_bin", "cc-connect"),
         notify_project=string("notify_project") or None,
         notify_session=string("notify_session") or None,
@@ -419,8 +422,26 @@ class CanaryController:
 
     def availability(self) -> dict[str, object]:
         http_ok = self.http_probe(self.config.health_url)
+        if not http_ok:
+            curl = self._local(
+                [
+                    self.config.curl_bin,
+                    "--noproxy",
+                    "*",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--output",
+                    "/dev/null",
+                    "--max-time",
+                    "15",
+                    self.config.health_url,
+                ],
+                timeout=20,
+            )
+            http_ok = curl.returncode == 0
         remote_ok = True
-        status: Optional[dict[str, object]] = None  # noqa: UP045 - Python 3.9 runtime
+        status: dict[str, object] | None = None
         if http_ok:
             try:
                 status = self.remote_status()
@@ -710,6 +731,7 @@ def install_command(args: argparse.Namespace) -> int:
             "git_bin": DEFAULT_GIT_BIN,
             "gh_bin": DEFAULT_GH_BIN,
             "ssh_bin": DEFAULT_SSH_BIN,
+            "curl_bin": DEFAULT_CURL_BIN,
             "cc_connect_bin": resolved,
             "notify_project": project,
             "notify_session": session,
@@ -733,6 +755,7 @@ def install_command(args: argparse.Namespace) -> int:
             "git_bin": config.git_bin,
             "gh_bin": config.gh_bin,
             "ssh_bin": config.ssh_bin,
+            "curl_bin": config.curl_bin,
             "cc_connect_bin": config.cc_connect_bin,
             "notify_project": config.notify_project,
             "notify_session": config.notify_session,
@@ -837,7 +860,7 @@ def resume_command(config: CanaryConfig) -> int:
 
 
 def main(
-    argv: Optional[Sequence[str]] = None,  # noqa: UP045 - Python 3.9 runtime
+    argv: Sequence[str] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     try:

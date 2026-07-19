@@ -37,6 +37,7 @@ def _config(tmp_path: Path, **overrides: object) -> CanaryConfig:
         "git_bin": "/usr/bin/true",
         "gh_bin": "/usr/bin/false",
         "ssh_bin": "/usr/bin/env",
+        "curl_bin": "/bin/echo",
         "cc_connect_bin": "/usr/bin/printf",
         "notify_project": "sage",
         "notify_session": "feishu:test",
@@ -160,11 +161,13 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
 
 
 def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
-    config = _config(tmp_path)
+    config = _config(tmp_path, curl_bin="/usr/bin/false")
     healthy = True
     notifications: list[str] = []
 
     def runner(command, input_text, timeout):
+        if command and command[0] == "/usr/bin/false":
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
         if command and command[0] == "/usr/bin/env":
             return type("Result", (), {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""})()
         if command and command[0] == "/usr/bin/printf":
@@ -202,6 +205,30 @@ def test_availability_rejects_degraded_server_status(tmp_path: Path) -> None:
     assert report["http"] is True
     assert report["remote"] is False
     assert report["healthy"] is False
+
+
+def test_availability_falls_back_to_proxy_free_curl(tmp_path: Path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, input_text, timeout):
+        calls.append(list(command))
+        if command[0] == "/bin/echo":
+            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        if command[0] == "/usr/bin/env":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""},
+            )()
+        raise AssertionError(command)
+
+    report = CanaryController(
+        _config(tmp_path), runner=runner, http_probe=lambda _url: False
+    ).availability()
+
+    assert report["healthy"] is True
+    curl = next(command for command in calls if command[0] == "/bin/echo")
+    assert curl[curl.index("--noproxy") + 1] == "*"
 
 
 def test_validate_commit_rejects_shell_text() -> None:
