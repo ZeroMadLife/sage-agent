@@ -1,9 +1,12 @@
 """Tests for the bounded private Canary deployment controller."""
 
+# ruff: noqa: I001 - Ruff 0.8 and 0.15 disagree on the tests/scripts import section.
+
 import json
 from pathlib import Path
 
 import pytest
+
 from scripts.deployctl import (
     CommandResult,
     DeployConfig,

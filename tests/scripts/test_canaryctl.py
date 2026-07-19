@@ -1,9 +1,12 @@
 """Canary CI/CD controller tests."""
 
+# ruff: noqa: I001 - Ruff 0.8 and 0.15 disagree on the tests/scripts import section.
+
 import json
 from pathlib import Path
 
 import pytest
+
 from scripts.canaryctl import (
     CanaryConfig,
     CanaryController,
