@@ -276,3 +276,22 @@ it('closes the permission drawer from its close control', async () => {
 
   expect(document.body.querySelector('.permission-drawer')).toBeNull()
 })
+
+it('closes the permission drawer on escape', async () => {
+  const { wrapper } = mountComposer()
+
+  await wrapper.find('.permission-trigger').trigger('click')
+  const drawer = document.body.querySelector('.permission-drawer')
+  expect(drawer).toBeTruthy()
+
+  const event = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  })
+  drawer?.dispatchEvent(event)
+  await nextTick()
+
+  expect(event.defaultPrevented).toBe(true)
+  expect(document.body.querySelector('.permission-drawer')).toBeNull()
+})
