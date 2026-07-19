@@ -231,6 +231,26 @@ def test_availability_falls_back_to_proxy_free_curl(tmp_path: Path) -> None:
     assert curl[curl.index("--noproxy") + 1] == "*"
 
 
+def test_run_once_reuses_proxy_free_probe_after_deploy(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    controller = CanaryController(config, http_probe=lambda _url: False)
+    curl_calls = 0
+
+    def fake_http() -> bool:
+        nonlocal curl_calls
+        curl_calls += 1
+        return True
+
+    controller._http_healthy = fake_http
+    controller.check = lambda: {"healthy": True}
+    controller.sync = lambda: {"status": "deployed", "sha": NEXT_SHA}
+
+    result = controller.run_once()
+
+    assert result["status"] == "ok"
+    assert curl_calls == 1
+
+
 def test_validate_commit_rejects_shell_text() -> None:
     with pytest.raises(CanaryError):
         validate_commit("a" * 40 + "; touch /tmp/pwned")
