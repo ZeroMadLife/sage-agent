@@ -111,8 +111,14 @@ function redactText(text: string) {
     </div>
     <div class="actions">
       <button class="deny" :disabled="busy" @click="emit('respond', 'deny')">拒绝</button>
-      <button v-if="allowsSessionApproval" class="session" :disabled="busy" @click="emit('respond', 'session')">
-        本会话允许
+      <button
+        v-if="allowsSessionApproval"
+        class="session"
+        :disabled="busy"
+        title="本会话后续同类操作将自动通过，不再逐次询问"
+        @click="emit('respond', 'session')"
+      >
+        本会话自动允许
       </button>
       <button class="allow" :disabled="busy" @click="emit('respond', 'once')">允许一次</button>
     </div>

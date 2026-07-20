@@ -46,6 +46,16 @@ function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
   return fetch(input, { credentials: 'include', ...init })
 }
 
+export class CodingApprovalResponseError extends Error {
+  readonly status: number
+
+  constructor(status: number) {
+    super(`respond approval failed: ${status}`)
+    this.name = 'CodingApprovalResponseError'
+    this.status = status
+  }
+}
+
 function parseTimelineResponse(value: unknown, sessionId: string): CodingTimelineResponse {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('收到无效的时间线响应')
   const response = value as Record<string, unknown>
@@ -486,7 +496,7 @@ export async function respondCodingApproval(
       body: JSON.stringify({ approval_id: approvalId, choice }),
     },
   )
-  if (!response.ok) throw new Error(`respond approval failed: ${response.status}`)
+  if (!response.ok) throw new CodingApprovalResponseError(response.status)
 }
 
 export async function stopCodingRun(sessionId: string, runId: string): Promise<void> {

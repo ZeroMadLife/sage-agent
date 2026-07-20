@@ -1269,6 +1269,29 @@ describe('coding store', () => {
     expect(store.errorMessage).toContain('respond approval failed: 500')
   })
 
+  it('reconciles a stale approval card after the server has already resolved it', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: true, json: async () => null })
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useCodingStore()
+    store.sessionId = 'c1'
+    store.pendingApproval = {
+      approval_id: 'appr_stale',
+      session_id: 'c1',
+      tool: 'run_shell',
+      args: { command: 'pwd' },
+      description: 'run_shell requires approval.',
+      pattern_key: 'tool:run_shell',
+    }
+
+    await store.respondApproval('once')
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(store.pendingApproval).toBeNull()
+    expect(store.errorMessage).toBe('')
+  })
+
   it('caches file tree directories', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

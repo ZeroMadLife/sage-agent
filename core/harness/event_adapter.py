@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -36,14 +35,72 @@ _RUN_BUDGET_NOTICES = {
     "step_capped": "本轮已达到执行步数安全上限，已停止继续执行。",
     "time_capped": "本轮已达到执行时长安全上限，已停止继续执行。",
 }
-_LEGACY_TOOL_PROTOCOL = re.compile(
-    r"<tool>\s*\{.*?\}\s*</tool>",
-    re.IGNORECASE | re.DOTALL,
-)
-_LEGACY_FINAL_PROTOCOL = re.compile(
-    r"<final>(.*?)</final>",
-    re.IGNORECASE | re.DOTALL,
-)
+_LEGACY_PROTOCOL_TAGS = ("<tool>", "</tool>", "<final>", "</final>")
+
+
+class _LegacyProtocolFilter:
+    """Strip the legacy XML response protocol across arbitrary stream chunks."""
+
+    def __init__(self) -> None:
+        self._mode = "text"
+        self._buffer = ""
+
+    def feed(self, value: str, *, final: bool = False) -> str:
+        self._buffer += value
+        output: list[str] = []
+        while self._buffer:
+            if self._mode in {"tool", "final"}:
+                closing = f"</{self._mode}>"
+                index = self._buffer.lower().find(closing)
+                if index < 0:
+                    if final and self._mode == "final":
+                        output.append(self._buffer)
+                        self._buffer = ""
+                    elif final:
+                        self._buffer = ""
+                    break
+                if self._mode == "final":
+                    output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(closing) :]
+                self._mode = "text"
+                continue
+
+            lowered = self._buffer.lower()
+            candidates = [
+                (index, tag)
+                for tag in _LEGACY_PROTOCOL_TAGS
+                if (index := lowered.find(tag)) >= 0
+            ]
+            if candidates:
+                index, tag = min(candidates, key=lambda item: item[0])
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(tag) :]
+                self._mode = "tool" if tag == "<tool>" else "final" if tag == "<final>" else "text"
+                continue
+            if final:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+            keep = max(
+                (
+                    len(prefix)
+                    for tag in _LEGACY_PROTOCOL_TAGS
+                    for prefix_length in range(1, len(tag))
+                    if (prefix := self._buffer[-prefix_length:]).lower() == tag[:prefix_length]
+                ),
+                default=0,
+            )
+            if keep:
+                output.append(self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+                break
+            else:
+                output.append(self._buffer)
+                self._buffer = ""
+        return "".join(output)
+
+    def finish(self) -> str:
+        return self.feed("", final=True)
 
 
 class HarnessEventAdapter:
@@ -71,6 +128,7 @@ class HarnessEventAdapter:
         self._custom_tool_results: set[str] = set()
         self._seen_budget_signatures: set[str] = set()
         self._seen_budget_usage_signatures: set[str] = set()
+        self._assistant_protocol_filter = _LegacyProtocolFilter()
 
     def adapt(self, item: HarnessStreamItem) -> tuple[RunEvent, ...]:
         """Return zero or more Sage events for one graph stream item."""
@@ -81,6 +139,20 @@ class HarnessEventAdapter:
         if item.mode == "values":
             return self._values(item.payload, item.source_event_id)
         return self._custom(item.payload, item.source_event_id)
+
+    def finish(self) -> tuple[RunEvent, ...]:
+        """Flush a trailing public fragment after the graph stream closes."""
+        content = self._assistant_protocol_filter.finish()
+        if not content:
+            return ()
+        return (
+            self._event(
+                "assistant",
+                "running",
+                {"type": "text_delta", "delta": content, "metadata": {}},
+                source_event_id=f"harness:{self.run_id}:protocol-flush",
+            ),
+        )
 
     def _messages(self, payload: Any, source_event_id: str) -> tuple[RunEvent, ...]:
         if not isinstance(payload, tuple) or not payload:
@@ -109,7 +181,7 @@ class HarnessEventAdapter:
                         "message_id": projected.get("id", ""),
                     }
                 return ()
-            content = _public_assistant_content(content)
+            content = self._assistant_protocol_filter.feed(str(content))
             if content:
                 return (
                     self._event(
@@ -592,13 +664,10 @@ def _public_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _public_assistant_content(value: object) -> object:
-    """Hide complete legacy protocol blocks from the browser timeline."""
+    """Hide legacy protocol blocks from non-streaming browser timeline content."""
     if not isinstance(value, str):
         return value
-    final_blocks = _LEGACY_FINAL_PROTOCOL.findall(value)
-    if final_blocks:
-        return final_blocks[-1].strip()
-    return _LEGACY_TOOL_PROTOCOL.sub("", value).strip()
+    return _LegacyProtocolFilter().feed(value, final=True).strip()
 
 
 def _tool_result_payload(

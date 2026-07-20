@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref, toRef } from 'vue'
 import {
+  CodingApprovalResponseError,
   approveKnowledgeSourceProposal as approveKnowledgeSourceProposalRequest,
   approveCodingPlan,
   approveMemoryProposal,
@@ -1057,6 +1058,15 @@ export const useCodingStore = defineStore('coding', () => {
       await respondCodingApproval(targetSessionId, approvalId, choice)
       if (state.pendingApproval?.approval_id === approvalId) state.pendingApproval = null
     } catch (error) {
+      if (error instanceof CodingApprovalResponseError && [404, 409].includes(error.status)) {
+        try {
+          state.pendingApproval = await fetchCodingApprovalPending(targetSessionId)
+          state.errorMessage = ''
+          return
+        } catch {
+          // Fall through to the original response error when reconciliation fails.
+        }
+      }
       state.errorMessage = error instanceof Error ? error.message : String(error)
     } finally {
       state.approvalBusy = false
