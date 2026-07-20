@@ -67,16 +67,19 @@ it('keeps publishing local and blocks release until the backend contract exists'
   wrapper.unmount()
 })
 
-it('opens a truthful public Agent draft drawer without generating an answer', async () => {
+it('opens the public Sage preview with source-scoped answers', async () => {
   const router = createTestRouter()
   await router.push('/public')
   const wrapper = mount(PublicProfileView, { global: { plugins: [router] } })
 
-  expect(wrapper.text()).toContain('持续构建，也持续理解')
+  expect(wrapper.text()).toContain('ZeroMadLife')
+  expect(wrapper.text()).toContain('Sage / Personal AI Learning Companion')
   await wrapper.get('.ask-sage').trigger('click')
-  expect(wrapper.text()).toContain('公开 Agent 尚未接入')
-  expect(wrapper.text()).toContain('不生成虚假回答')
-  expect(wrapper.get('.public-agent form button').attributes('disabled')).toBeDefined()
+  expect(wrapper.text()).toContain('公开资料预览')
+  expect(wrapper.text()).toContain('只回答这页已经公开的项目、方法和成长记录')
+  await wrapper.get('.agent-prompts button').trigger('click')
+  await wrapper.get('.agent-form').trigger('submit')
+  expect(wrapper.text()).toContain('Sage 是一个 Personal AI Learning Companion')
   expect(wrapper.text()).not.toContain('/Users/')
   wrapper.unmount()
 })
