@@ -2,58 +2,58 @@
   "entries": [
     {
       "keywords": ["sage", "做什么", "项目", "学习助手"],
-      "answer": "Sage 是一个 Personal AI Learning Companion：用户先设定目标，再让主对话结合个人知识和外部证据，安排练习并记录可验证进步。Knowledge 用来查看和治理知识结构，Coding 则是按需调用的 Practice Engine。",
+      "answer": "Sage 是一个个人 AI 学习伙伴：用户先设定目标，再让主对话结合个人知识和外部证据，安排练习并记录可验证进步。知识面用来查看和治理知识结构，Coding 则是按需调用的实践引擎。",
       "sources": [
         {
           "id": "sage",
           "label": "Sage 项目现场",
           "target": "evidence",
-          "detail": "目标、Knowledge、Practice 与 Evidence 的产品闭环"
+          "detail": "目标、知识、实践与证据的产品闭环"
         }
       ]
     },
     {
-      "keywords": ["harness", "恢复", "运行", "timeline", "审批"],
-      "answer": "Harness 2.0 把 planning、tool、approval、reply 和 terminal 统一投影到 durable Timeline。刷新或断线后，界面从同一条审计事实恢复，而不是重新伪造模型状态。",
+      "keywords": ["harness", "恢复", "运行", "timeline", "审批", "时间线"],
+      "answer": "Harness 2.0 把规划、工具、审批、回复和终端统一投影到可持久时间线。刷新或断线后，界面从同一条审计事实恢复，而不是重新伪造模型状态。",
       "sources": [
         {
           "id": "harness",
           "label": "Chat Harness 2.0",
           "target": "harness",
-          "detail": "统一 timeline、审批与恢复语义的工程案例"
+          "detail": "统一时间线、审批与恢复语义的工程案例"
         }
       ]
     },
     {
       "keywords": ["知识", "图谱", "rag", "wiki", "节点"],
-      "answer": "Knowledge 页面主要呈现个人知识库的结构和来源。真正的学习动作发生在主对话；选中的 graph node、page 和 revision 只在提交下一轮问题时进入冻结上下文。",
+      "answer": "知识页面主要呈现个人知识库的结构和来源。真正的学习动作发生在主对话；选中的图谱节点、页面和 revision 只在提交下一轮问题时进入冻结上下文。",
       "sources": [
         {
           "id": "knowledge",
-          "label": "Knowledge Surface",
+          "label": "知识工作面",
           "target": "evidence",
-          "detail": "图谱、RAG、revision 与冻结上下文的设计取舍"
+          "detail": "图谱、检索、revision 与冻结上下文的设计取舍"
         },
         {
           "id": "sage",
           "label": "Sage 项目现场",
           "target": "evidence",
-          "detail": "目标、Knowledge、Practice 与 Evidence 的产品闭环"
+          "detail": "目标、知识、实践与证据的产品闭环"
         }
       ]
     },
     {
-      "keywords": ["成长", "进度", "掌握", "证据", "面试"],
-      "answer": "公开成长记录不展示模型自评百分比，而是展示已经形成的项目、时间线、引用、测试或实践结果。没有可验证证据时，Sage 会保持“尚未验证”。",
+      "keywords": ["成长", "进度", "掌握", "证据", "面试", "笔记", "写"],
+      "answer": "公开成长记录不展示模型自评百分比，而是展示已经形成的项目、时间线、引用、测试或实践结果。公开站只读展示已发布笔记；写作入口在私有发布工作室，不会出现在所有人都能访问的公开面。",
       "sources": [
         {
           "id": "growth",
-          "label": "Learning Path",
+          "label": "成长轨迹",
           "target": "path",
           "detail": "按真实证据记录的公开成长轨迹"
         }
       ]
     }
   ],
-  "fallback": "这版问答只覆盖已经公开的 Sage、Harness、Knowledge 和成长记录。私有工作区、Session、Memory 与未发布资料不会进入这个公开入口。"
+  "fallback": "这版问答只覆盖已经公开的 Sage、Harness、知识面和成长记录。私有工作区、会话、记忆与未发布资料不会进入这个公开入口。"
 }

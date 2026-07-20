@@ -124,12 +124,12 @@ function wrapSelection(prefix: string, suffix = prefix, placeholder = '文字') 
         </ul>
       </section>
       <section>
-        <h2>写作入口</h2>
-        <p><Sparkles :size="15" />主对话与 Codex 都可以生成 Markdown 草稿；这里负责编辑、预览与最终确认。</p>
+        <h2>写作入口（私有）</h2>
+        <p><Sparkles :size="15" />这里是作者侧入口：草稿只保存在本机。公开站 `/notes` 只读展示已发布内容，不会放“写笔记”按钮。</p>
       </section>
       <section class="contract-status">
         <ListChecks :size="17" />
-        <span><strong>等待发布契约</strong><small>publish proposal / public package / public index</small></span>
+        <span><strong>等待发布契约</strong><small>审核通过后才能导出到公开 notes 包</small></span>
       </section>
     </aside>
   </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ArrowRight, MessageCircle } from 'lucide-vue-next'
-import type { HomeSections } from '../../public/content'
+import type { HomeSections } from '../../../public/content'
 import workbenchImage from '../../../assets/public/sage-knowledge-workbench.jpg'
 
 defineProps<{
@@ -30,13 +30,13 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <div class="snapshot" aria-label="System snapshot">
+    <div class="snapshot" aria-label="系统快照">
       <div class="snapshot-head">
-        <span>SYSTEM SNAPSHOT</span>
-        <strong>Harness runtime</strong>
+        <span>系统快照</span>
+        <strong>Harness 运行时</strong>
       </div>
       <button class="preview" type="button" @click="emit('scrollHarness')">
-        <img :src="workbenchImage" alt="Sage Knowledge 工作台预览" />
+        <img :src="workbenchImage" alt="Sage 知识工作台预览" />
         <span>
           <strong>真实工作台截面</strong>
           <small>打开体系与证据</small>

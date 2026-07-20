@@ -11,10 +11,10 @@ defineProps<{
   <section id="notes" class="notes-preview">
     <div class="heading">
       <div>
-        <span class="eyebrow">NOTES</span>
+        <span class="eyebrow">笔记</span>
         <h2>工程笔记</h2>
       </div>
-      <RouterLink to="/notes">View all <ArrowRight :size="14" /></RouterLink>
+      <RouterLink to="/notes">查看全部 <ArrowRight :size="14" /></RouterLink>
     </div>
     <div class="list">
       <RouterLink

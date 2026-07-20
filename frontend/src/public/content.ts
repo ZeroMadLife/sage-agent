@@ -3,6 +3,7 @@ import homeSectionsJson from '../../public-content/home.sections.json'
 import askCorpusJson from '../../public-content/ask-corpus.json'
 import whyDurableTimeline from '../../public-content/notes/why-durable-timeline.md?raw'
 import approvalIsNotDecoration from '../../public-content/notes/approval-is-not-decoration.md?raw'
+import publicSiteIsReadOnly from '../../public-content/notes/public-site-is-read-only.md?raw'
 
 export type SiteMeta = {
   brand: string
@@ -50,6 +51,7 @@ export type AskCorpus = {
 const noteSources: Record<string, string> = {
   'why-durable-timeline': whyDurableTimeline,
   'approval-is-not-decoration': approvalIsNotDecoration,
+  'public-site-is-read-only': publicSiteIsReadOnly,
 }
 
 function parseScalar(value: string): string {

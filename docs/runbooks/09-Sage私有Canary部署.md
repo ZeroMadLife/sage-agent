@@ -143,10 +143,12 @@ tailscale serve status
 
 ### 4.1 独立公开门面容器
 
-Compose 同时构建 `sage-public:<commit-sha>`，但它只包含 `PublicProfileView`、静态公开问答和
-公开图片，不打包 Assistant、Knowledge、Coding 路由，也没有环境文件、API 反向代理或私有
-Compose 网络访问权。容器固定绑定 `127.0.0.1:${SAGE_PUBLIC_PORT:-8081}`，用于在正式公网
-切换前完成镜像、回滚和静态页面验收。
+Compose 同时构建 `sage-public:<commit-sha>`。公开站路由为 `/`、`/notes`、`/notes/:slug`，
+包含工程门面、静态 Markdown 笔记、静态公开问答与公开图片；构建时会尝试写入 GitHub star
+静态 meta。它不打包 Assistant、Knowledge、Coding 路由，也不提供写笔记入口、环境文件、
+API 反向代理或私有 Compose 网络访问权。容器固定绑定
+`127.0.0.1:${SAGE_PUBLIC_PORT:-8081}`，用于在正式公网切换前完成镜像、回滚和静态页面验收。
+`npm run build:public` 末尾会扫描产物，拒绝泄漏私有应用路由字符串。
 
 `8081` 不是当前公网入口。`sagecompanion.cn` 完成 A 记录、ICP备案和 80/443 发布门禁前，
 不得把该端口改成 `0.0.0.0`，也不得用 Tailscale Funnel 绕过域名与 HTTPS 要求。正式切换时

@@ -6,7 +6,7 @@ describe('public profile answer adapter', () => {
     const response = await answerPublicProfileQuestion('Harness 2.0 如何恢复运行？')
 
     expect(response.mode).toBe('static')
-    expect(response.answer).toContain('durable Timeline')
+    expect(response.answer).toContain('可持久时间线')
     expect(response.sources).toEqual([
       expect.objectContaining({ id: 'harness', target: 'harness' }),
     ])
@@ -24,5 +24,11 @@ describe('public profile answer adapter', () => {
     const response = await answerPublicProfileQuestion('Harness 2.0 如何恢复运行？')
     expect(response.mode).toBe('static')
     expect(response.mode).not.toBe('limited_harness')
+  })
+
+  it('explains that public notes are read-only and writing stays private', async () => {
+    const response = await answerPublicProfileQuestion('我可以在公开站写笔记吗？')
+    expect(response.answer).toContain('只读')
+    expect(response.answer).toContain('发布工作室')
   })
 })

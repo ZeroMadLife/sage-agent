@@ -27,7 +27,8 @@ tags: [harness]
 
   it('lists engineering notes from static content', () => {
     const notes = listNotes()
-    expect(notes.length).toBeGreaterThanOrEqual(2)
+    expect(notes.length).toBeGreaterThanOrEqual(3)
     expect(notes.some((note) => note.slug === 'why-durable-timeline')).toBe(true)
+    expect(notes.some((note) => note.slug === 'public-site-is-read-only')).toBe(true)
   })
 })

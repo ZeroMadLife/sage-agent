@@ -11,15 +11,15 @@ defineProps<{
 <template>
   <section class="github-proof" aria-label="GitHub 证明">
     <div>
-      <span class="eyebrow">GITHUB</span>
+      <span class="eyebrow">GitHub</span>
       <h3>ZeroMadLife/sage-agent</h3>
-      <p>源码、设计文档与测试都在仓库里，可按路径追溯 Harness、Knowledge 与 Practice。</p>
+      <p>源码、设计文档与测试都在仓库里，可按路径追溯 Harness、知识面与实践引擎。</p>
       <p v-if="showStars && starLabel" class="stars">★ {{ starLabel }} stars</p>
-      <p v-else class="stars muted">Star 数构建时注入；当前为降级展示</p>
+      <p v-else class="stars muted">Star 数在构建时注入；当前为降级展示</p>
     </div>
     <a :href="htmlUrl" target="_blank" rel="noreferrer">
       <Github :size="16" />
-      Open repository
+      打开仓库
       <ArrowUpRight :size="14" />
     </a>
   </section>

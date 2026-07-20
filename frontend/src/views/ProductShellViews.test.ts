@@ -81,13 +81,13 @@ it('opens the public Sage preview with source-scoped answers', async () => {
 
   expect(wrapper.text()).toContain('ZeroMadLife')
   expect(wrapper.text()).toContain('不是又一个聊天框')
-  expect(wrapper.text()).toContain('HARNESS')
+  expect(wrapper.text()).toContain('体系')
   await wrapper.get('[data-action="ask-sage"]').trigger('click')
   expect(wrapper.text()).toContain('公开资料预览')
   expect(wrapper.text()).toContain('只回答已经公开的项目、方法和成长记录')
   await wrapper.get('.agent-prompts button').trigger('click')
   await flushPromises()
-  expect(wrapper.text()).toContain('Sage 是一个 Personal AI Learning Companion')
+  expect(wrapper.text()).toContain('Sage 是一个个人 AI 学习伙伴')
   expect(wrapper.text()).toContain('回答依据')
   expect(wrapper.text()).not.toContain('/Users/')
   wrapper.unmount()
@@ -100,7 +100,9 @@ it('leads with harness evidence and keeps notes navigable', async () => {
 
   expect(wrapper.text()).toContain('真实工作台，不是概念图')
   expect(wrapper.text()).toContain('GitHub')
-  expect(wrapper.get('[data-nav="notes"]').exists()).toBe(true)
+  expect(wrapper.text()).toContain('不提供写笔记入口')
+  expect(wrapper.find('[data-action="write-note"]').exists()).toBe(false)
+  expect(wrapper.find('[data-nav="notes"]').exists()).toBe(true)
   await wrapper.get('[data-nav="notes"]').trigger('click')
   await flushPromises()
   expect(router.currentRoute.value.path).toBe('/notes')
@@ -111,8 +113,10 @@ it('lists engineering notes and opens markdown detail content', async () => {
   const router = createTestRouter()
   await router.push('/notes')
   const list = mount(NotesListView, { global: { plugins: [router] } })
-  expect(list.text()).toContain('工程笔记')
+  expect(list.text()).toContain('只读的公开笔记')
   expect(list.text()).toContain('durable timeline')
+  expect(list.text()).toContain('公开站保持只读')
+  expect(list.text()).not.toContain('开始写作')
   list.unmount()
 
   await router.push('/notes/why-durable-timeline')
@@ -123,6 +127,16 @@ it('lists engineering notes and opens markdown detail content', async () => {
   expect(detail.text()).toContain('为什么 Harness 需要 durable timeline')
   expect(detail.html()).not.toContain('<script>alert')
   detail.unmount()
+})
+
+it('keeps author writing inside the private publishing studio', async () => {
+  const router = createTestRouter()
+  await router.push('/publishing')
+  const wrapper = mount(PublishingStudioView, { global: { plugins: [router] } })
+  expect(wrapper.text()).toContain('写作入口（私有）')
+  expect(wrapper.text()).toContain('公开站 `/notes` 只读展示')
+  expect(wrapper.get('.publish-button').attributes('disabled')).toBeDefined()
+  wrapper.unmount()
 })
 
 it('keeps the local publishing draft preview on the private application route', async () => {

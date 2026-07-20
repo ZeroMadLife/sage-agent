@@ -1,64 +1,64 @@
 {
   "hero": {
-    "eyebrow": "ENGINEERING SURFACE",
+    "eyebrow": "工程现场",
     "title": "不是又一个聊天框。\n是可恢复的学习运行时。",
-    "lede": "Sage 用 Harness 把目标、知识、实践和证据串成一条可审计路径。这里展示工程落地，不是包装好的 demo。",
+    "lede": "Sage 用 Harness 把目标、知识、实践和证据串成一条可审计路径。这里展示的是工程落地，不是包装过的 demo。",
     "primaryCta": "看 Harness 体系",
-    "secondaryCta": "GitHub 源码",
+    "secondaryCta": "打开 GitHub 源码",
     "askCta": "向公开资料提问",
     "snapshot": [
-      { "title": "Timeline", "detail": "durable events" },
-      { "title": "Approval", "detail": "risky ops gate" },
-      { "title": "Recovery", "detail": "refresh-safe" },
-      { "title": "Surfaces", "detail": "chat / knowledge / practice" }
+      { "title": "时间线", "detail": "可持久事件" },
+      { "title": "审批", "detail": "危险操作门禁" },
+      { "title": "恢复", "detail": "刷新后可回放" },
+      { "title": "工作面", "detail": "对话 / 知识 / 实践" }
     ]
   },
   "harness": {
-    "eyebrow": "01 / HARNESS",
+    "eyebrow": "01 / 体系",
     "title": "同一条运行时，服务多个工作面",
-    "support": "刷新或断线后，界面从 durable timeline 恢复，而不是重绘模型状态。",
+    "support": "刷新或断线后，界面从 durable timeline 恢复，而不是重新编造一轮模型状态。",
     "items": [
-      { "id": "plan", "title": "Plan", "detail": "目标拆解与阶段规划" },
-      { "id": "tool", "title": "Tool", "detail": "受控工具执行" },
-      { "id": "approve", "title": "Approve", "detail": "危险操作确认" },
-      { "id": "evidence", "title": "Evidence", "detail": "可回放结果与引用" }
+      { "id": "plan", "title": "规划", "detail": "目标拆解与阶段安排" },
+      { "id": "tool", "title": "工具", "detail": "受控工具执行" },
+      { "id": "approve", "title": "审批", "detail": "危险操作需要确认" },
+      { "id": "evidence", "title": "证据", "detail": "可回放结果与引用" }
     ]
   },
   "evidence": {
-    "eyebrow": "02 / EVIDENCE",
+    "eyebrow": "02 / 证据",
     "title": "真实工作台，不是概念图",
     "items": [
-      { "id": "assistant", "title": "Assistant", "caption": "目标驱动入口", "image": "assistant" },
-      { "id": "knowledge", "title": "Knowledge", "caption": "图谱与引用治理", "image": "knowledge" },
-      { "id": "practice", "title": "Practice", "caption": "受控执行与证据", "image": "practice" }
+      { "id": "assistant", "title": "今天 / Assistant", "caption": "目标驱动入口", "image": "assistant" },
+      { "id": "knowledge", "title": "知识 / Knowledge", "caption": "图谱与引用治理", "image": "knowledge" },
+      { "id": "practice", "title": "实践 / Practice", "caption": "受控执行与证据", "image": "practice" }
     ]
   },
   "path": {
-    "eyebrow": "03 / PATH",
+    "eyebrow": "03 / 轨迹",
     "title": "成长与边界",
     "items": [
       {
         "date": "2026 · 07",
-        "title": "Reliable Agent Harness",
-        "detail": "恢复、审批、持久 Timeline 与知识提案进入同一条运行路径。",
+        "title": "可靠的 Agent Harness",
+        "detail": "恢复、审批、持久时间线与知识提案进入同一条运行路径。",
         "state": "now"
       },
       {
         "date": "2026 · 06",
-        "title": "Personal Knowledge Base",
+        "title": "个人知识库",
         "detail": "来源、Wiki、检索、图谱和 revision 形成可追溯结构。",
         "state": "done"
       },
       {
-        "date": "Later",
-        "title": "Limited Public Harness",
-        "detail": "只读公开 corpus、限速与独立 public API；不会共享私人 workspace。",
+        "date": "后续",
+        "title": "有限权限公开 Harness",
+        "detail": "只读公开语料、限速与独立公开 API；不会共享私人工作区。",
         "state": "later"
       }
     ]
   },
   "about": {
-    "eyebrow": "04 / ABOUT THE WORK",
+    "eyebrow": "04 / 关于这项工作",
     "title": "我更关心系统如何陪人把事情做完，并留下证据。",
     "paragraphs": [
       "不是让 Agent 看起来更像一个人，而是让它知道什么时候检索、什么时候提问、什么时候停下来等待确认。",

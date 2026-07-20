@@ -52,12 +52,12 @@ function scrollHarness() {
         </div>
         <div class="aside">
           <div>
-            <span>OPEN SOURCE</span>
+            <span>开源</span>
             <strong>可阅读的实现</strong>
             <small>代码、设计文档和验收路径都在仓库里。</small>
           </div>
           <div>
-            <span>PUBLIC SURFACE</span>
+            <span>公开面</span>
             <strong>有限但诚实</strong>
             <small>公开问答只覆盖已经发布的资料，不伪装成完整 Agent。</small>
           </div>
