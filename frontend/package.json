@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "build:public": "vue-tsc -b && vite build --config vite.public.config.ts",
     "preview": "vite preview",
+    "preview:public": "vite preview --config vite.public.config.ts",
     "test": "vitest --environment jsdom"
   },
   "dependencies": {

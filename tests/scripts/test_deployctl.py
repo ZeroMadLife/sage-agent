@@ -188,7 +188,7 @@ def test_status_returns_bounded_service_summary_without_environment_values(
                             "Health": "healthy",
                         }
                     )
-                    for service in ("api", "web", "postgres", "redis")
+                    for service in ("api", "web", "public", "postgres", "redis")
                 ),
             )
         raise AssertionError(command)
@@ -211,7 +211,7 @@ def test_status_returns_bounded_service_summary_without_environment_values(
     assert result["commit"] == "a" * 40
     assert result["services"] == [
         {"service": service, "state": "running", "health": "healthy"}
-        for service in ("api", "web", "postgres", "redis")
+        for service in ("api", "web", "public", "postgres", "redis")
     ]
     assert "APP_SECRET_KEY" not in json.dumps(result)
 

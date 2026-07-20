@@ -55,7 +55,7 @@ const router = createRouter({
     {
       path: '/public',
       name: 'public.profile',
-      component: () => import('../views/PublicProfileView.vue'),
+      component: () => import('../views/PublicProfileRouteView.vue'),
     },
     {
       path: '/:pathMatch(.*)*',

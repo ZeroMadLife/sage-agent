@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { beforeEach, expect, it, vi } from 'vitest'
@@ -6,6 +6,7 @@ import { useAssistantHomeStore } from '../stores/assistantHome'
 import EvolutionView from './EvolutionView.vue'
 import PublishingStudioView from './PublishingStudioView.vue'
 import PublicProfileView from './PublicProfileView.vue'
+import PublicProfileRouteView from './PublicProfileRouteView.vue'
 
 vi.mock('../api/knowledge', () => ({
   fetchKnowledgeGraphInsights: vi.fn().mockRejectedValue(new Error('not connected')),
@@ -112,5 +113,20 @@ it('lets a visitor inspect project evidence before leaving the public profile', 
   expect(wrapper.get('[data-work-evidence="sage"]').text()).toContain('怎么判断有效')
   expect(wrapper.get('[data-work-evidence="sage"]').text()).toContain('当前边界')
   expect(wrapper.get('[data-work-evidence="sage"] a').attributes('target')).toBe('_blank')
+  wrapper.unmount()
+})
+
+it('keeps the local publishing draft preview on the private application route', async () => {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ path: '/public', component: PublicProfileRouteView }],
+  })
+  await router.push('/public?preview=draft')
+
+  const wrapper = mount(PublicProfileRouteView, { global: { plugins: [router] } })
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('PUBLIC DRAFT')
+  expect(wrapper.text()).toContain('如何让 Agent Harness 支持可靠恢复')
   wrapper.unmount()
 })

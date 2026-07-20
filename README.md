@@ -71,9 +71,9 @@ flowchart LR
 `/#/coding/session/:id` 统一呈现 plan、reasoning、tool、approval、reply 与 terminal；
 支持工作区工具、Diff、测试、checkpoint、上下文压缩和可恢复 timeline。
 
-公开成长主页 `/#/public` 会把经过筛选的项目、笔记和成长轨迹组织成外部浏览路径。
-它目前提供限定公开 corpus 的确定性问答与来源回执，不会伪装成已经上线的公网 Harness；
-稳定 HTTPS 地址将在正式部署后补充到这里。
+公开成长主页 `/#/public` 会把经过筛选的项目、笔记和成长轨迹组织成外部浏览路径，
+并已提供不携带私有应用路由的独立静态构建。它目前只提供限定公开 corpus 的确定性问答
+与来源回执，不会伪装成已经上线的公网 Harness；稳定 HTTPS 地址将在正式部署后补充到这里。
 
 ## 核心能力
 
@@ -190,7 +190,8 @@ sage-agent/
 ## 当前边界
 
 - `docker-compose.yml` 只编排本地 PostgreSQL/pgvector 与 Redis，不是生产部署栈。
-- 公开主页是展示与限定资料问答，不是公开 Agent，也不共享主对话的文件权限。
+- 公开主页已有独立静态构建、限定资料问答和 loopback 部署面；在域名与 80/443 门禁完成前
+  不能描述为公网已发布，也不是公开 Agent，不共享主对话的文件权限。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
 - Container Sandbox 已有实现与测试，正式公网任务的部署、资源和运维门禁仍需收口。
 - Loop Engineer 的代码、测试和设计资料仍保留，但自动扫描服务目前暂停，不属于运行中的产品能力。

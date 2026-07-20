@@ -15,10 +15,34 @@ def test_private_canary_exposes_only_the_loopback_gateway() -> None:
     compose = (ROOT / "infra/compose/private-canary.yml").read_text(encoding="utf-8")
 
     assert '"127.0.0.1:${SAGE_GATEWAY_PORT:-8080}:8080"' in compose
+    assert '"127.0.0.1:${SAGE_PUBLIC_PORT:-8081}:8081"' in compose
     assert '"5432:5432"' not in compose
     assert '"6379:6379"' not in compose
     assert "SAGE_CODING_SANDBOX_PROVIDER: container" in compose
     assert "APP_ENV: production" in compose
+
+
+def test_public_profile_is_built_as_an_api_isolated_static_surface() -> None:
+    compose = (ROOT / "infra/compose/private-canary.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "infra/docker/sage-public.Dockerfile").read_text(encoding="utf-8")
+    caddyfile = (ROOT / "infra/proxy/Caddyfile.public").read_text(encoding="utf-8")
+    router = (ROOT / "frontend/src/router/public.ts").read_text(encoding="utf-8")
+
+    public_service = compose[compose.index("  public:") : compose.index("\nnetworks:")]
+    assert "infra/docker/sage-public.Dockerfile" in public_service
+    assert "env_file:" not in public_service
+    assert "depends_on:" not in public_service
+    assert 'user: "65532:65532"' in public_service
+    assert "read_only: true" in public_service
+    assert "npm run build:public" in dockerfile
+    assert "dist-public" in dockerfile
+    assert "reverse_proxy" not in caddyfile
+    assert "connect-src 'none'" in caddyfile
+    assert "frame-ancestors 'none'" in caddyfile
+    assert "PublicProfileView" in router
+    assert "AssistantHomeView" not in router
+    assert "KnowledgeView" not in router
+    assert "CodingView" not in router
 
 
 def test_private_canary_environment_template_tracks_server_topology() -> None:
@@ -105,7 +129,9 @@ def test_api_entrypoint_runs_explicit_migration_commands() -> None:
 
 
 def test_web_image_cannot_disable_the_production_login_gate() -> None:
-    dockerfile = (ROOT / "infra/docker/sage-web.Dockerfile").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "infra/docker/sage-web.Dockerfile").read_text(
+        encoding="utf-8"
+    )
     compose = (ROOT / "infra/compose/private-canary.yml").read_text(encoding="utf-8")
 
     assert "RUN VITE_CLOUD_AUTH_REQUIRED=true npm run build" in dockerfile
@@ -118,9 +144,7 @@ def test_web_image_cannot_disable_the_production_login_gate() -> None:
 
 def test_private_proxy_routes_backend_before_the_spa_fallback() -> None:
     caddyfile = (ROOT / "infra/proxy/Caddyfile.private").read_text(encoding="utf-8")
-    dockerfile = (ROOT / "infra/docker/sage-web.Dockerfile").read_text(
-        encoding="utf-8"
-    )
+    dockerfile = (ROOT / "infra/docker/sage-web.Dockerfile").read_text(encoding="utf-8")
 
     assert "handle /api/*" in caddyfile
     assert "handle /health" in caddyfile

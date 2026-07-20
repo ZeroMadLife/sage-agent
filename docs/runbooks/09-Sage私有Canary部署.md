@@ -141,6 +141,17 @@ tailscale serve status
 受 Tailnet ACL 约束，Funnel 是公网入口。手机安装 Tailscale、加入同一 Tailnet 后使用
 `https://<device>.<tailnet>.ts.net`。
 
+### 4.1 独立公开门面容器
+
+Compose 同时构建 `sage-public:<commit-sha>`，但它只包含 `PublicProfileView`、静态公开问答和
+公开图片，不打包 Assistant、Knowledge、Coding 路由，也没有环境文件、API 反向代理或私有
+Compose 网络访问权。容器固定绑定 `127.0.0.1:${SAGE_PUBLIC_PORT:-8081}`，用于在正式公网
+切换前完成镜像、回滚和静态页面验收。
+
+`8081` 不是当前公网入口。`sagecompanion.cn` 完成 A 记录、ICP备案和 80/443 发布门禁前，
+不得把该端口改成 `0.0.0.0`，也不得用 Tailscale Funnel 绕过域名与 HTTPS 要求。正式切换时
+由主机级 Caddy 将备案域名反向代理到该 loopback 端口；私有 `8080` 网关保持不变。
+
 ## 5. 预检与部署
 
 所有命令由 `sage-deploy` 执行，并显式连接它自己的 rootless daemon：
@@ -161,8 +172,8 @@ SHA 镜像、启动数据服务、PostgreSQL 备份、幂等 migration、API/Web
 
 ## 6. 验收
 
-1. `curl http://127.0.0.1:8080/health` 返回 200。
-2. `ss -lntp` 只看到 `127.0.0.1:8080`，没有公网 8000/5432/6379。
+1. `curl http://127.0.0.1:8080/health` 和 `curl http://127.0.0.1:8081/` 返回 200。
+2. `ss -lntp` 只看到 `127.0.0.1:8080` 与 `127.0.0.1:8081`，没有公网 8000/5432/6379。
 3. 未登录访问 `/api/v1/coding/models` 与创建 session 返回 401。
 4. 未登录访问 `/api/v1/knowledge` 返回 401；遗留 `/api/v1/chat` 在 production 返回 404。
 5. 手机关闭 Wi-Fi，经蜂窝网络和 Tailscale 打开 Sage；退出 Tailnet 后 URL 不可访问。

@@ -36,7 +36,7 @@ SECRET_KEYS = {
     "GITHUB_TOKEN_ENCRYPTION_SECRET",
     "MODEL_PROVIDER_ENCRYPTION_SECRET",
 }
-EXPECTED_SERVICES = {"api", "web", "postgres", "redis"}
+EXPECTED_SERVICES = {"api", "web", "public", "postgres", "redis"}
 REQUIRED_KEYS = SECRET_KEYS | {
     "APP_ENV",
     "CLOUD_FRONTEND_URL",
@@ -454,7 +454,7 @@ class DeployController:
         state = self._load_state()
         previous = str(state.get("current", "")) or None
         self._run(
-            self._compose("build", "api", "web"),
+            self._compose("build", "api", "web", "public"),
             label="构建镜像",
             tag=tag,
             timeout=BUILD_TIMEOUT_SECONDS,
@@ -474,7 +474,7 @@ class DeployController:
         )
         try:
             self._run(
-                self._compose("up", "-d", "--wait", "api", "web"),
+                self._compose("up", "-d", "--wait", "api", "web", "public"),
                 label="切换应用",
                 tag=tag,
                 timeout=600,
@@ -483,7 +483,9 @@ class DeployController:
         except Exception:
             if previous and COMMIT_TAG.fullmatch(previous):
                 self._run(
-                    self._compose("up", "-d", "--no-build", "--wait", "api", "web"),
+                    self._compose(
+                        "up", "-d", "--no-build", "--wait", "api", "web", "public"
+                    ),
                     label="恢复上一镜像",
                     tag=previous,
                     timeout=600,
@@ -512,12 +514,14 @@ class DeployController:
         if not execute:
             return self.dry_run_plan("rollback", tag)
         self.preflight()
-        for image in (f"sage-api:{tag}", f"sage-web:{tag}"):
+        for image in (f"sage-api:{tag}", f"sage-web:{tag}", f"sage-public:{tag}"):
             self._run(["docker", "image", "inspect", image], label="检查回滚镜像")
         state = self._load_state()
         current = str(state.get("current", "")) or None
         self._run(
-            self._compose("up", "-d", "--no-build", "--wait", "api", "web"),
+            self._compose(
+                "up", "-d", "--no-build", "--wait", "api", "web", "public"
+            ),
             label="切换回滚镜像",
             tag=tag,
             timeout=600,

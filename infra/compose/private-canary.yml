@@ -122,9 +122,40 @@ services:
     networks:
       - sage
 
+  public:
+    image: sage-public:${SAGE_IMAGE_TAG:?SAGE_IMAGE_TAG is required}
+    build:
+      context: ../..
+      dockerfile: infra/docker/sage-public.Dockerfile
+      args:
+        SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${SAGE_PUBLIC_PORT:-8081}:8081"
+    user: "65532:65532"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /config:rw,noexec,nosuid,mode=1777,size=8m
+      - /data:rw,noexec,nosuid,mode=1777,size=8m
+      - /tmp:rw,noexec,nosuid,mode=1777,size=8m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    networks:
+      - public
+
 networks:
   sage:
     driver: bridge
+  public:
+    driver: bridge
+    internal: true
 
 volumes:
   sage_postgres:
