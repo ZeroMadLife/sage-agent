@@ -1,6 +1,6 @@
 # Sage 私有 Canary 部署与公网迁移设计
 
-> 状态：部署骨架已实现，待服务器执行
+> 状态：私有 Canary 与公开门面已部署；公开门面自动发布管线实施中
 >
 > 日期：2026-07-18
 
@@ -173,8 +173,14 @@ sagecompanion.cn -> 主机 Caddy 80/443 -> 127.0.0.1:8081 -> 独立静态 public
 
 - `npm run build:public` 只构建 `PublicProfileView`，产物不包含主应用私有路由。
 - public 容器不读取 `/etc/sage/env`，不依赖 API、数据库或 Redis，CSP 禁止浏览器发起连接。
-- 宿主机只监听 `127.0.0.1:8081`；完成 DNS、ICP备案与 80/443 审批前，不声称公网可访问。
+- rootless public 服务仍只监听 `127.0.0.1:8081`；经用户确认后，独立 root-owned public
+  发布容器临时绑定公网 `80`，用于原始 IP HTTP 门面。private Web/API、数据库和 Redis
+  继续保持回环或容器内网络，不随 public 门面开放。
 - 公开问答保持本地、有限问题集合与可追溯公开来源，不复用私人 Harness 权限。
+- `dev/sage-v7` 的 `public-release` 检查必须验证不可变 SHA 镜像、非 root 用户和受限容器 smoke。
+- 公网切换由 root-owned `public_releasectl` 执行；`sage-deploy` 只能提交严格 JSON action 与
+  完整 commit SHA，不能传入 shell、路径、端口、容器名或任意镜像引用。
+- 候选镜像先在回环临时端口验收，再切换 `80`；失败恢复 previous，成功后还需执行外部 smoke。
 
 ## 10. 实施切片与停点
 

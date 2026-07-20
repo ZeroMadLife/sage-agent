@@ -20,6 +20,12 @@ from scripts.canaryctl import (
 
 SHA = "a" * 40
 NEXT_SHA = "b" * 40
+REQUIRED_CHECKS = (
+    "python",
+    "backend-quality",
+    "frontend-quality",
+    "public-release",
+)
 
 
 def test_default_management_channel_uses_public_key_only_ssh() -> None:
@@ -80,6 +86,12 @@ def test_check_runs_require_latest_success_for_every_gate() -> None:
                 "conclusion": "success",
                 "completed_at": "2026-07-19T11:00:00Z",
             },
+            {
+                "name": "public-release",
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "2026-07-19T11:00:00Z",
+            },
         ]
     }
 
@@ -87,6 +99,7 @@ def test_check_runs_require_latest_success_for_every_gate() -> None:
         "python": "success",
         "backend-quality": "success",
         "frontend-quality": "success",
+        "public-release": "success",
     }
 
 
@@ -188,6 +201,7 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
                 {"name": "python", "status": "completed", "conclusion": "success"},
                 {"name": "backend-quality", "status": "completed", "conclusion": "success"},
                 {"name": "frontend-quality", "status": "completed", "conclusion": "success"},
+                {"name": "public-release", "status": "completed", "conclusion": "success"},
             ]}), "stderr": ""})()
         if command and command[0] == "/usr/bin/true" and command[1] == "-C":
             return type("Result", (), {"returncode": 0, "stdout": f"{NEXT_SHA}\trefs/heads/dev/sage-v7\n", "stderr": ""})()
@@ -197,12 +211,31 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
                 return type("Result", (), {"returncode": 0, "stdout": f"{SHA}\n", "stderr": ""})()
             if "deployctl.py" in script and " status" in script:
                 return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n', "stderr": ""})()
+            if "sage-public-releasectl" in script and '"action":"status"' in script:
+                return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n', "stderr": ""})()
+            if "sage-public-releasectl" in script and '"action":"apply"' in script:
+                return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"deployed","tag":"{NEXT_SHA}","previous":"{SHA}"}}\n', "stderr": ""})()
             return type("Result", (), {"returncode": 0, "stdout": "{}\n", "stderr": ""})()
+        if command and command[0] == "/bin/echo":
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "<title>ZeroMadLife / Sage</title>",
+                    "stderr": "",
+                },
+            )()
         raise AssertionError(command)
 
     result = CanaryController(config, runner=runner).deploy(NEXT_SHA)
 
-    assert result == {"status": "deployed", "sha": NEXT_SHA, "previous": SHA}
+    assert result == {
+        "status": "deployed",
+        "sha": NEXT_SHA,
+        "previous": SHA,
+        "public_previous": SHA,
+    }
     state = json.loads(config.state_path.read_text(encoding="utf-8"))
     assert state["last_deployed_sha"] == NEXT_SHA
     assert config.state_path.stat().st_mode & 0o777 == 0o600
@@ -240,7 +273,9 @@ def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
     def probe(_url: str) -> bool:
         return healthy
 
-    controller = CanaryController(config, runner=runner, http_probe=probe)
+    controller = CanaryController(
+        config, runner=runner, http_probe=probe, public_http_probe=probe
+    )
     assert controller.check()["healthy"] is True
     healthy = False
     assert controller.check()["healthy"] is False
@@ -261,7 +296,10 @@ def test_availability_rejects_degraded_server_status(tmp_path: Path) -> None:
         )()
 
     report = CanaryController(
-        _config(tmp_path), runner=runner, http_probe=lambda _url: True
+        _config(tmp_path),
+        runner=runner,
+        http_probe=lambda _url: True,
+        public_http_probe=lambda _url: True,
     ).availability()
 
     assert report["http"] is True
@@ -275,7 +313,15 @@ def test_availability_falls_back_to_proxy_free_curl(tmp_path: Path) -> None:
     def runner(command, input_text, timeout):
         calls.append(list(command))
         if command[0] == "/bin/echo":
-            return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "<title>ZeroMadLife / Sage</title>",
+                    "stderr": "",
+                },
+            )()
         if command[0] == "/usr/bin/env":
             return type(
                 "Result",
@@ -285,7 +331,10 @@ def test_availability_falls_back_to_proxy_free_curl(tmp_path: Path) -> None:
         raise AssertionError(command)
 
     report = CanaryController(
-        _config(tmp_path), runner=runner, http_probe=lambda _url: False
+        _config(tmp_path),
+        runner=runner,
+        http_probe=lambda _url: False,
+        public_http_probe=lambda _url: False,
     ).availability()
 
     assert report["healthy"] is True
@@ -304,13 +353,37 @@ def test_run_once_reuses_proxy_free_probe_after_deploy(tmp_path: Path) -> None:
         return True
 
     controller._http_healthy = fake_http
-    controller.check = lambda: {"healthy": True}
+    controller.check = lambda: {"healthy": True, "private_healthy": True}
     controller.sync = lambda: {"status": "deployed", "sha": NEXT_SHA}
+    controller._public_http_healthy = fake_http
 
     result = controller.run_once()
 
     assert result["status"] == "ok"
-    assert curl_calls == 1
+    assert curl_calls == 2
+
+
+def test_run_once_can_repair_an_unhealthy_public_facade(tmp_path: Path) -> None:
+    controller = CanaryController(_config(tmp_path))
+    sync_calls = 0
+
+    controller.check = lambda: {
+        "healthy": False,
+        "private_healthy": True,
+        "public_healthy": False,
+    }
+
+    def sync() -> dict[str, object]:
+        nonlocal sync_calls
+        sync_calls += 1
+        return {"status": "waiting-ci"}
+
+    controller.sync = sync
+
+    result = controller.run_once()
+
+    assert result["status"] == "unhealthy"
+    assert sync_calls == 1
 
 
 def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
@@ -331,11 +404,7 @@ def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
                                     "status": "completed",
                                     "conclusion": "success",
                                 }
-                                for name in (
-                                    "python",
-                                    "backend-quality",
-                                    "frontend-quality",
-                                )
+                                for name in REQUIRED_CHECKS
                             ]
                         }
                     ),
@@ -346,7 +415,11 @@ def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
             script = input_text or ""
             if "rev-parse HEAD" in script and "checkout" not in script:
                 stdout = f"{NEXT_SHA}\n"
-            elif "deployctl.py" in script and " status" in script:
+            elif (
+                "deployctl.py" in script and " status" in script
+            ) or (
+                "sage-public-releasectl" in script and '"action":"status"' in script
+            ):
                 stdout = json.dumps({"status": "healthy", "current": NEXT_SHA})
             else:
                 raise AssertionError(script)
@@ -373,3 +446,25 @@ def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
 def test_validate_commit_rejects_shell_text() -> None:
     with pytest.raises(CanaryError):
         validate_commit("a" * 40 + "; touch /tmp/pwned")
+
+
+def test_public_release_request_is_fixed_json_and_uses_bounded_sudo(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    def runner(command, input_text, timeout):
+        calls.append(input_text or "")
+        return type(
+            "Result",
+            (),
+            {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""},
+        )()
+
+    controller = CanaryController(_config(tmp_path), runner=runner)
+    assert controller._remote_public_request("apply", NEXT_SHA) == {"status": "healthy"}
+
+    assert len(calls) == 1
+    assert "sudo -n /usr/local/sbin/sage-public-releasectl" in calls[0]
+    assert '"action":"apply"' in calls[0]
+    assert NEXT_SHA in calls[0]
+    with pytest.raises(CanaryError):
+        controller._remote_public_request("apply", "main")

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""受限的本地 Canary CI/CD 与可用性控制器。
+"""受限的本地 private Canary 与 public facade CI/CD 控制器。
 
 它只把已经合入 ``dev/sage-v7`` 且 GitHub 必需检查全绿的完整 commit SHA
-部署到私有 Canary。服务器上的实际构建、备份、迁移和健康检查仍由
-``scripts/deployctl.py`` 执行；本机控制器不读取服务器密钥或环境文件。
+部署到私有 Canary，并把同一 SHA 的隔离 public 镜像发布到公网门面。服务器上的实际
+构建、备份、迁移和健康检查仍由 ``scripts/deployctl.py`` 与 root-owned
+``public_releasectl`` 执行；本机控制器不读取服务器密钥或环境文件。
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ _COMMIT = re.compile(r"[0-9a-f]{40}")
 _REMOTE_HOST = re.compile(r"[A-Za-z0-9._-]+@[A-Za-z0-9._-]+")
 _DOCKER_HOST = re.compile(r"unix:///run/user/[0-9]+/docker\.sock")
 _BRANCH = "dev/sage-v7"
-_REQUIRED_CHECKS = ("python", "backend-quality", "frontend-quality")
+_REQUIRED_CHECKS = ("python", "backend-quality", "frontend-quality", "public-release")
 LABEL = "com.sage.canaryctl"
 DEFAULT_STATE_ROOT = Path.home() / ".local/state/sage-canary"
 DEFAULT_LAUNCHER = Path.home() / ".local/bin/sage-canaryctl"
@@ -39,6 +40,7 @@ DEFAULT_REMOTE_APP = "/opt/sage/app"
 DEFAULT_ENV_FILE = "/etc/sage/env"
 DEFAULT_DOCKER_HOST = "unix:///run/user/1002/docker.sock"
 DEFAULT_HEALTH_URL = "https://sage-agent-canary.tail74531c.ts.net/health"
+DEFAULT_PUBLIC_HEALTH_URL = "http://121.40.185.188/"
 DEFAULT_GITHUB_REPO = "ZeroMadLife/sage-agent"
 DEFAULT_HOST_KEY_ALIAS = "121.40.185.188"
 DEFAULT_GIT_BIN = shutil.which("git") or "/usr/bin/git"
@@ -71,6 +73,7 @@ class CanaryConfig:
     env_file: str
     docker_host: str
     health_url: str
+    public_health_url: str
     github_repo: str
     branch: str
     state_root: Path
@@ -188,6 +191,8 @@ def validate_config(config: CanaryConfig) -> None:
         raise CanaryError("远程 Docker 必须使用 /run/user 下的 rootless socket")
     if not config.health_url.startswith(("https://", "http://127.0.0.1")):
         raise CanaryError("健康检查地址必须使用 HTTPS 或本机回环地址")
+    if not config.public_health_url.startswith(("https://", "http://")):
+        raise CanaryError("公共门面健康检查地址必须使用 HTTP(S)")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", config.github_repo):
         raise CanaryError("GitHub 仓库标识无效")
     if config.branch != _BRANCH:
@@ -219,6 +224,7 @@ def config_from_values(values: Mapping[str, object]) -> CanaryConfig:
         env_file=string("env_file", DEFAULT_ENV_FILE),
         docker_host=string("docker_host", DEFAULT_DOCKER_HOST),
         health_url=string("health_url", DEFAULT_HEALTH_URL),
+        public_health_url=string("public_health_url", DEFAULT_PUBLIC_HEALTH_URL),
         github_repo=string("github_repo", DEFAULT_GITHUB_REPO),
         branch=string("branch", _BRANCH),
         state_root=Path(string("state_root", str(DEFAULT_STATE_ROOT))).expanduser().resolve(),
@@ -248,6 +254,7 @@ def _default_state() -> dict[str, object]:
         "last_error": None,
         "consecutive_failures": 0,
         "last_deployed_sha": None,
+        "last_public_deployed_sha": None,
         "last_sync_at": None,
         "last_sync_error": None,
         "consecutive_sync_failures": 0,
@@ -263,8 +270,11 @@ def load_state(path: Path) -> dict[str, object]:
 
 
 def _int_state(state: Mapping[str, object], key: str) -> int:
+    value = state.get(key, 0)
     try:
-        return int(state.get(key, 0))
+        if isinstance(value, str | bytes | bytearray | int | float):
+            return int(value)
+        return 0
     except (TypeError, ValueError, OverflowError):
         return 0
 
@@ -272,7 +282,16 @@ def _int_state(state: Mapping[str, object], key: str) -> int:
 def probe_http(url: str) -> bool:
     try:
         with urllib.request.urlopen(url, timeout=10) as response:
-            return response.status == 200
+            return bool(response.status == 200)
+    except (OSError, ValueError):
+        return False
+
+
+def probe_public_http(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            body = response.read(4096)
+            return response.status == 200 and b"<title>ZeroMadLife / Sage</title>" in body
     except (OSError, ValueError):
         return False
 
@@ -324,11 +343,13 @@ class CanaryController:
         config: CanaryConfig,
         runner: Runner = run_command,
         http_probe: HttpProbe = probe_http,
+        public_http_probe: HttpProbe = probe_public_http,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.config = config
         self.runner = runner
         self.http_probe = http_probe
+        self.public_http_probe = public_http_probe
         self.clock = clock
 
     def _local(self, command: Sequence[str], timeout: int = 30) -> CommandResult:
@@ -428,10 +449,43 @@ class CanaryController:
             raise CanaryError("Canary 服务状态响应格式无效")
         return value
 
+    def _remote_public_request(
+        self, action: str, tag: str | None = None, *, timeout: int = 900
+    ) -> dict[str, object]:
+        if action not in {"status", "apply", "rollback"}:
+            raise CanaryError("公共门面发布 action 无效")
+        request: dict[str, str] = {"action": action}
+        if action != "status":
+            if tag is None:
+                raise CanaryError("公共门面发布缺少版本")
+            request["tag"] = validate_commit(tag)
+        payload = json.dumps(request, separators=(",", ":"), sort_keys=True)
+        command = (
+            "printf '%s\\n' "
+            + shlex.quote(payload)
+            + " | sudo -n /usr/local/sbin/sage-public-releasectl"
+        )
+        result = self._ssh_script(command, timeout=timeout)
+        if self._command_failed(result):
+            raise CanaryError("公共门面受限发布失败")
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise CanaryError("公共门面发布响应格式无效") from exc
+        if not isinstance(value, dict):
+            raise CanaryError("公共门面发布响应格式无效")
+        return value
+
+    def remote_public_status(self) -> dict[str, object]:
+        return self._remote_public_request("status", timeout=60)
+
     def availability(self) -> dict[str, object]:
         http_ok = self._http_healthy()
+        public_http_ok = self._public_http_healthy()
         remote_ok = True
+        public_remote_ok = True
         status: dict[str, object] | None = None
+        public_status: dict[str, object] | None = None
         if http_ok:
             try:
                 status = self.remote_status()
@@ -440,11 +494,24 @@ class CanaryController:
                 remote_ok = False
         else:
             remote_ok = False
+        if public_http_ok:
+            try:
+                public_status = self.remote_public_status()
+                public_remote_ok = public_status.get("status") == "healthy"
+            except CanaryError:
+                public_remote_ok = False
+        else:
+            public_remote_ok = False
         return {
-            "healthy": http_ok and remote_ok,
+            "healthy": http_ok and remote_ok and public_http_ok and public_remote_ok,
+            "private_healthy": http_ok and remote_ok,
+            "public_healthy": public_http_ok and public_remote_ok,
             "http": http_ok,
             "remote": remote_ok,
             "status": status,
+            "public_http": public_http_ok,
+            "public_remote": public_remote_ok,
+            "public_status": public_status,
         }
 
     def _http_healthy(self) -> bool:
@@ -467,6 +534,28 @@ class CanaryController:
             timeout=20,
         )
         return curl.returncode == 0
+
+    def _public_http_healthy(self) -> bool:
+        if self.public_http_probe(self.config.public_health_url):
+            return True
+        curl = self._local(
+            [
+                self.config.curl_bin,
+                "--noproxy",
+                "*",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "15",
+                self.config.public_health_url,
+            ],
+            timeout=20,
+        )
+        return (
+            curl.returncode == 0
+            and "<title>ZeroMadLife / Sage</title>" in curl.stdout
+        )
 
     def _notify(self, message: str) -> bool:
         if not self.config.notify_project or not self.config.notify_session:
@@ -612,12 +701,20 @@ class CanaryController:
             remote_status = self.remote_status()
         except CanaryError:
             remote_status = {}
+        try:
+            public_status = self.remote_public_status()
+        except CanaryError:
+            public_status = {}
         current_deployed = str(remote_status.get("current") or "")
-        if current_deployed == sha and remote_status.get("status") == "healthy":
+        current_public = str(public_status.get("current") or "")
+        private_ready = current_deployed == sha and remote_status.get("status") == "healthy"
+        public_ready = current_public == sha and public_status.get("status") == "healthy"
+        if private_ready and public_ready:
             state = load_state(self.config.state_path)
             state.update(
                 {
                     "last_deployed_sha": sha,
+                    "last_public_deployed_sha": sha,
                     "last_sync_at": self.clock(),
                     "last_sync_error": None,
                     "consecutive_sync_failures": 0,
@@ -626,13 +723,21 @@ class CanaryController:
             )
             _write_json(self.config.state_path, state)
             return {"status": "up-to-date", "sha": sha}
-        result = self._ssh_script(self._remote_deploy_script(sha), timeout=7200)
-        if self._command_failed(result):
-            raise CanaryError("Canary 部署失败；旧服务应保持不变，请查看服务器 deployctl 状态")
+        if not private_ready:
+            result = self._ssh_script(self._remote_deploy_script(sha), timeout=7200)
+            if self._command_failed(result):
+                raise CanaryError("Canary 部署失败；旧服务应保持不变，请查看服务器 deployctl 状态")
+        public_result = self._remote_public_request("apply", sha)
+        if not self._public_http_healthy():
+            previous_public = str(public_result.get("previous") or "")
+            if _COMMIT.fullmatch(previous_public):
+                self._remote_public_request("rollback", previous_public)
+            raise CanaryError("公共门面外部健康检查失败，已尝试恢复上一版本")
         state = load_state(self.config.state_path)
         state.update(
             {
                 "last_deployed_sha": sha,
+                "last_public_deployed_sha": sha,
                 "last_sync_at": self.clock(),
                 "last_sync_error": None,
                 "consecutive_sync_failures": 0,
@@ -644,6 +749,7 @@ class CanaryController:
             "status": "deployed",
             "sha": sha,
             "previous": current_deployed or current_head,
+            "public_previous": public_result.get("previous"),
         }
 
     def sync(self) -> dict[str, object]:
@@ -688,11 +794,28 @@ class CanaryController:
 
     def run_once(self) -> dict[str, object]:
         report = self.check()
-        if not bool(report["healthy"]):
+        if not bool(report["private_healthy"]):
             return {"status": "unhealthy", "availability": report}
         result = self.sync()
-        if result.get("status") == "deployed" and not self._http_healthy():
-            raise CanaryError("部署后健康检查失败")
+        if result.get("status") in {"deployed", "up-to-date"}:
+            if not self._http_healthy():
+                raise CanaryError("部署后私有 Canary 健康检查失败")
+            if not self._public_http_healthy():
+                raise CanaryError("部署后公共门面健康检查失败")
+            state = load_state(self.config.state_path)
+            now = self.clock()
+            state.update(
+                {
+                    "state": "HEALTHY",
+                    "checked_at": now,
+                    "last_healthy_at": now,
+                    "last_error": None,
+                    "consecutive_failures": 0,
+                }
+            )
+            _write_json(self.config.state_path, state)
+        elif not bool(report["public_healthy"]):
+            return {"status": "unhealthy", "availability": report, "sync": result}
         return {"status": "ok", "availability": report, "sync": result}
 
 
@@ -776,6 +899,7 @@ def install_command(args: argparse.Namespace) -> int:
             "env_file": args.env_file,
             "docker_host": args.docker_host,
             "health_url": args.health_url,
+            "public_health_url": args.public_health_url,
             "github_repo": args.github_repo,
             "branch": _BRANCH,
             "state_root": state_root,
@@ -800,6 +924,7 @@ def install_command(args: argparse.Namespace) -> int:
             "env_file": config.env_file,
             "docker_host": config.docker_host,
             "health_url": config.health_url,
+            "public_health_url": config.public_health_url,
             "github_repo": config.github_repo,
             "branch": config.branch,
             "state_root": str(config.state_root),
@@ -862,6 +987,7 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--env-file", default=DEFAULT_ENV_FILE)
     install.add_argument("--docker-host", default=DEFAULT_DOCKER_HOST)
     install.add_argument("--health-url", default=DEFAULT_HEALTH_URL)
+    install.add_argument("--public-health-url", default=DEFAULT_PUBLIC_HEALTH_URL)
     install.add_argument("--host-key-alias", default=DEFAULT_HOST_KEY_ALIAS)
     install.add_argument("--github-repo", default=DEFAULT_GITHUB_REPO)
     install.add_argument("--state-root", default=str(DEFAULT_STATE_ROOT))

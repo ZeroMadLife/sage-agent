@@ -47,3 +47,41 @@ jobs:
       - run: npm ci
       - run: npm run test -- --run
       - run: npm run build
+      - run: npm run build:public
+
+  public-release:
+    name: public-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build immutable public image
+        run: >-
+          docker build
+          --file infra/docker/sage-public.Dockerfile
+          --build-arg SAGE_IMAGE_TAG=${{ github.sha }}
+          --tag sage-public:${{ github.sha }}
+          .
+      - name: Verify image identity and isolated runtime
+        run: |
+          set -eu
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' sage-public:${{ github.sha }})" = "${{ github.sha }}"
+          test "$(docker image inspect --format '{{.Config.User}}' sage-public:${{ github.sha }})" = "65532:65532"
+          docker network create --driver bridge sage-public-ci >/dev/null
+          trap 'docker rm --force sage-public-ci >/dev/null 2>&1 || true; docker network rm sage-public-ci >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name sage-public-ci --publish 127.0.0.1:18081:8081 \
+            --network sage-public-ci \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /config:rw,noexec,nosuid,mode=1777,size=8m \
+            --tmpfs /data:rw,noexec,nosuid,mode=1777,size=8m \
+            --tmpfs /tmp:rw,noexec,nosuid,mode=1777,size=8m \
+            sage-public:${{ github.sha }}
+          attempt=0
+          until curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18081/ | grep -q '<title>ZeroMadLife / Sage</title>'; do
+            attempt=$((attempt + 1))
+            test "$attempt" -lt 20
+            sleep 1
+          done
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' sage-public-ci)" = "true"
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' sage-public-ci)" = '["ALL"]'
+          test "$(docker inspect --format '{{index .HostConfig.SecurityOpt 0}}' sage-public-ci)" = 'no-new-privileges:true'

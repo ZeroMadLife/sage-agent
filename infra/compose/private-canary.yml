@@ -129,6 +129,7 @@ services:
       dockerfile: infra/docker/sage-public.Dockerfile
       args:
         SAGE_DOCKER_REGISTRY: ${SAGE_DOCKER_REGISTRY:-docker.io}
+        SAGE_IMAGE_TAG: ${SAGE_IMAGE_TAG:?SAGE_IMAGE_TAG is required}
     restart: unless-stopped
     ports:
       - "127.0.0.1:${SAGE_PUBLIC_PORT:-8081}:8081"

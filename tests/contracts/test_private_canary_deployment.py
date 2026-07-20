@@ -35,6 +35,9 @@ def test_public_profile_is_built_as_an_api_isolated_static_surface() -> None:
     assert 'user: "65532:65532"' in public_service
     assert "read_only: true" in public_service
     assert "npm run build:public" in dockerfile
+    assert "org.opencontainers.image.revision=${SAGE_IMAGE_TAG}" in dockerfile
+    assert "USER 65532:65532" in dockerfile
+    assert "SAGE_IMAGE_TAG: ${SAGE_IMAGE_TAG:?SAGE_IMAGE_TAG is required}" in public_service
     assert "dist-public" in dockerfile
     assert "reverse_proxy" not in caddyfile
     assert "connect-src 'none'" in caddyfile
@@ -43,6 +46,27 @@ def test_public_profile_is_built_as_an_api_isolated_static_surface() -> None:
     assert "AssistantHomeView" not in router
     assert "KnowledgeView" not in router
     assert "CodingView" not in router
+
+
+def test_public_release_pipeline_has_a_bounded_root_boundary() -> None:
+    workflow = (ROOT / ".github/workflows/quality.yml").read_text(encoding="utf-8")
+    sudoers = (ROOT / "infra/sudoers/sage-public-release").read_text(encoding="utf-8")
+    installer = (ROOT / "infra/install/install-public-release-controller.sh").read_text(
+        encoding="utf-8"
+    )
+    controller = (ROOT / "scripts/public_releasectl.py").read_text(encoding="utf-8")
+
+    assert "npm run build:public" in workflow
+    assert "name: public-release" in workflow
+    assert "--read-only --cap-drop ALL" in workflow
+    assert "NOPASSWD: /usr/local/sbin/sage-public-releasectl" in sudoers
+    assert sudoers.strip().endswith('/usr/local/sbin/sage-public-releasectl ""')
+    assert "visudo -cf" in installer
+    assert "/var/lib/sage-public-release" in installer
+    assert "/opt/sage/state" not in installer
+    assert "parse_request(sys.stdin)" in controller
+    assert 'COMMIT_TAG = re.compile(r"[0-9a-f]{40}")' in controller
+    assert "/etc/sage/env" not in controller
 
 
 def test_private_canary_environment_template_tracks_server_topology() -> None:
