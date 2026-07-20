@@ -112,6 +112,58 @@ def test_event_adapter_does_not_stream_legacy_tool_protocol_as_answer_text() -> 
     assert "<tool>" not in str(events[0].payload)
 
 
+def test_event_adapter_filters_legacy_protocol_split_across_stream_chunks() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    chunks = (
+        "Checking the workspace.<to",
+        'ol>{"name":"run_shell","args":{"command":"pwd"}}</to',
+        "ol><fi",
+        "nal>Public answer only.</fi",
+        "nal>Afterword.",
+    )
+
+    events = tuple(
+        event
+        for index, chunk in enumerate(chunks, start=1)
+        for event in adapter.adapt(
+            HarnessStreamItem(
+                index,
+                "messages",
+                (AIMessage(content=chunk, id=f"ai-{index}"), {}),
+                f"source-{index}",
+            )
+        )
+    )
+
+    content = "".join(str(event.payload["delta"]) for event in events)
+    assert content == "Checking the workspace.Public answer only.Afterword."
+    assert "<tool>" not in content
+    assert "run_shell" not in content
+    assert "<final>" not in content
+
+
+def test_event_adapter_flushes_public_fragment_when_stream_ends() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    initial = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "messages",
+            (AIMessage(content="Answer with trailing <", id="ai-trailing"), {}),
+            "source-trailing",
+        )
+    )
+
+    events = adapter.finish()
+
+    assert len(events) == 1
+    assert (
+        "".join(
+            [*(str(event.payload["delta"]) for event in initial), str(events[0].payload["delta"])]
+        )
+        == "Answer with trailing <"
+    )
+
+
 def test_event_adapter_drops_tool_only_legacy_protocol_message() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
     ai = AIMessage(

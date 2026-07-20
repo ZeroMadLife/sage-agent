@@ -19,6 +19,8 @@ it('renders approval details and emits supported approval choices', async () => 
   expect(wrapper.text()).toContain('write_file')
   expect(wrapper.text()).toContain('写入文件前需要确认。')
   expect(wrapper.text()).not.toContain('requires approval')
+  expect(wrapper.get('button.session').text()).toBe('本会话自动允许')
+  expect(wrapper.get('button.session').attributes('title')).toContain('后续同类操作')
 
   await wrapper.find('button.allow').trigger('click')
   await wrapper.find('button.session').trigger('click')

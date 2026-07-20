@@ -237,6 +237,8 @@ class SageHarnessRuntimeAdapter:
                 compaction_event = None
             for event in adapter.adapt(item):
                 yield event
+        for event in adapter.finish():
+            yield event
 
 
 async def _checkpoint_pending_tool_call_ids(
