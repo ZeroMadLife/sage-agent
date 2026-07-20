@@ -229,6 +229,10 @@ class McpManager:
             for server in self._snapshot.servers
         )
 
+    def cached_catalog(self, scope: McpScope) -> McpCatalogSnapshot | None:
+        """Read a current scoped catalog without discovery or network activity."""
+        return self._cache.get((self._snapshot.revision, scope.key))
+
     async def catalog(self, scope: McpScope, *, force: bool = False) -> McpCatalogSnapshot:
         """Discover tools for one isolated scope and config revision."""
         if self._closed:
@@ -303,6 +307,7 @@ class McpManager:
                 **dict(descriptor.metadata),
                 "category": "mcp",
                 "mcp_server": descriptor.server_name,
+                "mcp_tool_id": descriptor.tool_id,
                 "remote_content": descriptor.remote_content,
                 "deferred": True,
                 "config_revision": catalog.revision,

@@ -46,7 +46,13 @@ async function selectMode(mode: PermissionMode) {
 
     <Teleport to="body">
       <div v-if="open" class="drawer-backdrop" @click.self="open = false">
-        <section class="permission-drawer" role="dialog" aria-modal="true" aria-label="权限模式">
+        <section
+          class="permission-drawer"
+          role="dialog"
+          aria-modal="true"
+          aria-label="权限模式"
+          @keydown.esc.prevent="open = false"
+        >
           <header class="drawer-header">
             <div>
               <p>权限模式</p>

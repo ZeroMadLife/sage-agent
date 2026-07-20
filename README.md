@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="frontend/src/assets/sage-thinking-fallback.png" width="112" alt="Sage" />
+  <img src="frontend/src/assets/sage-thinking-fallback.png" width="104" alt="Sage" />
 </p>
 
 <h1 align="center">Sage</h1>
 
 <p align="center">
   <strong>Personal AI Learning Companion</strong><br />
-  把个人项目、知识来源和真实实践连接成一条可追溯、可审核、可持续积累的成长路径。
+  让目标、知识、实践与证据在同一个可恢复的工作台里持续生长。
 </p>
 
 <p align="center">
@@ -14,223 +14,206 @@
   <a href="https://github.com/ZeroMadLife/sage-agent/actions/workflows/backend-quality.yml"><img src="https://github.com/ZeroMadLife/sage-agent/actions/workflows/backend-quality.yml/badge.svg" alt="Backend Quality" /></a>
   <img src="https://img.shields.io/badge/Python-3.12+-3776AB" alt="Python 3.12+" />
   <img src="https://img.shields.io/badge/Vue-3-42B883" alt="Vue 3" />
-  <img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-Sage 是一个本地优先的个人 AI 学习与实践工作台。它以对话为入口，把代码仓库、
-Markdown/Obsidian 知识、模型 Provider、Skills 和 MCP 工具组织到同一个可恢复的
-Chat Harness 中。
+![Sage knowledge growth workbench](docs/assets/readme/sage-knowledge-growth-cover.webp)
 
-Coding 没有被删除，而是成为 Sage 的 **Practice Engine**：用于阅读源码、修改代码、
-运行测试和验证理解。Knowledge 负责来源摄取、Wiki 提案、检索与引用；所有可能改变
-长期知识、代码或外部系统的操作都保留证据和人工控制点。
+Sage 是一个本地优先的个人 AI 学习与实践工作台。它把对话、代码仓库、
+Markdown/Obsidian 知识、模型 Provider、Skills 和 MCP 工具组织进同一套 Chat Harness，
+让一次回答能够继续成为可追溯的知识、实践记录和下一步行动。
 
-> **当前状态**：项目正在快速开发，适合本机使用、架构研究和受控私测。生产服务器
-> 一键部署仍在建设中；不要把 Vite/FastAPI 开发端口直接暴露到公网。
+Coding 没有被包装成另一个聊天框，而是 Sage 的 **Practice Engine**：用于阅读源码、
+修改代码、运行测试并验证理解。Knowledge 保存来源、提案、检索与引用；所有可能改变
+代码、长期知识或外部系统的操作都保留证据和控制点。
+
+> **项目状态**：Sage 正在快速开发，当前适合本机使用、架构研究与受控私测。
+> 正式公网发布仍需完成生产 Sandbox、租户级 Knowledge 隔离和部署门禁。
+
+## 从一个问题到长期成长
+
+```mermaid
+flowchart LR
+    A[目标 Purpose] --> B[探索 Explore]
+    B --> C[沉淀 Knowledge]
+    C --> D[刻意练习 Practice]
+    D --> E[证据 Evidence]
+    E --> F[复盘与演进 Evolve]
+    F --> A
+```
+
+1. **目标**：明确现在要解决的问题，以及为什么值得解决。
+2. **探索**：通过对话、网页、代码和本地资料收集上下文。
+3. **沉淀**：把来源转为可检索、可引用、可审阅的知识。
+4. **练习**：在受控工作区中阅读、修改、执行和验证。
+5. **证据**：保留 timeline、artifact、citation、diff 与测试结果，驱动下一轮复盘。
 
 ## 产品界面
 
-| Surface | 作用 | 当前状态 |
-| --- | --- | --- |
-| **今天** `/#/assistant` | 个人入口、近期会话、知识状态与下一步建议 | 已交付 |
-| **Practice** `/#/coding/session/:id` | 代码阅读、编辑、测试、审批、Diff 与运行证据 | 已交付，Harness 2.0 默认启用 |
-| **Knowledge** `/#/knowledge` | 来源摄取、知识图谱、Wiki 提案、检索与引用 | 已交付本地工作流 |
-| **成长记录** `/#/evolution` | 汇总 Learning Evidence 与受控进化提案 | 阶段入口，继续建设 |
-| **公开主页** `/#/public` | 未来发布经过筛选的公开资料包 | 阶段入口，尚未开放发布 |
-| **设置** `/#/settings/:section` | Provider、Skills、MCP、Memory、Context 与运行配置 | 已交付 |
+### 今天：从目标开始
 
-## 现在能做什么
+![Sage Assistant home](docs/assets/readme/screenshots/assistant-desktop.webp)
 
-### 一个可恢复的 Chat Harness
+`/#/assistant` 汇总近期会话、本地工作区与知识状态。新任务从这里进入统一 Harness，
+而不是在不同功能页面重复创建互不相通的会话运行时。
 
-- WebSocket 流式输出与 durable timeline；刷新或断线后可继续回放和恢复。
-- 统一呈现 planning、reasoning、tool、approval、reply 和 terminal 阶段。
-- Context budget、自动压缩、checkpoint、run trace 和长工具结果 artifact。
-- 同一套 Harness 复用于 Assistant、Knowledge 和 Coding，不为每个页面重写 Agent loop。
+### Knowledge：从来源到可引用知识
 
-### 受控的 Practice Engine
+![Sage Knowledge workspace](docs/assets/readme/screenshots/knowledge-desktop.webp)
 
-- `list_files`、`read_file`、`search`、`run_shell`、`write_file`、`patch_file` 等工作区工具。
-- 路径 containment、fresh-read、权限模式、危险命令审批和写入 Diff。
-- Plan Mode、Todo、Skills、MCP、子 Agent 和可中断运行。
-- Harness 2.0 新会话默认启用；production/staging 只有配置 Container Sandbox 才允许启用。
-- Container Sandbox 支持只读 rootfs、禁网、资源上限、受控 workspace mount 和退出清理。
+`/#/knowledge` 管理受控来源、知识图谱、Wiki 提案、混合检索和引用。原始快照、提案与
+已批准知识彼此分离，避免模型在后台静默改写事实。
 
-### 可追溯的 Knowledge 工作流
+### Practice：用真实执行验证理解
 
-- 摄取 Markdown、Obsidian 与受控文件来源，保留 immutable source snapshot。
-- 异步任务、失败恢复、Wiki proposal、批准/拒绝/回滚和版本证据。
-- Sparse/Dense hybrid retrieval、RRF、稳定 citation 与上下文预算。
-- 对话可以提出 Note、Wiki 或 Memory Proposal，但不会静默改写已验证知识。
+![Sage Practice workspace](docs/assets/readme/screenshots/practice-desktop.webp)
 
-### 面向长期运行的工程闭环
+`/#/coding/session/:id` 统一呈现 plan、reasoning、tool、approval、reply 与 terminal；
+支持工作区工具、Diff、测试、checkpoint、上下文压缩和可恢复 timeline。
 
-- Provider 配置、密钥加密存储、能力探测和用量记录。
-- GitHub OAuth + invite-only 云端身份基础，以及 session/workspace ownership 边界。
-- Loop Engineer 在独立 worktree 中扫描低风险问题；只有严格 Tier A 前端小修允许自动合并。
-- 飞书 cc-connect 作为外部开发通道，继续遵守仓库内 Git、测试和部署门禁。
+公开成长主页 `/#/public` 会把经过筛选的项目、笔记和成长轨迹组织成外部浏览路径。
+它目前提供限定公开 corpus 的确定性问答与来源回执，不会伪装成已经上线的公网 Harness；
+稳定 HTTPS 地址将在正式部署后补充到这里。
+
+## 核心能力
+
+| 能力 | 当前实现 |
+| --- | --- |
+| **Chat Harness** | WebSocket 流式事件、durable timeline、checkpoint、context budget、artifact 与 usage |
+| **Practice Engine** | 文件、搜索、Shell、写入、Patch、Diff、Git、审批与运行证据 |
+| **Knowledge Platform** | 来源快照、异步摄取、Wiki 提案、混合检索、RRF 与稳定 citation |
+| **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
+| **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
+
+Harness 2.0 是新会话的默认 runtime profile。开发机默认使用 `local_workspace`；它只适合
+可信本地仓库。production/staging 必须配置 Container Sandbox，不能把宿主机工作区直接
+暴露给浏览器任务。
 
 ## 架构
 
-```text
-Browser / Mobile Web
-  -> Vue 3 + Pinia
-  -> REST + WebSocket
-  -> FastAPI
-       ├─ Assistant Home
-       ├─ Chat Harness
-       │    ├─ durable timeline / checkpoint / context compaction
-       │    ├─ middleware / skills / MCP / subagents
-       │    └─ approval / evidence / artifact / usage
-       ├─ Practice Engine
-       │    ├─ workspace + Git + file tools
-       │    └─ local workspace | container sandbox
-       ├─ Knowledge Engine
-       │    ├─ source snapshots / ingest jobs / Wiki proposals
-       │    └─ sparse + dense retrieval / RRF / citations
-       └─ Cloud Control Plane
-            ├─ GitHub OAuth / invite / ownership
-            └─ encrypted model provider settings
+```mermaid
+flowchart TB
+    UI[Vue 3 + Pinia] -->|REST + WebSocket| API[FastAPI]
+    API --> HOME[Assistant Home]
+    API --> CHAT[Chat Harness]
+    API --> KNOWLEDGE[Knowledge Engine]
+    API --> CLOUD[Cloud Control Plane]
 
-State and infrastructure
-  ├─ PostgreSQL + pgvector
-  ├─ Redis Streams
-  ├─ SQLite durable runtime stores
-  └─ Git-backed workspace and knowledge artifacts
+    CHAT --> RUNTIME[sage_harness runtime]
+    RUNTIME --> MID[Middleware / Skills / MCP]
+    RUNTIME --> PRACTICE[Practice Engine]
+    RUNTIME --> EVIDENCE[Timeline / Artifact / Usage]
+
+    PRACTICE --> WORKSPACE[Local Workspace or Container Sandbox]
+    KNOWLEDGE --> SOURCES[Source Snapshots / Wiki Proposals]
+    KNOWLEDGE --> RETRIEVAL[Hybrid Retrieval / Citations]
+
+    API --> POSTGRES[(PostgreSQL / Redis cloud and job foundation)]
+    API --> REDIS[(Redis Streams)]
+    RUNTIME --> SQLITE[(SQLite runtime and local Knowledge stores)]
 ```
 
-核心 Harness 以独立 Python package 维护在 `packages/sage_harness/`。Sage 产品层负责把
-用户身份、工作区、Knowledge、Sandbox 和前端时间线适配到 Harness 的稳定端口。
+通用 Harness 作为独立 Python package 维护在 `packages/sage_harness/`。产品层负责将用户、
+Workspace、Knowledge、Sandbox 与前端事件协议适配到稳定端口，避免通用运行时反向依赖
+Sage 业务模块。
 
 ## 快速开始
 
 ### 环境要求
 
 - Python 3.12+
-- Node.js 20+
+- [uv](https://docs.astral.sh/uv/)
+- Node.js 24（与 CI 一致）
 - Docker Engine + Docker Compose v2
-- macOS、Linux，或 Windows WSL
-
-### 1. 获取代码
+- macOS、Linux 或 Windows WSL
 
 ```bash
 git clone https://github.com/ZeroMadLife/sage-agent.git
 cd sage-agent
-```
 
-### 2. 安装依赖
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-
-cd frontend
-npm install
-cd ..
-```
-
-### 3. 配置本地环境
-
-```bash
+bash scripts/bootstrap-dev-env.sh
+cd frontend && npm ci && cd ..
 cp .env.example .env
 ```
 
-至少配置一个可用模型 Provider。比如：
-
-```dotenv
-DEEPSEEK_API_KEY=your_key
-```
-
-`.env`、Provider key、OAuth secret 和运行凭据都不得提交到 Git。
-
-### 4. 启动
+在 `.env` 中至少配置一个模型 Provider，例如 `DEEPSEEK_API_KEY`。不要提交 `.env`、
+Provider key、OAuth secret 或任何运行凭据。
 
 ```bash
 bash scripts/dev.sh
 ```
 
-脚本会启动 PostgreSQL/pgvector、Redis、FastAPI 和 Vite：
+开发脚本会启动 PostgreSQL/pgvector、Redis、FastAPI 和 Vite：
 
-- Sage Web：`http://127.0.0.1:5173`
+- Web：`http://127.0.0.1:5173`
 - API：`http://127.0.0.1:8000`
 - Health：`http://127.0.0.1:8000/health`
 
-需要启用 Knowledge 持久任务时，先执行：
+开发环境默认执行幂等数据库迁移；生产环境必须在发布流程中显式运行并验证迁移。
+完整环境变量与 worktree 联调说明见 [Getting Started](docs/GETTING-STARTED.md)。
+
+## 验证
 
 ```bash
-python -m db.migrations
-```
-
-更完整的环境变量、worktree 联调和 Knowledge Source 配置见
-[Getting Started](docs/GETTING-STARTED.md)。
-
-## 常用验证
-
-```bash
-# 后端、类型和基础质量门禁
+# 后端、Ruff、mypy 与完整测试
 bash scripts/check.sh
-
-# Coding/Harness 定向回归
-pytest tests/core/coding tests/core/harness tests/harness tests/api/test_coding_routes.py -q
 
 # 前端测试与生产构建
 cd frontend
 npm run test -- --run
 npm run build
+
+# 文档和空白错误
+git diff --check
 ```
 
-GitHub Actions 会再次执行后端、前端、Ruff、mypy 和生产构建门禁。
+GitHub Actions 会在 PR 上重复执行后端质量、前端测试和生产构建门禁。
 
 ## 仓库结构
 
 ```text
 sage-agent/
-├── api/                         # FastAPI routes、WebSocket 与云端控制面
+├── api/                         # FastAPI routes、WebSocket 与云控制面
 ├── core/
-│   ├── coding/                  # Practice Engine、持久化、工具与运行协调
+│   ├── coding/                  # Practice Engine、工具与运行协调
 │   ├── harness/                 # Sage 到通用 Harness 的适配层
 │   ├── knowledge/               # 摄取、图谱、检索、Wiki 与学习证据
-│   ├── cloud/                   # 身份、Workspace 与 Provider 设置
-│   └── loop_harness/            # Loop Engineer 控制器
-├── packages/sage_harness/       # 可复用 Chat Harness 2.0 package
+│   └── cloud/                   # 身份、Workspace 与 Provider 设置
+├── packages/sage_harness/       # 可复用 Chat Harness package
 ├── frontend/                    # Vue 3 产品界面
-├── agents/                      # travel-planning 领域 Agent 与 LangGraph
-├── mcp_servers/                 # 高德、天气、景点 MCP servers
-├── evals/                       # Harness、Knowledge 与领域评测
 ├── tests/                       # 后端、API、契约与集成测试
-├── docs/                        # 产品设计、实施计划、Review 与运维文档
+├── release/v7-beta/             # 当前发布说明、评审与学习手册
+├── docs/                        # 设计、计划、Review 与运维文档
 └── docker-compose.yml           # 本地 PostgreSQL/pgvector + Redis
 ```
 
-## 真实边界
+## 当前边界
 
-- 当前 `docker-compose.yml` 只编排本地 PostgreSQL/pgvector 与 Redis，不是生产部署栈。
-- Evolution 与 Public Profile 仍是阶段入口，不能描述为已完成的成长系统或公开 Agent。
-- GitHub OAuth、ownership 和 Provider encryption 已有后端基础，但公网开放仍需要 HTTPS、
-  production secrets、邀请制配置、限流、备份和恢复演练。
-- 本地 `local_workspace` 允许工具作用于指定仓库；公网环境必须使用 Container Sandbox，
-  不能把宿主机工作区直接暴露给浏览器任务。
-- 原 TourSwarm 旅游规划能力作为第一个领域 Skill 和多约束 benchmark 保留，不再是主产品入口。
+- `docker-compose.yml` 只编排本地 PostgreSQL/pgvector 与 Redis，不是生产部署栈。
+- 公开主页是展示与限定资料问答，不是公开 Agent，也不共享主对话的文件权限。
+- Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
+- Container Sandbox 已有实现与测试，正式公网任务的部署、资源和运维门禁仍需收口。
+- Loop Engineer 的代码、测试和设计资料仍保留，但自动扫描服务目前暂停，不属于运行中的产品能力。
+- 原 TourSwarm 旅游规划能力作为领域 Skill 与多约束 benchmark 保留，不再是主产品入口。
 
-## 项目文档
+## 文档
 
+- [V7 Beta 发布入口](release/v7-beta/README.md)
+- [持续学习手册](release/v7-beta/learning/00-reading-map.md)
 - [Sage V7 产品设计](docs/superpowers/specs/2026-07-15-sage-v7-personal-assistant-knowledge-evolution-design.md)
 - [Chat Harness 2.0 设计](docs/superpowers/specs/2026-07-16-sage-chat-harness-v2-design.md)
-- [Loop Engineer](docs/loop-harness/README.md)
 - [开发环境指南](docs/GETTING-STARTED.md)
 - [开发协作约定](AGENTS.md)
 
-## 分支与贡献
+## 贡献
 
-- `main`：通过完整发布门禁的版本。
-- `dev/sage-v7`：当前集成分支。
-- 功能与修复：在独立 worktree 的 `codex/*` 分支完成，通过 PR 合入开发分支。
+- `main` 只保留通过完整发布门禁的版本。
+- `dev/sage-v7` 是当前集成分支。
+- 功能和修复在独立 worktree 的 `codex/*` 分支完成，通过 PR 合入开发分支。
 
 提交前请保持职责单一，附中文 PR 说明，并提供与改动匹配的测试、构建和
 `git diff --check` 证据。
 
 ## License
 
-MIT
+[MIT](LICENSE)

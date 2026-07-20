@@ -59,12 +59,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "enable":
-        selected = sum((args.dry_run, args.shadow_write, args.pr_canary))
+        selected = sum(
+            (
+                args.dry_run,
+                args.shadow_write,
+                args.pr_canary,
+                args.auto_merge_tier_a,
+            )
+        )
         if selected != 1:
-            parser.error("choose exactly one of --dry-run, --shadow-write or --pr-canary")
+            parser.error(
+                "choose exactly one of --dry-run, --shadow-write, --pr-canary "
+                "or --auto-merge-tier-a"
+            )
         config.validate_static()
         validate_manifest(config.controller_root, config.manifest_path)
-        if args.pr_canary:
+        if args.auto_merge_tier_a:
+            mode = "AUTO_MERGE_TIER_A"
+        elif args.pr_canary:
             mode = "PR_CANARY"
         elif args.shadow_write:
             mode = "SHADOW_WRITE"
@@ -95,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
             target_branch=config.target_branch,
         )
         root = git.require_integration_root(
-            allow_dirty=state.mode() in {"SHADOW_WRITE", "PR_CANARY"}
+            allow_dirty=state.mode()
+            in {"SHADOW_WRITE", "PR_CANARY", "AUTO_MERGE_TIER_A"}
         )
         version = CodexWorker(
             codex_bin=config.codex_bin,
@@ -103,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
             reports_root=config.reports_root,
             timeout_seconds=config.run_timeout_seconds,
         ).probe()
-        if state.mode() == "PR_CANARY":
+        if state.mode() in {"PR_CANARY", "AUTO_MERGE_TIER_A"}:
             GitHubAdapter(
                 gh_bin=config.gh_bin,
                 repository=config.github_repository,
@@ -181,6 +194,7 @@ def _parser() -> argparse.ArgumentParser:
     enable.add_argument("--dry-run", action="store_true")
     enable.add_argument("--shadow-write", action="store_true")
     enable.add_argument("--pr-canary", action="store_true")
+    enable.add_argument("--auto-merge-tier-a", action="store_true")
     subparsers.add_parser("pause")
     subparsers.add_parser("status")
     subparsers.add_parser("doctor")

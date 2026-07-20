@@ -209,6 +209,24 @@ function projectCodingRuntimeResources(
   events: readonly CodingTimelineEvent[],
 ): HarnessRuntimeResource[] {
   const resources: HarnessRuntimeResource[] = []
+  const runBudget = [...events].reverse().find(
+    (event) => event.payload.type === 'run_budget_updated',
+  )
+  if (runBudget) {
+    const used = numberValue(runBudget.payload.used_tokens)
+    const limit = numberValue(runBudget.payload.limit_tokens)
+    const modelCalls = numberValue(runBudget.payload.model_calls)
+    const modelLimit = numberValue(runBudget.payload.model_call_limit)
+    const toolCalls = numberValue(runBudget.payload.tool_calls)
+    const toolLimit = numberValue(runBudget.payload.tool_call_limit)
+    resources.push({
+      id: 'run-budget',
+      kind: 'budget',
+      label: '本轮预算',
+      detail: `${compactNumber(used)} / ${compactNumber(limit)} tokens · ${modelCalls}/${modelLimit} 模型 · ${toolCalls}/${toolLimit} 工具`,
+      status: explicitStatus(runBudget.status),
+    })
+  }
   const catalog = [...events].reverse().find(
     (event) => event.payload.type === 'mcp_catalog_updated',
   )
@@ -260,10 +278,17 @@ function projectCodingRuntimeResources(
       label: '子代理',
       detail: stringValue(event.payload.description) || previous?.detail || agentId,
       status: explicitStatus(event.status),
+      operationRef: operationRef(event.payload.operation_ref) || previous?.operationRef,
     })
   }
   resources.push(...agentResources.values())
   return resources
+}
+
+function compactNumber(value: number) {
+  if (value >= 1_000_000) return `${Number((value / 1_000_000).toFixed(1))}m`
+  if (value >= 1_000) return `${Number((value / 1_000).toFixed(1))}k`
+  return String(value)
 }
 
 function settleStageFromStatus(event: CodingTimelineEvent, stageId: string, offset: number) {

@@ -76,6 +76,8 @@ class ToolResultEvent(RunEventBase):
     args: dict[str, Any] = Field(default_factory=dict)
     content: str
     is_error: bool = False
+    error_code: str | None = None
+    retryable: bool | None = None
     policy_reason: str | None = None
     security_event_type: str | None = None
 
@@ -261,4 +263,10 @@ RunEvent: TypeAlias = (
 
 def event_to_dict(event: RunEventBase) -> dict[str, Any]:
     """Serialize a typed event to the existing JSON-safe dict wire shape."""
-    return event.model_dump()
+    payload = event.model_dump()
+    if isinstance(event, ToolResultEvent):
+        if event.error_code is None:
+            payload.pop("error_code", None)
+        if event.retryable is None:
+            payload.pop("retryable", None)
+    return payload

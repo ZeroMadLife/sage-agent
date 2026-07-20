@@ -3,7 +3,14 @@ import type { KnowledgeGraph, KnowledgeGraphCommunities } from '../../types/api'
 import {
   communitySeedPositions,
   featuredNodeIds,
+  focusedGraphEdgeColor,
+  graphEdgePresentation,
+  graphScopeNodeIds,
+  graphPerformanceProfile,
   graphFocus,
+  graphInteractionPalette,
+  graphLegendItems,
+  shortestGraphPath,
 } from './knowledgeGraphPresentation'
 
 const nodes = [
@@ -64,4 +71,89 @@ it('creates deterministic community-separated seed positions', () => {
 
   expect(first).toEqual(second)
   expect(first.get('isolated')).not.toEqual(first.get('center'))
+})
+
+it('builds a real legend for the active graph color mode', () => {
+  const analyzed = {
+    ...communities,
+    communities: [
+      { community_id: 'community-a', label: 'Harness', node_count: 3, edge_count: 2, cohesion: 0.7, properties: {} },
+      { community_id: 'community-b', label: '孤立知识', node_count: 1, edge_count: 0, cohesion: 0, properties: {} },
+    ],
+  }
+  const colors = {
+    type: { page: '#00f', source: '#f90', concept: '#80f' },
+    community: new Map([['community-a', '#0aa'], ['community-b', '#a0a']]),
+  }
+
+  expect(graphLegendItems(graph, analyzed, 'community', colors, 1)).toEqual([{
+    id: 'community-a', label: 'Harness', count: 3, color: '#0aa',
+  }])
+  expect(graphLegendItems(graph, analyzed, 'type', colors, 2)).toEqual([
+    { id: 'page', label: '页面', count: 2, color: '#00f' },
+    { id: 'concept', label: '概念', count: 1, color: '#80f' },
+  ])
+})
+
+it('defines deterministic 200, 1k and 5k rendering budgets', () => {
+  expect(graphPerformanceProfile(200, 800)).toMatchObject({
+    tier: 'small', maxRenderedEdges: 800, hideEdgesOnMove: false, useListFallback: false,
+  })
+  expect(graphPerformanceProfile(1_000, 6_000)).toMatchObject({
+    tier: 'medium', maxRenderedEdges: 6_000, barnesHutOptimize: true,
+  })
+  expect(graphPerformanceProfile(5_000, 40_000)).toMatchObject({
+    tier: 'large', maxRenderedEdges: 20_000, hideEdgesOnMove: true,
+  })
+  expect(graphPerformanceProfile(1_201, 2_000, true)).toMatchObject({
+    tier: 'fallback', useListFallback: true,
+  })
+})
+
+it('keeps the full relationship network visible before focus', () => {
+  const wikiEdge = graphEdgePresentation('WIKILINK', 1, 1, false, 'small')
+  const evidenceEdge = graphEdgePresentation('EVIDENCED_BY', 4, 1, false, 'small')
+
+  expect(wikiEdge).toMatchObject({
+    color: '#c8cace',
+    hidden: false,
+  })
+  expect(wikiEdge.size).toBeCloseTo(0.672)
+  expect(evidenceEdge).toMatchObject({
+    color: '#e3e5e7',
+    hidden: false,
+  })
+  expect(evidenceEdge.size).toBeCloseTo(0.576)
+})
+
+it('uses a quiet background and the focused node color for local exploration', () => {
+  expect(graphInteractionPalette(false)).toEqual({
+    dimNodeColor: '#d8dadd',
+    dimEdgeColor: '#eef0f2',
+    focusEdgeStrength: 0.84,
+  })
+  expect(focusedGraphEdgeColor('#8b5cf6', false)).toBe('#9e76f7')
+  expect(focusedGraphEdgeColor('#8b5cf6', true)).toBe('#7e55dd')
+})
+
+it('projects global, goal and local graph scopes from existing edges', () => {
+  expect(graphScopeNodeIds(graph, {
+    mode: 'global', depth: 2, anchorNodeId: null, goalNodeIds: [],
+  })).toEqual(new Set(nodes.map((node) => node.node_id)))
+
+  expect(graphScopeNodeIds(graph, {
+    mode: 'goal', depth: 1, anchorNodeId: null, goalNodeIds: ['page-neighbor'],
+  })).toEqual(new Set(['page-neighbor', 'center']))
+
+  expect(graphScopeNodeIds(graph, {
+    mode: 'local', depth: 1, anchorNodeId: 'center', goalNodeIds: [],
+  })).toEqual(new Set(['center', 'source-neighbor', 'page-neighbor']))
+})
+
+it('finds a deterministic evidence path from the selected node to a goal node', () => {
+  expect(shortestGraphPath(graph, 'source-neighbor', ['page-neighbor'])).toEqual({
+    nodeIds: ['source-neighbor', 'center', 'page-neighbor'],
+    edgeIds: ['edge-source', 'edge-page'],
+  })
+  expect(shortestGraphPath(graph, 'isolated', ['page-neighbor'])).toBeNull()
 })

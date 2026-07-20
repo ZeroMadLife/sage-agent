@@ -1,0 +1,19 @@
+[Unit]
+Description=Sage sandbox rootless Docker socket proxy
+After=user@1002.service user@1003.service
+Requires=user@1002.service user@1003.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/socat UNIX-LISTEN:/run/user/1002/sage-sandbox.sock,unlink-early,fork,mode=0600,user=sage-deploy,group=sage-deploy UNIX-CONNECT:/run/user/1003/docker.sock
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=false
+InaccessiblePaths=/home /root
+ProtectSystem=strict
+ReadWritePaths=/run/user/1002
+
+[Install]
+WantedBy=multi-user.target

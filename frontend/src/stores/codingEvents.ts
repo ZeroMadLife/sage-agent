@@ -51,6 +51,7 @@ export type CodingEventState = {
   diffInfoByRun: Ref<Record<string, DiffInfo>>
   memoryProposals: Ref<MemoryProposal[]>
   memoryProposalRefresh: Ref<number>
+  knowledgeSourceProposalRefresh: Ref<number>
 }
 
 export type CodingEventEffect = {
@@ -58,6 +59,7 @@ export type CodingEventEffect = {
   terminal?: boolean
   toolResult?: CodingToolResultEvent
   memoryProposalReady?: boolean
+  knowledgeSourceProposalReady?: boolean
 }
 
 function contextReasonLabel(reason: string): string {
@@ -146,6 +148,11 @@ export function applyCodingEvent(
     }
     state.memoryProposalRefresh.value += 1
     return { memoryProposalReady: true }
+  }
+  if (event.type === 'knowledge_source_proposal_created') {
+    if (event.session_id !== state.sessionId.value) return {}
+    state.knowledgeSourceProposalRefresh.value += 1
+    return { knowledgeSourceProposalReady: true }
   }
   if (event.type === 'context_usage_updated') {
     state.contextChars.value = event.used_tokens
@@ -266,6 +273,9 @@ export function applyCodingEvent(
     return { approvalRequired: true }
   }
   if (event.type === 'approval_granted') {
+    if (samePendingApproval(state.pendingApproval.value, event.run_id, event.tool)) {
+      state.pendingApproval.value = null
+    }
     const target = findRunningTool(state.messages.value, event.tool)
     if (target) target.content = '已确认,正在执行...'
     state.thinkingPhase.value = '正在执行工具...'
@@ -273,6 +283,9 @@ export function applyCodingEvent(
     return {}
   }
   if (event.type === 'tool_result') {
+    if (samePendingApproval(state.pendingApproval.value, event.run_id, event.tool)) {
+      state.pendingApproval.value = null
+    }
     updateToolActivity(state.messages.value, event)
     if (event.is_error) {
       settleExecutionActivity(state.messages.value, 'approval', 'error')
@@ -292,6 +305,12 @@ export function applyCodingEvent(
     return {} // NOT terminal -- wait for run_finished to refresh
   }
   if (event.type === 'run_finished') {
+    if (state.pendingApproval.value && (
+      !event.run_id || !state.pendingApproval.value.run_id ||
+      state.pendingApproval.value.run_id === event.run_id
+    )) {
+      state.pendingApproval.value = null
+    }
     return { terminal: true } // NOW refresh runs/sessions
   }
   if (event.type === 'error') {
@@ -304,6 +323,17 @@ export function applyCodingEvent(
   return {}
 }
 
+function samePendingApproval(
+  approval: CodingApproval | null,
+  runId: string | undefined,
+  tool: string,
+): boolean {
+  return Boolean(
+    approval && approval.tool === tool &&
+    (!runId || !approval.run_id || approval.run_id === runId),
+  )
+}
+
 function approvalFromEvent(sessionId: string, event: CodingApprovalRequiredEvent): CodingApproval {
   return {
     approval_id: event.approval_id,
@@ -312,6 +342,7 @@ function approvalFromEvent(sessionId: string, event: CodingApprovalRequiredEvent
     args: event.args,
     description: event.description,
     pattern_key: event.pattern_key,
+    run_id: event.run_id,
   }
 }
 

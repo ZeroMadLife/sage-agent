@@ -9,6 +9,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sage_harness import (
+    CapabilityTelemetryMiddleware,
     DeferredToolFilterMiddleware,
     DeferredToolSetup,
     GraphMessageCompactionRequest,
@@ -21,6 +22,7 @@ from sage_harness import (
     SkillCatalog,
     SubagentLifecycleMiddleware,
     SubagentLimits,
+    SubagentToolConfig,
     create_sage_agent,
     load_graph_message_compaction_plan,
     load_scoped_checkpoint,
@@ -51,8 +53,11 @@ class SageHarnessRuntimeAdapter:
         deferred_setup: DeferredToolSetup | None = None,
         skill_catalog: SkillCatalog | None = None,
         subagent_limits: SubagentLimits | None = None,
+        subagent_tool_config: SubagentToolConfig | None = None,
         config: HarnessConfig | None = None,
         artifact_store: ToolArtifactPort | None = None,
+        capability_ids_by_tool_name: Mapping[str, str] | None = None,
+        capability_revision: str | None = None,
     ) -> None:
         self.checkpointer = checkpointer
         self.config = config or HarnessConfig()
@@ -70,11 +75,14 @@ class SageHarnessRuntimeAdapter:
             catalog_hash = deferred_setup.catalog_hash
             if catalog_hash is None:
                 raise ValueError("Enabled deferred tool setup requires a catalog hash")
+            if deferred_setup.selection_index is None:
+                raise ValueError("Enabled deferred tool setup requires a selection index")
+            capability_bindings = deferred_setup.selection_index.bindings
             registry = registry.with_spec(
                 MiddlewareSpec(
                     "deferred_tool_filter",
                     lambda config: DeferredToolFilterMiddleware(
-                        deferred_setup.deferred_names,
+                        capability_bindings,
                         catalog_hash,
                     ),
                 ),
@@ -83,6 +91,19 @@ class SageHarnessRuntimeAdapter:
             deferred_prompt = render_deferred_tool_index(deferred_setup)
             effective_prompt = "\n\n".join(
                 part for part in (system_prompt, deferred_prompt) if part
+            )
+        if capability_ids_by_tool_name:
+            if capability_revision is None:
+                raise ValueError("Capability telemetry requires a catalog revision")
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "capability_telemetry",
+                    lambda config: CapabilityTelemetryMiddleware(
+                        capability_ids_by_tool_name,
+                        capability_revision,
+                    ),
+                ),
+                before="tool_error",
             )
         if skill_catalog is not None:
             registry = registry.with_spec(
@@ -96,7 +117,10 @@ class SageHarnessRuntimeAdapter:
             registry = registry.with_spec(
                 MiddlewareSpec(
                     "subagent_lifecycle",
-                    lambda config: SubagentLifecycleMiddleware(subagent_limits),
+                    lambda config: SubagentLifecycleMiddleware(
+                        subagent_limits,
+                        subagent_tool_config,
+                    ),
                 ),
                 before="durable_context",
             )
@@ -213,6 +237,8 @@ class SageHarnessRuntimeAdapter:
                 compaction_event = None
             for event in adapter.adapt(item):
                 yield event
+        for event in adapter.finish():
+            yield event
 
 
 async def _checkpoint_pending_tool_call_ids(

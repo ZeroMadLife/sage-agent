@@ -1,103 +1,125 @@
-# Sage v7-beta Testing Entrypoint
+# V7 Beta Testing
 
-## 快速验证（开发机）
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
-```bash
-# 后端全量
-/Users/zeromadlife/anaconda3/bin/python -m pytest -q
+本页提供当前可执行的验证入口。任何发布结论都应记录 source ref、命令、退出码和失败项；
+不要只复制一个会快速失真的测试数量。
 
-# 后端定向（Harness + Knowledge + Coding）
-/Users/zeromadlife/anaconda3/bin/python -m pytest tests/harness tests/core/coding tests/core/knowledge tests/api -q
-
-# 静态检查
-/Users/zeromadlife/anaconda3/bin/python -m ruff check .
-/Users/zeromadlife/anaconda3/bin/python -m mypy core/ packages/sage_harness/ api/
-
-# 前端
-cd frontend && npm run test -- --run
-cd frontend && npm run build
-```
-
-## 干净环境验证（CI 等价）
+## 1. 环境预检
 
 ```bash
-# 模拟 GitHub Actions 干净环境
-uv venv --python 3.12 /tmp/sage-v7-verify
-uv pip install --python /tmp/sage-v7-verify/bin/python -r requirements.txt
-PYTHONPATH=. /tmp/sage-v7-verify/bin/python -m pytest -q
-/tmp/sage-v7-verify/bin/python -m ruff check .
-PYTHONPATH=. /tmp/sage-v7-verify/bin/python -m mypy core/ packages/sage_harness/ api/
+python --version          # 3.12+
+node --version            # 24，与 CI 一致
+docker compose config -q
+git status --short
 ```
 
-## 群友试用前必须手跑的场景
+首次安装：
 
-### 场景 1：新用户首次进入
+```bash
+bash scripts/bootstrap-dev-env.sh
+cd frontend && npm ci && cd ..
+cp .env.example .env
+```
 
-1. 用 GitHub OAuth 登录
-2. 进入 `/assistant` 首页
-3. 看到 today + composer + 示例 prompt
-4. **验收**：5 秒内能看懂"Sage 是干嘛的"
+在 `.env` 配置至少一个模型 Provider 后运行：
 
-### 场景 2：导入知识源 + 带引用问答
+```bash
+SAGE_DEV_CHECK_ONLY=1 bash scripts/dev.sh
+bash scripts/dev.sh
+```
 
-1. 连接一个 GitHub 仓库（如 `facebook/react`）
-2. 等待索引完成（显示"已索引 N 个文档"）
-3. 问"React Fiber 架构解决了什么问题？"
-4. **验收**：回答带 `[来源: packages/react-reconciler/...]` 可点击引用
+确认 Web、API 和 health 分别可访问：
 
-### 场景 3：多用户隔离
+- `http://127.0.0.1:5173`
+- `http://127.0.0.1:8000`
+- `http://127.0.0.1:8000/health`
 
-1. 用户 A 登录，创建 session，导入知识源
-2. 用户 B 登录
-3. **验收**：B 看不到 A 的任何 session / memory / file / workspace
+## 2. 自动化门禁
 
-### 场景 4：断线重连
+### 完整质量检查
 
-1. 用户发起对话，工具执行中
-2. 关闭浏览器
-3. 5 秒后重新打开
-4. **验收**：工具执行过程完整显示，不重复不丢失
+```bash
+bash scripts/check.sh
+```
 
-### 场景 5：长会话压缩
+### Harness 与 Practice 定向回归
 
-1. 连续对话 20+ 轮
-2. 观察 context 指示器
-3. **验收**：达到 65% 自动压缩，用量下降，对话连续性不丢
+```bash
+pytest \
+  tests/core/coding \
+  tests/core/harness \
+  tests/harness \
+  tests/api/test_coding_routes.py \
+  tests/api/test_coding_timeline_routes.py \
+  tests/api/test_harness_capabilities.py \
+  -q
+```
 
-### 场景 6：审批流程
+### Knowledge 与 Cloud 边界
 
-1. 让 Sage 执行 `rm -rf node_modules` 之类危险命令
-2. **验收**：弹出审批卡片，点"拒绝"后 Sage 收到拒绝结果继续
+```bash
+pytest \
+  tests/core/knowledge \
+  tests/core/knowledge/source_proposals \
+  tests/api/test_knowledge_routes.py \
+  tests/api/test_knowledge_job_routes.py \
+  tests/api/test_knowledge_source_proposal_routes.py \
+  tests/api/test_cloud_auth_routes.py \
+  tests/api/test_cloud_workspace_routes.py \
+  tests/api/test_cloud_model_provider_routes.py \
+  -q
+```
 
-### 场景 7：三浏览器兼容
+### 前端与生产构建
 
-在 Chrome / Safari / Firefox 分别跑场景 1-2：
-- **验收**：登录、对话、引用跳转不崩
+```bash
+cd frontend
+npm run test -- --run
+npm run build
+cd ..
+git diff --check
+```
 
-### 场景 8：手机浏览器
+## 3. 八个必跑场景
 
-在手机 Safari / Chrome 跑场景 1-2：
-- **验收**：核心流程可操作，无横向滚动
+| # | 场景 | 操作 | 通过标准 |
+| --- | --- | --- | --- |
+| 1 | 首次启动 | 干净环境安装、迁移并打开 Assistant | 无空白页；health 正常；未配置模型时给出明确提示 |
+| 2 | Assistant 主路径 | 新建任务并完成一轮回复 | 事件顺序正确；刷新后会话与终态一致 |
+| 3 | Practice 证据链 | 读取文件、搜索、执行测试并查看 run trace | 工具结果、artifact、citation/diff 按类型展示，不伪造成回复 |
+| 4 | 审批与停止 | 触发需审批操作，再分别拒绝和停止 | UI 与后端终态一致；刷新后不会继续执行或重复提交 |
+| 5 | Knowledge 来源 | 摄取一个授权本地 Markdown 来源并提问 | 快照可追溯；回答包含可定位 citation；失败可重试 |
+| 6 | Wiki 提案 | 创建、批准、拒绝并回滚一条提案 | 提案与已批准知识分层；历史版本和操作者证据可查 |
+| 7 | 公开主页 | 在 `1440x900` 与 `390x844` 打开 `/#/public` 并提问 | 无横向溢出；回答只使用公开 corpus 并显示来源回执；不能访问私有工具 |
+| 8 | Sandbox 边界 | 在候选生产配置启动 Container Sandbox | rootfs、网络、资源、mount 与退出清理符合策略；不能回退宿主机 |
 
-## 已知不稳定点（群友试用时关注）
+场景 8 是公网开放的硬门禁。如果当前环境没有生产容器配置，应记录为 **未执行/阻断**，
+不能用本地 `local_workspace` 的成功结果代替。
 
-| 现象 | 原因 | 临时处理 |
-| --- | --- | --- |
-| 首次进入不知道干嘛 | onboarding 未实现 | 群友试用前必须补 |
-| 知识源导入入口不显式 | 前端没有导入按钮 | 群友试用前必须补 |
-| 长会话偶尔卡顿 | timeline 全量加载 | 刷新页面 |
-| Safari 个别样式错位 | 只验证过 Chromium | 群友试用前手测 |
-| Container Sandbox 未验证 | 服务器真实隔离未做 | 群友试用前用 OS 级隔离兜底 |
-| `deerflow_v2` profile 关闭 | 对等矩阵未完成 | 默认 legacy runtime |
+## 4. 浏览器回归矩阵
 
-## Canary 部署可用性
+- Desktop：Chrome/Chromium `1440x900`
+- Wide desktop：`1728x1117`
+- Mobile：`390x844`
+- Theme：light 与 dark
+- Interaction：hover、selection、blank reset、drawer、approval、reconnect
 
-- 部署 runbook：`docs/runbooks/09-Sage私有Canary部署.md`
-- CI/CD runbook：`docs/runbooks/10-Sage本地CI-CD与Canary可用性.md`
-- 健康探针：`b001441 fix(deploy): 复用无代理部署后健康探针`
-- 回滚：`git revert` + 重新部署
+重点检查文本不遮挡、图谱标签与边可辨认、动态内容不引起布局跳动、控制台无新增错误。
 
-## 反馈通道
+## 5. 发布记录模板
 
-- GitHub Issues：https://github.com/ZeroMadLife/sage-agent/issues
-- 飞书群：群友试用群链接（发布时附上）
+```markdown
+- Source ref:
+- Environment:
+- Backend quality:
+- Frontend tests:
+- Production build:
+- Manual scenarios:
+- Migration result:
+- Open blockers:
+- Decision: 可发布 / 继续开发 / 需修复
+```
+
+不要将 `.env`、Provider key、OAuth secret、邀请 token、用户文件内容或私有 timeline 附到
+公开 issue、PR 或发布记录中。

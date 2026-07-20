@@ -7,7 +7,12 @@ import pytest
 
 from core.loop_harness.errors import LoopBlockedError
 from core.loop_harness.github import GitHubAdapter
-from core.loop_harness.models import ValidationResult, ValidationStep, WorkerResult
+from core.loop_harness.models import (
+    PullRequestReceipt,
+    ValidationResult,
+    ValidationStep,
+    WorkerResult,
+)
 
 
 class FakeGitHub(GitHubAdapter):
@@ -47,6 +52,33 @@ def _candidate(summary: str = "修复空状态间距") -> WorkerResult:
 
 def _validation() -> ValidationResult:
     return ValidationResult(True, (ValidationStep("frontend-test", 0, 1.25),))
+
+
+def _pr_metadata(
+    *,
+    state: str = "OPEN",
+    is_draft: bool = True,
+    base_sha: str = "a" * 40,
+    head_sha: str = "b" * 40,
+    labels: list[dict[str, str]] | None = None,
+    checks: list[dict[str, str]] | None = None,
+    merge_sha: str | None = None,
+) -> str:
+    return json.dumps(
+        {
+            "number": 12,
+            "state": state,
+            "isDraft": is_draft,
+            "headRefName": "codex/loop-frontend-abcdef123456",
+            "headRefOid": head_sha,
+            "baseRefName": "dev/sage-v7",
+            "baseRefOid": base_sha,
+            "reviewDecision": "",
+            "labels": labels or [],
+            "statusCheckRollup": checks or [],
+            "mergeCommit": {"oid": merge_sha} if merge_sha else None,
+        }
+    )
 
 
 def test_github_adapter_creates_chinese_draft_pr_with_body_on_stdin(tmp_path) -> None:
@@ -168,3 +200,105 @@ def test_github_adapter_rejects_non_chinese_title(tmp_path) -> None:
         )
 
     assert exc.value.code == "BLOCKED_PR_LANGUAGE"
+
+
+def test_github_adapter_auto_merges_exact_tier_a_after_all_checks_pass(tmp_path) -> None:
+    successful_checks = [
+        {"status": "COMPLETED", "conclusion": "SUCCESS"},
+        {"status": "COMPLETED", "conclusion": "NEUTRAL"},
+        {"state": "SUCCESS"},
+    ]
+    adapter = FakeGitHub(
+        tmp_path,
+        [
+            _completed(_pr_metadata()),
+            _completed(),
+            _completed(_pr_metadata(is_draft=False, checks=successful_checks)),
+            _completed(),
+            _completed(
+                _pr_metadata(
+                    state="MERGED",
+                    is_draft=False,
+                    checks=successful_checks,
+                    merge_sha="c" * 40,
+                )
+            ),
+        ],
+    )
+    receipt = PullRequestReceipt(
+        12,
+        "https://github.com/ZeroMadLife/sage-agent/pull/12",
+        "codex/loop-frontend-abcdef123456",
+        "b" * 40,
+    )
+
+    merged_sha = adapter.merge_tier_a(
+        receipt=receipt,
+        base_sha="a" * 40,
+        tier="A",
+    )
+
+    assert merged_sha == "c" * 40
+    assert adapter.calls[1][0][:2] == ("pr", "ready")
+    merge_args = adapter.calls[3][0]
+    assert merge_args[:2] == ("pr", "merge")
+    assert "--squash" in merge_args
+    assert merge_args[merge_args.index("--match-head-commit") + 1] == "b" * 40
+
+
+def test_github_adapter_blocks_manual_review_label_before_ready(tmp_path) -> None:
+    adapter = FakeGitHub(
+        tmp_path,
+        [_completed(_pr_metadata(labels=[{"name": "high-risk"}]))],
+    )
+    receipt = PullRequestReceipt(
+        12,
+        "https://github.com/ZeroMadLife/sage-agent/pull/12",
+        "codex/loop-frontend-abcdef123456",
+        "b" * 40,
+    )
+
+    with pytest.raises(LoopBlockedError) as exc:
+        adapter.merge_tier_a(receipt=receipt, base_sha="a" * 40, tier="A")
+
+    assert exc.value.code == "BLOCKED_HUMAN_REVIEW"
+    assert len(adapter.calls) == 1
+
+
+def test_github_adapter_blocks_failed_check_without_merging(tmp_path) -> None:
+    failed_checks = [{"status": "COMPLETED", "conclusion": "FAILURE"}]
+    adapter = FakeGitHub(
+        tmp_path,
+        [
+            _completed(_pr_metadata(is_draft=False)),
+            _completed(_pr_metadata(is_draft=False, checks=failed_checks)),
+        ],
+    )
+    receipt = PullRequestReceipt(
+        12,
+        "https://github.com/ZeroMadLife/sage-agent/pull/12",
+        "codex/loop-frontend-abcdef123456",
+        "b" * 40,
+    )
+
+    with pytest.raises(LoopBlockedError) as exc:
+        adapter.merge_tier_a(receipt=receipt, base_sha="a" * 40, tier="A")
+
+    assert exc.value.code == "BLOCKED_GITHUB_CHECKS"
+    assert all(call[0][:2] != ("pr", "merge") for call in adapter.calls)
+
+
+def test_github_adapter_rejects_non_tier_a_without_api_calls(tmp_path) -> None:
+    adapter = FakeGitHub(tmp_path, [])
+    receipt = PullRequestReceipt(
+        12,
+        "https://github.com/ZeroMadLife/sage-agent/pull/12",
+        "codex/loop-frontend-abcdef123456",
+        "b" * 40,
+    )
+
+    with pytest.raises(LoopBlockedError) as exc:
+        adapter.merge_tier_a(receipt=receipt, base_sha="a" * 40, tier="B")
+
+    assert exc.value.code == "BLOCKED_DIFF_POLICY"
+    assert adapter.calls == []

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 ToolExecutionStatus = Literal["succeeded", "failed", "rejected"]
+EvidenceKind = Literal["knowledge", "web_search", "web_fetch"]
 ApprovalAction = Literal["once", "session", "reject"]
 McpConnectionStatus = Literal[
     "configured",
@@ -117,6 +118,90 @@ class KnowledgeRetrievalResult:
 
 
 @dataclass(frozen=True, slots=True)
+class WebEvidence:
+    """One immutable, bounded web-search excerpt for the current turn."""
+
+    citation_id: str
+    canonical_url: str
+    original_url: str
+    title: str
+    excerpt: str
+    provider: str
+    retrieved_at: str
+    content_hash: str
+    rank: int
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class WebSearchResult:
+    """Provider-neutral result that never implies trusted Knowledge state."""
+
+    query: str
+    provider: str
+    status: Literal["evidence_found", "no_evidence", "unavailable"]
+    token_budget: int
+    used_tokens: int
+    evidence: tuple[WebEvidence, ...] = ()
+    omitted_count: int = 0
+    error_code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class WebFetchedDocument:
+    """Normalized public HTML owned by a host-side fetch adapter."""
+
+    canonical_url: str
+    title: str
+    text: str
+    media_type: str
+    retrieved_at: str
+    content_hash: str
+    wire_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class WebFetchResult:
+    """Provider-neutral fetch result that never implies trusted Knowledge state."""
+
+    status: Literal["evidence_found", "unavailable"]
+    document: WebFetchedDocument | None = None
+    error_code: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBundleItem:
+    """One bounded evidence receipt that can be safely consumed by a child."""
+
+    evidence_ref: str
+    kind: EvidenceKind
+    content: str
+    title: str = ""
+    source_ref: str = ""
+    canonical_url: str = ""
+    page_revision: str = ""
+    source_revision: str = ""
+    content_hash: str = ""
+    token_count: int = 0
+    truncated: bool = False
+    metadata: Mapping[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceBundle:
+    """Token-bounded, read-only evidence selected from durable child receipts."""
+
+    status: Literal["evidence_found", "no_evidence", "unavailable"]
+    items: tuple[EvidenceBundleItem, ...] = ()
+    requested_refs: tuple[str, ...] = ()
+    missing_refs: tuple[str, ...] = ()
+    duplicate_count: int = 0
+    token_budget: int = 0
+    used_tokens: int = 0
+    omitted_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryReference:
     """Small durable-memory reference safe to assemble into context."""
 
@@ -137,6 +222,20 @@ class MemoryProposalReceipt:
     status: Literal["pending", "approved", "rejected"]
     candidate_count: int
     base_revision: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSourceProposalReceipt:
+    """Host-owned receipt for an external source awaiting user confirmation."""
+
+    proposal_id: str
+    thread_id: str
+    run_id: str
+    status: Literal["pending", "approved", "rejected"]
+    revision: int
+    source_kind: str
+    title: str
+    content_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +271,13 @@ class ToolExecutionPort(Protocol):
 class ToolArtifactPort(Protocol):
     """Archive full tool text outside graph state before checkpointing."""
 
-    def archive(self, call_id: str, content: str) -> ToolArtifactReceipt: ...
+    def archive(
+        self,
+        call_id: str,
+        content: str,
+        *,
+        metadata: Mapping[str, object] | None = None,
+    ) -> ToolArtifactReceipt: ...
 
 
 class ApprovalPort(Protocol):
@@ -198,6 +303,70 @@ class KnowledgePort(Protocol):
         token_budget: int,
         top_k: int = 8,
     ) -> KnowledgeRetrievalResult: ...
+
+
+class WebSearchPort(Protocol):
+    """Search external sources without granting fetch or persistence authority."""
+
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def available(self) -> bool: ...
+
+    async def search(
+        self,
+        query: str,
+        *,
+        top_k: int = 5,
+        token_budget: int = 2_000,
+        freshness: str = "all",
+        domains: Sequence[str] = (),
+        language: str = "all",
+    ) -> WebSearchResult: ...
+
+
+class WebFetchPort(Protocol):
+    """Fetch one public HTTPS HTML document through a server-owned safety boundary."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def fetch(self, url: str) -> WebFetchResult: ...
+
+
+class EvidenceBundlePort(Protocol):
+    """Read only evidence already recorded by the current parent run."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def read(
+        self,
+        thread_id: str,
+        parent_run_id: str,
+        *,
+        child_run_ids: Sequence[str],
+        evidence_refs: Sequence[str],
+        token_budget: int,
+    ) -> EvidenceBundle: ...
+
+
+class KnowledgeSourceProposalPort(Protocol):
+    """Propose, but never approve, one external source for durable Knowledge."""
+
+    @property
+    def available(self) -> bool: ...
+
+    async def propose(
+        self,
+        thread_id: str,
+        run_id: str,
+        artifact_ref: str,
+        *,
+        reason: str,
+        evidence_refs: Sequence[str] = (),
+    ) -> KnowledgeSourceProposalReceipt: ...
 
 
 class MemoryPort(Protocol):

@@ -8,7 +8,8 @@
 4. 检查聚焦测试、后端门禁、前端测试/构建和 `git diff --check`。
 5. 检查 Reviewer 结论绑定精确 head SHA。
 
-Tier A 只能由 GitHub 在 required checks 通过后 squash auto-merge；Tier B 保持 Draft，
+Tier A 只有在本地验证、独立 Claude 审查和全部 GitHub checks 通过后由 Controller squash
+合并；组件行为变化还必须带对应回归测试。Tier B 保持 Draft，
 用户查看 diff 后决定；Tier C 只进入 finding。用户向 Loop 分支追加 commit 后，原复审
 立即失效并转人工管理。
 

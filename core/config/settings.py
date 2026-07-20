@@ -4,6 +4,7 @@ Configuration is loaded from environment variables and an optional ``.env`` file
 """
 
 from functools import lru_cache
+from urllib.parse import urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -112,15 +113,32 @@ class Settings(BaseSettings):
     app_access_codes: str = ""
 
     cloud_dev_login_enabled: bool = False
+    cloud_canary_invite_login_enabled: bool = False
     # Local HTTP development needs a non-Secure cookie; non-development is
     # forced to Secure by the app factory regardless of this value.
     cloud_secure_cookies: bool = False
     cloud_frontend_url: str = "http://localhost:5173"
+    # Local development may repair additive PostgreSQL schema changes on startup.
+    # Production deployment keeps migrations explicit in the release runbook.
+    sage_auto_migrate: bool = True
     sage_deerflow_v2_enabled: bool = True
     sage_coding_default_runtime_profile: str = "deerflow_v2"
+    sage_harness_max_model_calls: int = Field(default=24, ge=1, le=128)
+    sage_harness_max_tool_calls: int = Field(default=64, ge=1, le=512)
+    sage_harness_max_run_tokens: int = Field(default=250_000, ge=1_000, le=5_000_000)
+    sage_harness_max_run_seconds: float = Field(default=1_800.0, ge=30.0, le=7_200.0)
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"
+    sage_web_search_enabled: bool = False
+    sage_web_search_endpoint: str = ""
+    sage_web_search_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_enabled: bool = False
+    sage_web_fetch_connect_timeout_seconds: float = Field(default=5.0, ge=1.0, le=30.0)
+    sage_web_fetch_read_timeout_seconds: float = Field(default=10.0, ge=1.0, le=60.0)
+    sage_web_fetch_total_timeout_seconds: float = Field(default=20.0, ge=2.0, le=90.0)
+    sage_coding_workspace_root: str = ""
+    sage_coding_storage_root: str = ""
 
     # GitHub OAuth is used for identity only. Repository authorization is
     # handled separately by a GitHub App so private repository access can be
@@ -201,6 +219,9 @@ class Settings(BaseSettings):
             missing.append("GITHUB_OAUTH_REDIRECT_URI(HTTPS)")
         if self.cloud_dev_login_enabled:
             missing.append("CLOUD_DEV_LOGIN_ENABLED=false")
+        frontend_hostname = (urlparse(self.cloud_frontend_url).hostname or "").lower()
+        if self.cloud_canary_invite_login_enabled and not frontend_hostname.endswith(".ts.net"):
+            missing.append("CLOUD_CANARY_INVITE_LOGIN_ENABLED=false outside private Canary")
         if missing:
             raise RuntimeError(f"production cloud secrets are missing: {', '.join(missing)}")
 

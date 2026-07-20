@@ -10,23 +10,39 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
 from inspect import signature
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    WebSocket,
+)
 from langchain_core.tools import BaseTool
 from sage_harness import (
+    CapabilityRegistry,
     HarnessConfig,
     McpCatalogPort,
     McpManager,
     McpScope,
+    McpToolSnapshot,
     SubagentLimits,
     SubagentToolConfig,
+    WebFetchPort,
+    WebSearchPort,
+    resolve_skill_allowed_tools,
 )
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import (
+    SESSION_COOKIE,
+    require_cloud_authentication_in_production,
+)
 from api.cloud_model_context import (
     combined_capabilities,
     combined_catalog,
@@ -46,6 +62,11 @@ from api.schemas import (
     CodingFileEntry,
     CodingFilesResponse,
     CodingGitStatusResponse,
+    CodingKnowledgeSourceProposal,
+    CodingKnowledgeSourceProposalDetail,
+    CodingKnowledgeSourceProposalEvent,
+    CodingKnowledgeSourceProposalsResponse,
+    CodingKnowledgeSourceProposalTransitionRequest,
     CodingMcpServer,
     CodingMcpServersResponse,
     CodingMemoryCandidate,
@@ -80,6 +101,10 @@ from api.schemas import (
     CodingTimelineResponse,
     CodingUsageSummary,
     ErrorEvent,
+    HarnessCapabilitiesResponse,
+    HarnessCapabilityHealthItem,
+    HarnessCapabilityHealthResponse,
+    HarnessCapabilityResponse,
     PermissionModeSwitchRequest,
     UserMessage,
 )
@@ -100,20 +125,40 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.capability_adapter import build_sage_capability_registry
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
     build_deerflow_system_prompt,
     context_status_event,
 )
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
 from core.harness.knowledge_adapter import CodingKnowledgePort
+from core.harness.knowledge_source_proposal_adapter import (
+    CodingKnowledgeSourceProposalPort,
+    CodingKnowledgeSourceProposalService,
+)
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.sandbox_factory import create_coding_sandbox
-from core.harness.subagent_adapter import CodingSubagentExecutor
+from core.harness.subagent_adapter import (
+    CodingSubagentExecutor,
+    build_coding_subagent_config,
+)
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
+from core.knowledge import KnowledgeStore
+from core.knowledge.source_proposals import (
+    KnowledgeSourceProposal,
+    KnowledgeSourceProposalConflictError,
+    KnowledgeSourceProposalEvent,
+    KnowledgeSourceProposalNotFoundError,
+)
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+
+
+def _port_available(port: object) -> bool:
+    return bool(port is not None and getattr(port, "available", True))
 
 
 def _require_enabled_runtime_profile(value: object, request: Request) -> RuntimeProfile:
@@ -199,7 +244,12 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
 
 
-router = APIRouter(dependencies=[Depends(_enforce_coding_session_owner)])
+router = APIRouter(
+    dependencies=[
+        Depends(require_cloud_authentication_in_production),
+        Depends(_enforce_coding_session_owner),
+    ]
+)
 
 
 def _valid_session_id(session_id: str) -> bool:
@@ -230,6 +280,9 @@ async def _runtime_timeline_events(
     harness_checkpointer: Any | None = None,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
+    web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -252,6 +305,9 @@ async def _runtime_timeline_events(
                 checkpointer=harness_checkpointer,
                 harness_config=harness_config,
                 mcp_catalog=mcp_catalog,
+                web_fetch_port=web_fetch_port,
+                web_search_port=web_search_port,
+                knowledge_source_proposal_service=knowledge_source_proposal_service,
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
@@ -363,6 +419,9 @@ async def _deerflow_timeline_events(
     checkpointer: Any,
     harness_config: HarnessConfig | None = None,
     mcp_catalog: McpCatalogPort | None = None,
+    web_fetch_port: WebFetchPort | None = None,
+    web_search_port: WebSearchPort | None = None,
+    knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
@@ -425,6 +484,7 @@ async def _deerflow_timeline_events(
             return
 
         mcp_tools: tuple[BaseTool, ...] = ()
+        mcp_snapshot: McpToolSnapshot | None = None
         mcp_servers = None
         if isinstance(mcp_catalog, McpManager):
             mcp_scope = McpScope(
@@ -455,19 +515,67 @@ async def _deerflow_timeline_events(
             ),
         )
         try:
-            subagent_executor = CodingSubagentExecutor(runtime)
-            subagent_config = SubagentToolConfig()
+            knowledge_port = CodingKnowledgePort(runtime)
+            evidence_bundle_port = CodingEvidenceBundlePort(runtime)
+            subagent_config = build_coding_subagent_config(
+                knowledge_port,
+                web_search_port,
+                web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
+                base_config=SubagentToolConfig(),
+            )
+            subagent_executor = CodingSubagentExecutor(
+                runtime,
+                knowledge_port=knowledge_port,
+                web_search_port=web_search_port,
+                web_fetch_port=web_fetch_port,
+                evidence_bundle_port=evidence_bundle_port,
+                sandbox=sandbox,
+            )
+            artifact_store = ToolResultStore(
+                runtime.storage_root,
+                runtime.session_id,
+                run_id,
+            )
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
                 run_id=run_id,
-                knowledge_port=CodingKnowledgePort(runtime),
+                knowledge_port=knowledge_port,
                 memory_port=CodingMemoryPort(runtime),
                 sandbox=sandbox,
                 extra_deferred_tools=mcp_tools,
+                mcp_catalog=mcp_snapshot.catalog if mcp_snapshot is not None else None,
+                active_skill_allowed_tools=resolve_skill_allowed_tools(
+                    runtime.skill_registry,
+                    content,
+                ),
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
+                web_fetch_port=web_fetch_port,
+                web_search_port=web_search_port,
+                artifact_store=artifact_store,
+                knowledge_source_proposal_port=CodingKnowledgeSourceProposalPort(
+                    runtime,
+                    run_id,
+                    knowledge_source_proposal_service,
+                ),
                 graph_approvals=True,
             )
+            if not is_resume:
+                yield RunEvent(
+                    kind="harness",
+                    status="completed",
+                    payload={
+                        "type": "capability_catalog_updated",
+                        "version": 1,
+                        "catalog_revision": tool_bundle.capability_revision,
+                        "catalog_hash": tool_bundle.deferred_setup.catalog_hash or "resident-only",
+                        "surface": "coding",
+                        "capability_count": tool_bundle.capability_count,
+                        "executable_count": len(tool_bundle.capability_ids_by_tool_name),
+                    },
+                    event_id=f"harness:{run_id}:capability-catalog",
+                )
             adapter = SageHarnessRuntimeAdapter(
                 model=runtime.model,
                 checkpointer=checkpointer,
@@ -476,12 +584,11 @@ async def _deerflow_timeline_events(
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
+                subagent_tool_config=subagent_config,
                 config=harness_config,
-                artifact_store=ToolResultStore(
-                    runtime.storage_root,
-                    runtime.session_id,
-                    run_id,
-                ),
+                artifact_store=artifact_store,
+                capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
+                capability_revision=tool_bundle.capability_revision,
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None
@@ -520,7 +627,10 @@ async def _deerflow_timeline_events(
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
                     yield event
-                    if event.payload.get("type") == "approval_required":
+                    if (
+                        event.payload.get("type") == "approval_required"
+                        and event.payload.get("approval_scope") != "subagent"
+                    ):
                         approval_to_resume = str(
                             event.payload.get("approval_id", "")
                         ).strip()
@@ -579,6 +689,8 @@ def _timeline_kind(event_type: str) -> str:
     if event_type.startswith("memory_"):
         return "memory"
     if event_type.startswith("agent_"):
+        return "agent"
+    if event_type.startswith("subagent_"):
         return "agent"
     if event_type in {"run_finished", "turn_started", "turn_finished"}:
         return "run"
@@ -752,6 +864,162 @@ async def _close_coding_mcp_scope(request: Request, session_id: str) -> None:
     )
     with suppress(Exception):
         await manager.close_scope(scope)
+
+
+def _harness_capability_context(
+    request: Request,
+    session_id: str,
+) -> tuple[str, str, CapabilityRegistry]:
+    """Resolve one authorized session into owner, workspace and current catalog."""
+    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
+    runtime = sessions.get(session_id)
+    store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
+    try:
+        persisted = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    workspace_root = _resolve_persisted_workspace_root(
+        default_workspace,
+        persisted.get("workspace_root"),
+    )
+    if runtime is not None:
+        tools: Mapping[str, object] = runtime.tools
+        skills = runtime.skill_registry.list()
+        owner_id = runtime.owner_user_id or "local"
+    else:
+        from core.coding.context import WorkspaceContext
+        from core.coding.skills import SkillRegistry
+        from core.coding.tools.registry import build_tool_registry
+
+        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        skills = SkillRegistry(root=workspace_root).list()
+        owner_id = str(persisted.get("owner_user_id") or "local")
+    workspace_id = workspace_id_from_path(workspace_root)
+    mcp_snapshot = None
+    manager = getattr(request.app.state, "coding_mcp_manager", None)
+    if isinstance(manager, McpManager):
+        mcp_snapshot = manager.cached_catalog(
+            McpScope(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                thread_id=session_id,
+            )
+        )
+    return (
+        owner_id,
+        workspace_id,
+        build_sage_capability_registry(
+            tools=tools,
+            skills=skills,
+            mcp_catalog=mcp_snapshot,
+            web_search_available=_port_available(
+                getattr(request.app.state, "coding_web_search_port", None)
+            ),
+            web_fetch_available=_port_available(
+                getattr(request.app.state, "coding_web_fetch_port", None)
+            ),
+            web_source_proposal_available=isinstance(
+                getattr(request.app.state, "knowledge_source_proposal_service", None),
+                CodingKnowledgeSourceProposalService,
+            ),
+            research_subagent_available=(
+                _port_available(getattr(request.app.state, "coding_web_search_port", None))
+                and isinstance(_coding_knowledge_store(request), KnowledgeStore)
+            ),
+        ),
+    )
+
+
+@router.get(
+    "/api/v1/harness/capabilities",
+    response_model=HarnessCapabilitiesResponse,
+)
+async def list_harness_capabilities(
+    request: Request,
+    session_id: str,
+    surface: Literal["growth", "knowledge", "coding"] = "coding",
+    origin: Annotated[
+        list[Literal["local", "mcp", "skill", "subagent", "web"]] | None,
+        Query(),
+    ] = None,
+    availability: Annotated[
+        list[Literal["available", "degraded", "unavailable", "disabled", "stale"]] | None,
+        Query(),
+    ] = None,
+    q: Annotated[str, Query(max_length=200)] = "",
+) -> HarnessCapabilitiesResponse:
+    """List safe metadata for capabilities visible to one authorized session."""
+    _require_valid_session_id(session_id)
+    _, workspace_id, registry = _harness_capability_context(request, session_id)
+    descriptors = registry.query(
+        surface=surface,
+        origins=frozenset(origin) if origin else None,
+        availability=frozenset(availability) if availability else None,
+        text=q,
+    )
+    capabilities = [
+        HarnessCapabilityResponse.model_validate(item.as_dict()) for item in descriptors
+    ]
+    return HarnessCapabilitiesResponse(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        surface=surface,
+        revision=registry.revision,
+        count=len(capabilities),
+        capabilities=capabilities,
+    )
+
+
+@router.get(
+    "/api/v1/harness/capabilities/health",
+    response_model=HarnessCapabilityHealthResponse,
+)
+async def harness_capability_health(
+    request: Request,
+    session_id: str,
+    surface: Literal["growth", "knowledge", "coding"] = "coding",
+    range: Literal["7d", "30d", "90d"] = "30d",
+) -> HarnessCapabilityHealthResponse:
+    """Return content-free metrics for capabilities visible to one authorized session."""
+    _require_valid_session_id(session_id)
+    owner_id, workspace_id, registry = _harness_capability_context(request, session_id)
+    days = {"7d": 7, "30d": 30, "90d": 90}[range]
+    aggregates = request.app.state.harness_capability_health_store.summary(
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        days=days,
+    )
+    empty: dict[str, Any] = {
+        "invocation_count": 0,
+        "success_count": 0,
+        "failure_count": 0,
+        "first_success_at": None,
+        "last_success_at": None,
+        "p50_latency_ms": None,
+        "p95_latency_ms": None,
+        "failure_categories": {},
+    }
+    descriptors = registry.query(surface=surface)
+    return HarnessCapabilityHealthResponse(
+        session_id=session_id,
+        workspace_id=workspace_id,
+        surface=surface,
+        catalog_revision=registry.revision,
+        range_days=days,
+        capabilities=[
+            HarnessCapabilityHealthItem(
+                capability_id=descriptor.capability_id,
+                origin=descriptor.origin,
+                revision=descriptor.revision,
+                availability=descriptor.availability,
+                **aggregates.get(descriptor.capability_id, empty),
+            )
+            for descriptor in descriptors
+        ],
+    )
 
 
 @router.post("/api/v1/coding/session/{session_id}/resume")
@@ -1048,6 +1316,15 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 harness_checkpointer=getattr(websocket.app.state, "sage_harness_checkpointer", None),
                 harness_config=getattr(websocket.app.state, "coding_harness_config", None),
                 mcp_catalog=getattr(websocket.app.state, "coding_mcp_catalog", None),
+                web_fetch_port=getattr(
+                    websocket.app.state, "coding_web_fetch_port", None
+                ),
+                web_search_port=getattr(
+                    websocket.app.state, "coding_web_search_port", None
+                ),
+                knowledge_source_proposal_service=getattr(
+                    websocket.app.state, "knowledge_source_proposal_service", None
+                ),
                 app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
             )
             try:
@@ -1284,6 +1561,11 @@ async def coding_approval_respond(
             ),
             harness_config=getattr(request.app.state, "coding_harness_config", None),
             mcp_catalog=getattr(request.app.state, "coding_mcp_catalog", None),
+            web_fetch_port=getattr(request.app.state, "coding_web_fetch_port", None),
+            web_search_port=getattr(request.app.state, "coding_web_search_port", None),
+            knowledge_source_proposal_service=getattr(
+                request.app.state, "knowledge_source_proposal_service", None
+            ),
             app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
             resume_value={
                 "approval_id": payload.approval_id,
@@ -1493,6 +1775,191 @@ async def reject_memory_proposal(
     return _transition_memory_proposal(
         request, session_id, payload.proposal_id, payload.expected_revision, "rejected"
     )
+
+
+def _source_proposal_service(request: Request) -> CodingKnowledgeSourceProposalService:
+    service = getattr(request.app.state, "knowledge_source_proposal_service", None)
+    if not isinstance(service, CodingKnowledgeSourceProposalService):
+        raise HTTPException(
+            status_code=503,
+            detail="Knowledge source proposal service is unavailable",
+        )
+    return service
+
+
+def _source_proposal_scope(
+    request: Request,
+    session_id: str,
+) -> tuple[CodingKnowledgeSourceProposalService, str, str]:
+    owner_id, _, _ = _harness_capability_context(request, session_id)
+    service = _source_proposal_service(request)
+    return service, owner_id, service.job_service.workspace_id
+
+
+def _source_proposal_response(
+    proposal: KnowledgeSourceProposal,
+) -> CodingKnowledgeSourceProposal:
+    return CodingKnowledgeSourceProposal(
+        proposal_id=proposal.proposal_id,
+        thread_id=proposal.thread_id,
+        run_id=proposal.run_id,
+        artifact_ref=proposal.artifact_ref,
+        source_kind=proposal.source_kind,
+        canonical_url=proposal.canonical_url,
+        title=proposal.title,
+        media_type=proposal.media_type,
+        retrieved_at=proposal.retrieved_at,
+        content_hash=proposal.content_hash,
+        reason=proposal.reason,
+        evidence_refs=list(proposal.evidence_refs),
+        status=proposal.status,
+        revision=proposal.revision,
+        target_root_id=proposal.target_root_id,
+        target_relative_path=proposal.target_relative_path,
+        job_id=proposal.job_id,
+        last_error=proposal.last_error,
+        decided_by=proposal.decided_by,
+        decided_at=proposal.decided_at,
+        created_at=proposal.created_at,
+        updated_at=proposal.updated_at,
+    )
+
+
+def _source_proposal_event_response(
+    event: KnowledgeSourceProposalEvent,
+) -> CodingKnowledgeSourceProposalEvent:
+    return CodingKnowledgeSourceProposalEvent(
+        event_id=event.event_id,
+        proposal_id=event.proposal_id,
+        sequence=event.sequence,
+        event_type=event.event_type,
+        revision=event.revision,
+        detail=event.detail,
+        created_at=event.created_at,
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals",
+    response_model=CodingKnowledgeSourceProposalsResponse,
+)
+async def list_knowledge_source_proposals(
+    session_id: str,
+    request: Request,
+    response: Response,
+    status: Literal["pending", "applying", "approved", "rejected"] | None = None,
+) -> CodingKnowledgeSourceProposalsResponse:
+    """List source proposals scoped to the authorized Thread owner."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    proposals = await service.repository.list(
+        workspace_id=workspace_id,
+        owner_id=owner_id,
+        thread_id=session_id,
+        status=status,
+    )
+    return CodingKnowledgeSourceProposalsResponse(
+        proposals=[_source_proposal_response(item) for item in proposals]
+    )
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}",
+    response_model=CodingKnowledgeSourceProposalDetail,
+)
+async def get_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposalDetail:
+    """Return one source proposal and its append-only review trail."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.repository.get(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+        events = await service.repository.events(
+            proposal_id,
+            workspace_id=workspace_id,
+            owner_id=owner_id,
+            thread_id=session_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    return CodingKnowledgeSourceProposalDetail(
+        proposal=_source_proposal_response(proposal),
+        events=[_source_proposal_event_response(item) for item in events],
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/approve",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def approve_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Approve one immutable source snapshot and schedule its durable ingest job."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.approve(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (FileNotFoundError, PermissionError, ValueError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Source proposal artifact is no longer valid; refresh before retrying",
+        ) from exc
+    return _source_proposal_response(proposal)
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/knowledge/source-proposals/{proposal_id}/reject",
+    response_model=CodingKnowledgeSourceProposal,
+)
+async def reject_knowledge_source_proposal(
+    session_id: str,
+    proposal_id: str,
+    payload: CodingKnowledgeSourceProposalTransitionRequest,
+    request: Request,
+    response: Response,
+) -> CodingKnowledgeSourceProposal:
+    """Reject one pending proposal with an optimistic revision guard."""
+    response.headers["Cache-Control"] = "no-store"
+    service, owner_id, workspace_id = _source_proposal_scope(request, session_id)
+    try:
+        proposal = await service.reject(
+            proposal_id,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            thread_id=session_id,
+            expected_revision=payload.expected_revision,
+            decided_by=owner_id,
+        )
+    except KnowledgeSourceProposalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Unknown source proposal") from exc
+    except KnowledgeSourceProposalConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _source_proposal_response(proposal)
 
 
 @router.get("/api/v1/coding/{session_id}/runs", response_model=CodingRunsResponse)

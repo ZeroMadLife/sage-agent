@@ -16,7 +16,7 @@ from langgraph.types import Command
 
 from sage_harness.config import HarnessRunContext
 from sage_harness.ports import ToolArtifactPort
-from sage_harness.state import SageThreadState
+from sage_harness.state import SageThreadState, delegation_budget_usage
 
 _BLOCKED_TAGS = frozenset(
     {
@@ -41,6 +41,14 @@ _END_INPUT = "--- END USER INPUT ---"
 _BEGIN_REMOTE = "--- BEGIN REMOTE TOOL CONTENT ---"
 _END_REMOTE = "--- END REMOTE TOOL CONTENT ---"
 _MAX_REMOTE_CONTENT_CHARS = 12_000
+_LEGACY_TOOL_BLOCK = re.compile(
+    r"<tool>\s*\{.*?\}\s*</tool>",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEGACY_FINAL_BLOCK = re.compile(
+    r"<final>(.*?)</final>",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class MissingRunContextError(RuntimeError):
@@ -68,7 +76,9 @@ def neutralize_untrusted_text(text: str) -> str:
         lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
         text,
     )
-    escaped = escaped.replace(_BEGIN_INPUT, "[BEGIN USER INPUT]").replace(_END_INPUT, "[END USER INPUT]")
+    escaped = escaped.replace(_BEGIN_INPUT, "[BEGIN USER INPUT]").replace(
+        _END_INPUT, "[END USER INPUT]"
+    )
     return f"{_BEGIN_INPUT}\n{escaped}\n{_END_INPUT}"
 
 
@@ -99,13 +109,19 @@ def _sanitize_last_user_message(messages: list[AnyMessage]) -> list[AnyMessage]:
         if message.name == "summary" or message.additional_kwargs.get("hide_from_ui"):
             continue
         if isinstance(message.content, str):
-            sanitized[index] = message.model_copy(update={"content": neutralize_untrusted_text(message.content)})
+            sanitized[index] = message.model_copy(
+                update={"content": neutralize_untrusted_text(message.content)}
+            )
         elif isinstance(message.content, list):
             content: list[str | dict[str, Any]] = []
             for block in message.content:
                 if isinstance(block, str):
                     content.append(neutralize_untrusted_text(block))
-                elif isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                elif (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                ):
                     content.append({**block, "text": neutralize_untrusted_text(block["text"])})
                 else:
                     content.append(block)
@@ -280,9 +296,7 @@ class ToolErrorMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
             return self._error_result(request, exc)
 
 
-class RemoteContentSanitizationMiddleware(
-    AgentMiddleware[SageThreadState, HarnessRunContext]
-):
+class RemoteContentSanitizationMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
     """Neutralize only tools explicitly tagged as remote-content sources."""
 
     state_schema = SageThreadState
@@ -404,6 +418,7 @@ class ToolResultArtifactMiddleware(AgentMiddleware[SageThreadState, HarnessRunCo
     ) -> ToolMessage | Command[Any]:
         return self._archive(request, await handler(request))
 
+
 def _message_usage(message: AIMessage) -> int:
     usage = message.usage_metadata
     if usage is None:
@@ -423,9 +438,29 @@ _BUDGET_NOTICES = {
 }
 
 
-def _counter(state: SageThreadState, key: str) -> int:
+def _counter(state: Mapping[str, object], key: str) -> int:
     value = state.get(key, 0)
     return max(value, 0) if isinstance(value, int) else 0
+
+
+def _child_budget_usage(state: SageThreadState, run_id: str) -> tuple[int, int, int]:
+    """Aggregate only children owned by the active parent run.
+
+    Pending and running children consume their full token reservation so a
+    concurrent batch cannot overbook the parent budget. Terminal children use
+    their measured counters instead.
+    """
+    tokens = 0
+    model_calls = 0
+    tool_calls = 0
+    for entry in state.get("delegations", []) or []:
+        if entry.get("run_id") != run_id:
+            continue
+        entry_tokens, entry_models, entry_tools = delegation_budget_usage(entry)
+        tokens += entry_tokens
+        model_calls += entry_models
+        tool_calls += entry_tools
+    return tokens, model_calls, tool_calls
 
 
 def _append_budget_notice(content: object, notice: str) -> object:
@@ -434,6 +469,33 @@ def _append_budget_notice(content: object, notice: str) -> object:
     if isinstance(content, list):
         return [*content, {"type": "text", "text": f"\n\n{notice}"}]
     return notice
+
+
+def _public_budget_content(content: object) -> object:
+    """Remove legacy tool protocol from a budget-stopped public response."""
+    if isinstance(content, str):
+        final_blocks = _LEGACY_FINAL_BLOCK.findall(content)
+        cleaned = final_blocks[-1] if final_blocks else _LEGACY_TOOL_BLOCK.sub("", content)
+        return cleaned.replace("<final>", "").replace("</final>", "").strip()
+    if isinstance(content, list):
+        projected: list[object] = []
+        for block in content:
+            if isinstance(block, str):
+                cleaned = _public_budget_content(block)
+                if cleaned:
+                    projected.append(cleaned)
+            elif (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
+                cleaned = _public_budget_content(block["text"])
+                if cleaned:
+                    projected.append({**block, "text": cleaned})
+            else:
+                projected.append(block)
+        return projected
+    return ""
 
 
 def _budget_stop_message(
@@ -463,7 +525,7 @@ def _budget_stop_message(
         response_metadata["finish_reason"] = "stop"
     return message.model_copy(
         update={
-            "content": _append_budget_notice(message.content, notice),
+            "content": _append_budget_notice(_public_budget_content(message.content), notice),
             "tool_calls": [],
             "invalid_tool_calls": [],
             "additional_kwargs": additional_kwargs,
@@ -511,6 +573,12 @@ class RunBudgetMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
             "run_token_usage": 0,
             "run_model_calls": 0,
             "run_tool_calls": 0,
+            "run_child_token_usage": 0,
+            "run_child_model_calls": 0,
+            "run_child_tool_calls": 0,
+            "run_token_limit": self.max_tokens,
+            "run_model_call_limit": self.max_model_calls,
+            "run_tool_call_limit": self.max_tool_calls,
         }
 
     @override
@@ -528,11 +596,19 @@ class RunBudgetMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
         state: SageThreadState,
         runtime: Runtime[HarnessRunContext],
     ) -> dict[str, object] | None:
-        _ = runtime
-        used_tokens = _counter(state, "run_token_usage")
-        model_calls = _counter(state, "run_model_calls")
+        child_tokens, child_models, child_tools = _child_budget_usage(
+            state,
+            runtime.context.run_id,
+        )
+        used_tokens = _counter(state, "run_token_usage") + child_tokens
+        model_calls = _counter(state, "run_model_calls") + child_models
+        child_update: dict[str, object] = {
+            "run_child_token_usage": child_tokens,
+            "run_child_model_calls": child_models,
+            "run_child_tool_calls": child_tools,
+        }
         if used_tokens < self.max_tokens and model_calls < self.max_model_calls:
-            return None
+            return child_update
         reason = "token_capped" if used_tokens >= self.max_tokens else "model_call_capped"
         used = used_tokens if reason == "token_capped" else model_calls
         limit = self.max_tokens if reason == "token_capped" else self.max_model_calls
@@ -542,7 +618,7 @@ class RunBudgetMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
             used=used,
             limit=limit,
         )
-        return {"jump_to": "end", "messages": [message]}
+        return {**child_update, "jump_to": "end", "messages": [message]}
 
     @hook_config(can_jump_to=["end"])
     @override
@@ -566,15 +642,25 @@ class RunBudgetMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
         if not messages or not isinstance(messages[-1], AIMessage):
             return None
         message = messages[-1]
-        used_tokens = _counter(state, "run_token_usage") + _message_usage(message)
-        model_calls = _counter(state, "run_model_calls") + 1
+        child_tokens, child_models, child_tools = _child_budget_usage(
+            state,
+            context.run_id,
+        )
+        parent_tokens = _counter(state, "run_token_usage") + _message_usage(message)
+        parent_model_calls = _counter(state, "run_model_calls") + 1
+        used_tokens = parent_tokens + child_tokens
+        model_calls = parent_model_calls + child_models
         prior_tool_calls = _counter(state, "run_tool_calls")
         proposed_tool_calls = len(message.tool_calls)
-        proposed_total_tools = prior_tool_calls + proposed_tool_calls
+        proposed_parent_tools = prior_tool_calls + proposed_tool_calls
+        proposed_total_tools = proposed_parent_tools + child_tools
         update: dict[str, object] = {
-            "run_token_usage": used_tokens,
-            "run_model_calls": model_calls,
+            "run_token_usage": parent_tokens,
+            "run_model_calls": parent_model_calls,
             "run_tool_calls": prior_tool_calls,
+            "run_child_token_usage": child_tokens,
+            "run_child_model_calls": child_models,
+            "run_child_tool_calls": child_tools,
         }
 
         stop_reason: str | None = None
@@ -606,7 +692,7 @@ class RunBudgetMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
             ]
             return update
 
-        update["run_tool_calls"] = proposed_total_tools
+        update["run_tool_calls"] = proposed_parent_tools
         return update
 
     @override
@@ -633,7 +719,9 @@ def _has_visible_text(message: AIMessage) -> bool:
     if isinstance(message.content, str):
         return bool(message.content.strip())
     return any(
-        isinstance(block, dict) and block.get("type") == "text" and bool(str(block.get("text") or "").strip())
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and bool(str(block.get("text") or "").strip())
         for block in message.content
     )
 
@@ -651,8 +739,14 @@ class TerminalResponseMiddleware(AgentMiddleware[SageThreadState, HarnessRunCont
     ) -> None:
         _ = runtime
         messages = state.get("messages", [])
-        if not messages or not isinstance(messages[-1], AIMessage) or not _has_visible_text(messages[-1]):
-            raise MissingTerminalResponseError("Agent completed without a visible assistant response")
+        if (
+            not messages
+            or not isinstance(messages[-1], AIMessage)
+            or not _has_visible_text(messages[-1])
+        ):
+            raise MissingTerminalResponseError(
+                "Agent completed without a visible assistant response"
+            )
 
     @override
     async def aafter_agent(

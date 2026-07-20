@@ -474,6 +474,17 @@ class KnowledgeStore:
             source_roots=tuple(self.source_roots.values()),
         )
 
+    def register_source_root(self, source: KnowledgeSourceRoot) -> KnowledgeSourceRoot:
+        """Register one server-owned connector root without rebuilding the store."""
+
+        validated = self._validate_source_roots({source.root_id: source})[source.root_id]
+        with self._lock:
+            existing = self.source_roots.get(validated.root_id)
+            if existing is not None and existing != validated:
+                raise KnowledgeConflictError("knowledge source root already exists")
+            self.source_roots[validated.root_id] = validated
+        return validated
+
     def ingest(self, source_root_id: str, relative_path: str) -> KnowledgeProposal:
         return self.ingest_prepared(self.prepare_ingest(source_root_id, relative_path))
 
@@ -1109,7 +1120,8 @@ class KnowledgeStore:
                 connection.rollback()
                 raise KnowledgeEvidenceError(str(exc)) from exc
             if any(
-                chunk.source_kind not in {"obsidian", "markdown", "github", "feishu"}
+                chunk.source_kind
+                not in {"obsidian", "markdown", "github", "feishu", "web"}
                 for _citation_id, chunk in resolved
             ):
                 connection.rollback()
@@ -2582,7 +2594,7 @@ class KnowledgeStore:
         for key, value in roots.items():
             if key != value.root_id or not _ROOT_ID.fullmatch(key):
                 raise ValueError("invalid knowledge source root id")
-            if value.kind not in {"obsidian", "markdown", "github", "feishu"}:
+            if value.kind not in {"obsidian", "markdown", "github", "feishu", "web"}:
                 raise ValueError("invalid knowledge source kind")
             path = value.path.expanduser().resolve()
             if not path.is_dir() or value.path.is_symlink():

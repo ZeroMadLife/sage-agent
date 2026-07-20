@@ -99,6 +99,8 @@ class LocalWorkspaceSandbox:
             operation=operation,
             content=result.content,
             is_error=result.is_error,
+            error_code=result.error_code,
+            retryable=result.retryable,
             metadata={
                 "sandbox_id": self._descriptor.sandbox_id,
                 "workspace_id": self._descriptor.workspace_id,

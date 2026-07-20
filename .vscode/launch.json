@@ -5,6 +5,7 @@
       "name": "Debug FastAPI (uvicorn)",
       "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "module": "uvicorn",
       "args": [
         "api.main:app",

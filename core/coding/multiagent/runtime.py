@@ -9,6 +9,7 @@ from core.coding.context import ContextManager, WorkspaceContext
 from core.coding.engine.engine import Engine
 from core.coding.multiagent.execution import WorkerTask
 from core.coding.tool_executor import PermissionChecker, ToolPolicyChecker
+from core.coding.tool_executor.executor import ToolExecutor
 from core.coding.tools.registry import build_tool_registry
 from core.coding.usage_store import UsageSample
 
@@ -31,9 +32,13 @@ async def run_worker_task(
     token_budget: int | None = None,
     max_steps: int = 20,
     event_sink: Callable[[dict[str, Any]], None] | None = None,
+    tools: dict[str, Any] | None = None,
+    usage_sink: Callable[[UsageSample], None] | None = None,
+    tool_executor: ToolExecutor | None = None,
 ) -> str:
     """Run one worker task and return its final response."""
-    tools = build_tool_registry(workspace)
+    if tools is None:
+        tools = build_tool_registry(workspace)
     if tool_scope is not None:
         tools = {name: tool for name, tool in tools.items() if name in set(tool_scope)}
     used_tokens = 0
@@ -44,6 +49,8 @@ async def run_worker_task(
         used_tokens += usage.total_tokens or (
             (usage.input_tokens or 0) + (usage.output_tokens or 0)
         )
+        if usage_sink is not None:
+            usage_sink(usage)
 
     def stopped() -> bool:
         return bool(should_stop and should_stop()) or bool(
@@ -66,6 +73,7 @@ async def run_worker_task(
         run_id=task.id,
         max_steps=max_steps,
         model_usage_sink=record_usage,
+        tool_executor=tool_executor,
     )
     final = ""
     async for event in engine.run_turn(task.prompt):

@@ -260,6 +260,57 @@ async def test_v2_compacts_before_graph_and_injects_new_summary(
 
 
 @pytest.mark.asyncio
+async def test_v2_subagent_approval_continues_without_graph_checkpoint_resume(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    class SubagentApprovalAdapter:
+        calls = 0
+
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def stream_turn(self, **kwargs: Any):  # type: ignore[no-untyped-def]
+            del kwargs
+            type(self).calls += 1
+            yield RunEvent(
+                kind="approval",
+                status="blocked",
+                payload={
+                    "type": "approval_required",
+                    "approval_id": "appr_child",
+                    "tool": "write_file",
+                    "approval_scope": "subagent",
+                    "resume_required": False,
+                },
+            )
+            yield RunEvent(
+                kind="assistant",
+                status="running",
+                payload={"type": "text_delta", "delta": "continued in place"},
+            )
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", SubagentApprovalAdapter)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="practice",
+            run_id="run-practice-approval",
+            surface_context=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    assert SubagentApprovalAdapter.calls == 1
+    assert any(event.payload.get("type") == "approval_required" for event in events)
+    assert events[-2].payload["content"] == "continued in place"
+
+
+@pytest.mark.asyncio
 async def test_v2_emergency_context_blocks_graph_model_request(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -35,3 +36,17 @@ def test_release_install_includes_the_editable_harness_package() -> None:
     normalized = {line.strip() for line in requirements if line.strip()}
 
     assert "-e ./packages/sage_harness" in normalized
+
+
+def test_local_ide_contract_uses_the_repository_python_312_environment() -> None:
+    """Checked-in IDE entry points must not fall back to a stale system Python."""
+    python_version = (ROOT / ".python-version").read_text(encoding="utf-8").strip()
+    vscode_settings = json.loads((ROOT / ".vscode" / "settings.json").read_text(encoding="utf-8"))
+    vscode_launch = json.loads((ROOT / ".vscode" / "launch.json").read_text(encoding="utf-8"))
+    vscode_tasks = json.loads((ROOT / ".vscode" / "tasks.json").read_text(encoding="utf-8"))
+
+    assert python_version == "3.12"
+    assert vscode_settings["python.defaultInterpreterPath"] == "${workspaceFolder}/.venv/bin/python"
+    assert vscode_launch["configurations"][0]["python"] == "${workspaceFolder}/.venv/bin/python"
+    backend_task = next(task for task in vscode_tasks["tasks"] if task["label"] == "dev: backend")
+    assert backend_task["command"].startswith(".venv/bin/python -m uvicorn")

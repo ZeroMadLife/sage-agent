@@ -102,6 +102,7 @@ def test_manager_discovers_once_per_scope_and_builds_secret_free_wrappers() -> N
     assert first.catalog.servers[1].status == "unconfigured"
     assert [tool.name for tool in first.tools] == ["docs_lookup"]
     assert first.tools[0].metadata["remote_content"] is True
+    assert first.tools[0].metadata["mcp_tool_id"] == "docs:lookup"
     assert result == "found:sage"
     assert "secret" not in repr(first.catalog)
 

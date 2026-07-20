@@ -170,7 +170,7 @@ describe('CodingView chat route lifecycle', () => {
     root.unmount()
   })
 
-  it('selects a changed session route and keeps the chat shell free of a persistent inspector', async () => {
+  it('selects a changed session route inside the persistent Harness and Chat workbench', async () => {
     const store = useCodingStore()
     store.sessionId = 'session-a'
     store.selectSession = vi.fn(async (sessionId: string) => { store.sessionId = sessionId })
@@ -179,7 +179,8 @@ describe('CodingView chat route lifecycle', () => {
     await router.push('/coding/session/session-b')
     await vi.waitFor(() => expect(store.selectSession).toHaveBeenCalledWith('session-b'))
     expect(wrapper().find('.pane-right').exists()).toBe(false)
-    expect(wrapper().find('.chat-shell').exists()).toBe(true)
+    expect(wrapper().find('.coding-harness-workbench').exists()).toBe(true)
+    expect(wrapper().get('.workbench-dock [role="tab"]').text()).toContain('主对话')
     root.unmount()
   })
 
@@ -335,6 +336,24 @@ describe('CodingView chat route lifecycle', () => {
     messageArea.element.scrollTop = 24
     await messageArea.trigger('scroll')
     expect(store.scrollAnchor).toEqual({ eventId: 'turn:run-a', offset: 24 })
+    root.unmount()
+  })
+
+  it('lets a chat turn select the matching historical Harness run', async () => {
+    const store = useCodingStore()
+    store.sessionId = 'session-a'
+    store.mergeTimelinePage('session-a', [
+      event(1, 'user', { type: 'user', content: '第一轮' }),
+      event(2, 'assistant', { type: 'final', content: '第一轮完成' }),
+      { ...event(3, 'user', { type: 'user', content: '第二轮' }), event_id: 'event-b-3', run_id: 'run-b' },
+      { ...event(4, 'assistant', { type: 'final', content: '第二轮完成' }), event_id: 'event-b-4', run_id: 'run-b' },
+    ], { next_cursor: 4, has_more: false, active_run: null })
+    const { root, wrapper } = await mountChat('/coding/session/session-a')
+
+    expect(wrapper().get('.coding-harness-workbench').attributes('data-run-id')).toBe('run-b')
+    await wrapper().get('[data-timeline-turn-id="turn:run-a"]').trigger('click')
+    expect(wrapper().get('.coding-harness-workbench').attributes('data-run-id')).toBe('run-a')
+    expect(wrapper().get('[data-timeline-turn-id="turn:run-a"]').attributes('data-harness-selected')).toBe('true')
     root.unmount()
   })
 

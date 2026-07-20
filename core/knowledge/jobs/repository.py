@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from db.models import (
+    KnowledgeExternalParseRecord,
     KnowledgeIdempotencyRecord,
     KnowledgeIngestItemRecord,
     KnowledgeIngestJobRecord,
@@ -28,6 +29,7 @@ from .sync import build_plan_id
 from .types import (
     TERMINAL_ITEM_STATUSES,
     IdempotencyClaim,
+    KnowledgeExternalParseState,
     KnowledgeJob,
     KnowledgeJobEvent,
     KnowledgeJobItem,
@@ -226,8 +228,7 @@ class KnowledgeJobRepository:
                 )
             ).all()
             manifest = {
-                str(row.relative_path): (str(row.source_revision), str(row.status))
-                for row in rows
+                str(row.relative_path): (str(row.source_revision), str(row.status)) for row in rows
             }
             return (
                 int(sync.watermark) if sync is not None else 0,
@@ -519,6 +520,112 @@ class KnowledgeJobRepository:
             ).all()
             return [_event_view(record) for record in records]
 
+    async def get_external_parse_state(self, item_id: str) -> KnowledgeExternalParseState | None:
+        async with self._session_factory() as session:
+            record = await session.get(KnowledgeExternalParseRecord, item_id)
+            return _external_parse_state_view(record) if record is not None else None
+
+    async def defer_external_parse(
+        self,
+        item_id: str,
+        *,
+        worker_id: str,
+        adapter_id: str,
+        adapter_version: str,
+        task_id: str,
+        state: str,
+        retry_after_seconds: float,
+    ) -> KnowledgeJobItem:
+        if not 0 < retry_after_seconds <= 300:
+            raise ValueError("external parser retry delay must be between 0 and 300 seconds")
+        if state not in {"queued", "running"}:
+            raise ValueError("external parser wait state is invalid")
+        if not adapter_id or not adapter_version or not task_id:
+            raise ValueError("external parser ticket is incomplete")
+        if len(adapter_id) > 64 or len(adapter_version) > 64 or len(task_id) > 128:
+            raise ValueError("external parser ticket exceeds storage limits")
+        now = _now()
+        async with self._session_factory() as session, session.begin():
+            item, job = await self._locked_item_and_job(session, item_id)
+            self._require_lease(item, worker_id)
+            if item.status != "parsing":
+                raise KnowledgeJobConflictError("external parser wait requires parsing status")
+            record = await session.get(KnowledgeExternalParseRecord, item_id)
+            if record is None:
+                record = KnowledgeExternalParseRecord(
+                    item_id=item_id,
+                    adapter_id=adapter_id,
+                    adapter_version=adapter_version,
+                    task_id=task_id,
+                    state=state,
+                    submitted_at=now,
+                )
+                session.add(record)
+            elif (
+                record.adapter_id == adapter_id
+                and record.adapter_version == adapter_version
+                and record.task_id == task_id
+            ):
+                record.state = state
+            elif record.state in {"completed", "failed", "fallback", "timed_out", "cancelled"}:
+                record.adapter_id = adapter_id
+                record.adapter_version = adapter_version
+                record.task_id = task_id
+                record.state = state
+                record.submitted_at = now
+            else:
+                raise KnowledgeJobConflictError("external parser ticket changed while active")
+            item.status = "external_wait"
+            item.lease_owner = None
+            item.lease_expires_at = None
+            item.next_attempt_at = now + timedelta(seconds=retry_after_seconds)
+            await self._append_event(
+                session,
+                job,
+                item=item,
+                kind="item",
+                status="external_wait",
+                detail={
+                    "relative_path": item.relative_path,
+                    "adapter_id": adapter_id,
+                    "adapter_version": adapter_version,
+                    "parser_state": state,
+                },
+            )
+            await self._refresh_job(session, job)
+            return _item_view(item)
+
+    async def mark_external_parse_terminal(
+        self,
+        item_id: str,
+        *,
+        worker_id: str,
+        state: str,
+        reason_code: str | None = None,
+    ) -> None:
+        if state not in {"completed", "failed", "fallback", "timed_out", "cancelled"}:
+            raise ValueError("external parser terminal state is invalid")
+        async with self._session_factory() as session, session.begin():
+            item, job = await self._locked_item_and_job(session, item_id)
+            self._require_lease(item, worker_id)
+            record = await session.get(KnowledgeExternalParseRecord, item_id)
+            if record is None:
+                return
+            record.state = state
+            await self._append_event(
+                session,
+                job,
+                item=item,
+                kind="parser",
+                status=state,
+                detail={
+                    "relative_path": item.relative_path,
+                    "adapter_id": record.adapter_id,
+                    "adapter_version": record.adapter_version,
+                    "reason_code": reason_code,
+                },
+            )
+
     async def ready_item_ids(self, *, limit: int = 1000) -> list[str]:
         now = _now()
         async with self._session_factory() as session:
@@ -531,7 +638,9 @@ class KnowledgeJobRepository:
                             KnowledgeIngestJobRecord.id == KnowledgeIngestItemRecord.job_id,
                         )
                         .where(
-                            KnowledgeIngestItemRecord.status.in_(("queued", "retry_wait")),
+                            KnowledgeIngestItemRecord.status.in_(
+                                ("queued", "retry_wait", "external_wait")
+                            ),
                             KnowledgeIngestJobRecord.cancel_requested.is_(False),
                             (
                                 KnowledgeIngestItemRecord.next_attempt_at.is_(None)
@@ -570,13 +679,15 @@ class KnowledgeJobRepository:
                 return None
             if job.cancel_requested:
                 return None
-            eligible = item.status in {"queued", "retry_wait"} and (
+            previous_status = item.status
+            eligible = item.status in {"queued", "retry_wait", "external_wait"} and (
                 item.next_attempt_at is None or _as_utc(item.next_attempt_at) <= now
             )
             if not eligible:
                 return None
             item.status = "claimed"
-            item.attempts += 1
+            if previous_status != "external_wait":
+                item.attempts += 1
             item.lease_owner = worker_id
             item.lease_expires_at = now + timedelta(seconds=lease_seconds)
             item.next_attempt_at = None
@@ -786,6 +897,9 @@ class KnowledgeJobRepository:
             if job.cancel_requested:
                 item.status = "cancelled"
                 item.next_attempt_at = None
+                external = await session.get(KnowledgeExternalParseRecord, item.id)
+                if external is not None:
+                    external.state = "cancelled"
                 key = await session.get(KnowledgeIdempotencyRecord, item.idempotency_key)
                 if key is not None and key.owner_item_id == item.id:
                     key.status = "failed"
@@ -795,6 +909,9 @@ class KnowledgeJobRepository:
             else:
                 item.status = "dead_letter"
                 item.next_attempt_at = None
+                external = await session.get(KnowledgeExternalParseRecord, item.id)
+                if external is not None:
+                    external.state = "failed"
                 key = await session.get(KnowledgeIdempotencyRecord, item.idempotency_key)
                 if key is not None and key.owner_item_id == item.id:
                     key.status = "failed"
@@ -832,13 +949,18 @@ class KnowledgeJobRepository:
                 await session.scalars(
                     select(KnowledgeIngestItemRecord).where(
                         KnowledgeIngestItemRecord.job_id == job_id,
-                        KnowledgeIngestItemRecord.status.in_(("queued", "retry_wait")),
+                        KnowledgeIngestItemRecord.status.in_(
+                            ("queued", "retry_wait", "external_wait")
+                        ),
                     )
                 )
             ).all()
             for item in items:
                 item.status = "cancelled"
                 item.next_attempt_at = None
+                external = await session.get(KnowledgeExternalParseRecord, item.id)
+                if external is not None:
+                    external.state = "cancelled"
                 await self._append_event(
                     session,
                     job,
@@ -870,6 +992,9 @@ class KnowledgeJobRepository:
             item.status = "cancelled"
             item.lease_owner = None
             item.lease_expires_at = None
+            external = await session.get(KnowledgeExternalParseRecord, item.id)
+            if external is not None:
+                external.state = "cancelled"
             await self._append_event(
                 session,
                 job,
@@ -893,6 +1018,9 @@ class KnowledgeJobRepository:
             item.attempts = 0
             item.next_attempt_at = _now()
             item.error = None
+            external = await session.get(KnowledgeExternalParseRecord, item.id)
+            if external is not None:
+                await session.delete(external)
             job.completed_at = None
             job.status = "running"
             await self._append_event(
@@ -1063,9 +1191,7 @@ class KnowledgeJobRepository:
                 )
             ).all()
             for item in items:
-                manifest_id = _stable_id(
-                    "kman", f"{item.source_id}\0{item.relative_path}"
-                )
+                manifest_id = _stable_id("kman", f"{item.source_id}\0{item.relative_path}")
                 existing = await session.get(KnowledgeSourceManifestRecord, manifest_id)
                 status = "deleted" if item.change_kind == "deleted" else "present"
                 if existing is None:
@@ -1170,9 +1296,7 @@ def _item_view(item: KnowledgeIngestItemRecord) -> KnowledgeJobItem:
     )
 
 
-def _sync_plan_view(
-    plan: KnowledgeSyncPlanRecord, *, source_root_id: str
-) -> KnowledgeSyncPlan:
+def _sync_plan_view(plan: KnowledgeSyncPlanRecord, *, source_root_id: str) -> KnowledgeSyncPlan:
     raw_changes = json.loads(plan.changes_json)
     changes = tuple(
         KnowledgeSyncChange(
@@ -1241,6 +1365,20 @@ def _event_view(record: KnowledgeJobEventRecord) -> KnowledgeJobEvent:
         status=record.status,
         detail=json.loads(record.detail_json),
         created_at=_as_utc(record.created_at),
+    )
+
+
+def _external_parse_state_view(
+    record: KnowledgeExternalParseRecord,
+) -> KnowledgeExternalParseState:
+    return KnowledgeExternalParseState(
+        item_id=record.item_id,
+        adapter_id=record.adapter_id,
+        adapter_version=record.adapter_version,
+        task_id=record.task_id,
+        state=record.state,
+        submitted_at=_as_utc(record.submitted_at),
+        updated_at=_as_utc(record.updated_at),
     )
 
 

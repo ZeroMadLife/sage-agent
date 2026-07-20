@@ -10,6 +10,7 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 API_TARGET="${VITE_API_PROXY_TARGET:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
+PYTHON_BIN="${SAGE_PYTHON:-${ROOT_DIR}/.venv/bin/python}"
 
 BACKEND_PID=""
 FRONTEND_PID=""
@@ -25,6 +26,30 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 cd "${ROOT_DIR}"
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Sage Python interpreter not found: ${PYTHON_BIN}"
+  echo "Run: bash scripts/bootstrap-dev-env.sh"
+  exit 1
+fi
+
+if ! "${PYTHON_BIN}" - <<'PY'
+import sys
+
+if sys.version_info < (3, 12):
+    raise SystemExit("Sage requires Python 3.12 or newer")
+
+from langchain.agents import create_agent
+import sage_harness
+
+assert create_agent is not None
+assert sage_harness.__name__ == "sage_harness"
+PY
+then
+  echo "Sage Python dependencies are incomplete or incompatible: ${PYTHON_BIN}"
+  echo "Run: bash scripts/bootstrap-dev-env.sh"
+  exit 1
+fi
 
 if [[ "${ENV_FILE}" != /* ]]; then
   ENV_FILE="${ROOT_DIR}/${ENV_FILE}"
@@ -84,7 +109,7 @@ if [[ "${SAGE_SKIP_DOCKER:-0}" != "1" ]]; then
 fi
 
 echo "Starting backend: http://${BACKEND_HOST}:${BACKEND_PORT}"
-python -m uvicorn api.main:app \
+"${PYTHON_BIN}" -m uvicorn api.main:app \
   --host "${BACKEND_HOST}" \
   --port "${BACKEND_PORT}" \
   --reload \

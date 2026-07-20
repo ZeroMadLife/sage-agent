@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import textwrap
+from contextlib import suppress
 from typing import Any
 
 from core.coding.context import WorkspaceContext, clip
@@ -32,6 +34,7 @@ ALLOWED_SHELL_ENV = {
     schema_model=RunShellArgs,
     risky=True,
     category="shell",
+    timeout=130.0,
 )
 def run_shell(
     workspace: WorkspaceContext,
@@ -42,29 +45,67 @@ def run_shell(
     _ = tool_context
     command = str(args["command"])
     timeout = int(args.get("timeout", 20))
+    process = subprocess.Popen(
+        command,
+        cwd=workspace.root,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=_filtered_env(),
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            command,
-            cwd=workspace.root,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=_filtered_env(),
-            check=False,
-        )
+        stdout, stderr = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        return ToolResult(content=f"command timed out after {timeout}s", is_error=True)
+        stdout, stderr = _terminate_process_group(process)
+        content = textwrap.dedent(
+            f"""\
+            command timed out after {timeout}s
+            failure_kind: timeout
+            retryable: true
+            timeout_seconds: {timeout}
+            stdout:
+            {stdout.strip() or "(empty)"}
+            stderr:
+            {stderr.strip() or "(empty)"}
+            """
+        ).strip()
+        return ToolResult(
+            content=clip(content),
+            is_error=True,
+            error_code="shell_timeout",
+            retryable=True,
+        )
     content = textwrap.dedent(
         f"""\
-        exit_code: {result.returncode}
+        exit_code: {process.returncode}
         stdout:
-        {result.stdout.strip() or "(empty)"}
+        {stdout.strip() or "(empty)"}
         stderr:
-        {result.stderr.strip() or "(empty)"}
+        {stderr.strip() or "(empty)"}
         """
     ).strip()
-    return ToolResult(content=clip(content), is_error=result.returncode != 0)
+    return ToolResult(
+        content=clip(content),
+        is_error=process.returncode != 0,
+        error_code="shell_exit_nonzero" if process.returncode != 0 else None,
+        retryable=False if process.returncode != 0 else None,
+    )
+
+
+def _terminate_process_group(
+    process: subprocess.Popen[str],
+) -> tuple[str, str]:
+    """Terminate the shell and every descendant before returning a timeout."""
+    with suppress(ProcessLookupError):
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        return process.communicate(timeout=0.5)
+    except subprocess.TimeoutExpired:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        return process.communicate()
 
 
 def _filtered_env() -> dict[str, str]:

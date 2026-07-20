@@ -152,6 +152,25 @@ def test_run_shell_uses_filtered_environment_and_reports_timeout(tmp_path: Path)
     assert "secret" not in env_result.content
     assert timeout_result.is_error is True
     assert "timed out" in timeout_result.content
+    assert timeout_result.error_code == "shell_timeout"
+    assert timeout_result.retryable is True
+
+
+def test_run_shell_timeout_terminates_the_whole_process_group(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    tools = build_tool_registry(workspace)
+    marker = tmp_path / "late-child.txt"
+
+    result = tools["run_shell"].execute(
+        {
+            "command": f"(sleep 2; touch {marker.name}) & wait",
+            "timeout": 1,
+        }
+    )
+    time.sleep(1.3)
+
+    assert result.error_code == "shell_timeout"
+    assert marker.exists() is False
 
 
 def test_tool_registry_discovers_decorated_tools_with_stable_metadata(tmp_path: Path) -> None:

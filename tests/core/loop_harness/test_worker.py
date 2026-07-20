@@ -14,10 +14,10 @@ from core.loop_harness.worker import (
 )
 
 
-def _fake_codex(tmp_path, payload: object):
+def _fake_codex(tmp_path, payload: object, *, fail_once: bool = False):
     executable = tmp_path / "codex"
     encoded = json.dumps(json.dumps(payload))
-    executable.write_text(
+    script = (
         "#!/bin/sh\n"
         'if [ "${1:-}" = "--version" ]; then echo \'codex-cli test\'; exit 0; fi\n'
         "out=''\n"
@@ -25,9 +25,15 @@ def _fake_codex(tmp_path, payload: object):
         '  if [ "$1" = "--output-last-message" ]; then shift; out=$1; fi\n'
         "  shift\n"
         "done\n"
-        f"printf '%s' {encoded} > \"$out\"\n",
-        encoding="utf-8",
     )
+    if fail_once:
+        marker = tmp_path / "codex-failed-once"
+        script += (
+            f"marker={json.dumps(str(marker))}\n"
+            "if [ ! -e \"$marker\" ]; then : > \"$marker\"; printf '%s' '{' > \"$out\"; exit 0; fi\n"
+        )
+    script += f"printf '%s' {encoded} > \"$out\"\n"
+    executable.write_text(script, encoding="utf-8")
     executable.chmod(0o700)
     return executable
 
@@ -94,6 +100,34 @@ def test_worker_uses_temporary_output_and_parses_schema(tmp_path) -> None:
     )
 
     assert worker.probe() == "codex-cli test"
+    result = worker.run(
+        worktree=worktree,
+        run_id="loop-test",
+        base_sha="a" * 40,
+        scan_scope=("core",),
+        protected_paths_digest="b" * 64,
+    )
+
+    assert result.verdict == "NO_OP"
+    assert list(reports.iterdir()) == []
+
+
+def test_worker_retries_once_when_structured_output_is_invalid(tmp_path) -> None:
+    controller = tmp_path / "controller"
+    (controller / "docs/loop-harness").mkdir(parents=True)
+    (controller / "core/loop_harness").mkdir(parents=True)
+    (controller / "docs/loop-harness/PROMPT.md").write_text("rules", encoding="utf-8")
+    (controller / "core/loop_harness/worker_result.schema.json").write_text("{}", encoding="utf-8")
+    reports = tmp_path / "reports"
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    worker = CodexWorker(
+        codex_bin=_fake_codex(tmp_path, _valid_payload(), fail_once=True),
+        controller_root=controller,
+        reports_root=reports,
+        timeout_seconds=10,
+    )
+
     result = worker.run(
         worktree=worktree,
         run_id="loop-test",

@@ -17,8 +17,12 @@ import {
   stopCodingRun,
   fetchMemoryProposals,
   approveMemoryProposal,
+  approveKnowledgeSourceProposal,
   createCloudModelProvider,
   fetchCloudModelProviders,
+  fetchKnowledgeSourceProposal,
+  fetchKnowledgeSourceProposals,
+  rejectKnowledgeSourceProposal,
   rejectMemoryProposal,
   updateCloudModelProvider,
 } from './coding'
@@ -94,6 +98,58 @@ describe('coding API client', () => {
   it('maps a memory CAS conflict to a Chinese retryable error', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 409 }))
     await expect(approveMemoryProposal('c1', 'p1', 2)).rejects.toThrow('记忆候选已发生变化，请刷新后重试')
+  })
+
+  it('lists and opens no-store knowledge source proposals', async () => {
+    const proposal = {
+      proposal_id: 'ksprop_1', thread_id: 'c1', run_id: 'run-1', status: 'pending', revision: 1,
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ proposals: [proposal] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ proposal, events: [] }) })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(fetchKnowledgeSourceProposals('c1')).resolves.toMatchObject({
+      proposals: [expect.objectContaining({ proposal_id: 'ksprop_1' })],
+    })
+    await expect(fetchKnowledgeSourceProposal('c1', 'ksprop_1')).resolves.toMatchObject({
+      proposal: expect.objectContaining({ revision: 1 }), events: [],
+    })
+
+    const listUrl = fetchMock.mock.calls[0][0] as URL
+    const detailUrl = fetchMock.mock.calls[1][0] as URL
+    expect(listUrl.pathname).toBe('/api/v1/coding/c1/knowledge/source-proposals')
+    expect(listUrl.searchParams.get('status')).toBe('pending')
+    expect(detailUrl.pathname).toBe('/api/v1/coding/c1/knowledge/source-proposals/ksprop_1')
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ cache: 'no-store' })
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: 'no-store' })
+  })
+
+  it('approves and rejects source proposals with revision CAS', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ proposal_id: 'ksprop_1', status: 'approved', revision: 2 }),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await approveKnowledgeSourceProposal('c1', 'ksprop_1', 1)
+    await rejectKnowledgeSourceProposal('c1', 'ksprop_2', 4)
+
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      method: 'POST', cache: 'no-store', body: JSON.stringify({ expected_revision: 1 }),
+    })
+    expect(fetchMock.mock.calls[1][1]).toMatchObject({
+      method: 'POST', cache: 'no-store', body: JSON.stringify({ expected_revision: 4 }),
+    })
+  })
+
+  it.each([
+    [409, '知识来源提案已发生变化，请刷新后重试'],
+    [404, '知识来源提案不存在、无权访问或已处理'],
+    [503, '知识来源审阅服务尚未就绪'],
+  ])('maps source proposal status %s to a stable Chinese error', async (status, message) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status }))
+    await expect(approveKnowledgeSourceProposal('c1', 'ksprop_1', 1)).rejects.toThrow(message)
   })
 
   it('creates a coding session', async () => {

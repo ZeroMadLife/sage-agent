@@ -1,5 +1,6 @@
 """Middleware primitives and deterministic registry for the Sage harness."""
 
+from sage_harness.capabilities import CapabilityTelemetryMiddleware
 from sage_harness.deferred_tools import DeferredToolFilterMiddleware
 from sage_harness.middleware.builtin import (
     InputSanitizationMiddleware,
@@ -27,6 +28,7 @@ from sage_harness.skills import SkillActivationMiddleware
 from sage_harness.subagents import SubagentLifecycleMiddleware
 
 __all__ = [
+    "CapabilityTelemetryMiddleware",
     "DeferredToolFilterMiddleware",
     "DurableContextMiddleware",
     "InputSanitizationMiddleware",

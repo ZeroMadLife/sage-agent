@@ -8,12 +8,18 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
 
 from api.schemas import (
+    CloudAuthOptionsResponse,
+    CloudCanaryInviteLoginRequest,
     CloudCurrentUserResponse,
     CloudDevelopmentLoginRequest,
     CloudGitHubOAuthStartRequest,
     CloudGitHubOAuthStartResponse,
 )
-from core.cloud.auth.repository import CloudRepository, new_browser_session_token
+from core.cloud.auth.repository import (
+    CloudRepository,
+    DeviceLimitReached,
+    new_browser_session_token,
+)
 from core.cloud.github import (
     GitHubOAuthService,
     InvalidOAuthTransaction,
@@ -25,6 +31,7 @@ router = APIRouter()
 _SESSION_COOKIE = "sage_session"
 _OAUTH_BINDING_COOKIE = "sage_oauth_binding"
 _SESSION_TTL = timedelta(days=7)
+_CANARY_SESSION_TTL = timedelta(days=30)
 _OAUTH_BINDING_TTL_SECONDS = 300
 
 
@@ -40,6 +47,66 @@ def _github_oauth(request: Request) -> GitHubOAuthService:
     if not isinstance(service, GitHubOAuthService):
         raise HTTPException(status_code=503, detail="GitHub authentication is unavailable")
     return service
+
+
+def _set_session_cookie(response: Response, request: Request, token: str, ttl: timedelta) -> None:
+    response.set_cookie(
+        key=_SESSION_COOKIE,
+        value=token,
+        httponly=True,
+        secure=bool(getattr(request.app.state, "cloud_secure_cookies", False)),
+        samesite="lax",
+        max_age=int(ttl.total_seconds()),
+        path="/",
+    )
+
+
+@router.get("/api/v1/cloud/auth/options", response_model=CloudAuthOptionsResponse)
+async def get_cloud_auth_options(request: Request, response: Response) -> CloudAuthOptionsResponse:
+    """Expose login capabilities without leaking credentials or account state."""
+    response.headers["Cache-Control"] = "no-store"
+    return CloudAuthOptionsResponse(
+        canary_invite_login=bool(
+            getattr(request.app.state, "cloud_canary_invite_login_enabled", False)
+        ),
+        github_login=isinstance(
+            getattr(request.app.state, "cloud_github_oauth_service", None),
+            GitHubOAuthService,
+        ),
+    )
+
+
+@router.post(
+    "/api/v1/cloud/auth/canary/login",
+    response_model=CloudCurrentUserResponse,
+)
+async def canary_invite_login(
+    payload: CloudCanaryInviteLoginRequest,
+    request: Request,
+    response: Response,
+) -> CloudCurrentUserResponse:
+    """Exchange one private-Canary invite for a revocable 30-day device session."""
+    if not bool(getattr(request.app.state, "cloud_canary_invite_login_enabled", False)):
+        raise HTTPException(status_code=404, detail="not found")
+    token = new_browser_session_token()
+    try:
+        user, _ = await _repository(request).create_canary_invite_session(
+            invite_code=payload.invite_code,
+            token=token,
+            device_name=payload.device_name,
+            expires_at=datetime.now(UTC) + _CANARY_SESSION_TTL,
+        )
+    except DeviceLimitReached as exc:
+        raise HTTPException(status_code=409, detail="最多允许 3 台设备保持登录") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="邀请码无效、已使用或账号已停用") from exc
+    _set_session_cookie(response, request, token, _CANARY_SESSION_TTL)
+    response.headers["Cache-Control"] = "no-store"
+    return CloudCurrentUserResponse(
+        user_id=user.user_id,
+        email=user.email,
+        display_name=user.display_name,
+    )
 
 
 @router.post(
@@ -93,22 +160,19 @@ async def complete_github_oauth(
         raise HTTPException(status_code=502, detail="GitHub authentication failed") from exc
 
     token = new_browser_session_token()
-    await _repository(request).create_session(
-        completed.user.user_id,
-        token,
-        expires_at=datetime.now(UTC) + _SESSION_TTL,
-    )
+    try:
+        await _repository(request).create_session(
+            completed.user.user_id,
+            token,
+            expires_at=datetime.now(UTC) + _SESSION_TTL,
+        )
+    except DeviceLimitReached as exc:
+        raise HTTPException(status_code=409, detail="最多允许 3 台设备保持登录") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="账号已停用") from exc
     frontend_url = str(getattr(request.app.state, "cloud_frontend_url", "")).rstrip("/")
     response = RedirectResponse(f"{frontend_url}{completed.return_to}", status_code=303)
-    response.set_cookie(
-        key=_SESSION_COOKIE,
-        value=token,
-        httponly=True,
-        secure=bool(getattr(request.app.state, "cloud_secure_cookies", False)),
-        samesite="lax",
-        max_age=int(_SESSION_TTL.total_seconds()),
-        path="/",
-    )
+    _set_session_cookie(response, request, token, _SESSION_TTL)
     response.delete_cookie(
         key=_OAUTH_BINDING_COOKIE,
         path="/api/v1/cloud/auth/github/callback",
@@ -161,18 +225,13 @@ async def development_login(
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="a valid invite is required") from exc
     token = new_browser_session_token()
-    await repository.create_session(
-        user.user_id, token, expires_at=datetime.now(UTC) + _SESSION_TTL
-    )
-    response.set_cookie(
-        key=_SESSION_COOKIE,
-        value=token,
-        httponly=True,
-        secure=bool(getattr(request.app.state, "cloud_secure_cookies", False)),
-        samesite="lax",
-        max_age=int(_SESSION_TTL.total_seconds()),
-        path="/",
-    )
+    try:
+        await repository.create_session(
+            user.user_id, token, expires_at=datetime.now(UTC) + _SESSION_TTL
+        )
+    except DeviceLimitReached as exc:
+        raise HTTPException(status_code=409, detail="最多允许 3 台设备保持登录") from exc
+    _set_session_cookie(response, request, token, _SESSION_TTL)
     return CloudCurrentUserResponse(
         user_id=user.user_id, email=user.email, display_name=user.display_name
     )

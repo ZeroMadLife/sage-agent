@@ -12,7 +12,16 @@ from typing import Any
 
 import httpx
 
-from ..external import ExternalAdapterError, ExternalParseProgress, ProgressCallback
+from ..external import (
+    ExternalAdapterError,
+    ExternalParseCompleted,
+    ExternalParseDispatch,
+    ExternalParsePending,
+    ExternalParseProgress,
+    ExternalParseStage,
+    ExternalParseTicket,
+    ProgressCallback,
+)
 from ..types import ParsedDocument, ParseRequest
 from .document import external_markdown_document
 from .http import download_bounded_text, json_object, request, require_https_url
@@ -29,7 +38,7 @@ class MinerUConfig:
 
 class MinerUAdapter:
     adapter_id = "mineru.agent"
-    adapter_version = "1.0.0"
+    adapter_version = "1.1.0"
     media_types = frozenset({"application/pdf"})
 
     def __init__(
@@ -52,6 +61,24 @@ class MinerUAdapter:
         *,
         progress: ProgressCallback,
     ) -> ParsedDocument:
+        outcome: ExternalParseDispatch = await self.submit(request_value, progress=progress)
+        while isinstance(outcome, ExternalParsePending):
+            await asyncio.sleep(outcome.retry_after_seconds)
+            outcome = await self.resume(
+                request_value,
+                outcome.ticket,
+                progress=progress,
+            )
+        return outcome.document
+
+    async def submit(
+        self,
+        request_value: ParseRequest,
+        *,
+        progress: ProgressCallback,
+    ) -> ExternalParsePending:
+        """Create and upload one task, then return without polling it."""
+
         if len(request_value.payload) > 10 * 1024 * 1024:
             raise ExternalAdapterError(self.adapter_id, "input_too_large", retryable=False)
         file_name = PurePosixPath(request_value.relative_path).name
@@ -71,9 +98,7 @@ class MinerUAdapter:
             )
             data = self._success_data(created)
             task_id = _required_identifier(data, "task_id", self.adapter_id)
-            upload_url = self._asset_url(
-                _required_string(data, "file_url", self.adapter_id)
-            )
+            upload_url = self._asset_url(_required_string(data, "file_url", self.adapter_id))
             await progress(
                 ExternalParseProgress(
                     adapter_id=self.adapter_id,
@@ -95,35 +120,37 @@ class MinerUAdapter:
                     stage="queued",
                 )
             )
-            markdown = await self._poll(client, task_id, progress)
-        try:
-            return external_markdown_document(
-                request_value,
-                markdown,
-                parser_id=self.adapter_id,
-                parser_version=self.adapter_version,
-                title=PurePosixPath(request_value.relative_path).stem,
-                language="zh",
-                confidence=0.9,
-            )
-        except ValueError as exc:
-            raise ExternalAdapterError(
-                self.adapter_id, "invalid_result", retryable=False
-            ) from exc
+        return ExternalParsePending(
+            ticket=ExternalParseTicket(
+                adapter_id=self.adapter_id,
+                adapter_version=self.adapter_version,
+                task_id=task_id,
+            ),
+            stage="queued",
+            retry_after_seconds=self.config.poll_seconds,
+        )
 
-    async def _poll(
+    async def resume(
         self,
-        client: httpx.AsyncClient,
-        task_id: str,
+        request_value: ParseRequest,
+        ticket: ExternalParseTicket,
+        *,
         progress: ProgressCallback,
-    ) -> str:
-        reported_running = False
-        while True:
+    ) -> ExternalParseDispatch:
+        """Poll exactly once so the Knowledge worker never waits on MinerU."""
+
+        if (
+            ticket.adapter_id != self.adapter_id
+            or ticket.adapter_version != self.adapter_version
+            or not _IDENTIFIER.fullmatch(ticket.task_id)
+        ):
+            raise ExternalAdapterError(self.adapter_id, "invalid_ticket", retryable=False)
+        async with self._client_scope() as client:
             response = await request(
                 client,
                 self.adapter_id,
                 "GET",
-                f"{self._base_url}/parse/{task_id}",
+                f"{self._base_url}/parse/{ticket.task_id}",
             )
             data = self._success_data(response)
             state = _required_string(data, "state", self.adapter_id)
@@ -131,31 +158,56 @@ class MinerUAdapter:
                 markdown_url = self._asset_url(
                     _required_string(data, "markdown_url", self.adapter_id)
                 )
-                return await download_bounded_text(
+                markdown = await download_bounded_text(
                     client,
                     self.adapter_id,
                     markdown_url,
                     max_bytes=4 * 1024 * 1024,
                 )
+                try:
+                    return ExternalParseCompleted(
+                        external_markdown_document(
+                            request_value,
+                            markdown,
+                            parser_id=self.adapter_id,
+                            parser_version=self.adapter_version,
+                            title=PurePosixPath(request_value.relative_path).stem,
+                            language="zh",
+                            confidence=0.9,
+                        )
+                    )
+                except ValueError as exc:
+                    raise ExternalAdapterError(
+                        self.adapter_id, "invalid_result", retryable=False
+                    ) from exc
             if state == "failed":
                 raw_code = data.get("err_code")
                 code = f"upstream_{raw_code}" if isinstance(raw_code, int | str) else "failed"
                 retryable = raw_code in {-10001, "-10001"}
                 raise ExternalAdapterError(self.adapter_id, code, retryable=retryable)
-            if state not in {"waiting-file", "uploading", "pending", "running"}:
-                raise ExternalAdapterError(
-                    self.adapter_id, "invalid_state", retryable=False
+            if state not in {
+                "waiting-file",
+                "uploading",
+                "pending",
+                "running",
+                "converting",
+            }:
+                raise ExternalAdapterError(self.adapter_id, "invalid_state", retryable=False)
+            stage: ExternalParseStage = (
+                "running" if state in {"running", "converting"} else "queued"
+            )
+            await progress(
+                ExternalParseProgress(
+                    adapter_id=self.adapter_id,
+                    adapter_version=self.adapter_version,
+                    stage=stage,
                 )
-            if state == "running" and not reported_running:
-                reported_running = True
-                await progress(
-                    ExternalParseProgress(
-                        adapter_id=self.adapter_id,
-                        adapter_version=self.adapter_version,
-                        stage="running",
-                    )
-                )
-            await asyncio.sleep(self.config.poll_seconds)
+            )
+            return ExternalParsePending(
+                ticket=ticket,
+                stage=stage,
+                retry_after_seconds=self.config.poll_seconds,
+            )
 
     def _success_data(self, response: httpx.Response) -> dict[str, Any]:
         payload = json_object(response, self.adapter_id)
@@ -175,9 +227,7 @@ class MinerUAdapter:
                 allow_query=True,
             )
         except ValueError as exc:
-            raise ExternalAdapterError(
-                self.adapter_id, "unsafe_url", retryable=False
-            ) from exc
+            raise ExternalAdapterError(self.adapter_id, "unsafe_url", retryable=False) from exc
 
     @asynccontextmanager
     async def _client_scope(self) -> AsyncIterator[httpx.AsyncClient]:

@@ -102,6 +102,17 @@ class KnowledgeJobItem:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeExternalParseState:
+    item_id: str
+    adapter_id: str
+    adapter_version: str
+    task_id: str
+    state: str
+    submitted_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeJobEvent:
     event_id: str
     job_id: str

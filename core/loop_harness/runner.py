@@ -56,6 +56,8 @@ _SCAN_SCOPES = (
     ("agents", "tests/agents"),
     ("mcp_servers", "tests/mcp_servers"),
 )
+_WRITE_MODES = {"SHADOW_WRITE", "PR_CANARY", "AUTO_MERGE_TIER_A"}
+_PR_MODES = {"PR_CANARY", "AUTO_MERGE_TIER_A"}
 _T = TypeVar("_T")
 
 
@@ -157,6 +159,8 @@ class LoopRunner:
         pr_url: str | None = None
         review_verdict: str | None = None
         pr_created_day: str | None = None
+        candidate_branch: str | None = None
+        candidate_head_sha: str | None = None
         try:
             self.config.ensure_local_directories()
             self.config.validate_static()
@@ -164,12 +168,12 @@ class LoopRunner:
             manifest = validate_manifest(self.config.controller_root, self.config.manifest_path)
             if mode == "DRY_RUN":
                 root_status = self.git.require_clean_integration_root()
-            elif mode in {"SHADOW_WRITE", "PR_CANARY"}:
+            elif mode in _WRITE_MODES:
                 root_status = self.git.require_integration_root(allow_dirty=True)
             else:
                 raise LoopBlockedError("PAUSED_MODE", f"unsupported active mode: {mode}")
             self._fenced(lease, self.worker.probe, expected_mode=mode)
-            if mode == "PR_CANARY":
+            if mode in _PR_MODES:
                 self._fenced(lease, self.github.probe, expected_mode=mode)
                 self._fenced(lease, self.github.require_pr_capacity, expected_mode=mode)
                 self._fenced(lease, self.reviewer.probe, expected_mode=mode)
@@ -375,6 +379,7 @@ class LoopRunner:
                                 "BLOCKED_STATE", "PR daily quota reservation is missing"
                             )
                         branch = f"codex/loop-frontend-{artifact.sha256[:12]}"
+                        candidate_branch = branch
                         commit_message = f"fix(loop): {result.summary}"
                         head_sha = self._fenced(
                             lease,
@@ -387,6 +392,7 @@ class LoopRunner:
                             ),
                             expected_mode=mode,
                         )
+                        candidate_head_sha = head_sha
                         self._fenced(lease, self.git.fetch, expected_mode=mode)
                         push_base_sha = self._fenced(
                             lease, self.git.remote_sha, expected_mode=mode
@@ -439,11 +445,33 @@ class LoopRunner:
                             result=review,
                         )
                         review_verdict = review.verdict
-                        terminal_state = (
-                            "PR_DRAFT_REVIEWED"
-                            if review.verdict == "PASS"
-                            else "PR_DRAFT_CHANGES_REQUESTED"
-                        )
+                        if (
+                            mode == "AUTO_MERGE_TIER_A"
+                            and diff_decision.tier == "A"
+                            and review.verdict == "PASS"
+                        ):
+                            merged_sha = self._fenced(
+                                lease,
+                                lambda: self.github.merge_tier_a(
+                                    receipt=receipt,
+                                    base_sha=base_sha,
+                                    tier=diff_decision.tier,
+                                ),
+                                expected_mode=mode,
+                            )
+                            self.state.record_merge_result(
+                                lease,
+                                pr_number=receipt.number,
+                                head_sha=head_sha,
+                                merged_sha=merged_sha,
+                            )
+                            terminal_state = "PR_AUTO_MERGED"
+                        else:
+                            terminal_state = (
+                                "PR_DRAFT_REVIEWED"
+                                if review.verdict == "PASS"
+                                else "PR_DRAFT_CHANGES_REQUESTED"
+                            )
                         error_code = None
                         summary = review.summary
         except LoopBlockedError as exc:
@@ -463,7 +491,7 @@ class LoopRunner:
         finally:
             if worktree is not None:
                 try:
-                    if mode in {"SHADOW_WRITE", "PR_CANARY"}:
+                    if mode in _WRITE_MODES:
                         self._fenced(
                             lease,
                             lambda: self.git.remove_managed_worktree(
@@ -472,6 +500,14 @@ class LoopRunner:
                         )
                     else:
                         self._fenced(lease, lambda: self.git.remove_clean_worktree(worktree))
+                    if candidate_branch is not None and candidate_head_sha is not None:
+                        self._fenced(
+                            lease,
+                            lambda: self.git.remove_local_candidate_branch(
+                                branch=candidate_branch,
+                                head_sha=candidate_head_sha,
+                            ),
+                        )
                 except (LoopBlockedError, RuntimeError, LeaseLostError) as exc:
                     terminal_state = "BLOCKED"
                     error_code = getattr(exc, "code", "BLOCKED_WORKTREE_CLEANUP")
@@ -644,6 +680,8 @@ def _notification(
         return f"Loop shadow 已验证：{summary[:180]}"
     if terminal_state.startswith("PR_DRAFT_") and pr_url and review_verdict:
         return f"Loop Draft PR 已审查 [{review_verdict}]：{summary[:120]} {pr_url}"
+    if terminal_state == "PR_AUTO_MERGED" and pr_url:
+        return f"Loop Tier A PR 已自动合并：{summary[:120]} {pr_url}"
     if terminal_state != "BLOCKED" or error_code is None:
         return None
     if pr_url:

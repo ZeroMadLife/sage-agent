@@ -31,7 +31,7 @@ class FilesystemKnowledgeSourceAdapter:
 
     adapter_id = "filesystem"
     adapter_version = "1"
-    supported_kinds = frozenset({"markdown", "obsidian"})
+    supported_kinds = frozenset({"markdown", "obsidian", "web"})
 
     async def scan(
         self,

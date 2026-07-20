@@ -14,6 +14,9 @@
 python3 --version
 # 预期输出: Python 3.12.x 或更高
 
+# uv（负责创建统一的项目 .venv）
+uv --version
+
 # Docker + Docker Compose
 docker --version
 docker compose version
@@ -28,8 +31,12 @@ node --version
 
 ```bash
 cd /Users/zeromadlife/Desktop/tour-agent
-pip install -r requirements.txt
+bash scripts/bootstrap-dev-env.sh
+source .venv/bin/activate
 ```
+
+PyCharm 和 VS Code 都应选择项目内的 `.venv/bin/python`。Harness 2.0 依赖
+Python 3.12 与 LangChain 1.x，旧的 `tour-agent-phase1` Python 3.11 环境不再兼容。
 
 ### 1.3 验证代码质量工具链
 
@@ -209,6 +216,16 @@ docker exec tourswarm-redis redis-cli ping
 # 预期: PONG
 
 ```
+
+开发环境启动 FastAPI 时会默认执行幂等 PostgreSQL schema 迁移，IDE 直接启动也会
+补齐新版本增加的表和字段。若需要单独修复或确认迁移，可运行：
+
+```bash
+.venv/bin/python -m db.migrations
+```
+
+`SAGE_AUTO_MIGRATE=false` 可关闭开发环境自动迁移。生产环境不会在应用启动时迁移，
+仍由发布流程在启动新版本前显式执行迁移、检查结果并保留回滚点。
 
 **停止服务：**
 

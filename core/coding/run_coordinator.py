@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from core.coding.persistence.session_event_journal import (
 )
 
 _PROCESS_INSTANCE_ID = f"process-{uuid.uuid4()}"
+logger = logging.getLogger(__name__)
 
 
 class RunCoordinatorError(RuntimeError):
@@ -50,6 +52,7 @@ class RunCoordinator:
         owner_pid: int | None = None,
         subscriber_queue_size: int = 256,
         poll_interval_seconds: float = 0.1,
+        event_observer: Callable[[SessionEvent], Awaitable[None] | None] | None = None,
     ) -> None:
         if subscriber_queue_size < 1:
             raise ValueError("subscriber_queue_size must be positive")
@@ -69,6 +72,7 @@ class RunCoordinator:
         self._cancel_audit_events: dict[str, tuple[RunEvent, ...]] = {}
         self._subscribers: set[asyncio.Queue[SessionEvent]] = set()
         self._last_broadcast_sequence = 0
+        self._event_observer = event_observer
 
     @property
     def active_run_id(self) -> str | None:
@@ -183,8 +187,8 @@ class RunCoordinator:
             except asyncio.CancelledError:
                 try:
                     await _wait_through_cancellation(begin_task)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Run event observer failed (%s)", type(exc).__name__)
                 else:
                     fencing_token = begin_task.result()
                     release_task = asyncio.create_task(
@@ -469,6 +473,13 @@ class RunCoordinator:
                     lease_owner_id=self.owner_id if fencing_token is not None else None,
                     fencing_token=fencing_token,
                 )
+            if self._event_observer is not None:
+                try:
+                    observed = self._event_observer(stored)
+                    if observed is not None:
+                        await observed
+                except Exception:
+                    pass
             self._broadcast(stored)
             return stored
 

@@ -104,8 +104,10 @@ def evaluate_diff(
 
     production = tuple(path for path in actual if _is_production_path(path))
     tests = tuple(path for path in actual if _is_test_path(path))
+    behavior_is_covered = not snapshot.behavior_changed or bool(tests)
     if (
-        not snapshot.behavior_changed
+        production
+        and behavior_is_covered
         and len(production) <= 2
         and len(tests) <= 1
         and snapshot.changed_lines <= 80

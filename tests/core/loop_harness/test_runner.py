@@ -37,6 +37,7 @@ class FakeGit:
         self.snapshot_calls = 0
         self.commits = 0
         self.pushes = 0
+        self.removed_candidate_branches = 0
 
     def require_clean_integration_root(self) -> RootStatus:
         if self.blocked:
@@ -104,6 +105,11 @@ class FakeGit:
         assert branch.startswith("codex/loop-frontend-")
         assert head_sha == "b" * 40
         self.pushes += 1
+
+    def remove_local_candidate_branch(self, *, branch: str, head_sha: str) -> None:
+        assert branch.startswith("codex/loop-frontend-")
+        assert head_sha == "b" * 40
+        self.removed_candidate_branches += 1
 
 
 def test_scan_scopes_start_with_bounded_frontend_components() -> None:
@@ -175,6 +181,7 @@ class FakeGitHub:
         self.probes = 0
         self.capacity_checks = 0
         self.created = 0
+        self.merged = 0
 
     def probe(self) -> None:
         self.probes += 1
@@ -190,6 +197,16 @@ class FakeGitHub:
             branch,
             head_sha,
         )
+
+    def merge_tier_a(
+        self, *, receipt: PullRequestReceipt, base_sha: str, tier: str
+    ) -> str:
+        assert receipt.number == 12
+        assert receipt.head_sha == "b" * 40
+        assert base_sha == "a" * 40
+        assert tier == "A"
+        self.merged += 1
+        return "c" * 40
 
 
 class FakeReviewer:
@@ -480,5 +497,85 @@ def test_runner_pr_canary_binds_draft_and_review_to_exact_head(
     assert report.state == "PR_DRAFT_REVIEWED"
     assert report.notification and "pull/12" in report.notification
     assert git.commits == git.pushes == 1
+    assert git.removed_candidate_branches == 1
     assert github.created == reviewer.reviews == 1
+    assert github.merged == 0
+    assert state.status()["open_pull_requests"] == 1
+
+
+def test_runner_auto_merges_only_tier_a_after_independent_review(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("core.loop_harness.runner._SCAN_SCOPES", (("frontend/src",),))
+    config = _config(tmp_path)
+    state = LoopState(config.database_path)
+    state.initialize()
+    state.set_enabled(True, mode="AUTO_MERGE_TIER_A")
+    candidate_path = "frontend/src/views/KnowledgeView.vue"
+    scanner_result = WorkerResult(
+        verdict="FRONTEND_CANDIDATE",
+        summary="修复知识库空状态间距",
+        evidence=(f"{candidate_path}:20",),
+        reproduction=("打开空知识库页面",),
+        changed_files=(candidate_path,),
+        tests=("KnowledgeView.test.ts",),
+        risk_reasons=(),
+        suggested_tier="A",
+        confidence=0.95,
+    )
+    github = FakeGitHub()
+
+    report = LoopRunner(
+        config,
+        state,
+        git=FakeGit(snapshot=DiffSnapshot((candidate_path,), 4, 2, (), (), False)),
+        worker=FakeWorker(scanner_result),
+        fixer=FakeFixer(FixerResult("已修复知识库空状态间距", (candidate_path,), (), ())),
+        validator=FakeValidator(),
+        artifact_store=FakeArtifactStore(config.reports_root),
+        github=github,
+        reviewer=FakeReviewer(),
+    ).run()
+
+    assert report.state == "PR_AUTO_MERGED"
+    assert report.notification and "已自动合并" in report.notification
+    assert github.created == github.merged == 1
+    assert state.status()["open_pull_requests"] == 0
+
+
+def test_runner_keeps_tier_b_draft_for_manual_merge(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("core.loop_harness.runner._SCAN_SCOPES", (("frontend/src",),))
+    config = _config(tmp_path)
+    state = LoopState(config.database_path)
+    state.initialize()
+    state.set_enabled(True, mode="AUTO_MERGE_TIER_A")
+    candidate_path = "frontend/src/views/KnowledgeView.vue"
+    scanner_result = WorkerResult(
+        verdict="FRONTEND_CANDIDATE",
+        summary="修复知识库交互状态",
+        evidence=(f"{candidate_path}:20",),
+        reproduction=("切换知识库节点",),
+        changed_files=(candidate_path,),
+        tests=("KnowledgeView.test.ts",),
+        risk_reasons=("包含行为变化",),
+        suggested_tier="B",
+        confidence=0.95,
+    )
+    github = FakeGitHub()
+
+    report = LoopRunner(
+        config,
+        state,
+        git=FakeGit(snapshot=DiffSnapshot((candidate_path,), 4, 2, (), (), True)),
+        worker=FakeWorker(scanner_result),
+        fixer=FakeFixer(FixerResult("已修复知识库交互状态", (candidate_path,), (), ())),
+        validator=FakeValidator(),
+        artifact_store=FakeArtifactStore(config.reports_root),
+        github=github,
+        reviewer=FakeReviewer(),
+    ).run()
+
+    assert report.state == "PR_DRAFT_REVIEWED"
+    assert github.created == 1
+    assert github.merged == 0
     assert state.status()["open_pull_requests"] == 1

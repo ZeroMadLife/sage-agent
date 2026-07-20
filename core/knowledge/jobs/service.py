@@ -8,16 +8,21 @@ import hashlib
 import logging
 import uuid
 from collections.abc import Mapping
+from datetime import UTC, datetime
 
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 from core.knowledge.parsing import (
     DocumentParseError,
     DocumentRequiresOcrError,
     ExternalParseCoordinator,
+    ExternalParsePending,
     ExternalParsePolicyError,
     ExternalParseProgress,
+    ExternalParseTicket,
     ExternalParsingFailedError,
     ExternalParsingTransientError,
+    ParsedDocument,
+    ParseRequest,
     ParserNotFoundError,
 )
 from core.knowledge.sources import (
@@ -39,7 +44,7 @@ from .types import (
     ScannedKnowledgeFile,
 )
 
-PIPELINE_VERSION = "p2.2-b5-autonomy-policy-v1"
+PIPELINE_VERSION = "h2.5b2-async-document-parsing-v1"
 logger = logging.getLogger(__name__)
 
 
@@ -152,6 +157,22 @@ class KnowledgeJobService:
         )
         await self.enqueue_ready()
         return job
+
+    async def register_source_root(self, source: KnowledgeSourceRoot) -> KnowledgeSourceRoot:
+        """Register one server-owned root and bind its connector durably."""
+
+        registered = self.store.register_source_root(source)
+        adapter = self.source_adapters.resolve(registered)
+        self._source_ids[registered.root_id] = await self.repository.ensure_workspace(
+            self.workspace_id,
+            self.store.workspace_root.name or "knowledge",
+            root_id=registered.root_id,
+            source_kind=registered.kind,
+            source_label=registered.label,
+            adapter_id=adapter.adapter_id,
+            adapter_version=adapter.adapter_version,
+        )
+        return registered
 
     async def preview_sync(
         self, source_root_id: str, relative_directory: str = "."
@@ -338,39 +359,17 @@ class KnowledgeJobService:
             )
             artifact = await adapter.fetch(source_root, descriptor)
             await self.repository.start_parsing(item.item_id, worker_id=self.worker_id)
-            source = await asyncio.to_thread(
-                self.store.load_artifact, job.source_root_id, artifact
-            )
+            source = await asyncio.to_thread(self.store.load_artifact, job.source_root_id, artifact)
             request = source.parse_request()
-            try:
-                document = await asyncio.to_thread(self.store.parser_registry.parse, request)
-            except DocumentRequiresOcrError:
-                if self.external_parser is None:
-                    raise
-
-                async def report(progress: ExternalParseProgress) -> None:
-                    await self.repository.record_parser_progress(
-                        item.item_id,
-                        worker_id=self.worker_id,
-                        adapter_id=progress.adapter_id,
-                        adapter_version=progress.adapter_version,
-                        stage=progress.stage,
-                        completed_units=progress.completed_units,
-                        total_units=progress.total_units,
-                        reason_code=progress.reason_code,
-                    )
-
-                document = await self.external_parser.parse(
-                    job.source_root_id,
-                    request,
-                    progress=report,
-                )
-            await self.repository.start_understanding(
-                item.item_id, worker_id=self.worker_id
+            document = await self._parse_document(
+                item.item_id,
+                job.source_root_id,
+                request,
             )
-            prepared = await asyncio.to_thread(
-                self.store.prepare_parsed_source, source, document
-            )
+            if document is None:
+                return
+            await self.repository.start_understanding(item.item_id, worker_id=self.worker_id)
+            prepared = await asyncio.to_thread(self.store.prepare_parsed_source, source, document)
             if prepared.source_revision != item.source_revision:
                 raise KnowledgeJobConflictError("source revision changed; create a new batch")
             if await self.repository.is_cancel_requested(item.item_id):
@@ -385,9 +384,7 @@ class KnowledgeJobService:
                 worker_id=self.worker_id,
                 proposal_id=proposal.proposal_id,
             )
-            await self._acknowledge_source(
-                adapter, source_root, descriptor, proposal.proposal_id
-            )
+            await self._acknowledge_source(adapter, source_root, descriptor, proposal.proposal_id)
         except Exception as exc:
             delay = self.retry_base_seconds * (2 ** max(item.attempts - 1, 0))
             await self.repository.fail_item(
@@ -402,6 +399,127 @@ class KnowledgeJobService:
             heartbeat_stop.set()
             await heartbeat
             await self.queue.acknowledge(message)
+
+    async def _parse_document(
+        self,
+        item_id: str,
+        source_root_id: str,
+        request: ParseRequest,
+    ) -> ParsedDocument | None:
+        external_error: Exception | None = None
+        external_state = await self.repository.get_external_parse_state(item_id)
+
+        async def report(progress: ExternalParseProgress) -> None:
+            await self.repository.record_parser_progress(
+                item_id,
+                worker_id=self.worker_id,
+                adapter_id=progress.adapter_id,
+                adapter_version=progress.adapter_version,
+                stage=progress.stage,
+                completed_units=progress.completed_units,
+                total_units=progress.total_units,
+                reason_code=progress.reason_code,
+            )
+
+        if self.external_parser is not None and self.external_parser.supports(request.media_type):
+            ticket: ExternalParseTicket | None = None
+            if external_state is not None and external_state.state in {"queued", "running"}:
+                elapsed = (datetime.now(UTC) - external_state.submitted_at).total_seconds()
+                if elapsed >= self.external_parser.policy.timeout_seconds:
+                    external_error = ExternalParsingTransientError(
+                        "external document parsing exceeded its total wait limit"
+                    )
+                    await self.repository.mark_external_parse_terminal(
+                        item_id,
+                        worker_id=self.worker_id,
+                        state="timed_out",
+                        reason_code="timeout",
+                    )
+                else:
+                    ticket = ExternalParseTicket(
+                        adapter_id=external_state.adapter_id,
+                        adapter_version=external_state.adapter_version,
+                        task_id=external_state.task_id,
+                    )
+            try:
+                if external_error is None:
+                    outcome = await self.external_parser.dispatch(
+                        source_root_id,
+                        request,
+                        ticket=ticket,
+                        progress=report,
+                    )
+                    if isinstance(outcome, ExternalParsePending):
+                        if external_state is not None and (
+                            outcome.ticket.adapter_id != external_state.adapter_id
+                            or outcome.ticket.adapter_version != external_state.adapter_version
+                            or outcome.ticket.task_id != external_state.task_id
+                        ):
+                            await self.repository.mark_external_parse_terminal(
+                                item_id,
+                                worker_id=self.worker_id,
+                                state="failed",
+                                reason_code="adapter_fallback",
+                            )
+                        await self.repository.defer_external_parse(
+                            item_id,
+                            worker_id=self.worker_id,
+                            adapter_id=outcome.ticket.adapter_id,
+                            adapter_version=outcome.ticket.adapter_version,
+                            task_id=outcome.ticket.task_id,
+                            state="running" if outcome.stage == "running" else "queued",
+                            retry_after_seconds=outcome.retry_after_seconds,
+                        )
+                        return None
+                    if external_state is not None:
+                        terminal_state = (
+                            "completed"
+                            if outcome.document.provenance.parser_id == external_state.adapter_id
+                            else "fallback"
+                        )
+                        await self.repository.mark_external_parse_terminal(
+                            item_id,
+                            worker_id=self.worker_id,
+                            state=terminal_state,
+                        )
+                    return outcome.document
+            except (
+                ExternalParsePolicyError,
+                ExternalParsingFailedError,
+                ExternalParsingTransientError,
+            ) as exc:
+                external_error = exc
+                if external_state is not None and external_state.state in {"queued", "running"}:
+                    await self.repository.mark_external_parse_terminal(
+                        item_id,
+                        worker_id=self.worker_id,
+                        state="failed",
+                        reason_code=_error_code(exc),
+                    )
+
+        if external_error is not None:
+            await self.repository.record_parser_progress(
+                item_id,
+                worker_id=self.worker_id,
+                adapter_id="sage.pdf.text",
+                adapter_version="1.0.0",
+                stage="fallback",
+                reason_code=_error_code(external_error),
+            )
+        try:
+            document = await asyncio.to_thread(self.store.parser_registry.parse, request)
+        except DocumentRequiresOcrError as local_error:
+            if external_error is not None:
+                raise external_error from local_error
+            raise
+        if external_error is not None and external_state is not None:
+            await self.repository.mark_external_parse_terminal(
+                item_id,
+                worker_id=self.worker_id,
+                state="fallback",
+                reason_code=_error_code(external_error),
+            )
+        return document
 
     async def _heartbeat(self, item_id: str, stop: asyncio.Event) -> None:
         interval = max(self.lease_seconds / 3, 0.05)

@@ -8,9 +8,7 @@ from typing import Annotated, Literal, NotRequired, TypedDict
 from langchain.agents import AgentState
 
 GoalStatus = Literal["pending", "in_progress", "succeeded", "failed", "cancelled"]
-DelegationStatus = Literal[
-    "pending", "running", "succeeded", "failed", "cancelled", "timed_out"
-]
+DelegationStatus = Literal["pending", "running", "succeeded", "failed", "cancelled", "timed_out"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
@@ -22,6 +20,10 @@ MAX_DELEGATIONS = 50
 MAX_SKILL_CONTEXT = 8
 MAX_MEMORY_REFS = 32
 MAX_PROMOTED_TOOLS = 64
+MAX_EVIDENCE_REFS = 128
+MAX_EVIDENCE_FINGERPRINTS = 256
+LEGACY_CHILD_MODEL_CALLS = 18
+LEGACY_CHILD_TOOL_CALLS = 16
 
 
 class ThreadDataState(TypedDict, total=False):
@@ -77,9 +79,20 @@ class DelegationEntry(TypedDict, total=False):
     status: DelegationStatus
     result_brief: str
     result_ref: str
+    error_code: str
     tool_scope: list[str]
     token_budget: int
     timeout_seconds: float
+    reserved_tokens: int
+    reserved_model_calls: int
+    reserved_tool_calls: int
+    token_usage: int
+    model_calls: int
+    tool_count: int
+    evidence_refs: list[str]
+    query_fingerprints: list[str]
+    source_fingerprints: list[str]
+    mastery_evidence: list[dict[str, object]]
     created_at: str
 
 
@@ -113,10 +126,39 @@ class ApprovalContext(TypedDict, total=False):
 
 
 class PromotedTools(TypedDict):
-    """Deferred tool names authorized for one exact catalog revision."""
+    """Stable capability IDs authorized for one exact catalog revision."""
 
     catalog_hash: str
     names: list[str]
+    capability_ids: NotRequired[list[str]]
+
+
+def _usage_count(entry: Mapping[str, object], key: str) -> int:
+    value = entry.get(key)
+    return value if type(value) is int and value >= 0 else 0
+
+
+def delegation_budget_usage(entry: Mapping[str, object]) -> tuple[int, int, int]:
+    """Settle one current or legacy child ledger entry without undercounting."""
+    status = str(entry.get("status") or "")
+    if status in {"pending", "running"}:
+        return (
+            _usage_count(entry, "reserved_tokens"),
+            _usage_count(entry, "reserved_model_calls"),
+            _usage_count(entry, "reserved_tool_calls"),
+        )
+    token_usage = (
+        _usage_count(entry, "token_usage")
+        if "token_usage" in entry
+        else _usage_count(entry, "token_budget")
+    )
+    model_calls = (
+        _usage_count(entry, "model_calls") if "model_calls" in entry else LEGACY_CHILD_MODEL_CALLS
+    )
+    tool_calls = (
+        _usage_count(entry, "tool_count") if "tool_count" in entry else LEGACY_CHILD_TOOL_CALLS
+    )
+    return token_usage, model_calls, tool_calls
 
 
 def merge_thread_data(
@@ -210,7 +252,11 @@ def merge_goal(existing: GoalState | None, new: GoalState | None) -> GoalState |
     new_status = new.get("status")
     if old_status in TERMINAL_GOAL_STATUSES and new_status not in TERMINAL_GOAL_STATUSES:
         return existing
-    if old_status in TERMINAL_GOAL_STATUSES and new_status in TERMINAL_GOAL_STATUSES and old_status != new_status:
+    if (
+        old_status in TERMINAL_GOAL_STATUSES
+        and new_status in TERMINAL_GOAL_STATUSES
+        and old_status != new_status
+    ):
         raise ValueError(f"Conflicting terminal goal statuses: {old_status!r} != {new_status!r}")
     return {**existing, **new}
 
@@ -233,7 +279,11 @@ def merge_delegations(
         if not entry_id or not status:
             raise ValueError("Delegation entries require id and status")
         previous = by_id.get(entry_id)
-        if previous and previous.get("status") in TERMINAL_DELEGATION_STATUSES and status not in TERMINAL_DELEGATION_STATUSES:
+        if (
+            previous
+            and previous.get("status") in TERMINAL_DELEGATION_STATUSES
+            and status not in TERMINAL_DELEGATION_STATUSES
+        ):
             continue
         if (
             previous
@@ -250,6 +300,38 @@ def merge_delegations(
             entry = {**entry, "created_at": previous["created_at"]}
         by_id[entry_id] = entry
     return [by_id[entry_id] for entry_id in order[-MAX_DELEGATIONS:]]
+
+
+def merge_evidence_refs(
+    existing: list[str] | None,
+    new: list[str] | None,
+) -> list[str]:
+    """Merge evidence refs deterministically, independent of child completion order."""
+    if new is None:
+        return sorted(set(existing or []))[-MAX_EVIDENCE_REFS:]
+    return sorted(
+        {
+            str(item).strip()
+            for item in [*(existing or []), *new]
+            if isinstance(item, str) and item.strip()
+        }
+    )[-MAX_EVIDENCE_REFS:]
+
+
+def merge_evidence_fingerprints(
+    existing: list[str] | None,
+    new: list[str] | None,
+) -> list[str]:
+    """Merge opaque evidence breaker fingerprints without retaining raw queries."""
+    if new is None:
+        return sorted(set(existing or []))[-MAX_EVIDENCE_FINGERPRINTS:]
+    return sorted(
+        {
+            str(item).strip()
+            for item in [*(existing or []), *new]
+            if isinstance(item, str) and item.strip()
+        }
+    )[-MAX_EVIDENCE_FINGERPRINTS:]
 
 
 def _normalize_skill(entry: Mapping[str, object]) -> SkillRef:
@@ -346,7 +428,9 @@ def merge_approval_context(
         and new_status in TERMINAL_APPROVAL_STATUSES
         and old_status != new_status
     ):
-        raise ValueError(f"Conflicting terminal approval statuses: {old_status!r} != {new_status!r}")
+        raise ValueError(
+            f"Conflicting terminal approval statuses: {old_status!r} != {new_status!r}"
+        )
     return {**existing, **new}
 
 
@@ -362,12 +446,24 @@ def merge_promoted_tools(
     if not catalog_hash:
         raise ValueError("Promoted tools require a catalog_hash")
     names = [
-        name
-        for name in dict.fromkeys(str(item).strip() for item in new.get("names", []))
-        if name
+        name for name in dict.fromkeys(str(item).strip() for item in new.get("names", [])) if name
     ]
+    capability_ids = [
+        capability_id
+        for capability_id in dict.fromkeys(
+            str(item).strip() for item in new.get("capability_ids", [])
+        )
+        if capability_id
+    ]
+    includes_capability_ids = "capability_ids" in new
     if existing is None or existing.get("catalog_hash") != catalog_hash:
-        return {"catalog_hash": catalog_hash, "names": names[-MAX_PROMOTED_TOOLS:]}
+        replacement: PromotedTools = {
+            "catalog_hash": catalog_hash,
+            "names": names[-MAX_PROMOTED_TOOLS:],
+        }
+        if includes_capability_ids:
+            replacement["capability_ids"] = capability_ids[-MAX_PROMOTED_TOOLS:]
+        return replacement
 
     merged = list(
         dict.fromkeys(
@@ -377,10 +473,23 @@ def merge_promoted_tools(
             ]
         )
     )
-    return {
+    merged_result: PromotedTools = {
         "catalog_hash": catalog_hash,
         "names": [name for name in merged if name][-MAX_PROMOTED_TOOLS:],
     }
+    if includes_capability_ids or "capability_ids" in existing:
+        merged_capability_ids = list(
+            dict.fromkeys(
+                [
+                    *(str(item).strip() for item in existing.get("capability_ids", [])),
+                    *capability_ids,
+                ]
+            )
+        )
+        merged_result["capability_ids"] = [item for item in merged_capability_ids if item][
+            -MAX_PROMOTED_TOOLS:
+        ]
+    return merged_result
 
 
 class SageThreadState(AgentState):
@@ -393,6 +502,13 @@ class SageThreadState(AgentState):
     todos: Annotated[NotRequired[list[TodoItem] | None], merge_todos]
     goal: Annotated[NotRequired[GoalState | None], merge_goal]
     delegations: Annotated[NotRequired[list[DelegationEntry] | None], merge_delegations]
+    evidence_refs: Annotated[NotRequired[list[str] | None], merge_evidence_refs]
+    evidence_query_fingerprints: Annotated[
+        NotRequired[list[str] | None], merge_evidence_fingerprints
+    ]
+    evidence_source_fingerprints: Annotated[
+        NotRequired[list[str] | None], merge_evidence_fingerprints
+    ]
     skill_context: Annotated[NotRequired[list[SkillRef] | None], merge_skill_context]
     memory_refs: Annotated[NotRequired[list[MemoryRef] | None], merge_memory_refs]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
@@ -400,8 +516,14 @@ class SageThreadState(AgentState):
     summary_text: NotRequired[str | None]
     budget_run_id: NotRequired[str]
     run_token_usage: NotRequired[int]
+    run_token_limit: NotRequired[int]
     run_model_calls: NotRequired[int]
+    run_model_call_limit: NotRequired[int]
     run_tool_calls: NotRequired[int]
+    run_tool_call_limit: NotRequired[int]
+    run_child_token_usage: NotRequired[int]
+    run_child_model_calls: NotRequired[int]
+    run_child_tool_calls: NotRequired[int]
 
 
 __all__ = [
@@ -418,9 +540,12 @@ __all__ = [
     "SkillRef",
     "ThreadDataState",
     "TodoItem",
+    "delegation_budget_usage",
     "merge_approval_context",
     "merge_artifacts",
     "merge_delegations",
+    "merge_evidence_fingerprints",
+    "merge_evidence_refs",
     "merge_goal",
     "merge_memory_refs",
     "merge_promoted_tools",

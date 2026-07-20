@@ -8,6 +8,7 @@ import type {
 } from '../../types/api'
 import KnowledgeGraphCanvas from './KnowledgeGraphCanvas.vue'
 import KnowledgeInspector from './KnowledgeInspector.vue'
+import { selectedNodePresentation } from './knowledgeGraphPresentation'
 
 vi.mock('../../api/knowledge', () => ({
   fetchKnowledgeCitation: vi.fn(),
@@ -99,7 +100,15 @@ beforeEach(() => {
   })
 })
 
-it('degrades the graph to a searchable node list on mobile', async () => {
+it('keeps the selected node color and disables Sigma white highlight overlays', () => {
+  const presentation = selectedNodePresentation('#16a085', 5)
+  expect(presentation.color).toBe('#16a085')
+  expect(presentation.size).toBeCloseTo(6.9)
+  expect(presentation.highlighted).toBe(false)
+  expect(presentation.zIndex).toBe(6)
+})
+
+it('keeps the interactive graph on mobile within the compact performance budget', async () => {
   const wrapper = mount(KnowledgeGraphCanvas, {
     props: {
       graph, communities, selectedNodeId: null, colorMode: 'community',
@@ -107,8 +116,35 @@ it('degrades the graph to a searchable node list on mobile', async () => {
     },
   })
 
-  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(2)
-  await wrapper.setProps({ visibleKinds: ['page'], query: 'agent' })
+  expect(wrapper.find('.mobile-node-list').exists()).toBe(false)
+  expect(wrapper.get('.sigma-container').attributes('aria-label')).toBe('本地知识图谱')
+  wrapper.unmount()
+})
+
+it('degrades an oversized compact graph to a bounded node list', async () => {
+  const oversizedGraph: KnowledgeGraph = {
+    snapshot: { ...snapshot, node_count: 1201, edge_count: 0 },
+    nodes: Array.from({ length: 1201 }, (_, index) => ({
+      ...pageNode,
+      node_id: `page-${index + 1}`,
+      page_id: `page-${index + 1}`,
+      label: index === 0 ? 'Agent Harness' : `Page ${index + 1}`,
+    })),
+    edges: [],
+    offset: 0,
+    next_offset: null,
+    has_more: false,
+  }
+  const wrapper = mount(KnowledgeGraphCanvas, {
+    props: {
+      graph: oversizedGraph, communities: null, selectedNodeId: null, colorMode: 'community',
+      visibleKinds: ['page'], query: '',
+    },
+  })
+
+  expect(wrapper.find('.sigma-container').exists()).toBe(false)
+  expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(80)
+  await wrapper.setProps({ query: 'agent' })
   await flushPromises()
   expect(wrapper.findAll('.mobile-node-list button')).toHaveLength(1)
   await wrapper.get('.mobile-node-list button').trigger('click')
@@ -144,6 +180,8 @@ it('summarizes the selected neighborhood without exposing every graph label', ()
   expect(wrapper.get('.graph-focus-summary').text()).toContain('Agent Harness')
   expect(wrapper.get('.graph-focus-summary').text()).toContain('1 条直接连接')
   expect(wrapper.find('.graph-global-summary').exists()).toBe(false)
+  expect(wrapper.get('.graph-legend-panel').attributes('data-mode')).toBe('community')
+  expect(wrapper.get('.graph-legend-panel').text()).toContain('Harness2')
   wrapper.unmount()
 })
 
@@ -190,6 +228,8 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   await wrapper.findAll('.inspector-tabs button')[3].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
   expect(wrapper.emitted('select')).toEqual([['source-1']])
+  await wrapper.get('button[aria-label="在对话中研究此节点"]').trigger('click')
+  expect(wrapper.emitted('research')).toHaveLength(1)
   await wrapper.get('.knowledge-inspector').trigger('keydown', { key: 'Escape' })
   expect(wrapper.emitted('close')).toHaveLength(1)
   wrapper.unmount()

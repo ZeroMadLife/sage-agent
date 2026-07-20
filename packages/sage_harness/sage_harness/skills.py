@@ -63,6 +63,22 @@ def parse_skill_activation(text: object) -> tuple[str, str] | None:
     return match.group(1), (match.group(2) or "")[:_MAX_ARGUMENT_CHARS]
 
 
+def resolve_skill_allowed_tools(
+    catalog: SkillCatalog,
+    text: object,
+) -> frozenset[str] | None:
+    """Return the exact active Skill allowlist without exposing its prompt body."""
+    parsed = parse_skill_activation(text)
+    if parsed is None:
+        return None
+    name, arguments = parsed
+    skill = catalog.get(name)
+    activation = _skill_activation(skill, arguments) if skill is not None else None
+    if activation is None or activation.name != name:
+        return None
+    return activation.allowed_tools
+
+
 def _skill_field(skill: object, name: str, default: object = "") -> object:
     if isinstance(skill, Mapping):
         return skill.get(name, default)
@@ -275,4 +291,10 @@ class SkillActivationMiddleware(AgentMiddleware[SageThreadState, HarnessRunConte
         return blocked if blocked is not None else await handler(request)
 
 
-__all__ = ["SkillActivation", "SkillActivationMiddleware", "SkillCatalog", "parse_skill_activation"]
+__all__ = [
+    "SkillActivation",
+    "SkillActivationMiddleware",
+    "SkillCatalog",
+    "parse_skill_activation",
+    "resolve_skill_allowed_tools",
+]

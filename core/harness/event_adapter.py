@@ -18,7 +18,16 @@ from core.coding.run_coordinator import RunEvent
 
 _PUBLIC_TOOL_CONTENT_LIMIT = 4_000
 _PUBLIC_KNOWLEDGE_CITATION_LIMIT = 12
+_PUBLIC_WEB_CITATION_LIMIT = 8
 _KNOWLEDGE_STATUSES = frozenset({"evidence_found", "no_evidence", "unavailable"})
+_CAPABILITY_EVENT_TYPES = frozenset(
+    {
+        "capability_catalog_updated",
+        "capability_selected",
+        "capability_selection_failed",
+        "capability_invocation_completed",
+    }
+)
 _RUN_BUDGET_NOTICES = {
     "model_call_capped": "本轮已达到模型调用安全上限，已停止继续调用工具。",
     "token_capped": "本轮已达到 token 安全上限，已停止继续调用工具。",
@@ -26,6 +35,72 @@ _RUN_BUDGET_NOTICES = {
     "step_capped": "本轮已达到执行步数安全上限，已停止继续执行。",
     "time_capped": "本轮已达到执行时长安全上限，已停止继续执行。",
 }
+_LEGACY_PROTOCOL_TAGS = ("<tool>", "</tool>", "<final>", "</final>")
+
+
+class _LegacyProtocolFilter:
+    """Strip the legacy XML response protocol across arbitrary stream chunks."""
+
+    def __init__(self) -> None:
+        self._mode = "text"
+        self._buffer = ""
+
+    def feed(self, value: str, *, final: bool = False) -> str:
+        self._buffer += value
+        output: list[str] = []
+        while self._buffer:
+            if self._mode in {"tool", "final"}:
+                closing = f"</{self._mode}>"
+                index = self._buffer.lower().find(closing)
+                if index < 0:
+                    if final and self._mode == "final":
+                        output.append(self._buffer)
+                        self._buffer = ""
+                    elif final:
+                        self._buffer = ""
+                    break
+                if self._mode == "final":
+                    output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(closing) :]
+                self._mode = "text"
+                continue
+
+            lowered = self._buffer.lower()
+            candidates = [
+                (index, tag)
+                for tag in _LEGACY_PROTOCOL_TAGS
+                if (index := lowered.find(tag)) >= 0
+            ]
+            if candidates:
+                index, tag = min(candidates, key=lambda item: item[0])
+                output.append(self._buffer[:index])
+                self._buffer = self._buffer[index + len(tag) :]
+                self._mode = "tool" if tag == "<tool>" else "final" if tag == "<final>" else "text"
+                continue
+            if final:
+                output.append(self._buffer)
+                self._buffer = ""
+                break
+            keep = max(
+                (
+                    len(prefix)
+                    for tag in _LEGACY_PROTOCOL_TAGS
+                    for prefix_length in range(1, len(tag))
+                    if (prefix := self._buffer[-prefix_length:]).lower() == tag[:prefix_length]
+                ),
+                default=0,
+            )
+            if keep:
+                output.append(self._buffer[:-keep])
+                self._buffer = self._buffer[-keep:]
+                break
+            else:
+                output.append(self._buffer)
+                self._buffer = ""
+        return "".join(output)
+
+    def finish(self) -> str:
+        return self.feed("", final=True)
 
 
 class HarnessEventAdapter:
@@ -52,6 +127,8 @@ class HarnessEventAdapter:
         self._pending_model_tool_calls: dict[str, dict[str, Any]] = {}
         self._custom_tool_results: set[str] = set()
         self._seen_budget_signatures: set[str] = set()
+        self._seen_budget_usage_signatures: set[str] = set()
+        self._assistant_protocol_filter = _LegacyProtocolFilter()
 
     def adapt(self, item: HarnessStreamItem) -> tuple[RunEvent, ...]:
         """Return zero or more Sage events for one graph stream item."""
@@ -62,6 +139,20 @@ class HarnessEventAdapter:
         if item.mode == "values":
             return self._values(item.payload, item.source_event_id)
         return self._custom(item.payload, item.source_event_id)
+
+    def finish(self) -> tuple[RunEvent, ...]:
+        """Flush a trailing public fragment after the graph stream closes."""
+        content = self._assistant_protocol_filter.finish()
+        if not content:
+            return ()
+        return (
+            self._event(
+                "assistant",
+                "running",
+                {"type": "text_delta", "delta": content, "metadata": {}},
+                source_event_id=f"harness:{self.run_id}:protocol-flush",
+            ),
+        )
 
     def _messages(self, payload: Any, source_event_id: str) -> tuple[RunEvent, ...]:
         if not isinstance(payload, tuple) or not payload:
@@ -90,6 +181,7 @@ class HarnessEventAdapter:
                         "message_id": projected.get("id", ""),
                     }
                 return ()
+            content = self._assistant_protocol_filter.feed(str(content))
             if content:
                 return (
                     self._event(
@@ -144,6 +236,21 @@ class HarnessEventAdapter:
                         source_event_id=f"{source_event_id}:memory-proposal",
                     )
                 )
+            source_proposal_payload = _knowledge_source_proposal_payload(
+                tool_name=tool_name,
+                content=content,
+                session_id=self.session_id,
+                run_id=self.run_id,
+            )
+            if source_proposal_payload is not None:
+                events.append(
+                    self._event(
+                        "proposal",
+                        "pending",
+                        source_proposal_payload,
+                        source_event_id=f"{source_event_id}:knowledge-source-proposal",
+                    )
+                )
             return tuple(events)
         return ()
 
@@ -167,8 +274,12 @@ class HarnessEventAdapter:
             source_event_id=source_event_id,
         )
         interrupt = _graph_interrupt(payload)
+        budget_events = (
+            *self._budget_usage_from_state(payload, source_event_id),
+            *self._budget_from_state(payload, source_event_id),
+        )
         if interrupt is None:
-            return (*self._budget_from_state(payload, source_event_id), checkpoint_event)
+            return (*budget_events, checkpoint_event)
         interrupt_payload, interrupt_id = interrupt
         interrupt_event_type = str(interrupt_payload.get("type", "graph_interrupt"))
         if interrupt_event_type == "approval_required":
@@ -189,9 +300,10 @@ class HarnessEventAdapter:
                 checkpoint_event,
             )
             if approval_call is None:
-                return approval_events
-            return (approval_call, *approval_events)
+                return (*budget_events, *approval_events)
+            return (*budget_events, approval_call, *approval_events)
         return (
+            *budget_events,
             self._event(
                 "harness",
                 "blocked",
@@ -227,6 +339,23 @@ class HarnessEventAdapter:
                     source_event_id=source_event_id,
                 ),
             )
+        if event_type in _CAPABILITY_EVENT_TYPES:
+            capability_payload = _public_capability_payload(payload)
+            if capability_payload is None:
+                return ()
+            return (
+                self._event(
+                    "harness",
+                    (
+                        "error"
+                        if event_type == "capability_selection_failed"
+                        or capability_payload.get("status") == "failure"
+                        else "completed"
+                    ),
+                    capability_payload,
+                    source_event_id=source_event_id,
+                ),
+            )
         if event_type in {
             "approval_required",
             "approval_granted",
@@ -239,8 +368,13 @@ class HarnessEventAdapter:
             "subagent_failed",
             "subagent_cancelled",
             "subagent_timed_out",
+            "subagent_progress",
         }:
-            event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
+            event_payload = (
+                _public_subagent_progress(payload)
+                if event_type == "subagent_progress"
+                else {str(key): _bounded_value(value) for key, value in payload.items()}
+            )
             if event_type.startswith("subagent"):
                 event_payload.setdefault("agent_run_id", event_payload.get("child_run_id", ""))
             if event_type == "tool_call":
@@ -296,7 +430,8 @@ class HarnessEventAdapter:
                         "blocked"
                         if event_type == "approval_required"
                         else "running"
-                        if event_type in {"agent_started", "subagent_started"}
+                        if event_type
+                        in {"agent_started", "subagent_started", "subagent_progress"}
                         else "error"
                         if event_type == "subagent_cancelled"
                         else "error"
@@ -344,6 +479,59 @@ class HarnessEventAdapter:
         return self._budget_events(
             {"type": "run_budget_exhausted", **harness_meta},
             f"{source_event_id}:budget",
+        )
+
+    def _budget_usage_from_state(
+        self,
+        payload: Any,
+        source_event_id: str,
+    ) -> tuple[RunEvent, ...]:
+        if not isinstance(payload, Mapping):
+            return ()
+        used_tokens = _public_non_negative_int(
+            payload.get("run_token_usage")
+        ) + _public_non_negative_int(payload.get("run_child_token_usage"))
+        limit_tokens = _public_non_negative_int(payload.get("run_token_limit"))
+        model_calls = _public_non_negative_int(
+            payload.get("run_model_calls")
+        ) + _public_non_negative_int(payload.get("run_child_model_calls"))
+        model_call_limit = _public_non_negative_int(payload.get("run_model_call_limit"))
+        tool_calls = _public_non_negative_int(
+            payload.get("run_tool_calls")
+        ) + _public_non_negative_int(payload.get("run_child_tool_calls"))
+        tool_call_limit = _public_non_negative_int(payload.get("run_tool_call_limit"))
+        if limit_tokens <= 0 or model_call_limit <= 0 or tool_call_limit <= 0:
+            return ()
+        signature = ":".join(
+            str(item)
+            for item in (
+                used_tokens,
+                limit_tokens,
+                model_calls,
+                model_call_limit,
+                tool_calls,
+                tool_call_limit,
+            )
+        )
+        if signature in self._seen_budget_usage_signatures:
+            return ()
+        self._seen_budget_usage_signatures.add(signature)
+        return (
+            self._event(
+                "harness",
+                "completed",
+                {
+                    "type": "run_budget_updated",
+                    "used_tokens": used_tokens,
+                    "limit_tokens": limit_tokens,
+                    "model_calls": model_calls,
+                    "model_call_limit": model_call_limit,
+                    "tool_calls": tool_calls,
+                    "tool_call_limit": tool_call_limit,
+                    "usage_ratio": min(1.0, used_tokens / limit_tokens),
+                },
+                source_event_id=f"{source_event_id}:budget-usage",
+            ),
         )
 
     def _budget_events(
@@ -475,6 +663,13 @@ def _public_metadata(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: _bounded_value(item) for key, item in value.items() if key in allowed}
 
 
+def _public_assistant_content(value: object) -> object:
+    """Hide legacy protocol blocks from non-streaming browser timeline content."""
+    if not isinstance(value, str):
+        return value
+    return _LegacyProtocolFilter().feed(value, final=True).strip()
+
+
 def _tool_result_payload(
     projected: Mapping[str, Any],
     tool_name: str,
@@ -502,6 +697,22 @@ def _tool_result_payload(
                     "truncated": artifact.get("truncated") is True,
                 }
             )
+    subagent = projected.get("sage_subagent")
+    if tool_name == "task" and isinstance(subagent, Mapping):
+        operation_id = _public_string(subagent.get("child_run_id"), 256)
+        payload["subagent"] = {
+            "child_run_id": operation_id,
+            "parent_run_id": _public_string(subagent.get("parent_run_id"), 256),
+            "status": _public_string(subagent.get("status"), 32),
+            "result_ref": _public_string(subagent.get("result_ref"), 1_000),
+            "error_code": _public_string(subagent.get("error_code"), 128),
+            "evidence_count": _public_non_negative_int(subagent.get("evidence_count")),
+            "token_usage": _public_non_negative_int(subagent.get("token_usage")),
+            "model_calls": _public_non_negative_int(subagent.get("model_calls")),
+            "tool_count": _public_non_negative_int(subagent.get("tool_count")),
+        }
+        if operation_id:
+            payload["operation_ref"] = {"kind": "coding_run", "id": operation_id}
     return payload
 
 
@@ -515,8 +726,160 @@ def _public_number(value: object) -> int | float:
     return 0
 
 
+def _public_capability_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    event_type = str(payload.get("type", ""))
+    version = payload.get("version")
+    revision = _public_string(payload.get("catalog_revision"), 128)
+    if event_type not in _CAPABILITY_EVENT_TYPES or version != 1 or not revision:
+        return None
+    public: dict[str, Any] = {
+        "type": event_type,
+        "version": 1,
+        "catalog_revision": revision,
+    }
+    catalog_hash = _public_string(payload.get("catalog_hash"), 128)
+    if catalog_hash:
+        public["catalog_hash"] = catalog_hash
+    if event_type == "capability_catalog_updated":
+        public.update(
+            {
+                "surface": _public_string(payload.get("surface"), 32),
+                "capability_count": _public_non_negative_int(
+                    payload.get("capability_count")
+                ),
+                "executable_count": _public_non_negative_int(
+                    payload.get("executable_count")
+                ),
+            }
+        )
+        return public
+    if event_type == "capability_selected":
+        capability_ids = _public_capability_ids(payload.get("capability_ids"))
+        if not capability_ids:
+            return None
+        public.update(
+            {
+                "capability_ids": capability_ids,
+                "selected_count": len(capability_ids),
+            }
+        )
+        return public
+    if event_type == "capability_selection_failed":
+        categories = _public_failure_categories(
+            payload.get("failure_categories"),
+            allowed={
+                "ambiguous",
+                "disallowed",
+                "not_deferred",
+                "surface_mismatch",
+                "unavailable",
+                "unknown",
+            },
+        )
+        if not categories:
+            return None
+        public.update(
+            {
+                "failure_categories": categories,
+                "rejected_count": _public_non_negative_int(
+                    payload.get("rejected_count")
+                ),
+            }
+        )
+        return public
+    capability_id = _public_string(payload.get("capability_id"), 256)
+    status = _public_string(payload.get("status"), 16)
+    if not capability_id or status not in {"success", "failure"}:
+        return None
+    public.update(
+        {
+            "capability_id": capability_id,
+            "status": status,
+            "duration_ms": _public_non_negative_int(payload.get("duration_ms")),
+        }
+    )
+    if status == "failure":
+        category = _public_string(payload.get("failure_category"), 64)
+        if category not in {
+            "approval_denied",
+            "execution_error",
+            "policy_blocked",
+            "timeout",
+            "tool_error",
+            "unavailable",
+        }:
+            category = "execution_error"
+        public["failure_category"] = category
+    return public
+
+
+def _public_subagent_progress(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Project child progress without exposing prompts, arguments, or tool output."""
+    phase = _public_string(payload.get("phase"), 32)
+    if phase not in {
+        "model_requested",
+        "tool_started",
+        "tool_completed",
+        "approval_required",
+    }:
+        phase = "model_requested"
+    status = _public_string(payload.get("status"), 16)
+    if status not in {"running", "waiting", "completed", "error"}:
+        status = "running"
+    public: dict[str, Any] = {
+        "type": "subagent_progress",
+        "child_run_id": _public_string(payload.get("child_run_id"), 256),
+        "parent_run_id": _public_string(payload.get("parent_run_id"), 256),
+        "subagent_type": _public_string(payload.get("subagent_type"), 64),
+        "phase": phase,
+        "status": status,
+        "tool_count": _public_non_negative_int(payload.get("tool_count")),
+        "evidence_count": _public_non_negative_int(payload.get("evidence_count")),
+    }
+    tool_name = _public_string(payload.get("tool"), 128)
+    if tool_name:
+        public["tool"] = tool_name
+    operation_ref = payload.get("operation_ref")
+    if isinstance(operation_ref, Mapping):
+        kind = _public_string(operation_ref.get("kind"), 64)
+        identifier = _public_string(operation_ref.get("id"), 256)
+        if kind and identifier:
+            public["operation_ref"] = {"kind": kind, "id": identifier}
+    return public
+
+
+def _public_capability_ids(value: object) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [
+        item
+        for item in (_public_string(candidate, 256) for candidate in value[:20])
+        if item
+    ]
+
+
+def _public_failure_categories(
+    value: object,
+    *,
+    allowed: set[str],
+) -> list[str]:
+    if not isinstance(value, list | tuple):
+        return []
+    return sorted(
+        {
+            category
+            for category in (_public_string(candidate, 64) for candidate in value[:20])
+            if category in allowed
+        }
+    )
+
+
 def _public_tool_result_content(tool_name: str, value: object) -> str:
     text = value if isinstance(value, str) else str(value)
+    if tool_name == "search_web":
+        return _public_web_search_content(text)
+    if tool_name == "fetch_web":
+        return _public_web_fetch_content(text)
     if tool_name != "knowledge_search":
         return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
     try:
@@ -592,6 +955,120 @@ def _public_tool_result_content(tool_name: str, value: object) -> str:
     return json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
 
 
+def _public_web_search_content(text: str) -> str:
+    payload = _remote_json_payload(text)
+    if payload is None:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    status = _public_string(payload.get("status"), 32)
+    if status not in _KNOWLEDGE_STATUSES:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    raw_citations = payload.get("citations")
+    citations = [item for item in raw_citations if isinstance(item, Mapping)][
+        :_PUBLIC_WEB_CITATION_LIMIT
+    ] if isinstance(raw_citations, list) else []
+    omitted_count = _public_non_negative_int(payload.get("omitted_count"))
+    base = {
+        "status": status,
+        "query": _public_string(payload.get("query"), 400),
+        "provider": _public_string(payload.get("provider"), 80),
+        "used_tokens": _public_non_negative_int(payload.get("used_tokens")),
+        "token_budget": _public_non_negative_int(payload.get("token_budget")),
+        "omitted_count": omitted_count,
+        "error_code": _public_string(payload.get("error_code"), 80),
+        "remote_content": True,
+    }
+    if status != "evidence_found" or not citations:
+        return json.dumps({**base, "citations": []}, ensure_ascii=False, separators=(",", ":"))
+    for count in range(len(citations), 0, -1):
+        for excerpt_limit in (700, 350, 160, 80, 40):
+            public_citations = [
+                {
+                    "citation_id": _public_string(item.get("citation_id"), 160),
+                    "rank": _public_positive_int(item.get("rank")),
+                    "url": _public_string(item.get("url"), 1_000),
+                    "title": _public_string(item.get("title"), 240),
+                    "excerpt": _public_string(item.get("excerpt"), excerpt_limit),
+                    "provider": _public_string(item.get("provider"), 80),
+                    "retrieved_at": _public_string(item.get("retrieved_at"), 80),
+                    "content_hash": _public_string(item.get("content_hash"), 128),
+                    "remote_content": True,
+                }
+                for item in citations[:count]
+                if _public_string(item.get("citation_id"), 160)
+                and _public_string(item.get("url"), 1)
+            ]
+            candidate = {
+                **base,
+                "omitted_count": omitted_count + max(0, len(citations) - count),
+                "citations": public_citations,
+            }
+            encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+            if len(encoded) <= _PUBLIC_TOOL_CONTENT_LIMIT:
+                return encoded
+    return json.dumps({**base, "citations": []}, ensure_ascii=False, separators=(",", ":"))
+
+
+def _public_web_fetch_content(text: str) -> str:
+    payload = _remote_json_payload(text)
+    if payload is None:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    status = _public_string(payload.get("status"), 32)
+    if status not in {"evidence_found", "unavailable"}:
+        return text[:_PUBLIC_TOOL_CONTENT_LIMIT]
+    artifact_ref = _public_string(payload.get("artifact_ref"), 1_000)
+    if artifact_ref and not artifact_ref.startswith("sage://coding/"):
+        artifact_ref = ""
+    public = {
+        "status": status,
+        "citation_id": _public_string(payload.get("citation_id"), 160),
+        "url": _public_string(payload.get("url"), 1_000),
+        "title": _public_string(payload.get("title"), 240),
+        "excerpt": _public_string(payload.get("excerpt"), 1_200),
+        "retrieved_at": _public_string(payload.get("retrieved_at"), 80),
+        "content_hash": _public_string(payload.get("content_hash"), 128),
+        "media_type": _public_string(payload.get("media_type"), 80),
+        "wire_bytes": _public_non_negative_int(payload.get("wire_bytes")),
+        "used_tokens": _public_non_negative_int(payload.get("used_tokens")),
+        "token_budget": _public_non_negative_int(payload.get("token_budget")),
+        "artifact_ref": artifact_ref,
+        "original_chars": _public_non_negative_int(payload.get("original_chars")),
+        "error_code": _public_string(payload.get("error_code"), 80),
+        "remote_content": True,
+    }
+    for excerpt_limit in (1_200, 800, 400, 160, 80, 40, 0):
+        candidate = {
+            **public,
+            "excerpt": _public_string(payload.get("excerpt"), excerpt_limit)
+            if excerpt_limit
+            else "",
+        }
+        encoded = json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) <= _PUBLIC_TOOL_CONTENT_LIMIT:
+            return encoded
+    return json.dumps(
+        {"status": status, "remote_content": True},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _remote_json_payload(text: str) -> Mapping[object, object] | None:
+    candidate = text.strip()
+    boundaries = (
+        ("<remote-content>", "</remote-content>"),
+        ("--- BEGIN REMOTE TOOL CONTENT ---", "--- END REMOTE TOOL CONTENT ---"),
+    )
+    for prefix, suffix in boundaries:
+        if candidate.startswith(prefix) and candidate.endswith(suffix):
+            candidate = candidate[len(prefix) : -len(suffix)].strip()
+            break
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
 def _public_knowledge_citation(
     value: Mapping[object, object],
     *,
@@ -652,6 +1129,44 @@ def _memory_proposal_payload(
         session_id=session_id,
         run_id=run_id,
     )
+
+
+def _knowledge_source_proposal_payload(
+    *,
+    tool_name: str,
+    content: object,
+    session_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    if tool_name != "save_web_source" or not isinstance(content, str):
+        return None
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, Mapping):
+        return None
+    proposal_id = _public_string(value.get("proposal_id"), 128)
+    content_hash = _public_string(value.get("content_hash"), 64)
+    revision = _public_non_negative_int(value.get("revision"))
+    if (
+        not proposal_id.startswith("ksprop_")
+        or len(content_hash) != 64
+        or revision < 1
+        or value.get("status") != "pending"
+    ):
+        return None
+    return {
+        "type": "knowledge_source_proposal_created",
+        "proposal_id": proposal_id,
+        "proposal_type": "knowledge_source",
+        "source_kind": "web",
+        "content_hash": content_hash,
+        "requires_user_confirmation": True,
+        "revision": revision,
+        "session_id": session_id,
+        "run_id": run_id,
+    }
 
 
 def _validated_memory_proposal_payload(

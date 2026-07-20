@@ -654,6 +654,7 @@ export type CodingTimelineKind =
   | 'approval'
   | 'context'
   | 'memory'
+  | 'proposal'
   | 'agent'
   | 'terminal'
   | 'system'
@@ -736,6 +737,8 @@ export type CodingToolResultEvent = CodingEventMeta & {
   args: Record<string, unknown>
   content: string
   is_error: boolean
+  error_code?: string | null
+  retryable?: boolean | null
   policy_reason?: string | null
   security_event_type?: string | null
 }
@@ -822,6 +825,18 @@ export type CodingMemoryProposalReadyEvent = CodingEventMeta & {
   base_revision: number
 }
 
+export type CodingKnowledgeSourceProposalCreatedEvent = CodingEventMeta & {
+  type: 'knowledge_source_proposal_created'
+  session_id: string
+  run_id: string
+  proposal_id: string
+  proposal_type: 'knowledge_source'
+  source_kind: 'web'
+  content_hash: string
+  requires_user_confirmation: true
+  revision: number
+}
+
 export type CodingRunFinishedEvent = CodingEventMeta & {
   type: 'run_finished'
   status: string
@@ -892,6 +907,7 @@ export type CodingServerEvent =
   | CodingPlanReadyForReviewEvent
   | CodingWorkspaceDiffReadyEvent
   | CodingMemoryProposalReadyEvent
+  | CodingKnowledgeSourceProposalCreatedEvent
   | CodingRunFinishedEvent
   | CodingContextUsageEvent
   | CodingCompactionStartedEvent
@@ -1139,6 +1155,52 @@ export type MemoryProposal = {
 
 export type MemoryProposalsResponse = {
   proposals: MemoryProposal[]
+}
+
+export type CodingKnowledgeSourceProposalStatus = 'pending' | 'applying' | 'approved' | 'rejected'
+
+export type CodingKnowledgeSourceProposal = {
+  proposal_id: string
+  thread_id: string
+  run_id: string
+  artifact_ref: string
+  source_kind: string
+  canonical_url: string
+  title: string
+  media_type: string
+  retrieved_at: string
+  content_hash: string
+  reason: string
+  evidence_refs: string[]
+  status: CodingKnowledgeSourceProposalStatus
+  revision: number
+  target_root_id: string
+  target_relative_path: string
+  job_id: string | null
+  last_error: string | null
+  decided_by: string | null
+  decided_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export type CodingKnowledgeSourceProposalEvent = {
+  event_id: string
+  proposal_id: string
+  sequence: number
+  event_type: string
+  revision: number
+  detail: Record<string, string>
+  created_at: string
+}
+
+export type CodingKnowledgeSourceProposalsResponse = {
+  proposals: CodingKnowledgeSourceProposal[]
+}
+
+export type CodingKnowledgeSourceProposalDetail = {
+  proposal: CodingKnowledgeSourceProposal
+  events: CodingKnowledgeSourceProposalEvent[]
 }
 
 export type CodingSkillSummary = {

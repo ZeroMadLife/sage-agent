@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.cloud.auth.models import CloudLoginSession, CloudProject, CloudUser, CloudWorkspace
@@ -21,6 +22,10 @@ from db.models import (
     CloudUserRecord,
     CloudWorkspaceRecord,
 )
+
+
+class DeviceLimitReached(Exception):
+    """The account already has the maximum number of active device sessions."""
 
 
 def _digest(value: str) -> str:
@@ -38,6 +43,42 @@ def _is_expired(value: datetime | None, now: datetime) -> bool:
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     return value <= now
+
+
+async def _get_or_insert_user(
+    session: AsyncSession,
+    *,
+    email: str,
+    display_name: str,
+) -> tuple[CloudUserRecord, bool]:
+    """Resolve one email account, tolerating concurrent first-device registration."""
+    existing = await session.scalar(
+        select(CloudUserRecord)
+        .where(CloudUserRecord.email == email)
+        .with_for_update()
+    )
+    if existing is not None:
+        return existing, False
+
+    try:
+        async with session.begin_nested():
+            created = CloudUserRecord(
+                id=str(uuid4()),
+                email=email,
+                display_name=display_name,
+            )
+            session.add(created)
+            await session.flush()
+        return created, True
+    except IntegrityError:
+        race_winner = await session.scalar(
+            select(CloudUserRecord)
+            .where(CloudUserRecord.email == email)
+            .with_for_update()
+        )
+        if race_winner is None:
+            raise
+        return race_winner, False
 
 
 class CloudRepository:
@@ -98,14 +139,15 @@ class CloudRepository:
 
             if not invite_code:
                 raise PermissionError("an unused invite is required")
-            user = CloudUserRecord(
-                id=str(uuid4()), email=normalized_email, display_name=display_name.strip()
+            user, created = await _get_or_insert_user(
+                session,
+                email=normalized_email,
+                display_name=display_name.strip(),
             )
-            session.add(user)
-            # PostgreSQL checks this foreign key immediately. Flush the user
-            # before the invite row references it, while keeping one rollback
-            # boundary if the conditional consume loses a race.
-            await session.flush()
+            if user is not None and user.disabled_at is not None:
+                raise PermissionError("cloud user is disabled")
+            if not created and reject_existing_identity:
+                raise PermissionError("development identity is already bootstrapped")
             # A conditional update is the one-time-invite lock. Checking then
             # updating would allow two concurrent registrations to consume it.
             consumed = await session.execute(
@@ -133,19 +175,140 @@ class CloudRepository:
             return _to_user(user)
 
     async def create_session(
-        self, user_id: str, token: str, *, expires_at: datetime
+        self,
+        user_id: str,
+        token: str,
+        *,
+        expires_at: datetime,
+        device_name: str = "Unknown device",
+        max_active_sessions: int = 3,
     ) -> CloudLoginSession:
         """Persist a session digest; raw token remains exclusively in the cookie."""
         if not token:
             raise ValueError("session token is required")
         token_hash = _digest(token)
         async with self._session_factory() as session:
+            user = await session.scalar(
+                select(CloudUserRecord)
+                .where(CloudUserRecord.id == user_id)
+                .with_for_update()
+            )
+            if user is None or user.disabled_at is not None:
+                raise PermissionError("cloud user is unavailable")
+            active_sessions = await session.scalar(
+                select(func.count(CloudLoginSessionRecord.id)).where(
+                    CloudLoginSessionRecord.user_id == user_id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                    CloudLoginSessionRecord.expires_at > func.now(),
+                )
+            )
+            if int(active_sessions or 0) >= max_active_sessions:
+                raise DeviceLimitReached
+            now = _utc_now()
             record = CloudLoginSessionRecord(
-                id=str(uuid4()), user_id=user_id, token_hash=token_hash, expires_at=expires_at
+                id=str(uuid4()),
+                user_id=user_id,
+                token_hash=token_hash,
+                device_name=_normalize_device_name(device_name),
+                expires_at=expires_at,
+                last_seen_at=now,
             )
             session.add(record)
             await session.commit()
             return _to_login_session(record)
+
+    async def create_canary_invite_session(
+        self,
+        *,
+        invite_code: str,
+        token: str,
+        device_name: str,
+        expires_at: datetime,
+        max_active_sessions: int = 3,
+    ) -> tuple[CloudUser, CloudLoginSession]:
+        """Atomically consume one email-bound invite and create one device session."""
+        if not invite_code or not token:
+            raise ValueError("invite code and session token are required")
+        now = _utc_now()
+        async with self._session_factory() as session:
+            invite = await session.scalar(
+                select(CloudInviteRecord)
+                .where(CloudInviteRecord.code_hash == _digest(invite_code))
+                .with_for_update()
+            )
+            if (
+                invite is None
+                or invite.consumed_at is not None
+                or _is_expired(invite.expires_at, now)
+                or not invite.email
+            ):
+                raise PermissionError("invite is invalid or already consumed")
+
+            email = invite.email.strip().lower()
+            # Claim the invite before creating a first-time account. Keeping the
+            # user reference unset until after flush avoids PostgreSQL's immediate
+            # foreign-key check while preserving one atomic rollback boundary.
+            consumed = await session.execute(
+                update(CloudInviteRecord)
+                .where(
+                    CloudInviteRecord.id == invite.id,
+                    CloudInviteRecord.consumed_at.is_(None),
+                    (CloudInviteRecord.expires_at.is_(None))
+                    | (CloudInviteRecord.expires_at > func.now()),
+                )
+                .values(consumed_at=now)
+            )
+            if consumed.rowcount != 1:
+                await session.rollback()
+                raise PermissionError("invite is invalid or already consumed")
+
+            user, _ = await _get_or_insert_user(
+                session,
+                email=email,
+                display_name=email.partition("@")[0],
+            )
+            if user.disabled_at is not None:
+                raise PermissionError("cloud user is disabled")
+
+            active_sessions = await session.scalar(
+                select(func.count(CloudLoginSessionRecord.id)).where(
+                    CloudLoginSessionRecord.user_id == user.id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                    CloudLoginSessionRecord.expires_at > func.now(),
+                )
+            )
+            if int(active_sessions or 0) >= max_active_sessions:
+                await session.rollback()
+                raise DeviceLimitReached
+            invite.consumed_by_user_id = user.id
+
+            identity = await session.scalar(
+                select(AuthIdentityRecord).where(
+                    AuthIdentityRecord.provider == "canary_invite",
+                    AuthIdentityRecord.provider_subject == email,
+                )
+            )
+            if identity is None:
+                session.add(
+                    AuthIdentityRecord(
+                        id=str(uuid4()),
+                        user_id=user.id,
+                        provider="canary_invite",
+                        provider_subject=email,
+                    )
+                )
+
+            record = CloudLoginSessionRecord(
+                id=str(uuid4()),
+                user_id=user.id,
+                token_hash=_digest(token),
+                device_name=_normalize_device_name(device_name),
+                expires_at=expires_at,
+                last_seen_at=now,
+            )
+            session.add(record)
+            await session.commit()
+            return _to_user(user), _to_login_session(record)
 
     async def authenticated_user(self, token: str) -> CloudUser | None:
         """Resolve a non-expired, non-revoked browser session token."""
@@ -161,7 +324,12 @@ class CloudRepository:
             if record is None or record.revoked_at is not None or _is_expired(record.expires_at, now):
                 return None
             user = await session.get(CloudUserRecord, record.user_id)
-            return _to_user(user) if user is not None else None
+            if user is None or user.disabled_at is not None:
+                return None
+            if record.last_seen_at is None or (now - _as_utc(record.last_seen_at)).total_seconds() >= 900:
+                record.last_seen_at = now
+                await session.commit()
+            return _to_user(user)
 
     async def revoke_session(self, token: str) -> bool:
         """Revoke one browser session by token digest."""
@@ -182,6 +350,71 @@ class CloudRepository:
         async with self._session_factory() as session:
             values = (await session.scalars(select(CloudLoginSessionRecord.token_hash))).all()
             return token in values
+
+    async def list_active_sessions(self, email: str) -> list[CloudLoginSession]:
+        """List active device sessions for one operator-selected account."""
+        normalized_email = email.strip().lower()
+        async with self._session_factory() as session:
+            user_id = await session.scalar(
+                select(CloudUserRecord.id).where(CloudUserRecord.email == normalized_email)
+            )
+            if user_id is None:
+                return []
+            records = (
+                await session.scalars(
+                    select(CloudLoginSessionRecord)
+                    .where(
+                        CloudLoginSessionRecord.user_id == user_id,
+                        CloudLoginSessionRecord.revoked_at.is_(None),
+                        CloudLoginSessionRecord.expires_at > func.now(),
+                    )
+                    .order_by(CloudLoginSessionRecord.created_at.desc())
+                )
+            ).all()
+            return [_to_login_session(record) for record in records]
+
+    async def revoke_device_session(self, email: str, session_id: str) -> bool:
+        """Revoke one device only when it belongs to the selected account."""
+        normalized_email = email.strip().lower()
+        async with self._session_factory() as session:
+            record = await session.scalar(
+                select(CloudLoginSessionRecord)
+                .join(CloudUserRecord, CloudLoginSessionRecord.user_id == CloudUserRecord.id)
+                .where(
+                    CloudUserRecord.email == normalized_email,
+                    CloudLoginSessionRecord.id == session_id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                )
+            )
+            if record is None:
+                return False
+            record.revoked_at = _utc_now()
+            await session.commit()
+            return True
+
+    async def disable_user(self, email: str) -> bool:
+        """Disable one account and revoke every active device session."""
+        normalized_email = email.strip().lower()
+        now = _utc_now()
+        async with self._session_factory() as session:
+            user = await session.scalar(
+                select(CloudUserRecord)
+                .where(CloudUserRecord.email == normalized_email)
+                .with_for_update()
+            )
+            if user is None:
+                return False
+            user.disabled_at = now
+            await session.execute(
+                update(CloudLoginSessionRecord)
+                .where(
+                    CloudLoginSessionRecord.user_id == user.id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+            await session.commit()
+            return True
 
     async def create_oauth_transaction(
         self,
@@ -360,8 +593,19 @@ def _to_user(record: CloudUserRecord) -> CloudUser:
 def _to_login_session(record: CloudLoginSessionRecord) -> CloudLoginSession:
     return CloudLoginSession(
         session_id=record.id, user_id=record.user_id, token_hash=record.token_hash,
+        device_name=record.device_name,
         expires_at=record.expires_at,
+        last_seen_at=record.last_seen_at,
     )
+
+
+def _normalize_device_name(value: str) -> str:
+    normalized = " ".join(value.split())[:120]
+    return normalized or "Unknown device"
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 def _to_project(record: CloudProjectRecord) -> CloudProject:

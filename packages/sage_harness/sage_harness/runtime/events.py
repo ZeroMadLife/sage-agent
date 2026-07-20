@@ -63,7 +63,8 @@ def message_payload(message: Any) -> dict[str, Any]:
             content,
             text_limit=(
                 _TOOL_MESSAGE_CONTENT_LIMIT
-                if isinstance(message, ToolMessage) and name == "knowledge_search"
+                if isinstance(message, ToolMessage)
+                and name in {"knowledge_search", "search_web"}
                 else 4_000
             ),
         ),
@@ -97,6 +98,23 @@ def message_payload(message: Any) -> dict[str, Any]:
             key: _bounded_json(harness_meta[key])
             for key in ("stop_reason", "used", "limit", "notice")
             if key in harness_meta
+        }
+    subagent_meta = message.additional_kwargs.get("sage_subagent")
+    if isinstance(message, ToolMessage) and isinstance(subagent_meta, dict):
+        projected["sage_subagent"] = {
+            key: _bounded_json(subagent_meta[key])
+            for key in (
+                "child_run_id",
+                "parent_run_id",
+                "status",
+                "result_ref",
+                "error_code",
+                "evidence_count",
+                "token_usage",
+                "model_calls",
+                "tool_count",
+            )
+            if key in subagent_meta
         }
     return projected
 

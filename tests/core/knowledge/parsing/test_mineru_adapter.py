@@ -5,7 +5,12 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from core.knowledge.parsing import ExternalAdapterError, ExternalParseProgress, ParseRequest
+from core.knowledge.parsing import (
+    ExternalAdapterError,
+    ExternalParsePending,
+    ExternalParseProgress,
+    ParseRequest,
+)
 from core.knowledge.parsing.adapters import MinerUAdapter, MinerUConfig
 
 
@@ -53,9 +58,7 @@ async def test_mineru_uploads_polls_and_downloads_bounded_markdown() -> None:
                     "data": {
                         "task_id": "task-1",
                         "state": "done",
-                        "markdown_url": (
-                            "https://cdn-mineru.openxlab.org.cn/pdf/task-1/full.md"
-                        ),
+                        "markdown_url": ("https://cdn-mineru.openxlab.org.cn/pdf/task-1/full.md"),
                     },
                 },
             )
@@ -76,6 +79,54 @@ async def test_mineru_uploads_polls_and_downloads_bounded_markdown() -> None:
     assert document.provenance.parser_id == "mineru.agent"
     assert "Recovered table" in document.rendered_markdown
     assert [event.stage for event in events] == ["uploading", "queued", "running"]
+    await client.aclose()
+
+
+async def test_mineru_submit_and_resume_each_perform_one_bounded_remote_step() -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/parse/file"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "task_id": "task-one-step",
+                        "file_url": "https://oss-mineru.openxlab.org.cn/upload/scan.pdf?sig=1",
+                    },
+                },
+            )
+        if request.method == "PUT":
+            return httpx.Response(200)
+        if request.url.path.endswith("/parse/task-one-step"):
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {"task_id": "task-one-step", "state": "running"},
+                },
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = MinerUAdapter(MinerUConfig(poll_seconds=2), client=client)
+
+    submitted = await adapter.submit(_request(), progress=_ignore)
+    assert requests == [
+        ("POST", "/api/v1/agent/parse/file"),
+        ("PUT", "/upload/scan.pdf"),
+    ]
+
+    resumed = await adapter.resume(_request(), submitted.ticket, progress=_ignore)
+    assert isinstance(resumed, ExternalParsePending)
+    assert resumed.stage == "running"
+    assert requests == [
+        ("POST", "/api/v1/agent/parse/file"),
+        ("PUT", "/upload/scan.pdf"),
+        ("GET", "/api/v1/agent/parse/task-one-step"),
+    ]
     await client.aclose()
 
 

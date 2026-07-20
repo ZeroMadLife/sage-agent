@@ -37,15 +37,24 @@ const router = createRouter({
       component: () => import('../views/KnowledgeView.vue'),
     },
     {
-      path: '/evolution',
-      name: 'evolution',
+      path: '/growth',
+      name: 'growth',
       meta: { assistantShell: true },
       component: () => import('../views/EvolutionView.vue'),
     },
     {
+      path: '/evolution',
+      redirect: '/growth',
+    },
+    {
+      path: '/publishing',
+      name: 'publishing.studio',
+      meta: { assistantShell: true },
+      component: () => import('../views/PublishingStudioView.vue'),
+    },
+    {
       path: '/public',
       name: 'public.profile',
-      meta: { assistantShell: true },
       component: () => import('../views/PublicProfileView.vue'),
     },
     {

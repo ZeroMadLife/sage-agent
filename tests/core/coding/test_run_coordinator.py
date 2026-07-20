@@ -73,6 +73,54 @@ async def test_closing_subscription_does_not_cancel_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_event_observer_runs_after_event_is_durable(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    observed: list[str] = []
+
+    async def observer(event):  # type: ignore[no-untyped-def]
+        persisted = journal.replay(after=0, limit=20).items
+        assert any(item.event_id == event.event_id for item in persisted)
+        observed.append(event.event_id)
+
+    coordinator = RunCoordinator(journal, event_observer=observer)
+    task = await coordinator.start_run(
+        "run-1",
+        _events(
+            RunEvent(
+                kind="harness",
+                status="completed",
+                payload={"type": "capability_invocation_completed"},
+                event_id="capability-event-1",
+            )
+        ),
+    )
+    await task
+
+    assert "capability-event-1" in observed
+
+
+@pytest.mark.asyncio
+async def test_event_observer_failure_does_not_interrupt_run(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+
+    async def observer(_event):  # type: ignore[no-untyped-def]
+        raise RuntimeError("projection unavailable")
+
+    coordinator = RunCoordinator(journal, event_observer=observer)
+    task = await coordinator.start_run(
+        "run-1",
+        _events(RunEvent(kind="assistant", status="done", payload={"answer": "ok"})),
+    )
+    await task
+
+    events = journal.replay(after=0, limit=20).items
+    assert [(event.kind, event.status) for event in events][-2:] == [
+        ("assistant", "done"),
+        ("terminal", "completed"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_suspend_and_resume_existing_run_preserves_one_start_event(
     tmp_path: Path,
 ) -> None:

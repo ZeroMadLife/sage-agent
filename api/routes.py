@@ -3,7 +3,8 @@
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
+from starlette.requests import HTTPConnection
 
 from api.schemas import (
     AuthRequest,
@@ -15,7 +16,15 @@ from api.schemas import (
     SessionMessagesResponse,
 )
 
-router = APIRouter()
+
+async def _reject_legacy_chat_in_production(connection: HTTPConnection) -> None:
+    app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
+    if app_env == "production":
+        raise HTTPException(status_code=404, detail="legacy chat is unavailable in production")
+
+
+health_router = APIRouter()
+router = APIRouter(dependencies=[Depends(_reject_legacy_chat_in_production)])
 
 
 class SessionState:
@@ -31,7 +40,7 @@ class SessionState:
 SESSIONS: dict[str, SessionState] = {}
 
 
-@router.get("/health")
+@health_router.get("/health")
 async def health() -> dict[str, str]:
     """Health check for local and deployment probes."""
     return {"status": "ok"}

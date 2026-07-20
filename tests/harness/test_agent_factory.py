@@ -38,6 +38,10 @@ def _context(run_id: str = "run-1") -> HarnessRunContext:
     )
 
 
+def test_default_run_token_budget_supports_long_evidence_workflows() -> None:
+    assert HarnessConfig().max_run_tokens == 250_000
+
+
 def test_factory_builds_a_real_graph_with_server_owned_context() -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="ready")])
     graph = create_sage_agent(model, middleware=[])
@@ -269,6 +273,34 @@ def test_large_tool_result_is_archived_before_checkpoint_projection() -> None:
     }
 
 
+def test_prearchived_tool_result_is_not_archived_again() -> None:
+    class ArtifactStore:
+        def archive(self, call_id: str, content: str):
+            raise AssertionError(f"prearchived result was archived again: {call_id} {content[:20]}")
+
+    middleware = ToolResultArtifactMiddleware(ArtifactStore())
+    request = ToolCallRequest(
+        tool_call={"name": "remote_lookup", "args": {}, "id": "call-fetch", "type": "tool_call"},
+        tool=None,
+        state={},
+        runtime=MagicMock(),
+    )
+    original = ToolMessage(
+        content="x" * 20_000,
+        name="remote_lookup",
+        tool_call_id="call-fetch",
+        artifact={
+            "artifact_ref": "sage://coding/s1/runs/r1/tool-results/call-fetch.txt",
+            "original_chars": 20_000,
+            "truncated": True,
+        },
+    )
+
+    result = middleware.wrap_tool_call(request, lambda _: original)
+
+    assert result is original
+
+
 def test_token_budget_stops_before_another_model_call() -> None:
     middleware = TokenBudgetMiddleware(max_tokens=10)
     runtime = MagicMock(context=_context())
@@ -283,6 +315,92 @@ def test_token_budget_stops_before_another_model_call() -> None:
     assert update is not None
     assert update["jump_to"] == "end"
     assert update["messages"][0].additional_kwargs["sage_harness"]["stop_reason"] == "token_capped"
+
+
+def test_run_budget_counts_running_child_reservations_before_another_model_call() -> None:
+    middleware = RunBudgetMiddleware(
+        max_model_calls=24,
+        max_tool_calls=64,
+        max_tokens=100_000,
+    )
+    state = {
+        "messages": [],
+        "budget_run_id": "run-1",
+        "run_token_usage": 76_000,
+        "delegations": [
+            {
+                "id": "child-a",
+                "run_id": "run-1",
+                "status": "running",
+                "reserved_tokens": 24_000,
+                "reserved_model_calls": 8,
+                "reserved_tool_calls": 6,
+                "token_usage": 0,
+            },
+            {
+                "id": "child-old",
+                "run_id": "run-old",
+                "status": "running",
+                "reserved_tokens": 24_000,
+            },
+        ],
+    }
+
+    update = middleware.before_model(state, MagicMock(context=_context()))
+
+    assert update is not None
+    assert update["jump_to"] == "end"
+    assert update["run_child_token_usage"] == 24_000
+    assert update["run_child_model_calls"] == 8
+    assert update["run_child_tool_calls"] == 6
+    assert update["messages"][0].additional_kwargs["sage_harness"] == {
+        "stop_reason": "token_capped",
+        "used": 100_000,
+        "limit": 100_000,
+        "notice": "本轮已达到 token 安全上限，已停止继续调用工具。",
+    }
+
+
+def test_run_budget_uses_terminal_child_actual_counters() -> None:
+    middleware = RunBudgetMiddleware(
+        max_model_calls=24,
+        max_tool_calls=64,
+        max_tokens=100_000,
+    )
+    response = AIMessage(
+        content="Done.",
+        usage_metadata={"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+    )
+
+    update = middleware.after_model(
+        {
+            "messages": [response],
+            "budget_run_id": "run-1",
+            "run_token_usage": 100,
+            "run_model_calls": 1,
+            "run_tool_calls": 2,
+            "delegations": [
+                {
+                    "id": "child-a",
+                    "run_id": "run-1",
+                    "status": "succeeded",
+                    "reserved_tokens": 24_000,
+                    "token_usage": 1_200,
+                    "model_calls": 2,
+                    "tool_count": 3,
+                }
+            ],
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    assert update["run_token_usage"] == 110
+    assert update["run_model_calls"] == 2
+    assert update["run_tool_calls"] == 2
+    assert update["run_child_token_usage"] == 1_200
+    assert update["run_child_model_calls"] == 2
+    assert update["run_child_tool_calls"] == 3
 
 
 def test_run_budget_strips_tools_from_the_response_that_exhausts_tokens() -> None:
@@ -331,6 +449,73 @@ def test_run_budget_strips_tools_from_the_response_that_exhausts_tokens() -> Non
     assert update["run_model_calls"] == 1
     assert update["run_tool_calls"] == 0
     assert update["run_token_usage"] == 10
+
+
+def test_run_budget_removes_legacy_tool_protocol_from_public_notice() -> None:
+    middleware = RunBudgetMiddleware(
+        max_model_calls=3,
+        max_tool_calls=3,
+        max_tokens=10,
+    )
+    response = AIMessage(
+        content=(
+            '<tool>{"name":"search_web","args":{"query":"private"}}</tool>'
+            '<final>Unable to finish the requested research.</final>'
+        ),
+        usage_metadata={"input_tokens": 8, "output_tokens": 2, "total_tokens": 10},
+    )
+
+    update = middleware.after_model(
+        {
+            "messages": [response],
+            "budget_run_id": "run-1",
+            "run_token_usage": 0,
+            "run_model_calls": 0,
+            "run_tool_calls": 0,
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    content = str(update["messages"][0].content)
+    assert "<tool>" not in content
+    assert "<final>" not in content
+    assert "Unable to finish the requested research." in content
+    assert "token 安全上限" in content
+
+
+def test_run_budget_publishes_limits_without_resetting_a_resumed_run() -> None:
+    middleware = RunBudgetMiddleware(
+        max_model_calls=24,
+        max_tool_calls=64,
+        max_tokens=100_000,
+    )
+    runtime = MagicMock(context=_context())
+
+    initial = middleware.before_agent({}, runtime)
+    resumed = middleware.before_agent(
+        {
+            "budget_run_id": "run-1",
+            "run_token_usage": 42_000,
+            "run_model_calls": 4,
+            "run_tool_calls": 6,
+        },
+        runtime,
+    )
+
+    assert initial == {
+        "budget_run_id": "run-1",
+        "run_token_usage": 0,
+        "run_model_calls": 0,
+        "run_tool_calls": 0,
+        "run_child_token_usage": 0,
+        "run_child_model_calls": 0,
+        "run_child_tool_calls": 0,
+        "run_token_limit": 100_000,
+        "run_model_call_limit": 24,
+        "run_tool_call_limit": 64,
+    }
+    assert resumed is None
 
 
 @pytest.mark.parametrize(
@@ -413,6 +598,12 @@ def test_run_budget_keeps_same_run_counters_across_checkpoint_resume() -> None:
         "run_token_usage": 0,
         "run_model_calls": 0,
         "run_tool_calls": 0,
+        "run_child_token_usage": 0,
+        "run_child_model_calls": 0,
+        "run_child_tool_calls": 0,
+        "run_token_limit": 100,
+        "run_model_call_limit": 4,
+        "run_tool_call_limit": 4,
     }
 
 

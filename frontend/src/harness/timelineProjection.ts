@@ -2,6 +2,7 @@ import type {
   HarnessDefinition,
   HarnessProjection,
   HarnessRunStatus,
+  HarnessStageEventViewModel,
   HarnessStageStatus,
   HarnessStageViewModel,
   HarnessTimelineEvent,
@@ -38,6 +39,7 @@ export function projectHarnessTimeline(
   const stages = new Map<string, HarnessStageViewModel>()
   const transitions = new Map<string, HarnessTransitionViewModel>()
   const accumulatedDurations = new Map<string, number>()
+  const stageEvents: HarnessStageEventViewModel[] = []
   for (const stage of definitionMatches ? definition?.stages ?? [] : []) {
     stages.set(stage.id, createStage(stage.id, stage.label, stage.description, stage.terminal))
   }
@@ -92,6 +94,19 @@ export function projectHarnessTimeline(
     stage.lastSequence = event.sequence
     if (event.detail) stage.detail = event.detail
     if (event.operationRef) stage.operationRef = event.operationRef
+    stageEvents.push({
+      eventId: event.eventId,
+      stageId: event.stageId,
+      label: stage.label,
+      detail: event.detail,
+      status: event.type === 'stage_failed'
+        ? event.status === 'cancelled' ? 'cancelled' : 'failed'
+        : event.type === 'stage_completed'
+          ? 'completed'
+          : event.status === 'blocked' ? 'blocked' : 'running',
+      timestamp: event.timestamp,
+      sequence: event.sequence,
+    })
 
     if (event.type === 'stage_started') {
       const previousStatus = stage.status
@@ -145,6 +160,7 @@ export function projectHarnessTimeline(
     stages: [...stages.values()].sort((left, right) => stageOrder(definition, left.id) - stageOrder(definition, right.id) || left.lastSequence - right.lastSequence),
     transitions: [...transitions.values()].sort((left, right) => left.lastSequence - right.lastSequence),
     visitedPath,
+    stageEvents,
     lastSequence: events.at(-1)?.sequence || 0,
   }
 }

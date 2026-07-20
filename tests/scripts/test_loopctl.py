@@ -82,3 +82,11 @@ def test_enable_shadow_write_is_explicit(tmp_path, monkeypatch, capsys) -> None:
     output = capsys.readouterr().out
     assert "pr-canary enabled" in output
     assert LoopState(state_root / "state.sqlite3").status()["mode"] == "PR_CANARY"
+
+    assert main(["enable", "--auto-merge-tier-a"]) == 0
+    output = capsys.readouterr().out
+    assert "auto-merge-tier-a enabled" in output
+    assert (
+        LoopState(state_root / "state.sqlite3").status()["mode"]
+        == "AUTO_MERGE_TIER_A"
+    )

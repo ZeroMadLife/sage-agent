@@ -49,8 +49,39 @@ md.renderer.rules.link_open = function (tokens, idx, options, env, self) {
 export function useMarkdown() {
   function render(content: string): string {
     if (!content) return ''
-    return md.render(content)
+    return md.render(normalizeCompactMarkdown(content))
   }
 
   return { render }
+}
+
+function normalizeCompactMarkdown(content: string): string {
+  return content
+    .split(/(```[\s\S]*?```)/g)
+    .map((segment, index) => index % 2 === 1 ? segment : normalizeMarkdownText(segment))
+    .join('')
+}
+
+function normalizeMarkdownText(content: string): string {
+  let normalized = content
+    .replace(/<tool>\s*\{[\s\S]*?\}\s*<\/tool>/gi, '')
+    .replace(/<\/?final>/gi, '')
+    .replace(/\r\n?/g, '\n')
+  normalized = normalized.replace(/([^#\n])(?=#{1,6})/g, '$1\n\n')
+  normalized = normalized.replace(/^(#{1,6})(?=\S)/gm, '$1 ')
+
+  // Some providers collapse table row separators while streaming. Repair only
+  // strings that clearly contain a compact Markdown table, leaving prose `||`
+  // untouched.
+  const compactTable = /\|[^|\n]+\|[^|\n]+\|\|/.test(normalized) && /\|\s*:?-{3,}/.test(normalized)
+  if (compactTable) {
+    normalized = normalized.replace(/^(#{1,6})\s+([^|\n]+)\|/m, '$1 $2\n\n|')
+    normalized = normalized.replace(/([^\n])(?=\|[^|\n]+\|[^|\n]+\|\|)/g, '$1\n')
+    normalized = normalized.replace(/\|\|/g, '|\n|')
+    normalized = normalized.replace(
+      /(\n\n)\|([^|\n]+)\|\n\|(-{3,})\|(-{3,})\|/,
+      '$1| |$2|\n|$3|$4|',
+    )
+  }
+  return normalized
 }

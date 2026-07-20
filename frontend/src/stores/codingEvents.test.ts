@@ -28,6 +28,7 @@ function state() {
     diffInfoByRun: ref<Record<string, DiffInfo>>({}),
     memoryProposals: ref([]),
     memoryProposalRefresh: ref(0),
+    knowledgeSourceProposalRefresh: ref(0),
   }
 }
 
@@ -42,6 +43,18 @@ describe('codingEvents', () => {
     expect(effect.memoryProposalReady).toBe(true)
     expect(current.memoryProposalRefresh.value).toBe(1)
     expect(current.memoryProposals.value[0]).toMatchObject({ proposal_id: 'p1', status: 'pending', revision: 0, base_revision: 4 })
+  })
+
+  it('requests a source proposal refresh without inventing protected proposal fields', () => {
+    const current = state()
+    const effect = applyCodingEvent(current, {
+      type: 'knowledge_source_proposal_created', proposal_id: 'ksprop_1',
+      proposal_type: 'knowledge_source', source_kind: 'web', content_hash: 'a'.repeat(64),
+      requires_user_confirmation: true, revision: 1, session_id: 'coding_1', run_id: 'run_1',
+    } as never)
+
+    expect(effect.knowledgeSourceProposalReady).toBe(true)
+    expect(current.knowledgeSourceProposalRefresh.value).toBe(1)
   })
   it('tracks context usage and compaction lifecycle', () => {
     const current = state()
@@ -179,6 +192,22 @@ describe('codingEvents', () => {
     expect(effect.terminal).toBe(true)
   })
 
+  it('clears a stale child approval when its parent run finishes', () => {
+    const current = state()
+    current.pendingApproval.value = {
+      approval_id: 'appr_child', session_id: 'coding_1', tool: 'run_shell',
+      args: { command: 'pwd' }, description: '执行 Shell 命令前需要确认。',
+      pattern_key: 'tool:run_shell', run_id: 'run-parent',
+    }
+
+    applyCodingEvent(current, {
+      type: 'run_finished', run_id: 'run-parent', status: 'completed',
+      duration_ms: 1234, tool_steps: 2,
+    })
+
+    expect(current.pendingApproval.value).toBeNull()
+  })
+
   it('sets pending approval from approval_required', () => {
     const current = state()
 
@@ -189,11 +218,28 @@ describe('codingEvents', () => {
       args: { path: 'README.md' },
       description: 'write_file requires approval.',
       pattern_key: 'tool:write_file',
+      run_id: 'run-parent',
     })
 
     expect(effect.approvalRequired).toBe(true)
     expect(current.pendingApproval.value?.approval_id).toBe('appr_1')
     expect(current.pendingApproval.value?.session_id).toBe('coding_1')
+    expect(current.pendingApproval.value?.run_id).toBe('run-parent')
+  })
+
+  it('clears the matching approval when the tool is granted', () => {
+    const current = state()
+    applyCodingEvent(current, {
+      type: 'approval_required', approval_id: 'appr_1', tool: 'run_shell',
+      args: { command: 'pwd' }, description: '执行 Shell 命令前需要确认。',
+      pattern_key: 'tool:run_shell', run_id: 'run-parent',
+    })
+
+    applyCodingEvent(current, {
+      type: 'approval_granted', tool: 'run_shell', run_id: 'run-parent',
+    })
+
+    expect(current.pendingApproval.value).toBeNull()
   })
 
   it('shows approval-required tools as visible running activity', () => {

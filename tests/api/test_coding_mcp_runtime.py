@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -78,8 +79,19 @@ class McpToolFakeModel(FakeMessagesListChatModel):
                     tool_calls=[
                         {
                             "name": "tool_search",
-                            "args": {"query": "select:scenic_lookup"},
-                            "id": "call-search",
+                            "args": {"query": "scenic information"},
+                            "id": "call-discover",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "tool_search",
+                            "args": {"query": "select:mcp:scenic:lookup"},
+                            "id": "call-select",
                             "type": "tool_call",
                         }
                     ],
@@ -194,7 +206,17 @@ def test_v2_discovers_promotes_and_sanitizes_live_mcp_tool(tmp_path: Path) -> No
         }
     ]
     calls = [payload["tool"] for payload in payloads if payload.get("type") == "tool_call"]
-    assert calls == ["tool_search", "scenic_lookup"]
+    assert calls == ["tool_search", "tool_search", "scenic_lookup"]
+    search_results = [
+        json.loads(str(payload["content"]))
+        for payload in payloads
+        if payload.get("type") == "tool_result" and payload.get("tool") == "tool_search"
+    ]
+    assert search_results[0]["status"] == "matches"
+    assert search_results[0]["results"][0]["capability_id"] == "mcp:scenic:lookup"
+    assert "schema" not in search_results[0]["results"][0]
+    assert search_results[1]["status"] == "selected"
+    assert search_results[1]["selected"][0]["schema"]["name"] == "scenic_lookup"
     result = next(
         payload
         for payload in payloads

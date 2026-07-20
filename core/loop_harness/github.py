@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from pathlib import Path
 
 from core.loop_harness.errors import LoopBlockedError
@@ -12,6 +13,15 @@ from core.loop_harness.models import PullRequestReceipt, ValidationResult, Worke
 
 _LOOP_BRANCH = re.compile(r"codex/loop-frontend-[a-f0-9]{12}")
 _PR_URL = re.compile(r"https://github\.com/[^/\s]+/[^/\s]+/pull/(\d+)")
+_BLOCKING_LABELS = {
+    "dependencies",
+    "do-not-merge",
+    "high-risk",
+    "loop-pause",
+    "manual-review",
+    "security",
+}
+_SUCCESSFUL_CHECK_CONCLUSIONS = {"SUCCESS", "NEUTRAL", "SKIPPED"}
 
 
 class GitHubAdapter:
@@ -22,11 +32,15 @@ class GitHubAdapter:
         repository: str,
         target_branch: str,
         timeout_seconds: int = 120,
+        checks_timeout_seconds: int = 15 * 60,
+        poll_interval_seconds: float = 10.0,
     ) -> None:
         self.gh_bin = gh_bin
         self.repository = repository
         self.target_branch = target_branch
         self.timeout_seconds = timeout_seconds
+        self.checks_timeout_seconds = checks_timeout_seconds
+        self.poll_interval_seconds = poll_interval_seconds
 
     def probe(self) -> None:
         if not self.gh_bin.is_file():
@@ -110,6 +124,145 @@ class GitHubAdapter:
             raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub PR URL is invalid")
         return PullRequestReceipt(int(match.group(1)), match.group(0), branch, head_sha)
 
+    def merge_tier_a(
+        self,
+        *,
+        receipt: PullRequestReceipt,
+        base_sha: str,
+        tier: str,
+    ) -> str:
+        if tier != "A":
+            raise LoopBlockedError(
+                "BLOCKED_DIFF_POLICY", "only deterministic Tier A may auto-merge"
+            )
+        _validate_branch(receipt.branch)
+        _validate_sha(receipt.head_sha)
+        _validate_sha(base_sha)
+        metadata = self._pr_metadata(receipt.number)
+        self._require_merge_candidate(metadata, receipt=receipt, base_sha=base_sha)
+        if bool(metadata.get("isDraft")):
+            ready = self._run(
+                "pr", "ready", str(receipt.number), "--repo", self.repository
+            )
+            if ready.returncode != 0:
+                raise LoopBlockedError(
+                    "BLOCKED_GITHUB_PR", "GitHub PR could not be marked ready"
+                )
+
+        metadata = self._wait_for_successful_checks(
+            receipt=receipt,
+            base_sha=base_sha,
+        )
+        self._require_merge_candidate(metadata, receipt=receipt, base_sha=base_sha)
+        merge = self._run(
+            "pr",
+            "merge",
+            str(receipt.number),
+            "--repo",
+            self.repository,
+            "--squash",
+            "--delete-branch",
+            "--match-head-commit",
+            receipt.head_sha,
+        )
+        if merge.returncode != 0:
+            raise LoopBlockedError(
+                "BLOCKED_GITHUB_MERGE", "GitHub rejected the Tier A merge"
+            )
+        merged = self._pr_metadata(receipt.number)
+        if str(merged.get("state")) != "MERGED":
+            raise LoopBlockedError(
+                "BLOCKED_GITHUB_MERGE", "GitHub did not report the PR as merged"
+            )
+        merge_commit = merged.get("mergeCommit")
+        if not isinstance(merge_commit, dict):
+            raise LoopBlockedError(
+                "BLOCKED_GITHUB_OUTPUT", "GitHub merge commit metadata is missing"
+            )
+        merged_sha = str(merge_commit.get("oid", ""))
+        _validate_sha(merged_sha)
+        return merged_sha
+
+    def _wait_for_successful_checks(
+        self,
+        *,
+        receipt: PullRequestReceipt,
+        base_sha: str,
+    ) -> dict[str, object]:
+        deadline = time.monotonic() + self.checks_timeout_seconds
+        while True:
+            metadata = self._pr_metadata(receipt.number)
+            self._require_merge_candidate(metadata, receipt=receipt, base_sha=base_sha)
+            checks = metadata.get("statusCheckRollup")
+            if not isinstance(checks, list) or not checks:
+                status = "pending"
+            else:
+                status = _check_rollup_status(checks)
+            if status == "success":
+                return metadata
+            if status == "failure":
+                raise LoopBlockedError(
+                    "BLOCKED_GITHUB_CHECKS", "GitHub checks did not all pass"
+                )
+            if time.monotonic() >= deadline:
+                raise LoopBlockedError(
+                    "BLOCKED_GITHUB_CHECKS_TIMEOUT", "GitHub checks did not finish in time"
+                )
+            time.sleep(self.poll_interval_seconds)
+
+    def _require_merge_candidate(
+        self,
+        metadata: dict[str, object],
+        *,
+        receipt: PullRequestReceipt,
+        base_sha: str,
+    ) -> None:
+        number = metadata.get("number")
+        if not isinstance(number, int) or isinstance(number, bool) or number != receipt.number:
+            raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub PR number changed")
+        is_draft = metadata.get("isDraft")
+        if not isinstance(is_draft, bool):
+            raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub draft state is invalid")
+        if str(metadata.get("state")) != "OPEN":
+            raise LoopBlockedError("BLOCKED_GITHUB_PR", "GitHub PR is not open")
+        if str(metadata.get("headRefName")) != receipt.branch:
+            raise LoopBlockedError("BLOCKED_PR_HEAD_DRIFT", "GitHub PR branch changed")
+        if str(metadata.get("headRefOid")) != receipt.head_sha:
+            raise LoopBlockedError("BLOCKED_PR_HEAD_DRIFT", "GitHub PR head changed")
+        if str(metadata.get("baseRefName")) != self.target_branch:
+            raise LoopBlockedError("BLOCKED_BASE_DRIFT", "GitHub PR target branch changed")
+        if str(metadata.get("baseRefOid")) != base_sha:
+            raise LoopBlockedError("BLOCKED_BASE_DRIFT", "GitHub PR base changed")
+        if str(metadata.get("reviewDecision", "")) not in {"", "APPROVED"}:
+            raise LoopBlockedError(
+                "BLOCKED_HUMAN_REVIEW", "GitHub requires manual review for the PR"
+            )
+        labels = metadata.get("labels")
+        if not isinstance(labels, list):
+            raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub labels are invalid")
+        label_names = {
+            str(label.get("name", "")).strip().casefold()
+            for label in labels
+            if isinstance(label, dict)
+        }
+        if label_names & _BLOCKING_LABELS:
+            raise LoopBlockedError(
+                "BLOCKED_HUMAN_REVIEW", "a manual-review or high-risk label is present"
+            )
+
+    def _pr_metadata(self, number: int) -> dict[str, object]:
+        result = self._run(
+            "pr",
+            "view",
+            str(number),
+            "--repo",
+            self.repository,
+            "--json",
+            "number,state,isDraft,headRefName,headRefOid,baseRefName,baseRefOid,"
+            "reviewDecision,labels,statusCheckRollup,mergeCommit",
+        )
+        return _json_object(result, "BLOCKED_GITHUB")
+
     def _find_by_branch(self, branch: str) -> PullRequestReceipt | None:
         result = self._run(
             "pr",
@@ -172,6 +325,41 @@ def _json_list(result: subprocess.CompletedProcess[str], code: str) -> list[obje
     if not isinstance(payload, list):
         raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub JSON is not a list")
     return payload
+
+
+def _json_object(
+    result: subprocess.CompletedProcess[str], code: str
+) -> dict[str, object]:
+    if result.returncode != 0:
+        raise LoopBlockedError(code, "GitHub CLI request failed")
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub JSON is invalid") from exc
+    if not isinstance(payload, dict):
+        raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub JSON is not an object")
+    return payload
+
+
+def _check_rollup_status(checks: list[object]) -> str:
+    pending = False
+    for raw in checks:
+        if not isinstance(raw, dict):
+            return "failure"
+        if "status" in raw:
+            status = str(raw.get("status", "")).upper()
+            if status != "COMPLETED":
+                pending = True
+                continue
+            if str(raw.get("conclusion", "")).upper() not in _SUCCESSFUL_CHECK_CONCLUSIONS:
+                return "failure"
+            continue
+        state = str(raw.get("state", "")).upper()
+        if state in {"PENDING", "EXPECTED"}:
+            pending = True
+        elif state != "SUCCESS":
+            return "failure"
+    return "pending" if pending else "success"
 
 
 def _title(summary: str) -> str:

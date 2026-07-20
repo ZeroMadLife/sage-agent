@@ -233,6 +233,36 @@ describe('harness timeline projection', () => {
     }))
   })
 
+  it('projects the current run budget separately from the context window', () => {
+    const projection = projectLatestCodingHarness([
+      codingEvent(1, 'harness', {
+        type: 'run_budget_updated',
+        used_tokens: 24_000,
+        limit_tokens: 100_000,
+        model_calls: 3,
+        model_call_limit: 24,
+        tool_calls: 5,
+        tool_call_limit: 64,
+      }),
+      codingEvent(2, 'context', {
+        type: 'context_usage_updated',
+        used_tokens: 4_200,
+        effective_limit_tokens: 936_000,
+      }),
+    ])
+
+    expect(projection.runtimeResources).toContainEqual({
+      id: 'run-budget',
+      kind: 'budget',
+      label: '本轮预算',
+      detail: '24k / 100k tokens · 3/24 模型 · 5/64 工具',
+      status: 'completed',
+    })
+    expect(projection.runtimeResources).toContainEqual(expect.objectContaining({
+      id: 'context-budget', kind: 'context',
+    }))
+  })
+
   it('projects a V2 approval loop without charging human wait to plan or tool time', () => {
     const projection = projectLatestCodingHarness([
       { ...codingEvent(1, 'user', { type: 'user', content: '执行 pwd' }), timestamp: '2026-07-16T00:00:00Z' },
@@ -290,15 +320,45 @@ describe('harness timeline projection', () => {
     const projection = projectLatestCodingHarness([
       codingEvent(1, 'agent', {
         type: 'subagent_started', child_run_id: 'child-1', description: '读取项目',
+        operation_ref: { kind: 'coding_run', id: 'child-1' },
       }, 'running'),
       codingEvent(2, 'agent', {
         type: 'subagent_completed', child_run_id: 'child-1', result_ref: 'subagent://child-1',
+        operation_ref: { kind: 'coding_run', id: 'child-1' },
       }),
     ])
 
     expect(projection.runtimeResources).toContainEqual({
       id: 'agent:child-1', kind: 'agent', label: '子代理', detail: '读取项目', status: 'completed',
+      operationRef: { kind: 'coding_run', id: 'child-1' },
     })
+  })
+
+  it('keeps repeated tool-stage events as an append-only audit sequence', () => {
+    const projection = projectLatestCodingHarness([
+      codingEvent(1, 'tool', {
+        type: 'tool_call', tool: 'read_file', args: { path: 'README.md' },
+      }, 'running'),
+      codingEvent(2, 'tool', {
+        type: 'tool_result', tool: 'read_file', args: { path: 'README.md' }, content: 'done',
+      }),
+      codingEvent(3, 'tool', {
+        type: 'tool_call', tool: 'search', args: { query: 'Harness' },
+      }, 'running'),
+      codingEvent(4, 'tool', {
+        type: 'tool_result', tool: 'search', args: { query: 'Harness' }, content: 'done',
+      }),
+    ])
+
+    const actEvents = projection.stageEvents?.filter((item) => item.stageId === 'act')
+    expect(actEvents).toHaveLength(4)
+    expect(actEvents?.map((item) => item.detail)).toEqual([
+      'read_file · README.md',
+      'read_file · README.md',
+      'search',
+      'search',
+    ])
+    expect(new Set(actEvents?.map((item) => item.eventId)).size).toBe(4)
   })
 
   it('keeps blocked and resumed approval activity in one tool-stage visit', () => {

@@ -9,7 +9,7 @@ beforeEach(() => {
   setActivePinia(createPinia())
 })
 
-function mountComposer() {
+function mountComposer(props: { density?: 'default' | 'compact' } = {}) {
   const store = useCodingStore()
   store.sessionId = 'c1'
   store.isThinking = false
@@ -18,7 +18,7 @@ function mountComposer() {
     { name: 'plan', description: 'plan a task', source: 'builtin', argument_hint: '' },
     { name: 'test', description: 'run tests', source: 'project', argument_hint: '' },
   ]
-  const wrapper = mount(CodingComposer)
+  const wrapper = mount(CodingComposer, { props })
   return { wrapper, store }
 }
 
@@ -135,6 +135,32 @@ it('does not render the retired context placeholder inside the composer', () => 
   expect(wrapper.text()).not.toContain('模型未配置')
 })
 
+it('supports a compact density for the chat dock without changing the default composer', () => {
+  const { wrapper: compact } = mountComposer({ density: 'compact' })
+  const { wrapper: standard } = mountComposer()
+
+  expect(compact.get('.composer').classes()).toContain('compact')
+  expect(standard.get('.composer').classes()).toContain('default')
+})
+
+it('accepts and focuses an editable task draft through its public handle', async () => {
+  const { wrapper } = mountComposer()
+  const handle = wrapper.vm as unknown as {
+    setInput: (value: string) => void
+    focus: () => void
+    hasDraft: () => boolean
+  }
+  const focus = vi.spyOn(textarea(wrapper).element as HTMLTextAreaElement, 'focus')
+
+  handle.setInput('研究当前节点')
+  await nextTick()
+  handle.focus()
+
+  expect((textarea(wrapper).element as HTMLTextAreaElement).value).toBe('研究当前节点')
+  expect(focus).toHaveBeenCalledOnce()
+  expect(handle.hasDraft()).toBe(true)
+})
+
 it('shows configured context at the top-right and real reasoning controls in the rail', async () => {
   const { wrapper, store } = mountComposer()
   store.models = [{
@@ -166,7 +192,7 @@ it('shows configured context at the top-right and real reasoning controls in the
 
 it('sends the message on enter after a skill has been selected', async () => {
   const { wrapper, store } = mountComposer()
-  store.sendMessage = vi.fn()
+  store.sendMessage = vi.fn().mockReturnValue(true)
 
   await textarea(wrapper).setValue('/rev')
   await nextTick()
@@ -185,7 +211,7 @@ it('sends the message on enter after a skill has been selected', async () => {
 
 it('re-shows the skill menu after sending a message', async () => {
   const { wrapper, store } = mountComposer()
-  store.sendMessage = vi.fn()
+  store.sendMessage = vi.fn().mockReturnValue(true)
 
   // Select a skill, then send it.
   await textarea(wrapper).setValue('/rev')
@@ -199,6 +225,17 @@ it('re-shows the skill menu after sending a message', async () => {
   await nextTick()
   expect(wrapper.find('.skill-menu').exists()).toBe(true)
   expect(wrapper.findAll('.skill-menu-item')).toHaveLength(3)
+})
+
+it('keeps the draft when the transport rejects the message', async () => {
+  const { wrapper, store } = mountComposer()
+  store.sendMessage = vi.fn().mockReturnValue(false)
+
+  await textarea(wrapper).setValue('连接恢复后继续发送')
+  await textarea(wrapper).trigger('keydown', { key: 'Enter', shiftKey: false })
+
+  expect(store.sendMessage).toHaveBeenCalledWith('连接恢复后继续发送')
+  expect((textarea(wrapper).element as HTMLTextAreaElement).value).toBe('连接恢复后继续发送')
 })
 
 it('selects a skill by mouse click', async () => {
@@ -237,5 +274,24 @@ it('closes the permission drawer from its close control', async () => {
   ;(document.body.querySelector('.drawer-close') as HTMLButtonElement).click()
   await nextTick()
 
+  expect(document.body.querySelector('.permission-drawer')).toBeNull()
+})
+
+it('closes the permission drawer on escape', async () => {
+  const { wrapper } = mountComposer()
+
+  await wrapper.find('.permission-trigger').trigger('click')
+  const drawer = document.body.querySelector('.permission-drawer')
+  expect(drawer).toBeTruthy()
+
+  const event = new KeyboardEvent('keydown', {
+    key: 'Escape',
+    bubbles: true,
+    cancelable: true,
+  })
+  drawer?.dispatchEvent(event)
+  await nextTick()
+
+  expect(event.defaultPrevented).toBe(true)
   expect(document.body.querySelector('.permission-drawer')).toBeNull()
 })

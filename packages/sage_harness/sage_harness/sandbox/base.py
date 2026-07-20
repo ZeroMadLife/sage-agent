@@ -61,6 +61,8 @@ class SandboxResult:
     operation: SandboxOperation
     content: str
     is_error: bool = False
+    error_code: str | None = None
+    retryable: bool | None = None
     metadata: Mapping[str, object] = field(default_factory=dict)
 
 

@@ -15,6 +15,7 @@ from sage_harness import (
     HarnessRunContext,
     SkillActivationMiddleware,
     parse_skill_activation,
+    resolve_skill_allowed_tools,
 )
 from sage_harness.agents import create_sage_agent
 from sage_harness.middleware import MiddlewareSpec, build_default_registry
@@ -76,6 +77,10 @@ def test_parse_skill_activation_requires_a_slash_command() -> None:
         "inspect staged files",
     )
     assert parse_skill_activation("please /review") is None
+    assert resolve_skill_allowed_tools(Catalog(), "/review inspect") == frozenset(
+        {"read_file", "search"}
+    )
+    assert resolve_skill_allowed_tools(Catalog(), "please /review") is None
 
 
 def test_before_agent_persists_only_a_non_host_skill_reference() -> None:

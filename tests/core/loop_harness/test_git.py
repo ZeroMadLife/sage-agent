@@ -229,3 +229,12 @@ def test_git_controller_commits_exact_candidate_and_pushes_without_force(tmp_pat
     assert remote_head == head_sha
     assert _git(worktree, "status", "--porcelain").stdout == ""
     git.remove_managed_worktree(worktree, discard_changes=True)
+    git.remove_local_candidate_branch(branch=branch, head_sha=head_sha)
+    local_branch = subprocess.run(
+        ["git", "show-ref", "--verify", f"refs/heads/{branch}"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert local_branch.returncode != 0

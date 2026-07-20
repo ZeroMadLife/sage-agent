@@ -78,7 +78,11 @@ class ToolExecutor:
         if tool is None:
             return None
         try:
-            args = validate_tool(self.workspace, name, args)
+            args = (
+                tool.validate_arguments(args)
+                if tool.argument_validator is not None
+                else validate_tool(self.workspace, name, args)
+            )
         except ValueError:
             return None
         permission = self.permission_checker.check(tool, args, self.workspace)
@@ -125,7 +129,11 @@ class ToolExecutor:
             return
 
         try:
-            args = validate_tool(self.workspace, name, args)
+            args = (
+                tool.validate_arguments(args)
+                if tool.argument_validator is not None
+                else validate_tool(self.workspace, name, args)
+            )
         except ValueError as exc:
             yield self._tool_result_event(
                 name,
@@ -198,6 +206,8 @@ class ToolExecutor:
                 result = ToolResult(
                     content=sandbox_result.content,
                     is_error=sandbox_result.is_error,
+                    error_code=sandbox_result.error_code,
+                    retryable=sandbox_result.retryable,
                 )
             except SandboxPolicyError as exc:
                 result = ToolResult(content=str(exc), is_error=True)
@@ -304,6 +314,8 @@ class ToolExecutor:
             args=args,
             content=result.content,
             is_error=result.is_error,
+            error_code=result.error_code,
+            retryable=result.retryable,
         )
 
     def _cancelled_event(self) -> CancelledEvent:

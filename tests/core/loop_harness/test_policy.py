@@ -97,6 +97,19 @@ def test_vue_behavior_change_is_tier_b_and_never_tier_a() -> None:
     assert "包含前端行为变化" in decision.reasons
 
 
+def test_small_component_behavior_fix_with_regression_test_is_tier_a() -> None:
+    candidate = _candidate(
+        "frontend/src/views/KnowledgeView.vue",
+        "frontend/src/views/KnowledgeView.test.ts",
+    )
+    snapshot = _snapshot(*candidate.changed_files, behavior_changed=True)
+
+    decision = evaluate_diff(candidate, snapshot, dirty_paths=())
+
+    assert decision.allowed is True
+    assert decision.tier == "A"
+
+
 def test_diff_outside_candidate_paths_is_rejected() -> None:
     candidate = _candidate("frontend/src/views/KnowledgeView.vue")
     snapshot = _snapshot(

@@ -164,7 +164,7 @@ class KnowledgeSourceRootSummary(BaseModel):
     """Browser-safe configured source root without a server filesystem path."""
 
     root_id: str
-    kind: Literal["obsidian", "markdown", "github", "feishu"]
+    kind: Literal["obsidian", "markdown", "github", "feishu", "web"]
     label: str
 
 
@@ -1137,6 +1137,64 @@ class CodingMcpServersResponse(BaseModel):
     servers: list[CodingMcpServer]
 
 
+class HarnessCapabilityResponse(BaseModel):
+    """Browser-safe metadata for one non-executable Harness capability."""
+
+    capability_id: str
+    name: str
+    origin: Literal["local", "mcp", "skill", "subagent", "web"]
+    kind: Literal["tool", "workflow", "delegate"]
+    revision: str
+    description: str
+    surfaces: list[Literal["growth", "knowledge", "coding"]]
+    risk: Literal["low", "medium", "high"]
+    permission: Literal["none", "approval", "runtime"]
+    deferred: bool
+    remote_content: bool
+    availability: Literal["available", "degraded", "unavailable", "disabled", "stale"]
+    timeout_seconds: float = Field(gt=0, le=3600)
+    tags: list[str]
+
+
+class HarnessCapabilitiesResponse(BaseModel):
+    """Revisioned capability catalog for one authorized session surface."""
+
+    session_id: str
+    workspace_id: str
+    surface: Literal["growth", "knowledge", "coding"]
+    revision: str
+    count: int = Field(ge=0)
+    capabilities: list[HarnessCapabilityResponse]
+
+
+class HarnessCapabilityHealthItem(BaseModel):
+    """Content-free health summary for one currently visible capability."""
+
+    capability_id: str
+    origin: Literal["local", "mcp", "skill", "subagent", "web"]
+    revision: str
+    availability: Literal["available", "degraded", "unavailable", "disabled", "stale"]
+    invocation_count: int = Field(ge=0)
+    success_count: int = Field(ge=0)
+    failure_count: int = Field(ge=0)
+    first_success_at: str | None = None
+    last_success_at: str | None = None
+    p50_latency_ms: int | None = Field(default=None, ge=0)
+    p95_latency_ms: int | None = Field(default=None, ge=0)
+    failure_categories: dict[str, int] = Field(default_factory=dict)
+
+
+class HarnessCapabilityHealthResponse(BaseModel):
+    """Authorized workspace-scoped capability health projection."""
+
+    session_id: str
+    workspace_id: str
+    surface: Literal["growth", "knowledge", "coding"]
+    catalog_revision: str
+    range_days: int = Field(ge=1, le=3650)
+    capabilities: list[HarnessCapabilityHealthItem]
+
+
 class CodingApprovalResponse(BaseModel):
     """Pending approval returned to the coding UI."""
 
@@ -1215,6 +1273,58 @@ class CodingMemoryProposalDetail(BaseModel):
 class CodingMemoryProposalTransitionRequest(BaseModel):
     """Revision guard for an ID-addressed proposal transition."""
 
+    expected_revision: int = Field(ge=0)
+
+
+class CodingKnowledgeSourceProposal(BaseModel):
+    """Browser-safe review projection for one web evidence proposal."""
+
+    proposal_id: str
+    thread_id: str
+    run_id: str
+    artifact_ref: str
+    source_kind: str
+    canonical_url: str
+    title: str
+    media_type: str
+    retrieved_at: str
+    content_hash: str
+    reason: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    status: Literal["pending", "applying", "approved", "rejected"]
+    revision: int = Field(ge=0)
+    target_root_id: str
+    target_relative_path: str = ""
+    job_id: str | None = None
+    last_error: str | None = None
+    decided_by: str | None = None
+    decided_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class CodingKnowledgeSourceProposalEvent(BaseModel):
+    """Append-only safe lifecycle event for one source proposal."""
+
+    event_id: str
+    proposal_id: str
+    sequence: int = Field(ge=1)
+    event_type: str
+    revision: int = Field(ge=0)
+    detail: dict[str, str] = Field(default_factory=dict)
+    created_at: str
+
+
+class CodingKnowledgeSourceProposalsResponse(BaseModel):
+    proposals: list[CodingKnowledgeSourceProposal]
+
+
+class CodingKnowledgeSourceProposalDetail(BaseModel):
+    proposal: CodingKnowledgeSourceProposal
+    events: list[CodingKnowledgeSourceProposalEvent]
+
+
+class CodingKnowledgeSourceProposalTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
@@ -1328,12 +1438,34 @@ class CloudDevelopmentLoginRequest(BaseModel):
         return value.strip()
 
 
+class CloudCanaryInviteLoginRequest(BaseModel):
+    """One-time private-Canary invite exchanged for a device session."""
+
+    invite_code: str = Field(min_length=1, max_length=256)
+    device_name: str = Field(default="Unknown device", max_length=120)
+
+    @field_validator("invite_code", "device_name")
+    @classmethod
+    def strip_canary_login_values(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
 class CloudCurrentUserResponse(BaseModel):
     """Authenticated cloud identity without exposing its browser session token."""
 
     user_id: str
     email: str
     display_name: str
+
+
+class CloudAuthOptionsResponse(BaseModel):
+    """Public login methods enabled by the trusted server configuration."""
+
+    canary_invite_login: bool
+    github_login: bool
 
 
 class CloudGitHubOAuthStartRequest(BaseModel):

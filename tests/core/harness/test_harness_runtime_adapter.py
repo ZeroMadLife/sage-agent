@@ -95,6 +95,133 @@ def test_event_adapter_exposes_ai_delta_and_tool_result_without_private_state() 
     assert "analysis" not in str(ai_events[0].payload)
 
 
+def test_event_adapter_does_not_stream_legacy_tool_protocol_as_answer_text() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    ai = AIMessage(
+        content=(
+            '<tool>{"name":"search_web","args":{"query":"private"}}</tool>'
+            '<final>Public answer only.</final>'
+        ),
+        id="ai-legacy",
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (ai, {}), "source-legacy"))
+
+    assert len(events) == 1
+    assert events[0].payload["delta"] == "Public answer only."
+    assert "<tool>" not in str(events[0].payload)
+
+
+def test_event_adapter_filters_legacy_protocol_split_across_stream_chunks() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    chunks = (
+        "Checking the workspace.<to",
+        'ol>{"name":"run_shell","args":{"command":"pwd"}}</to',
+        "ol><fi",
+        "nal>Public answer only.</fi",
+        "nal>Afterword.",
+    )
+
+    events = tuple(
+        event
+        for index, chunk in enumerate(chunks, start=1)
+        for event in adapter.adapt(
+            HarnessStreamItem(
+                index,
+                "messages",
+                (AIMessage(content=chunk, id=f"ai-{index}"), {}),
+                f"source-{index}",
+            )
+        )
+    )
+
+    content = "".join(str(event.payload["delta"]) for event in events)
+    assert content == "Checking the workspace.Public answer only.Afterword."
+    assert "<tool>" not in content
+    assert "run_shell" not in content
+    assert "<final>" not in content
+
+
+def test_event_adapter_flushes_public_fragment_when_stream_ends() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    initial = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "messages",
+            (AIMessage(content="Answer with trailing <", id="ai-trailing"), {}),
+            "source-trailing",
+        )
+    )
+
+    events = adapter.finish()
+
+    assert len(events) == 1
+    assert (
+        "".join(
+            [*(str(event.payload["delta"]) for event in initial), str(events[0].payload["delta"])]
+        )
+        == "Answer with trailing <"
+    )
+
+
+def test_event_adapter_drops_tool_only_legacy_protocol_message() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    ai = AIMessage(
+        content='<tool>{"name":"search_web","args":{"query":"private"}}</tool>',
+        id="ai-tool-only",
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (ai, {}), "source-tool-only"))
+
+    assert events == ()
+
+
+def test_event_adapter_projects_safe_subagent_receipt_on_task_result() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    tool = ToolMessage(
+        content="Requested profile is unavailable.",
+        tool_call_id="call-task",
+        name="task",
+        status="error",
+        additional_kwargs={
+            "sage_subagent": {
+                "child_run_id": "child-1",
+                "parent_run_id": "r1",
+                "status": "failed",
+                "result_ref": "",
+                "error_code": "subagent_type_not_allowed",
+                "evidence_count": 0,
+                "token_usage": 0,
+                "model_calls": 0,
+                "tool_count": 0,
+                "prompt": "must-not-leak",
+            }
+        },
+    )
+
+    events = adapter.adapt(HarnessStreamItem(1, "messages", (tool, {}), "source-task"))
+
+    assert len(events) == 1
+    assert events[0].kind == "tool"
+    assert events[0].status == "error"
+    assert events[0].payload["operation_ref"] == {
+        "kind": "coding_run",
+        "id": "child-1",
+    }
+    assert events[0].payload["subagent"] == {
+        "child_run_id": "child-1",
+        "parent_run_id": "r1",
+        "status": "failed",
+        "result_ref": "",
+        "error_code": "subagent_type_not_allowed",
+        "evidence_count": 0,
+        "token_usage": 0,
+        "model_calls": 0,
+        "tool_count": 0,
+    }
+    assert "must-not-leak" not in str(events[0].payload)
+
+
 def test_event_adapter_projects_a_bounded_run_budget_stop_and_notice() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
 
@@ -126,6 +253,114 @@ def test_event_adapter_projects_a_bounded_run_budget_stop_and_notice() -> None:
     assert events[1].payload["type"] == "text_delta"
     assert "执行时长" in events[1].payload["delta"]
     assert "secret" not in str(events)
+
+
+def test_event_adapter_projects_live_run_budget_usage_once_per_counter_state() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    state = {
+        "messages": [],
+        "run_token_usage": 24_000,
+        "run_token_limit": 100_000,
+        "run_model_calls": 3,
+        "run_model_call_limit": 24,
+        "run_tool_calls": 5,
+        "run_tool_call_limit": 64,
+    }
+
+    first = adapter.adapt(HarnessStreamItem(1, "values", state, "source-budget-live"))
+    repeated = adapter.adapt(HarnessStreamItem(2, "values", state, "source-budget-repeat"))
+
+    budget = next(event for event in first if event.payload["type"] == "run_budget_updated")
+    assert budget.kind == "harness"
+    assert budget.payload == {
+        "type": "run_budget_updated",
+        "used_tokens": 24_000,
+        "limit_tokens": 100_000,
+        "model_calls": 3,
+        "model_call_limit": 24,
+        "tool_calls": 5,
+        "tool_call_limit": 64,
+        "usage_ratio": 0.24,
+        "run_id": "r1",
+        "session_id": "s1",
+    }
+    assert not any(event.payload["type"] == "run_budget_updated" for event in repeated)
+
+
+def test_event_adapter_projects_parent_and_child_budget_as_one_run_total() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "values",
+            {
+                "messages": [],
+                "run_token_usage": 1_000,
+                "run_child_token_usage": 2_000,
+                "run_token_limit": 10_000,
+                "run_model_calls": 1,
+                "run_child_model_calls": 2,
+                "run_model_call_limit": 10,
+                "run_tool_calls": 2,
+                "run_child_tool_calls": 3,
+                "run_tool_call_limit": 10,
+            },
+            "source-budget-child",
+        )
+    )
+
+    budget = next(event for event in events if event.payload["type"] == "run_budget_updated")
+    assert budget.payload["used_tokens"] == 3_000
+    assert budget.payload["model_calls"] == 3
+    assert budget.payload["tool_calls"] == 5
+    assert budget.payload["usage_ratio"] == 0.3
+
+
+def test_event_adapter_projects_only_allowlisted_capability_audit_fields() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+
+    selection = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "capability_selected",
+                "version": 1,
+                "catalog_revision": "catalog-r1",
+                "catalog_hash": "hash-r1",
+                "capability_ids": ["local:list_files"],
+                "selected_count": 1,
+                "schema": {"secret": "must-not-leak"},
+                "path": "/Users/example/private",
+            },
+            "source-capability",
+        )
+    )
+    invocation = adapter.adapt(
+        HarnessStreamItem(
+            2,
+            "custom",
+            {
+                "type": "capability_invocation_completed",
+                "version": 1,
+                "catalog_revision": "catalog-r1",
+                "capability_id": "local:list_files",
+                "status": "failure",
+                "duration_ms": 25,
+                "failure_category": "timeout",
+                "args": {"api_key": "must-not-leak"},
+            },
+            "source-invocation",
+        )
+    )
+
+    assert selection[0].payload["type"] == "capability_selected"
+    assert selection[0].payload["capability_ids"] == ["local:list_files"]
+    assert invocation[0].payload["failure_category"] == "timeout"
+    assert "schema" not in str(selection)
+    assert "/Users/" not in str(selection)
+    assert "api_key" not in str(invocation)
 
 
 def test_event_adapter_preserves_failed_tool_message_status() -> None:
@@ -244,7 +479,7 @@ def test_event_adapter_keeps_large_knowledge_result_valid_and_deduplicated() -> 
     assert duplicate_message_events == ()
 
 
-def test_message_payload_only_expands_knowledge_tool_content() -> None:
+def test_message_payload_expands_structured_evidence_tool_content() -> None:
     content = "x" * 5_000
 
     regular = message_payload(
@@ -257,9 +492,13 @@ def test_message_payload_only_expands_knowledge_tool_content() -> None:
             name="knowledge_search",
         )
     )
+    web = message_payload(
+        ToolMessage(content=content, tool_call_id="call-web", name="search_web")
+    )
 
     assert len(str(regular["content"])) == 4_000
     assert knowledge["content"] == content
+    assert web["content"] == content
 
 
 def test_event_adapter_projects_only_scoped_tool_artifact_metadata() -> None:
@@ -491,18 +730,25 @@ def test_event_adapter_projects_graph_approval_interrupt_without_checkpoint_cont
             {
                 "__interrupt__": (Interrupt(),),
                 "messages": [],
+                "run_token_usage": 12,
+                "run_token_limit": 100,
+                "run_model_calls": 1,
+                "run_model_call_limit": 4,
+                "run_tool_calls": 1,
+                "run_tool_call_limit": 4,
                 "private_checkpoint": {"token": "do not expose"},
             },
             "source-interrupt",
         )
     )
 
-    assert events[0].kind == "approval"
-    assert events[0].status == "blocked"
-    assert events[0].payload["type"] == "approval_required"
-    assert events[0].payload["interrupt_id"] == "interrupt-1"
-    assert "private_checkpoint" not in str(events[0].payload)
-    assert events[1].payload["type"] == "checkpoint_update"
+    assert events[0].payload["type"] == "run_budget_updated"
+    assert events[1].kind == "approval"
+    assert events[1].status == "blocked"
+    assert events[1].payload["type"] == "approval_required"
+    assert events[1].payload["interrupt_id"] == "interrupt-1"
+    assert "private_checkpoint" not in str(events[1].payload)
+    assert events[2].payload["type"] == "checkpoint_update"
 
 
 def test_runtime_adapter_streams_a_real_langgraph_message(tmp_path: Path) -> None:
@@ -880,7 +1126,11 @@ def test_runtime_adapter_promotes_deferred_tool_before_execution(tmp_path: Path)
     promoted = state["promoted_tools"]
     assert isinstance(promoted, dict)
     bundle_hash = promoted["catalog_hash"]
-    assert promoted == {"catalog_hash": bundle_hash, "names": ["todo_list"]}
+    assert promoted == {
+        "catalog_hash": bundle_hash,
+        "names": ["todo_list"],
+        "capability_ids": ["local:todo_list"],
+    }
     assert isinstance(bundle_hash, str) and len(bundle_hash) == 16
 
 
@@ -1044,6 +1294,78 @@ def test_event_adapter_projects_agent_started_event() -> None:
     assert events[0].payload["agent_run_id"] == "agent_1"
 
 
+def test_event_adapter_projects_only_public_subagent_progress_fields() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "subagent_progress",
+                "child_run_id": "child_1",
+                "parent_run_id": "parent_1",
+                "subagent_type": "research",
+                "phase": "tool_completed",
+                "status": "completed",
+                "tool": "search_web",
+                "tool_count": 2,
+                "evidence_count": 3,
+                "operation_ref": {"kind": "coding_run", "id": "child_1"},
+                "args": {"query": "private query"},
+                "content": "private page content",
+                "prompt": "private child prompt",
+            },
+            "source-child-progress",
+        )
+    )
+
+    assert events[0].kind == "agent"
+    assert events[0].status == "running"
+    assert events[0].payload == {
+        "type": "subagent_progress",
+        "child_run_id": "child_1",
+        "parent_run_id": "parent_1",
+        "subagent_type": "research",
+        "phase": "tool_completed",
+        "status": "completed",
+        "tool": "search_web",
+        "tool_count": 2,
+        "evidence_count": 3,
+        "operation_ref": {"kind": "coding_run", "id": "child_1"},
+        "agent_run_id": "child_1",
+        "run_id": "r1",
+        "session_id": "s1",
+    }
+
+
+def test_event_adapter_preserves_subagent_approval_waiting_progress() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "custom",
+            {
+                "type": "subagent_progress",
+                "child_run_id": "child_1",
+                "parent_run_id": "parent_1",
+                "subagent_type": "practice",
+                "phase": "approval_required",
+                "status": "waiting",
+                "tool": "run_shell",
+                "operation_ref": {"kind": "coding_run", "id": "child_1"},
+            },
+            "source-child-approval",
+        )
+    )
+
+    assert events[0].payload["phase"] == "approval_required"
+    assert events[0].payload["status"] == "waiting"
+    assert events[0].payload["operation_ref"] == {
+        "kind": "coding_run",
+        "id": "child_1",
+    }
+
+
 @pytest.mark.parametrize(
     ("event_type", "child_status", "error_code"),
     [
@@ -1140,6 +1462,9 @@ def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> No
     prompt = build_deerflow_system_prompt(runtime)
     assert "untrusted reference" in prompt
     assert "继续实现 harness" in prompt
+    assert "never print legacy <tool> or <final> protocol tags" in prompt
+    assert "never assume /workspace exists" in prompt
+    assert "do not retry the same selection" in prompt
     assert context_status_event(runtime, "r1") is None
 
 
@@ -1333,6 +1658,66 @@ def test_runtime_adapter_streams_read_tool_result(tmp_path: Path) -> None:
 
     payloads = asyncio.run(run())
     assert any(item.get("type") == "tool_result" for item in payloads)
+    assert any(item.get("type") == "text_delta" for item in payloads)
+
+
+def test_runtime_adapter_runs_shell_pipeline_with_computed_result(tmp_path: Path) -> None:
+    async def run() -> list[dict[str, object]]:
+        async with open_sqlite_checkpointer(tmp_path / "checkpoints.sqlite3") as saver:
+            from core.coding.runtime import CodingRuntime
+
+            runtime = CodingRuntime(
+                session_id="s-shell-pipeline",
+                workspace_root=tmp_path,
+                model=object(),
+                storage_root=tmp_path / ".coding",
+                permission_mode="auto",
+            )
+            model = BindableFakeMessagesListChatModel(
+                responses=[
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "run_shell",
+                                "args": {
+                                    "command": "ls -la | tail -n +2 | wc -l",
+                                    "timeout": 20,
+                                },
+                                "id": "call-shell-pipeline",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Counted the directory entries."),
+                ]
+            )
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                tools=build_deerflow_coding_tools(runtime, run_id="r-shell-pipeline"),
+            )
+            events = [
+                event.payload
+                async for event in adapter.stream_turn(
+                    session_id="s-shell-pipeline",
+                    run_id="r-shell-pipeline",
+                    workspace_id="w-shell-pipeline",
+                    workspace_path=str(tmp_path),
+                    content="Count the directory entries with the requested shell pipeline",
+                )
+            ]
+            return events
+
+    payloads = asyncio.run(run())
+    tool_result = next(
+        item
+        for item in payloads
+        if item.get("type") == "tool_result" and item.get("tool") == "run_shell"
+    )
+    assert tool_result.get("is_error") is False
+    assert tool_result.get("policy_reason") in {None, ""}
+    assert "exit_code: 0" in str(tool_result.get("content"))
     assert any(item.get("type") == "text_delta" for item in payloads)
 
 

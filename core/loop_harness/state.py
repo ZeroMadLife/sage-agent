@@ -28,6 +28,7 @@ _SUPPORTED_MODES = {
     "DRY_RUN",
     "SHADOW_WRITE",
     "PR_CANARY",
+    "AUTO_MERGE_TIER_A",
     "PAUSED_MANUAL",
     "PAUSED_ERROR",
 }
@@ -515,6 +516,29 @@ class LoopState:
             )
             if cursor.rowcount != 1:
                 raise sqlite3.DatabaseError("PR review head does not match durable state")
+
+    def record_merge_result(
+        self,
+        lease: Lease,
+        *,
+        pr_number: int,
+        head_sha: str,
+        merged_sha: str,
+    ) -> None:
+        if len(merged_sha) != 40 or any(
+            char not in "0123456789abcdef" for char in merged_sha
+        ):
+            raise ValueError("merge SHA must be a full lowercase Git SHA")
+        with self._transaction() as connection:
+            self._assert_lease_row(connection, lease)
+            cursor = connection.execute(
+                "UPDATE pull_requests SET state = 'MERGED', merged_sha = ?, updated_at = ? "
+                "WHERE number = ? AND head_sha = ? AND tier = 'A' "
+                "AND review_verdict = 'PASS'",
+                (merged_sha, _iso_now(), pr_number, head_sha),
+            )
+            if cursor.rowcount != 1:
+                raise sqlite3.DatabaseError("merged PR does not satisfy durable Tier A gates")
 
     def set_enabled(self, enabled: bool, *, mode: str = "DRY_RUN") -> None:
         if mode not in _SUPPORTED_MODES:

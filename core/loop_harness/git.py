@@ -275,6 +275,27 @@ class GitController:
         except RuntimeError as exc:
             raise LoopBlockedError("BLOCKED_GITHUB_PUSH", "candidate push failed") from exc
 
+    def remove_local_candidate_branch(self, *, branch: str, head_sha: str) -> None:
+        if _LOOP_BRANCH_PATTERN.fullmatch(branch) is None:
+            raise LoopBlockedError("BLOCKED_PR_BRANCH", "Loop candidate branch is invalid")
+        if len(head_sha) != 40 or any(
+            character not in "0123456789abcdef" for character in head_sha
+        ):
+            raise LoopBlockedError("BLOCKED_PR_HEAD", "candidate head SHA is invalid")
+        actual_head = self._run("rev-parse", f"refs/heads/{branch}").stdout.strip()
+        if actual_head != head_sha:
+            raise LoopBlockedError(
+                "BLOCKED_PR_HEAD_DRIFT", "local candidate branch head changed"
+            )
+        root_branch = self._run(
+            "symbolic-ref", "--quiet", "--short", "HEAD"
+        ).stdout.strip()
+        if root_branch == branch:
+            raise LoopBlockedError(
+                "BLOCKED_PR_BRANCH", "candidate branch is checked out in the integration root"
+            )
+        self._run("branch", "-D", branch)
+
     def remove_managed_worktree(self, destination: Path, *, discard_changes: bool) -> None:
         if not destination.exists():
             return

@@ -194,7 +194,7 @@ class DeerflowAgentFakeModel(FakeMessagesListChatModel):
                             "args": {
                                 "description": "读取 README",
                                 "prompt": "读取 README 并返回第一行",
-                                "subagent_type": "Explore",
+                                "subagent_type": "explore",
                             },
                             "id": "call-task",
                             "type": "tool_call",
@@ -310,14 +310,15 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert app.state.coding_sessions[session_id].runtime_profile == "deerflow_v2"
 
 
-def test_deerflow_profile_refuses_host_local_sandbox_in_production(tmp_path: Path) -> None:
+def test_deerflow_profile_refuses_host_local_sandbox_outside_development(
+    tmp_path: Path,
+) -> None:
     app = create_app(
         coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",
         coding_deerflow_v2_enabled=True,
-        cloud_app_env="production",
-        cloud_repository=object(),
+        cloud_app_env="staging",
     )
 
     response = TestClient(app).post(
@@ -415,6 +416,10 @@ def test_enabled_deerflow_profile_streams_read_tool_summary(tmp_path: Path) -> N
                 events.append(event)
                 if event["kind"] == "terminal":
                     break
+        health = client.get(
+            "/api/v1/harness/capabilities/health",
+            params={"session_id": session_id, "surface": "coding", "range": "30d"},
+        )
 
     payloads = [event["payload"] for event in events]
     tool_calls = [payload for payload in payloads if payload.get("type") == "tool_call"]
@@ -424,6 +429,28 @@ def test_enabled_deerflow_profile_streams_read_tool_summary(tmp_path: Path) -> N
     assert tool_calls[0]["tool_call_id"] == "call-list-files"
     assert tool_results and "README.md" in tool_results[0]["content"]
     assert any(payload.get("type") == "text_delta" for payload in payloads)
+    catalog_event = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "capability_catalog_updated"
+    )
+    invocation_event = next(
+        payload
+        for payload in payloads
+        if payload.get("type") == "capability_invocation_completed"
+    )
+    assert invocation_event["capability_id"] == "local:list_files"
+    assert invocation_event["status"] == "success"
+    assert "schema" not in str(catalog_event).lower()
+    assert "/Users/" not in str(catalog_event)
+    assert health.status_code == 200
+    metric = next(
+        item
+        for item in health.json()["capabilities"]
+        if item["capability_id"] == "local:list_files"
+    )
+    assert metric["invocation_count"] == 1
+    assert metric["success_count"] == 1
 
 
 def test_enabled_deerflow_profile_reuses_approval_endpoint_for_write_tool(tmp_path: Path) -> None:
@@ -693,22 +720,47 @@ def test_enabled_deerflow_profile_awaits_and_projects_subagent_terminal(tmp_path
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
             websocket.send_json({"content": "启动一个探索任务"})
             payloads: list[dict] = []
+            agent_kinds: list[str] = []
             while True:
                 event = websocket.receive_json()
                 payloads.append(event["payload"])
+                if str(event["payload"].get("type", "")).startswith("subagent_"):
+                    agent_kinds.append(event["kind"])
                 if event["kind"] == "terminal":
                     break
+
+        child_run_id = str(
+            next(item for item in payloads if item.get("type") == "subagent_started")[
+                "child_run_id"
+            ]
+        )
+        child_response = client.get(
+            f"/api/v1/coding/{session_id}/runs/{child_run_id}"
+        )
 
     agent_events = [
         item for item in payloads if str(item.get("type", "")).startswith("subagent_")
     ]
-    assert [item["type"] for item in agent_events] == [
-        "subagent_started",
-        "subagent_completed",
-    ]
+    assert agent_events[0]["type"] == "subagent_started"
+    assert agent_events[-1]["type"] == "subagent_completed"
+    assert any(item["type"] == "subagent_progress" for item in agent_events)
     assert agent_events[0]["child_run_id"].startswith("child_")
-    assert agent_events[1]["child_run_id"] == agent_events[0]["child_run_id"]
-    assert agent_events[1]["result_ref"].startswith("subagent://")
+    assert agent_events[-1]["child_run_id"] == agent_events[0]["child_run_id"]
+    assert agent_events[-1]["result_ref"].startswith("subagent://")
+    assert agent_kinds == ["agent"] * len(agent_events)
+    assert agent_events[0]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert agent_events[-1]["operation_ref"] == {
+        "kind": "coding_run",
+        "id": child_run_id,
+    }
+    assert child_response.status_code == 200
+    child_run = child_response.json()
+    assert child_run["run_id"] == child_run_id
+    assert child_run["events"][0]["parent_run_id"]
+    assert child_run["events"][-1]["type"] == "run_finished"
     assert any(item.get("type") == "final" for item in payloads)
 
 
@@ -1521,31 +1573,29 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
             coding_deerflow_v2_enabled=True,
         )
     )
-    production = TestClient(
+    staging = TestClient(
         create_app(
             coding_model_factory=FakeModel,
             coding_workspace_root=tmp_path,
-            coding_storage_root=tmp_path / ".coding-prod",
+            coding_storage_root=tmp_path / ".coding-staging",
             coding_deerflow_v2_enabled=True,
-            cloud_app_env="production",
-            cloud_repository=object(),
+            cloud_app_env="staging",
         )
     )
-    isolated_production = TestClient(
+    isolated_staging = TestClient(
         create_app(
             coding_model_factory=FakeModel,
             coding_workspace_root=tmp_path,
-            coding_storage_root=tmp_path / ".coding-prod-container",
+            coding_storage_root=tmp_path / ".coding-staging-container",
             coding_deerflow_v2_enabled=True,
             coding_sandbox_provider="container",
-            cloud_app_env="production",
-            cloud_repository=object(),
+            cloud_app_env="staging",
         )
     )
 
     development_models = development.get("/api/v1/coding/models").json()
-    production_models = production.get("/api/v1/coding/models").json()
-    isolated_production_models = isolated_production.get(
+    staging_models = staging.get("/api/v1/coding/models").json()
+    isolated_staging_models = isolated_staging.get(
         "/api/v1/coding/models"
     ).json()
 
@@ -1554,14 +1604,14 @@ def test_list_coding_models_advertises_only_safe_runtime_profiles(tmp_path: Path
         "deerflow_v2",
     ]
     assert development_models["default_runtime_profile"] == "deerflow_v2"
-    assert production_models["runtime_profiles"] == ["legacy"]
-    assert production_models["default_runtime_profile"] == "legacy"
-    assert isolated_production_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
-    assert isolated_production_models["default_runtime_profile"] == "deerflow_v2"
+    assert staging_models["runtime_profiles"] == ["legacy"]
+    assert staging_models["default_runtime_profile"] == "legacy"
+    assert isolated_staging_models["runtime_profiles"] == ["legacy", "deerflow_v2"]
+    assert isolated_staging_models["default_runtime_profile"] == "deerflow_v2"
 
-    production_session = production.post("/api/v1/coding/session", json={})
-    assert production_session.status_code == 200
-    assert production_session.json()["runtime_profile"] == "legacy"
+    staging_session = staging.post("/api/v1/coding/session", json={})
+    assert staging_session.status_code == 200
+    assert staging_session.json()["runtime_profile"] == "legacy"
 
 
 def test_app_rejects_invalid_default_runtime_profile(tmp_path: Path) -> None:

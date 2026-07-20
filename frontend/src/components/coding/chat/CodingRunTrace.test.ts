@@ -219,4 +219,93 @@ describe('CodingRunTrace', () => {
     expect(wrapper.text()).toContain('执行完成')
     expect(wrapper.text()).not.toContain('执行中')
   })
+
+  it('renders a recoverable policy rejection as an amber audit step instead of a run failure', async () => {
+    const policyAudit: CodingRunAuditSummary = {
+      ...audit,
+      steps: [
+        {
+          ...audit.steps[1],
+          status: 'error',
+          result_summary: '执行失败',
+          arguments_preview: '{"command":"sed -n 1,20p src/app.ts"}',
+        },
+        {
+          ...audit.steps[0],
+          action_summary: '读取 src/app.ts',
+          arguments_preview: '{"path":"src/app.ts"}',
+        },
+      ],
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: {
+        runId: 'run-policy-recovery',
+        audit: policyAudit,
+        tools: [
+          {
+            id: 'tool-policy',
+            tool: 'run_shell',
+            args: { command: 'sed -n 1,20p src/app.ts' },
+            status: 'error',
+            result: '',
+            is_error: true,
+            policy_reason: 'prior_read_required',
+          },
+          {
+            id: 'tool-read',
+            tool: 'read_file',
+            args: { path: 'src/app.ts' },
+            status: 'completed',
+            result: 'content',
+            is_error: false,
+          },
+        ],
+      },
+    })
+
+    expect(wrapper.get('summary').text()).toContain('运行完成')
+    await wrapper.get('summary').trigger('click')
+
+    const policyStep = wrapper.findAll('.trace-step')[0]
+    expect(policyStep.classes()).toContain('policy-blocked')
+    expect(policyStep.classes()).not.toContain('error')
+    expect(policyStep.text()).toContain('策略已阻断')
+    expect(policyStep.text()).toContain('需先读取目标文件')
+  })
+
+  it('distinguishes approval blocking from a real execution failure', async () => {
+    const wrapper = mount(CodingRunTrace, {
+      props: {
+        runId: 'run-block-types',
+        active: true,
+        tools: [
+          {
+            id: 'tool-approval',
+            tool: 'run_shell',
+            args: { command: 'pwd' },
+            status: 'blocked',
+            result: '',
+            is_error: false,
+          },
+          {
+            id: 'tool-error',
+            tool: 'run_shell',
+            args: { command: 'exit 1' },
+            status: 'error',
+            result: 'exit_code: 1',
+            is_error: true,
+          },
+        ],
+      },
+    })
+
+    expect(wrapper.get('summary').text()).toContain('等待确认')
+    await wrapper.get('summary').trigger('click')
+
+    const [approvalStep, errorStep] = wrapper.findAll('.trace-step')
+    expect(approvalStep.classes()).toContain('approval-blocked')
+    expect(approvalStep.text()).toContain('等待确认')
+    expect(errorStep.classes()).toContain('error')
+    expect(errorStep.text()).toContain('失败')
+  })
 })

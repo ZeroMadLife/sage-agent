@@ -59,6 +59,7 @@ def _app(tmp_path: Path) -> tuple[Any, Path, Any, Any]:
         knowledge_source_roots=source_roots,
         knowledge_job_service=service,
     )
+    assert app.state.knowledge_source_proposal_service is None
     return app, vault, engine, redis
 
 

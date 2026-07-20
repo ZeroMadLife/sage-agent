@@ -380,7 +380,11 @@ class Engine:
         args = payload.get("args", {})
         if name not in self.tools or not isinstance(args, dict):
             return
-        validate_tool_preflight(self.workspace, name, args)
+        tool = self.tools[name]
+        if tool.argument_validator is not None:
+            tool.validate_arguments(args)
+        else:
+            validate_tool_preflight(self.workspace, name, args)
 
     @staticmethod
     def _tool_argument_correction(error: ToolArgumentValidationError) -> str:
@@ -405,6 +409,8 @@ class Engine:
                 "args": event.args,
                 "content": event.content,
                 "is_error": event.is_error,
+                "error_code": event.error_code or "",
+                "retryable": event.retryable,
                 "policy_reason": event.policy_reason or "",
                 "security_event_type": event.security_event_type or "",
                 "created_at": now(),

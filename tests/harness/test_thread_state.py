@@ -6,9 +6,12 @@ import pytest
 from langgraph.graph import END, START, StateGraph
 from sage_harness.state import (
     SageThreadState,
+    delegation_budget_usage,
     merge_approval_context,
     merge_artifacts,
     merge_delegations,
+    merge_evidence_fingerprints,
+    merge_evidence_refs,
     merge_goal,
     merge_memory_refs,
     merge_promoted_tools,
@@ -69,6 +72,55 @@ def test_artifacts_and_memory_refs_deduplicate_by_stable_id() -> None:
     ) == [{"memory_id": "m1", "summary": "new"}, {"memory_id": "m2"}]
 
 
+def test_evidence_refs_merge_deterministically_across_child_completion_order() -> None:
+    first = merge_evidence_refs(["wcite_b"], ["kcite_a", "wcite_b"])
+    second = merge_evidence_refs(["kcite_a"], ["wcite_b", "kcite_a"])
+
+    assert first == second == ["kcite_a", "wcite_b"]
+
+
+def test_evidence_fingerprints_are_deduplicated_and_bounded() -> None:
+    fingerprints = [f"query_{index:03d}" for index in range(300)]
+
+    merged = merge_evidence_fingerprints(fingerprints[:200], fingerprints[100:])
+
+    assert len(merged) == 256
+    assert merged[0] == "query_044"
+    assert merged[-1] == "query_299"
+
+
+def test_delegation_budget_usage_supports_reservations_actuals_and_legacy_state() -> None:
+    assert delegation_budget_usage(
+        {
+            "status": "running",
+            "reserved_tokens": 1_000,
+            "reserved_model_calls": 4,
+            "reserved_tool_calls": 2,
+        }
+    ) == (1_000, 4, 2)
+    assert delegation_budget_usage(
+        {
+            "status": "succeeded",
+            "token_usage": 600,
+            "model_calls": 2,
+            "tool_count": 1,
+        }
+    ) == (600, 2, 1)
+    assert delegation_budget_usage({"status": "succeeded", "token_budget": 24_000}) == (
+        24_000,
+        18,
+        16,
+    )
+    assert delegation_budget_usage(
+        {
+            "status": "failed",
+            "token_usage": 0,
+            "model_calls": 0,
+            "tool_count": 0,
+        }
+    ) == (0, 0, 0)
+
+
 def test_promoted_tools_union_within_catalog_and_reset_on_schema_drift() -> None:
     first = {"catalog_hash": "catalog-a", "names": ["todo_list"]}
 
@@ -98,7 +150,9 @@ def test_terminal_goal_and_delegation_cannot_be_downgraded() -> None:
 
 
 def test_skill_refs_are_bounded_and_normalized() -> None:
-    refs = [{"path": f"skills/{index}", "description": "a  long\n description"} for index in range(10)]
+    refs = [
+        {"path": f"skills/{index}", "description": "a  long\n description"} for index in range(10)
+    ]
 
     merged = merge_skill_context(None, refs)
 
@@ -119,7 +173,9 @@ def test_conflicting_workspace_sandbox_and_approval_fail_closed() -> None:
     with pytest.raises(ValueError, match="sandbox ids"):
         merge_sandbox({"sandbox_id": "s1"}, {"sandbox_id": "s2"})
     with pytest.raises(ValueError, match="approval requests"):
-        merge_approval_context({"request_id": "r1", "status": "pending"}, {"request_id": "r2", "status": "pending"})
+        merge_approval_context(
+            {"request_id": "r1", "status": "pending"}, {"request_id": "r2", "status": "pending"}
+        )
 
 
 def test_legacy_path_only_thread_state_can_claim_matching_durable_scope() -> None:

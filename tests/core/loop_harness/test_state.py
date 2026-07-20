@@ -216,9 +216,11 @@ def test_shadow_write_mode_is_explicit_and_invalid_modes_fail_closed(tmp_path) -
     assert state.status()["mode"] == "SHADOW_WRITE"
     state.set_enabled(True, mode="PR_CANARY")
     assert state.status()["mode"] == "PR_CANARY"
+    state.set_enabled(True, mode="AUTO_MERGE_TIER_A")
+    assert state.status()["mode"] == "AUTO_MERGE_TIER_A"
     with pytest.raises(ValueError, match="unsupported Loop mode"):
         state.set_enabled(True, mode="AUTO_MERGE")
-    assert state.status()["mode"] == "PR_CANARY"
+    assert state.status()["mode"] == "AUTO_MERGE_TIER_A"
 
 
 def test_pr_capacity_and_review_are_bound_to_exact_head(tmp_path) -> None:
@@ -274,6 +276,19 @@ def test_pr_capacity_and_review_are_bound_to_exact_head(tmp_path) -> None:
         ).fetchone()
     assert row == ("DRAFT_REVIEWED", "PASS", "2026-07-16")
     assert state.status()["open_pull_requests"] == 1
+
+    state.record_merge_result(
+        lease,
+        pr_number=12,
+        head_sha="b" * 40,
+        merged_sha="c" * 40,
+    )
+    with sqlite3.connect(state.path) as connection:
+        merged = connection.execute(
+            "SELECT state, merged_sha FROM pull_requests WHERE number = 12"
+        ).fetchone()
+    assert merged == ("MERGED", "c" * 40)
+    assert state.status()["open_pull_requests"] == 0
 
 
 def test_initialize_migrates_existing_phase1_database(tmp_path) -> None:
