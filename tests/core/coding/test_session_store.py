@@ -243,3 +243,36 @@ def test_session_store_messages_filters_old_style_skill_prompts(tmp_path: Path) 
             "created_at": "2026-07-08T09:00:03",
         }
     ]
+
+
+def test_session_store_messages_filters_internal_goal_followup_prompt(tmp_path: Path) -> None:
+    store = CodingSessionStore(tmp_path)
+    store.save(
+        {
+            "id": "s-goal-followup",
+            "workspace_root": "/tmp/repo",
+            "created_at": "2026-07-08T09:00:00",
+            "updated_at": "2026-07-08T09:10:00",
+            "history": [
+                {
+                    "role": "user",
+                    "content": "这是用户已显式启用的受限自动跟进。\n\n目标：继续读取证据",
+                    "created_at": "2026-07-08T09:00:01",
+                },
+                {
+                    "role": "assistant",
+                    "content": "我继续检查公开证据。",
+                    "created_at": "2026-07-08T09:00:03",
+                },
+            ],
+        }
+    )
+
+    assert store.messages("s-goal-followup") == [
+        {
+            "role": "assistant",
+            "content": "我继续检查公开证据。",
+            "created_at": "2026-07-08T09:00:03",
+        }
+    ]
+    assert store.list_sessions()[0]["title"] == "新会话"

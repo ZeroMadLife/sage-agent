@@ -7,6 +7,7 @@ import {
   approveMemoryProposal,
   buildCodingStreamUrl,
   clearCodingThreadGoal,
+  configureCodingThreadGoalContinuation,
   evaluateCodingThreadGoal,
   fetchCodingFile,
   fetchCodingFiles,
@@ -546,7 +547,9 @@ export const useCodingStore = defineStore('coding', () => {
     const payloadType = typeof event.payload.type === 'string' ? event.payload.type : ''
     state.errorMessage = ''
     if (
-      (payloadType === 'thread_goal_updated' || payloadType === 'thread_goal_evaluated') &&
+      (payloadType === 'thread_goal_updated' ||
+        payloadType === 'thread_goal_evaluated' ||
+        payloadType === 'thread_goal_policy_updated') &&
       event.payload.goal &&
       typeof event.payload.goal === 'object'
     ) {
@@ -1393,6 +1396,38 @@ export const useCodingStore = defineStore('coding', () => {
     }
   }
 
+  async function configureThreadGoalContinuation(
+    mode: 'manual' | 'bounded_auto',
+    maxAutoFollowups = 1,
+  ) {
+    const targetSessionId = sessionId.value
+    const goal = threadGoal.value
+    if (!targetSessionId || !goal || threadGoalBusy.value) return false
+    threadGoalBusy.value = true
+    threadGoalError.value = ''
+    try {
+      const response = await configureCodingThreadGoalContinuation(
+        targetSessionId,
+        goal.revision,
+        mode,
+        maxAutoFollowups,
+      )
+      if (targetSessionId !== sessionId.value) return false
+      threadGoal.value = response.goal
+      threadGoalRevision.value = response.revision
+      return response.goal !== null
+    } catch (error) {
+      if (targetSessionId === sessionId.value) {
+        const message = error instanceof Error ? error.message : String(error)
+        await loadThreadGoal(targetSessionId)
+        threadGoalError.value = message
+      }
+      return false
+    } finally {
+      if (targetSessionId === sessionId.value) threadGoalBusy.value = false
+    }
+  }
+
   async function continueThreadGoal(surfaceContext?: HarnessSurfaceContext | null) {
     const targetSessionId = sessionId.value
     const goal = threadGoal.value
@@ -2077,6 +2112,7 @@ export const useCodingStore = defineStore('coding', () => {
     loadThreadGoal,
     saveThreadGoal,
     evaluateThreadGoal,
+    configureThreadGoalContinuation,
     continueThreadGoal,
     removeThreadGoal,
     handleServerEvent,

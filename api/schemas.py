@@ -1728,6 +1728,12 @@ class UserMessage(BaseModel):
     thread_goal_revision: int | None = Field(default=None, ge=1)
 
 
+class CodingThreadGoalCriterionEvaluation(BaseModel):
+    index: int = Field(ge=0, le=7)
+    status: Literal["met", "unmet", "blocked"]
+    evidence_refs: list[str] = Field(default_factory=list, max_length=32)
+
+
 class CodingThreadGoalEvaluation(BaseModel):
     """A typed, evidence-referenced Goal evaluation visible to the user."""
 
@@ -1747,6 +1753,18 @@ class CodingThreadGoalEvaluation(BaseModel):
     next_action: str = Field(min_length=1, max_length=2_000)
     source_run_id: str | None = None
     evaluated_at: str
+    criteria: list[CodingThreadGoalCriterionEvaluation] = Field(default_factory=list, max_length=8)
+
+
+class CodingThreadGoalContinuation(BaseModel):
+    """Explicit, bounded follow-up policy and server-owned counters."""
+
+    mode: Literal["manual", "bounded_auto"] = "manual"
+    max_auto_followups: int = Field(default=1, ge=1, le=4)
+    auto_followups_started: int = Field(default=0, ge=0)
+    no_progress_streak: int = Field(default=0, ge=0)
+    last_progress_fingerprint: str = Field(default="", max_length=128)
+    stop_reason: str | None = Field(default=None, max_length=64)
 
 
 class CodingThreadGoal(BaseModel):
@@ -1758,6 +1776,9 @@ class CodingThreadGoal(BaseModel):
     completion_criteria: list[str] = Field(min_length=1, max_length=8)
     status: Literal["active", "blocked", "satisfied"]
     evaluation: CodingThreadGoalEvaluation | None = None
+    continuation: CodingThreadGoalContinuation = Field(
+        default_factory=CodingThreadGoalContinuation
+    )
     created_at: str
     updated_at: str
 
@@ -1775,6 +1796,12 @@ class CodingThreadGoalUpsertRequest(BaseModel):
 
 class CodingThreadGoalRevisionRequest(BaseModel):
     expected_revision: int = Field(ge=1)
+
+
+class CodingThreadGoalContinuationRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    mode: Literal["manual", "bounded_auto"]
+    max_auto_followups: int = Field(default=1, ge=1, le=4)
 
 
 class CodingThreadGoalContinueResponse(BaseModel):

@@ -184,6 +184,7 @@ def create_app(
     auth: AuthManager | None = None,
     session_store: Any | None = None,
     coding_model_factory: Any | None = None,
+    coding_goal_evaluator_factory: Any | None = None,
     coding_workspace_root: str | Path | None = None,
     coding_storage_root: str | Path | None = None,
     coding_model_catalog: list[dict[str, Any]] | None = None,
@@ -226,6 +227,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        app.state.coding_goal_followup_shutdown = False
         checkpoint_stack = AsyncExitStack()
         service = getattr(app.state, "knowledge_job_service", None)
         proposal_service = getattr(app.state, "knowledge_source_proposal_service", None)
@@ -270,12 +272,18 @@ def create_app(
                 await service.start()
             yield
         finally:
+            app.state.coding_goal_followup_shutdown = True
             if isinstance(service, KnowledgeJobService):
                 await service.stop()
             owned_redis = getattr(app.state, "knowledge_job_redis_client", None)
             if owned_redis is not None:
                 await owned_redis.aclose()
             await app.state.coding_run_registry.shutdown()
+            goal_tasks = tuple(getattr(app.state, "coding_goal_followup_tasks", ()))
+            for task in goal_tasks:
+                task.cancel()
+            if goal_tasks:
+                await asyncio.gather(*goal_tasks, return_exceptions=True)
             mcp_manager = getattr(app.state, "coding_mcp_manager", None)
             if isinstance(mcp_manager, McpManager):
                 await mcp_manager.aclose()
@@ -285,6 +293,9 @@ def create_app(
     app.state.agent = agent
     app.state.auth = auth
     app.state.session_store = session_store
+    app.state.coding_goal_evaluator_factory = coding_goal_evaluator_factory
+    app.state.coding_goal_followup_tasks = set()
+    app.state.coding_goal_followup_shutdown = False
     settings = get_settings()
     app_env = cloud_app_env or settings.app_env
     if app_env == "production" and cloud_repository is None:

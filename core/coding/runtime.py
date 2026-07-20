@@ -700,7 +700,14 @@ class CodingRuntime:
             self._active_projection.append(deepcopy(enriched))
         return enriched
 
-    def append_harness_message(self, *, role: str, content: str, run_id: str) -> dict[str, Any]:
+    def append_harness_message(
+        self,
+        *,
+        role: str,
+        content: str,
+        run_id: str,
+        input_origin: str = "user",
+    ) -> dict[str, Any]:
         """Persist one public Harness message into the existing session transcript."""
         if role not in {"user", "assistant"}:
             raise ValueError("harness messages must be user or assistant")
@@ -708,7 +715,12 @@ class CodingRuntime:
         if not text:
             raise ValueError("harness message content must not be empty")
         item = self._append_canonical_item(
-            {"role": role, "content": text, "run_id": run_id},
+            {
+                "role": role,
+                "content": text,
+                "run_id": run_id,
+                "input_origin": input_origin,
+            },
         )
         self._save_session()
         return item

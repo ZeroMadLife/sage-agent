@@ -86,6 +86,7 @@ class RunCoordinator:
         surface_context: Mapping[str, Any] | None = None,
         thread_goal: Mapping[str, Any] | None = None,
         expected_thread_goal_revision: int | None = None,
+        goal_followup: Mapping[str, Any] | None = None,
     ) -> asyncio.Task[None]:
         """Start consuming an event stream as the session's active run."""
         frozen_surface_context = (
@@ -110,6 +111,7 @@ class RunCoordinator:
                     surface_context=frozen_surface_context,
                     thread_goal=frozen_thread_goal,
                     expected_thread_goal_revision=expected_thread_goal_revision,
+                    goal_followup=goal_followup,
                 )
             )
             try:
@@ -159,6 +161,7 @@ class RunCoordinator:
         surface_context: Mapping[str, Any] | None = None,
         thread_goal: Mapping[str, Any] | None = None,
         expected_thread_goal_revision: int | None = None,
+        goal_followup: Mapping[str, Any] | None = None,
     ) -> BeginRunResult:
         async with self._publish_lock:
             kwargs: dict[str, Any] = {
@@ -171,6 +174,8 @@ class RunCoordinator:
                 kwargs["thread_goal"] = thread_goal
             if expected_thread_goal_revision is not None:
                 kwargs["expected_thread_goal_revision"] = expected_thread_goal_revision
+            if goal_followup is not None:
+                kwargs["goal_followup"] = goal_followup
             stored = await asyncio.to_thread(self.journal.begin_run, run_id, **kwargs)
             self._broadcast(stored.event)
             return stored

@@ -120,7 +120,7 @@ class CodingSessionStore:
                 continue
             # Filter out old-style expanded skill prompts that were persisted as
             # user messages before slash expansion was decoupled from history.
-            if role == "user" and content.startswith("你正在使用 Sage 的"):
+            if role == "user" and _is_internal_user_prompt(content):
                 continue
             messages.append(
                 {
@@ -167,7 +167,14 @@ def _session_title(history: Any, workspace_root: str) -> str:
             if not content:
                 continue
             # Skip old-style expanded skill prompts persisted as user messages.
-            if content.startswith("你正在使用 Sage 的"):
+            if _is_internal_user_prompt(content):
                 continue
             return content[:60]
     return "新会话"
+
+
+def _is_internal_user_prompt(content: str) -> bool:
+    return content.startswith((
+        "你正在使用 Sage 的",
+        "这是用户已显式启用的受限自动跟进。",
+    ))

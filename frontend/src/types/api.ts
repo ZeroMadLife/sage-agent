@@ -715,6 +715,20 @@ export type CodingThreadGoalEvaluation = {
   next_action: string
   source_run_id: string | null
   evaluated_at: string
+  criteria: Array<{
+    index: number
+    status: 'met' | 'unmet' | 'blocked'
+    evidence_refs: string[]
+  }>
+}
+
+export type CodingThreadGoalContinuation = {
+  mode: 'manual' | 'bounded_auto'
+  max_auto_followups: number
+  auto_followups_started: number
+  no_progress_streak: number
+  last_progress_fingerprint: string
+  stop_reason: string | null
 }
 
 export type CodingThreadGoal = {
@@ -724,6 +738,7 @@ export type CodingThreadGoal = {
   completion_criteria: string[]
   status: 'active' | 'blocked' | 'satisfied'
   evaluation: CodingThreadGoalEvaluation | null
+  continuation: CodingThreadGoalContinuation
   created_at: string
   updated_at: string
 }

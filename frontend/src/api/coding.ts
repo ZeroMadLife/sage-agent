@@ -209,6 +209,29 @@ export function evaluateCodingThreadGoal(sessionId: string, revision: number) {
   return postThreadGoalRevision<CodingThreadGoalResponse>(sessionId, revision, 'evaluate')
 }
 
+export async function configureCodingThreadGoalContinuation(
+  sessionId: string,
+  revision: number,
+  mode: 'manual' | 'bounded_auto',
+  maxAutoFollowups: number,
+): Promise<CodingThreadGoalResponse> {
+  const response = await apiFetch(
+    new URL(`/api/v1/coding/${sessionId}/goal/continuation`, API_BASE_URL),
+    {
+      method: 'PATCH',
+      cache: 'no-store',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        expected_revision: revision,
+        mode,
+        max_auto_followups: maxAutoFollowups,
+      }),
+    },
+  )
+  if (!response.ok) throw threadGoalError(response.status)
+  return (await response.json()) as CodingThreadGoalResponse
+}
+
 export function prepareCodingThreadGoalContinue(sessionId: string, revision: number) {
   return postThreadGoalRevision<CodingThreadGoalContinueResponse>(sessionId, revision, 'continue')
 }

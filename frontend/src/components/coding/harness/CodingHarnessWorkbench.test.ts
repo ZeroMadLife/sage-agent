@@ -79,6 +79,11 @@ function threadGoal(): CodingThreadGoal {
     evaluation: {
       status: 'continue', blocker: 'goal_not_met_yet', evidence_refs: ['event-1'],
       next_action: '继续补齐官方证据', source_run_id: 'run-a', evaluated_at: '2026-07-20T08:01:00Z',
+      criteria: [],
+    },
+    continuation: {
+      mode: 'manual', max_auto_followups: 1, auto_followups_started: 0,
+      no_progress_streak: 0, last_progress_fingerprint: '', stop_reason: null,
     },
   }
 }

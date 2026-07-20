@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import time
@@ -98,6 +99,7 @@ from api.schemas import (
     CodingSkillsResponse,
     CodingSkillSummary,
     CodingThreadGoal,
+    CodingThreadGoalContinuationRequest,
     CodingThreadGoalContinueResponse,
     CodingThreadGoalResponse,
     CodingThreadGoalRevisionRequest,
@@ -126,12 +128,15 @@ from core.coding.persistence import (
 )
 from core.coding.persistence.session_event_journal import (
     SessionEvent,
+    SessionEventJournalError,
+    SessionRunLeaseConflictError,
     SessionThreadGoalConflictError,
 )
 from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
+from core.coding.usage_store import normalize_usage
 from core.harness import RuntimeProfile, normalize_runtime_profile
 from core.harness.capability_adapter import build_sage_capability_registry
 from core.harness.context_adapter import (
@@ -158,6 +163,12 @@ from core.harness.thread_goal import (
     ThreadGoalNotFoundError,
     ThreadGoalService,
 )
+from core.harness.thread_goal_evaluator import (
+    GoalCriterionDecision,
+    GoalEvaluationDecision,
+    StructuredThreadGoalEvaluator,
+    build_thread_goal_evaluation_request,
+)
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 from core.knowledge import KnowledgeStore
 from core.knowledge.source_proposals import (
@@ -168,6 +179,7 @@ from core.knowledge.source_proposals import (
 )
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
+logger = logging.getLogger(__name__)
 
 
 def _port_available(port: object) -> bool:
@@ -302,6 +314,7 @@ async def _runtime_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
+    input_origin: Literal["user", "goal_followup"] = "user",
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
     if runtime.runtime_profile == "deerflow_v2":
@@ -328,6 +341,7 @@ async def _runtime_timeline_events(
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
+                input_origin=input_origin,
             ):
                 if graph_event.kind == "terminal":
                     diff_payload = await runtime.finish_harness_evidence(
@@ -367,11 +381,19 @@ async def _runtime_timeline_events(
         return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)
-    yield RunEvent(
-        kind="user",
-        status="completed",
-        payload={"type": "user", "content": content},
-    )
+    if input_origin == "user":
+        yield RunEvent(
+            kind="user",
+            status="completed",
+            payload={"type": "user", "content": content},
+        )
+    else:
+        yield RunEvent(
+            kind="harness",
+            status="completed",
+            payload={"type": "thread_goal_followup_started", "run_id": run_id},
+            event_id=f"goal-followup:{run_id}:started",
+        )
     if skill_prompt:
         yield RunEvent(
             kind="system",
@@ -437,6 +459,7 @@ async def _deerflow_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
+    input_origin: Literal["user", "goal_followup"] = "user",
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
     async with runtime.harness_turn(run_id):
@@ -447,13 +470,26 @@ async def _deerflow_timeline_events(
                 user_message=content,
                 run_id=run_id,
             )
-            runtime.append_harness_message(role="user", content=content, run_id=run_id)
-            yield RunEvent(
-                kind="user",
-                status="completed",
-                payload={"type": "user", "content": content, "run_id": run_id},
-                event_id=f"harness:{run_id}:user",
+            runtime.append_harness_message(
+                role="user",
+                content=content,
+                run_id=run_id,
+                input_origin=input_origin,
             )
+            if input_origin == "user":
+                yield RunEvent(
+                    kind="user",
+                    status="completed",
+                    payload={"type": "user", "content": content, "run_id": run_id},
+                    event_id=f"harness:{run_id}:user",
+                )
+            else:
+                yield RunEvent(
+                    kind="harness",
+                    status="completed",
+                    payload={"type": "thread_goal_followup_started", "run_id": run_id},
+                    event_id=f"harness:{run_id}:goal-followup",
+                )
 
         durable_context = build_deerflow_durable_context(runtime, thread_goal=thread_goal)
         context_event = (
@@ -741,6 +777,234 @@ def _observe_server_task(task: asyncio.Task[None]) -> None:
     """Retrieve a detached task result after Coordinator persisted its terminal."""
     with suppress(asyncio.CancelledError, Exception):
         task.result()
+
+
+def _track_goal_task(app: Any, coroutine: Any) -> asyncio.Task[Any] | None:
+    if bool(getattr(app.state, "coding_goal_followup_shutdown", False)):
+        close = getattr(coroutine, "close", None)
+        if callable(close):
+            close()
+        return None
+    task = asyncio.create_task(coroutine, name="sage-goal-followup")
+    tasks = getattr(app.state, "coding_goal_followup_tasks", None)
+    if isinstance(tasks, set):
+        tasks.add(task)
+
+    def finish(done: asyncio.Task[Any]) -> None:
+        if isinstance(tasks, set):
+            tasks.discard(done)
+        _observe_server_task(cast(asyncio.Task[None], done))
+
+    task.add_done_callback(finish)
+    return task
+
+
+def _attach_goal_post_turn(app: Any, session_id: str, run_id: str, task: asyncio.Task[None]) -> None:
+    """Schedule durable evaluation after the coordinator releases its run lease."""
+
+    def finished(done: asyncio.Task[None]) -> None:
+        _observe_server_task(done)
+        if done.cancelled():
+            return
+        _track_goal_task(app, _post_turn_goal_followup(app, session_id, run_id))
+
+    task.add_done_callback(finished)
+
+
+async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str) -> None:
+    sessions: dict[str, CodingRuntime] = getattr(app.state, "coding_sessions", {})
+    runtime = sessions.get(session_id)
+    if runtime is None:
+        return
+    coordinator = app.state.coding_run_registry.get(session_id)
+    journal = coordinator.journal
+    frozen_goal = await asyncio.to_thread(journal.run_thread_goal, source_run_id)
+    if frozen_goal is None:
+        return
+    current = await asyncio.to_thread(journal.current_thread_goal)
+    if current is None:
+        return
+    continuation = current.get("continuation")
+    if not isinstance(continuation, Mapping) or continuation.get("mode") != "bounded_auto":
+        return
+    terminal = next(
+        (
+            event
+            for event in await asyncio.to_thread(journal.events_for_run, source_run_id)
+            if event.kind == "terminal"
+        ),
+        None,
+    )
+    if terminal is None:
+        return
+    request = build_thread_goal_evaluation_request(
+        goal=frozen_goal,
+        run_id=source_run_id,
+        events=await asyncio.to_thread(journal.events_for_run, source_run_id),
+    )
+    if terminal.status != "completed":
+        decision = GoalEvaluationDecision(
+            status="blocked",
+            blocker="run_failed" if terminal.status == "error" else "external_wait",
+            evidence_refs=(),
+            next_action="上一轮未正常完成；请检查运行状态后由用户决定是否继续",
+            criteria=tuple(
+                GoalCriterionDecision(index=index, status="blocked", evidence_refs=())
+                for index, _ in enumerate(request.completion_criteria)
+            ),
+        )
+    else:
+        try:
+            evaluator = _goal_evaluator(app, runtime, source_run_id)
+            decision = await evaluator.evaluate(request)
+        except Exception as exc:
+            logger.warning("Thread Goal evaluator failed: %s", type(exc).__name__)
+            decision = GoalEvaluationDecision(
+                status="blocked",
+                blocker="external_wait",
+                evidence_refs=(),
+                next_action="Goal 评估服务暂时不可用；请用户手动检查证据后继续",
+                criteria=tuple(
+                    GoalCriterionDecision(index=index, status="blocked", evidence_refs=())
+                    for index, _ in enumerate(request.completion_criteria)
+                ),
+            )
+    try:
+        result = ThreadGoalService(journal).evaluate_post_turn(
+            request=request,
+            decision=decision,
+            terminal_status=terminal.status,
+        )
+    except (
+        SessionThreadGoalConflictError,
+        SessionRunLeaseConflictError,
+        SessionEventJournalError,
+        ThreadGoalBusyError,
+    ):
+        return
+    if result.reservation is not None:
+        await _start_pending_goal_followup(app, session_id)
+
+
+def _goal_evaluator(app: Any, runtime: CodingRuntime, source_run_id: str) -> Any:
+    factory = getattr(app.state, "coding_goal_evaluator_factory", None)
+    if factory is not None:
+        if callable(factory):
+            return factory(runtime)
+        return factory
+    model = runtime.model
+    with suppress(Exception):
+        model = runtime._current_model_factory(reasoning_mode="off")
+
+    def record_usage(response: object) -> None:
+        sample = normalize_usage(response)
+        usage_store = runtime.usage_store
+        if sample is None or usage_store is None:
+            return
+        provider, _, _ = runtime.model_spec.partition(":")
+        try:
+            usage_store.record(
+                request_id=f"{source_run_id}:goal-evaluation",
+                session_id=runtime.session_id,
+                run_id=source_run_id,
+                provider=provider or "unknown",
+                model=runtime.model_spec or "unknown",
+                usage=sample,
+            )
+        except Exception:
+            logger.warning("Unable to persist Thread Goal evaluator usage", exc_info=True)
+
+    return StructuredThreadGoalEvaluator(
+        model,
+        max_output_tokens=600,
+        response_observer=record_usage,
+    )
+
+
+async def _start_pending_goal_followup(app: Any, session_id: str) -> None:
+    sessions: dict[str, CodingRuntime] = getattr(app.state, "coding_sessions", {})
+    runtime = sessions.get(session_id)
+    if runtime is None:
+        return
+    coordinator = app.state.coding_run_registry.get(session_id)
+    pending = await asyncio.to_thread(coordinator.journal.pending_thread_goal_followup)
+    if pending is None:
+        return
+    service = ThreadGoalService(coordinator.journal)
+    thread_goal = service.get()
+    if thread_goal is None or int(thread_goal.get("revision", 0)) != int(
+        pending.get("goal_revision", 0)
+    ):
+        return
+    surface_context = await asyncio.to_thread(
+        coordinator.journal.run_surface_context,
+        str(pending["source_run_id"]),
+    )
+    run_id = str(pending["run_id"])
+    stream = _runtime_timeline_events(
+        runtime,
+        content=str(pending["prompt"]),
+        skill_prompt=None,
+        command="",
+        arguments="",
+        run_id=run_id,
+        surface_context=surface_context,
+        thread_goal=thread_goal,
+        harness_checkpointer=getattr(app.state, "sage_harness_checkpointer", None),
+        harness_config=getattr(app.state, "coding_harness_config", None),
+        mcp_catalog=getattr(app.state, "coding_mcp_catalog", None),
+        web_fetch_port=getattr(app.state, "coding_web_fetch_port", None),
+        web_search_port=getattr(app.state, "coding_web_search_port", None),
+        knowledge_source_proposal_service=getattr(
+            app.state, "knowledge_source_proposal_service", None
+        ),
+        app_env=str(getattr(app.state, "cloud_app_env", "development")),
+        input_origin="goal_followup",
+    )
+    try:
+        task = await coordinator.start_run(
+            run_id,
+            stream,
+            surface_context=surface_context,
+            thread_goal=thread_goal,
+            expected_thread_goal_revision=int(thread_goal["revision"]),
+            goal_followup=pending,
+        )
+    except Exception as exc:
+        logger.warning("Thread Goal follow-up start failed: %s", type(exc).__name__)
+        await stream.aclose()
+        return
+    _attach_goal_post_turn(app, session_id, run_id, task)
+
+
+def _schedule_goal_reconciliation(app: Any, session_id: str) -> None:
+    _track_goal_task(app, _reconcile_goal_followup(app, session_id))
+
+
+async def _reconcile_goal_followup(app: Any, session_id: str) -> None:
+    coordinator = app.state.coding_run_registry.get(session_id)
+    pending = await asyncio.to_thread(coordinator.journal.pending_thread_goal_followup)
+    if pending is not None:
+        await _start_pending_goal_followup(app, session_id)
+        return
+    sessions: dict[str, CodingRuntime] = getattr(app.state, "coding_sessions", {})
+    runtime = sessions.get(session_id)
+    if runtime is None:
+        return
+    terminal = await asyncio.to_thread(coordinator.journal.latest_terminal_event)
+    if terminal is None:
+        return
+    frozen = await asyncio.to_thread(coordinator.journal.run_thread_goal, terminal.run_id)
+    current = await asyncio.to_thread(coordinator.journal.current_thread_goal)
+    if (
+        frozen is not None
+        and current is not None
+        and frozen.get("goal_id") == current.get("goal_id")
+        and frozen.get("revision") == current.get("revision")
+        and isinstance(current.get("continuation"), Mapping)
+        and current["continuation"].get("mode") == "bounded_auto"
+    ):
+        await _post_turn_goal_followup(app, session_id, terminal.run_id)
 
 
 @router.post("/api/v1/coding/session")
@@ -1129,6 +1393,8 @@ async def resume_coding_session(
     pending_approval = coordinator.journal.recoverable_approval()
     if pending_approval is not None:
         runtime.approval_manager.restore_pending(pending_approval)
+    else:
+        _schedule_goal_reconciliation(request.app, session_id)
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(persisted_workspace),
@@ -1201,6 +1467,36 @@ async def upsert_coding_thread_goal(
         )
     except SessionThreadGoalConflictError as exc:
         raise _thread_goal_conflict(exc) from exc
+    except ThreadGoalBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return CodingThreadGoalResponse(
+        goal=CodingThreadGoal.model_validate(goal), revision=int(goal["revision"])
+    )
+
+
+@router.patch(
+    "/api/v1/coding/{session_id}/goal/continuation",
+    response_model=CodingThreadGoalResponse,
+)
+async def configure_coding_thread_goal_continuation(
+    session_id: str,
+    payload: CodingThreadGoalContinuationRequest,
+    request: Request,
+) -> CodingThreadGoalResponse:
+    """Enable manual or bounded automatic Goal follow-up with an explicit CAS."""
+    service = await _thread_goal_service(request, session_id)
+    try:
+        goal = service.configure_continuation(
+            expected_revision=payload.expected_revision,
+            mode=payload.mode,
+            max_auto_followups=payload.max_auto_followups,
+        )
+    except SessionThreadGoalConflictError as exc:
+        raise _thread_goal_conflict(exc) from exc
+    except ThreadGoalNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ThreadGoalBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -1509,7 +1805,7 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                         else frozen_thread_goal_revision
                     ),
                 )
-                task.add_done_callback(_observe_server_task)
+                _attach_goal_post_turn(websocket.app, session_id, run_id, task)
             except ActiveRunConflictError:
                 await stream.aclose()
                 await _start_rejected_input_run(
@@ -1771,7 +2067,7 @@ async def coding_approval_respond(
                 runtime.approval_manager.restore_pending(durable_approval)
             raise
         else:
-            task.add_done_callback(_observe_server_task)
+            _attach_goal_post_turn(request.app, session_id, resumed_run_id, task)
     return {"ok": True}
 
 

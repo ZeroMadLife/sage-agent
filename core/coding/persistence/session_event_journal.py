@@ -60,6 +60,16 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 _FILE_FLAGS = os.O_CLOEXEC | os.O_NOFOLLOW
 _SIDECAR_SUFFIXES = ("-wal", "-shm")
 
+
+def _deterministic_goal_event_id(
+    session_id: str,
+    purpose: str,
+    source_run_id: str,
+    revision: int,
+) -> str:
+    value = f"sage:thread-goal:{session_id}:{purpose}:{source_run_id}:{revision}"
+    return f"goal-{uuid.uuid5(uuid.NAMESPACE_URL, value).hex}"
+
 _EVENTS_SQL = """
 CREATE TABLE session_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -391,6 +401,7 @@ class SessionEventJournal:
         surface_context: Mapping[str, Any] | None = None,
         thread_goal: Mapping[str, Any] | None = None,
         expected_thread_goal_revision: int | None = None,
+        goal_followup: Mapping[str, Any] | None = None,
     ) -> BeginRunResult:
         """Acquire the singleton lease and persist run_started atomically."""
         validated_run = _validate_identifier("run_id", run_id)
@@ -402,6 +413,8 @@ class SessionEventJournal:
             payload["surface_context"] = dict(surface_context)
         if thread_goal is not None:
             payload["thread_goal"] = dict(thread_goal)
+        if goal_followup is not None:
+            payload["goal_followup"] = dict(goal_followup)
         values = _validated_event_input(
             run_id=validated_run,
             kind="system",
@@ -420,6 +433,12 @@ class SessionEventJournal:
                     frozen_revision = int(thread_goal.get("revision", 0)) if thread_goal else 0
                     if frozen_revision != expected_thread_goal_revision:
                         raise SessionThreadGoalConflictError(current_revision)
+                if goal_followup is not None:
+                    self._assert_pending_thread_goal_followup(
+                        connection,
+                        goal_followup=goal_followup,
+                        run_id=validated_run,
+                    )
                 lease = connection.execute(
                     "SELECT run_id FROM active_run_lease WHERE lease_key = 1"
                 ).fetchone()
@@ -784,25 +803,26 @@ class SessionEventJournal:
     def thread_goal_context(self) -> dict[str, Any] | None:
         """Return an active Goal or a tombstone that clears checkpoint state."""
         with self._connect() as connection:
-            row = connection.execute(
+            rows = connection.execute(
                 "SELECT * FROM session_events WHERE run_id = 'thread-goal' "
-                "AND kind = 'harness' ORDER BY sequence DESC LIMIT 1"
-            ).fetchone()
-        if row is None:
-            return None
-        event = _event_from_row(row, self.session_id)
-        payload = event.payload
-        if payload.get("type") == "thread_goal_cleared":
-            return {
-                "goal_id": str(payload["goal_id"]),
-                "revision": int(payload["revision"]),
-                "description": "",
-                "completion_criteria": [],
-                "status": "cancelled",
-                "updated_at": event.timestamp,
-            }
-        goal = payload.get("goal")
-        return dict(goal) if isinstance(goal, Mapping) else None
+                "AND kind = 'harness' ORDER BY sequence DESC"
+            ).fetchall()
+        for row in rows:
+            event = _event_from_row(row, self.session_id)
+            payload = event.payload
+            if payload.get("type") == "thread_goal_cleared":
+                return {
+                    "goal_id": str(payload["goal_id"]),
+                    "revision": int(payload["revision"]),
+                    "description": "",
+                    "completion_criteria": [],
+                    "status": "cancelled",
+                    "updated_at": event.timestamp,
+                }
+            goal = payload.get("goal")
+            if isinstance(goal, Mapping):
+                return dict(goal)
+        return None
 
     def append_thread_goal(
         self,
@@ -812,7 +832,11 @@ class SessionEventJournal:
         goal: Mapping[str, Any],
     ) -> SessionEvent:
         """Append a full Goal snapshot with an atomic revision guard."""
-        if event_type not in {"thread_goal_updated", "thread_goal_evaluated"}:
+        if event_type not in {
+            "thread_goal_updated",
+            "thread_goal_evaluated",
+            "thread_goal_policy_updated",
+        }:
             raise ValueError("invalid Thread Goal event type")
         if isinstance(expected_revision, bool) or expected_revision < 0:
             raise ValueError("expected_revision must be non-negative")
@@ -848,6 +872,201 @@ class SessionEventJournal:
             except Exception:
                 connection.rollback()
                 raise
+
+    def append_thread_goal_post_turn(
+        self,
+        *,
+        source_run_id: str,
+        expected_revision: int,
+        goal: Mapping[str, Any],
+        reservation: Mapping[str, Any] | None,
+    ) -> tuple[SessionEvent, SessionEvent | None]:
+        """Atomically persist a terminal evaluation and optional follow-up reservation."""
+        validated_source = _validate_identifier("source_run_id", source_run_id)
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise ValueError("expected_revision must be positive")
+        goal_snapshot = dict(goal)
+        reservation_snapshot = dict(reservation) if reservation is not None else None
+        evaluation_event_id = _deterministic_goal_event_id(
+            self.session_id,
+            "evaluation",
+            validated_source,
+            expected_revision,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT * FROM session_events WHERE event_id = ?",
+                    (evaluation_event_id,),
+                ).fetchone()
+                if existing is not None:
+                    evaluated = _event_from_row(existing, self.session_id)
+                    scheduled_row = connection.execute(
+                        "SELECT * FROM session_events WHERE event_id = ?",
+                        (
+                            _deterministic_goal_event_id(
+                                self.session_id,
+                                "reservation",
+                                validated_source,
+                                expected_revision + 1,
+                            ),
+                        ),
+                    ).fetchone()
+                    existing_scheduled = (
+                        _event_from_row(scheduled_row, self.session_id)
+                        if scheduled_row is not None
+                        else None
+                    )
+                    connection.rollback()
+                    return evaluated, existing_scheduled
+
+                active_run = connection.execute(
+                    "SELECT run_id FROM active_run_lease WHERE lease_key = 1"
+                ).fetchone()
+                if active_run is not None:
+                    raise SessionRunLeaseConflictError(str(active_run[0]))
+                current = self._current_thread_goal(connection)
+                current_revision = self._thread_goal_revision(connection)
+                if current_revision != expected_revision:
+                    raise SessionThreadGoalConflictError(current_revision)
+                if current is None or goal_snapshot.get("goal_id") != current.get("goal_id"):
+                    raise SessionThreadGoalConflictError(current_revision)
+                if goal_snapshot.get("revision") != expected_revision + 1:
+                    raise ValueError("goal revision must increment expected_revision by one")
+                terminal = connection.execute(
+                    "SELECT * FROM session_events WHERE run_id = ? AND kind = 'terminal'",
+                    (validated_source,),
+                ).fetchone()
+                if terminal is None:
+                    raise SessionEventJournalError("source run is not terminal")
+                if connection.execute(
+                    "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
+                    (int(terminal["sequence"]),),
+                ).fetchone() is not None:
+                    raise SessionEventJournalError(
+                        "source run was superseded by newer user input"
+                    )
+                started = connection.execute(
+                    "SELECT * FROM session_events WHERE run_id = ? "
+                    "AND kind = 'system' ORDER BY sequence LIMIT 1",
+                    (validated_source,),
+                ).fetchone()
+                if started is None:
+                    raise SessionEventJournalError("source run has no durable start")
+                started_goal = _event_from_row(started, self.session_id).payload.get("thread_goal")
+                if (
+                    not isinstance(started_goal, Mapping)
+                    or started_goal.get("goal_id") != current.get("goal_id")
+                    or started_goal.get("revision") != expected_revision
+                ):
+                    raise SessionThreadGoalConflictError(current_revision)
+
+                evaluated_values = _validated_event_input(
+                    run_id="thread-goal",
+                    kind="harness",
+                    status="completed",
+                    payload={
+                        "type": "thread_goal_evaluated",
+                        "version": 2,
+                        "source_run_id": validated_source,
+                        "goal": goal_snapshot,
+                    },
+                    event_id=evaluation_event_id,
+                    timestamp=None,
+                )
+                evaluated = self._insert(connection, **evaluated_values)
+                scheduled: SessionEvent | None = None
+                if reservation_snapshot is not None:
+                    if reservation_snapshot.get("source_run_id") != validated_source:
+                        raise ValueError("reservation source run does not match")
+                    if reservation_snapshot.get("goal_revision") != expected_revision + 1:
+                        raise ValueError("reservation goal revision does not match")
+                    followup_run_id = _validate_identifier(
+                        "followup_run_id", str(reservation_snapshot.get("run_id", ""))
+                    )
+                    reservation_id = _validate_identifier(
+                        "reservation_id", str(reservation_snapshot.get("reservation_id", ""))
+                    )
+                    reservation_snapshot["run_id"] = followup_run_id
+                    reservation_snapshot["reservation_id"] = reservation_id
+                    scheduled_values = _validated_event_input(
+                        run_id="thread-goal",
+                        kind="harness",
+                        status="queued",
+                        payload={
+                            "type": "thread_goal_followup_scheduled",
+                            "version": 1,
+                            **reservation_snapshot,
+                        },
+                        event_id=_deterministic_goal_event_id(
+                            self.session_id,
+                            "reservation",
+                            validated_source,
+                            expected_revision + 1,
+                        ),
+                        timestamp=None,
+                    )
+                    scheduled = self._insert(connection, **scheduled_values)
+                connection.commit()
+                return evaluated, scheduled
+            except Exception:
+                connection.rollback()
+                raise
+
+    def pending_thread_goal_followup(self) -> dict[str, Any] | None:
+        """Return one durable reservation only while it is still safe to consume."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM session_events WHERE run_id = 'thread-goal' "
+                "AND kind = 'harness' ORDER BY sequence DESC"
+            ).fetchall()
+            scheduled_event: SessionEvent | None = None
+            for row in rows:
+                candidate = _event_from_row(row, self.session_id)
+                if candidate.payload.get("type") == "thread_goal_followup_scheduled":
+                    scheduled_event = candidate
+                    break
+            if scheduled_event is None:
+                return None
+            reservation = dict(scheduled_event.payload)
+            if self._thread_goal_revision(connection) != reservation.get("goal_revision"):
+                return None
+            current = self._current_thread_goal(connection)
+            if current is None or current.get("status") != "active":
+                return None
+            if connection.execute(
+                "SELECT 1 FROM active_run_lease WHERE lease_key = 1"
+            ).fetchone() is not None:
+                return None
+            followup_run_id = str(reservation.get("run_id", ""))
+            if connection.execute(
+                "SELECT 1 FROM session_events WHERE run_id = ? LIMIT 1",
+                (followup_run_id,),
+            ).fetchone() is not None:
+                return None
+            newer_user = connection.execute(
+                "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
+                (scheduled_event.sequence,),
+            ).fetchone()
+            if newer_user is not None:
+                return None
+            reservation["scheduled_sequence"] = scheduled_event.sequence
+            return reservation
+
+    def run_goal_followup(self, run_id: str) -> dict[str, Any] | None:
+        """Return the reservation receipt atomically consumed by run_started."""
+        validated_run = _validate_identifier("run_id", run_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM session_events WHERE run_id = ? AND kind = 'system' "
+                "ORDER BY sequence LIMIT 1",
+                (validated_run,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = _event_from_row(row, self.session_id).payload.get("goal_followup")
+        return dict(value) if isinstance(value, Mapping) else None
 
     def clear_thread_goal(self, *, expected_revision: int) -> SessionEvent:
         """Clear the current Goal using the same atomic revision contract."""
@@ -922,6 +1141,20 @@ class SessionEventJournal:
         value = _event_from_row(row, self.session_id).payload.get("thread_goal")
         return dict(value) if isinstance(value, Mapping) else None
 
+    def run_surface_context(self, run_id: str) -> dict[str, Any] | None:
+        """Return the canonical Surface Context frozen by run_started."""
+        validated_run = _validate_identifier("run_id", run_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM session_events WHERE run_id = ? "
+                "AND kind = 'system' ORDER BY sequence LIMIT 1",
+                (validated_run,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = _event_from_row(row, self.session_id).payload.get("surface_context")
+        return dict(value) if isinstance(value, Mapping) else None
+
     def run_resume_context(self, run_id: str) -> tuple[str, dict[str, Any]] | None:
         """Return the original user message and surface context for a run."""
         validated_run = _validate_identifier("run_id", run_id)
@@ -953,7 +1186,11 @@ class SessionEventJournal:
             event_type = payload.get("type")
             if event_type == "thread_goal_cleared":
                 return None
-            if event_type in {"thread_goal_updated", "thread_goal_evaluated"}:
+            if event_type in {
+                "thread_goal_updated",
+                "thread_goal_evaluated",
+                "thread_goal_policy_updated",
+            }:
                 goal = payload.get("goal")
                 if not isinstance(goal, Mapping):
                     raise SessionEventJournalCorruptionError(
@@ -963,21 +1200,69 @@ class SessionEventJournal:
         return None
 
     def _thread_goal_revision(self, connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            "SELECT * FROM session_events WHERE run_id = 'thread-goal' "
+            "AND kind = 'harness' ORDER BY sequence DESC"
+        ).fetchall()
+        for row in rows:
+            payload = _event_from_row(row, self.session_id).payload
+            if payload.get("type") == "thread_goal_cleared":
+                revision = payload.get("revision")
+            else:
+                goal = payload.get("goal")
+                if not isinstance(goal, Mapping):
+                    continue
+                revision = goal.get("revision")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise SessionEventJournalCorruptionError(
+                    "Thread Goal event has an invalid revision"
+                )
+            return revision
+        return 0
+
+    def _assert_pending_thread_goal_followup(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        goal_followup: Mapping[str, Any],
+        run_id: str,
+    ) -> None:
+        reservation_id = _validate_identifier(
+            "reservation_id", str(goal_followup.get("reservation_id", ""))
+        )
         row = connection.execute(
             "SELECT * FROM session_events WHERE run_id = 'thread-goal' "
-            "AND kind = 'harness' ORDER BY sequence DESC LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return 0
-        payload = _event_from_row(row, self.session_id).payload
-        if payload.get("type") == "thread_goal_cleared":
-            revision = payload.get("revision")
-        else:
-            goal = payload.get("goal")
-            revision = goal.get("revision") if isinstance(goal, Mapping) else None
-        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-            raise SessionEventJournalCorruptionError("Thread Goal event has an invalid revision")
-        return revision
+            "AND kind = 'harness' ORDER BY sequence DESC"
+        ).fetchall()
+        scheduled: SessionEvent | None = None
+        for item in row:
+            event = _event_from_row(item, self.session_id)
+            if (
+                event.payload.get("type") == "thread_goal_followup_scheduled"
+                and event.payload.get("reservation_id") == reservation_id
+            ):
+                scheduled = event
+                break
+        if scheduled is None:
+            raise SessionEventJournalError("goal follow-up reservation is unavailable")
+        payload = scheduled.payload
+        for field in ("run_id", "source_run_id", "goal_id", "goal_revision", "prompt"):
+            if payload.get(field) != goal_followup.get(field):
+                raise SessionEventJournalError(
+                    f"goal follow-up {field} does not match reservation"
+                )
+        if payload.get("run_id") != run_id:
+            raise SessionEventJournalError("goal follow-up run does not match requested run")
+        current = self._current_thread_goal(connection)
+        if current is None or payload.get("goal_id") != current.get("goal_id"):
+            raise SessionThreadGoalConflictError(self._thread_goal_revision(connection))
+        if payload.get("goal_revision") != self._thread_goal_revision(connection):
+            raise SessionThreadGoalConflictError(self._thread_goal_revision(connection))
+        if connection.execute(
+            "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
+            (scheduled.sequence,),
+        ).fetchone() is not None:
+            raise SessionEventJournalError("goal follow-up was superseded by user input")
 
     def _insert(
         self,
