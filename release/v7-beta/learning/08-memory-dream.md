@@ -1,6 +1,6 @@
 # 08 - 长短记忆与 Dream
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 Working Memory / Durable Memory / Dream Proposal 三层的生命周期与信任等级，解释为什么 Dream 只能生成 proposal 不能自动写入，以及 MemoryStore 的 revisioned + atomic + CAS 设计。
 

@@ -1,6 +1,6 @@
 # 13 - 模块速查表
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 遇到问题先按"现象"找模块，再打开入口符号和对应测试。不要从 `__init__.py` 顺序翻文件。
 

@@ -1,6 +1,6 @@
 # V7 Beta Changelog
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 本文件描述 V7 Beta 相对早期 TourSwarm/Sage 原型的产品与架构变化。精确行为以当前代码、
 迁移和测试为准；历史设计稿中的未来能力不自动进入此清单。
@@ -11,7 +11,7 @@
   组成持续学习闭环。
 - 增加 Assistant 首页、Knowledge 工作台、Practice 工作台、成长记录和公开主页。
 - 统一中文产品壳、响应式布局、深链接和 light/dark 主题。
-- 公开主页以经过筛选的项目与成长记录为内容源，问答严格限制为静态公开资料。
+- 公开主页以经过筛选的项目与成长记录为内容源，确定性问答限制在公开 corpus，并附来源回执。
 
 ## Harness
 

@@ -1,6 +1,6 @@
 # V7 Beta Architecture Review
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 ## 评审结论
 
@@ -82,7 +82,7 @@ Container Sandbox；是否“实现了容器类”与是否“完成公网 admis
 | Critical | 公网任务访问宿主机工作区 | 本地/容器 provider 分离 | 强制 container，验证挂载、禁网、资源和清理 |
 | High | Knowledge 跨租户读取 | 云端来源功能未开放 | source、metadata、retrieval 全链路 owner scope |
 | High | 长运行重复执行或终态漂移 | run lease、fencing、timeline 恢复 | 故障注入与恢复演练 |
-| High | 公开问答泄露私有上下文 | 当前静态公开资料 allowlist | 独立身份、corpus、tool 和 usage 边界 |
+| High | 公开问答泄露私有上下文 | 当前确定性公开 corpus 与来源回执 | 独立身份、corpus、tool 和 usage 边界 |
 | Medium | 文档将设计误写为交付 | source ref 与测试门禁 | 发布评审逐项复核 |
 
 ## 验证证据

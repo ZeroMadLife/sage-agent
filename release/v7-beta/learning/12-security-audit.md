@@ -1,6 +1,6 @@
 # 12 - 安全审计与防注入
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 Sage 的六层安全防御（路径安全 / 输入净化 / 远程内容净化 / Prompt Injection 防护 / 凭证保护 / fail-closed 策略）、AES-GCM 加密、以及哪些攻击面已被覆盖哪些还没有。
 

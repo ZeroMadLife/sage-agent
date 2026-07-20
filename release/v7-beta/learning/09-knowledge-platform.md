@@ -1,6 +1,6 @@
 # 09 - Knowledge Platform
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：沿一条真实本地来源链路理解 source、parse artifact、proposal、page revision、
 > index 和 citation，并区分当前 SQLite baseline 与未来生产检索后端。

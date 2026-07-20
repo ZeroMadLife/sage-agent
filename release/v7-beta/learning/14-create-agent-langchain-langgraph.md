@@ -1,6 +1,6 @@
 # 14 - create_agent 与 LangChain/LangGraph 深入
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能从源码解释 LangChain 和 LangGraph 的区别、`create_agent` 内部做了什么、StateGraph + checkpointer + middleware 如何协作，以及 Sage 为什么从自研 XML 协议迁移到这套运行时。
 >

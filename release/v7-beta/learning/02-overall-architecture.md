@@ -1,6 +1,6 @@
 # 02 - 总体架构
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能画出 Sage 的三层架构图，解释请求主链路每一跳的职责，并指出 Runtime、Engine、ToolExecutor、Timeline 各自的边界。
 

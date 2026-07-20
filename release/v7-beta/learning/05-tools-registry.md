@@ -1,6 +1,6 @@
 # 05 - Tool Registry 与工具系统
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 `@register_tool` 装饰器做了什么、工具的 deferred loading 怎么省 token、`tool_search` 怎么按需提升工具 schema，以及 Pydantic schema 验证的三层防护。
 

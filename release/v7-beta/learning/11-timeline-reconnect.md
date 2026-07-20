@@ -1,6 +1,6 @@
 # 11 - 持久 Timeline 与断线重连
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 SessionEventJournal 的 schema 设计、RunCoordinator 的服务端持有 run 机制、无缝重放算法（先重放后订阅无竞态）、fencing token 防幽灵写入、以及为什么"WebSocket 断开 ≠ 取消 run"。
 

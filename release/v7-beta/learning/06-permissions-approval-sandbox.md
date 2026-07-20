@@ -1,6 +1,6 @@
 # 06 - 权限、审批与沙盒
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 Sage 的五道门（Permission / Policy / Approval / Execute / Workspace）、11 个危险命令模式、ApprovalManager 的 once/session/always/deny 四级审批、以及 Local/Container Sandbox 的边界。
 

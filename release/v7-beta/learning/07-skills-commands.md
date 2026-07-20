@@ -1,6 +1,6 @@
 # 07 - Skills 与命令系统
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清 SKILL.md 的格式、slash 命令的解析与展开流程、8 个 bundled skill 各自做什么、以及 skill 的 `allowed_tools` 当前为什么没强制执行。
 

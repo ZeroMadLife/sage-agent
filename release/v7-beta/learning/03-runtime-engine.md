@@ -1,6 +1,6 @@
 # 03 - Runtime 与 Engine
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能用伪代码复述 `Engine.run_turn()` 和 `CodingRuntime.run_turn()`，解释 legacy XML 协议与 `create_agent` 原生 tool calling 的差别，并指出 lease、diff、trace、run_finished 为什么必须在 Runtime 而不是 Engine。
 

@@ -1,6 +1,6 @@
 # 10 - 受限子代理：Research / Synthesize / Practice
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能讲清三个受限子代理 profile（Research/Synthesize/Practice）的职责、工具白名单、预算限制、Evidence Bundle 的安全边界，以及为什么父 timeline 不看到 child 的工具参数和网页正文。
 

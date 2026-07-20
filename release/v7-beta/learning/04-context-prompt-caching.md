@@ -1,6 +1,6 @@
 # 04 - Context 组装与 Prompt Caching
 
-> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
 
 > 本章目标：能画出 Sage 的 prompt 五段式拼装顺序，解释三层 system prompt 怎么命中 provider prefix cache，讲清压力分级（normal/budget/snip/compact/high/emergency）的触发条件和行为。
 
