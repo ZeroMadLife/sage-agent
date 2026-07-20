@@ -1,139 +1,153 @@
-# Sage learning 阅读地图
+# Sage 持续学习手册
 
-这套笔记不是 Sage 的宣传文档，也不是把每个 Python 文件翻译成中文。它要解决的问题是：**我们虽然通过 Vibe Coding 做出了 Sage，但如何真正看懂它、验证它，并在秋招时能把每个设计决策讲清楚。**
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
 
-阅读时始终把 Sage 看成一个 **Personal AI Learning Companion harness**：
+这套手册不是宣传稿，也不是源码的逐行翻译。它的目标是建立一种可重复的学习方法：
+从产品问题进入架构，沿真实调用链找到状态与证据，再用测试校正自己的理解。
+
+阅读时始终把 Sage 看成一个 **Personal AI Learning Companion**：
 
 ```text
-模型能力
-  + 工具执行
-  + 上下文管理
-  + 权限与审批
-  + 持久记忆
-  + 知识检索
-  + 受限子代理
-  + 运行状态
-  + 可追溯证据 
-  + Web 交互
-= 一个能连接个人项目、笔记、文档，持续形成知识资产的系统
+目标与个人材料
+  + 可恢复的 Chat Harness
+  + 工具执行与受控实践
+  + 上下文、记忆与知识检索
+  + 权限、审批与沙盒
+  + Timeline、Artifact、Citation 与测试证据
+= 一套可持续复盘的个人学习系统
 ```
 
-## 这套文档和发布文档的差别
+## 如何使用这套文档
 
 | 文档 | 目的 | 读法 |
 | --- | --- | --- |
-| `release/v7-beta/CHANGELOG.md` | 发布变更摘要 | 看本版改了什么 |
-| `release/v7-beta/REVIEW.md` | 架构评审包 | 拿着做评审 |
-| `release/v7-beta/TESTING.md` | 测试入口与场景 | 跑验收 |
-| `release/v7-beta/learning/` | **本目录**：深度讲解每个模块为什么存在 | 准备面试追问、做架构分享 |
+| [CHANGELOG](../CHANGELOG.md) | 版本变化摘要 | 先看本版改变了什么 |
+| [REVIEW](../REVIEW.md) | 架构与风险评审 | 核对设计判断和发布边界 |
+| [TESTING](../TESTING.md) | 可执行验证 | 复现自动化与人工场景 |
+| `learning/` | 深入模块与调用链 | 建立可以被源码推翻或确认的理解 |
 
-CHANGELOG 回答"改了什么"，learning 回答"**为什么这么设计**"。
+`CHANGELOG` 回答“发生了什么”，本手册回答“为什么这样设计、代码如何实现、应该怎样
+验证”。当二者和当前源码不一致时，以当前 source ref、实现和测试为准。
 
-## 源码事实口径
-
-- 项目：`/Users/zeromadlife/Desktop/tour-agent`
-- 分支：`dev/sage-v7`
-- Harness 包：`packages/sage_harness/`（应用中立，可独立发布）
-- 应用适配层：`core/harness/`（21 个 adapter）
-- 旧 runtime（legacy）：`core/coding/`（CodingRuntime + XML Engine）
-- Knowledge 平台：`core/knowledge/`（Wiki + RAG + citation + revision）
-- 前端：`frontend/src/views/CodingView.vue`、`frontend/src/stores/coding*.ts`
-- 验证入口：`tests/harness/`、`tests/core/coding/`、`tests/core/knowledge/`、`tests/api/`
-
-文档里的状态标记含义：
+## 事实标记
 
 | 标记 | 含义 |
 | --- | --- |
-| **已实现** | 当前源码和测试里都能找到对应行为 |
-| **部分实现** | 主路径存在，但能力、交互或正确性尚未完整 |
-| **规划中** | 只出现在设计书或 V8 路线里 |
-| **复盘风险** | 源码存在，但仍应重点审查或补强 |
+| **已实现** | 在当前源码和测试中都有对应行为 |
+| **部分实现** | 主路径存在，但能力、交互或正确性尚未闭合 |
+| **设计目标** | 设计稿明确描述，但不能当作当前交付 |
+| **待验证** | 存在实现线索，仍需测试或运行证据确认 |
+| **当前边界** | 已知不支持、被关闭或不应对外承诺的部分 |
 
-设计书描述"应该是什么"，源码描述"现在是什么"。二者冲突时，本手册以源码和测试为事实，并把差异写进"当前边界"。
+每章的 `Last verified against` 表示最近一次事实校正所依据的代码版本。后续学习不是在
+目录里不断追加碎片，而是修改对应主题，并同步 source ref、测试证据和边界。
 
-## 推荐阅读顺序
+## 源码地图
 
-### 第一遍：建立全局地图（面试第一轮常问）
+- 通用 Harness：`packages/sage_harness/`
+- Sage Harness 适配层：`core/harness/`
+- Practice Engine 与 legacy runtime：`core/coding/`
+- Knowledge Platform：`core/knowledge/`
+- 身份、Workspace 与 Provider：`core/cloud/`
+- FastAPI 边界：`api/`
+- Vue 产品界面：`frontend/src/`
+- 验证入口：`tests/harness/`、`tests/core/`、`tests/api/`、`frontend/src/**/*.test.ts`
 
-1. [[01-why-sage]] - 为什么做 Sage，和 ChatGPT/Claude Code 差在哪
-2. [[02-overall-architecture]] - 三层架构与请求主链路
-3. [[03-runtime-engine]] - Runtime 与 Engine 的职责拆分
+## 推荐阅读路径
 
-这一遍不要追逐每个函数，只回答三个问题：**请求从哪里进来、谁推进任务、证据最终存在哪里。**
+### 第一遍：建立全局地图
 
-### 第二遍：理解 Harness 为什么可靠（面试第二轮深挖）
+1. [为什么做 Sage](01-why-sage.md)
+2. [总体架构](02-overall-architecture.md)
+3. [Runtime 与 Engine](03-runtime-engine.md)
 
-4. [[04-context-prompt-caching]] - Prompt 怎么拼，cache 怎么命中
-5. [[05-tools-registry]] - 工具怎么注册、怎么发现、怎么限制
-6. [[06-permissions-approval-sandbox]] - 五道门与沙盒
-7. [[07-skills-commands]] - Skills 与 slash 命令
-8. [[08-memory-dream]] - 长短记忆与 Dream 反思
+这一遍只回答三个问题：请求从哪里进入，谁推进任务，状态和证据最终落在哪里。
 
-这一遍重点看边界：**模型不能直接写文件，工具不能绕过权限，Memory 不能无来源地注入，Dream 不能自动写入长期记忆。**
+### 第二遍：理解 Harness 为什么可控
 
-### 第三遍：理解知识平台与多 Agent（差异化亮点）
+4. [Context 组装与 Prompt Caching](04-context-prompt-caching.md)
+5. [Tool Registry 与工具系统](05-tools-registry.md)
+6. [权限、审批与沙盒](06-permissions-approval-sandbox.md)
+7. [Skills 与命令系统](07-skills-commands.md)
+8. [长短记忆与 Dream](08-memory-dream.md)
 
-9. [[09-knowledge-platform]] - Knowledge Platform：Wiki + RAG + 引用
-10. [[10-subagents-research]] - 受限子代理：Research/Synthesize/Practice
-11. [[11-timeline-reconnect]] - 持久 Timeline 与断线重连
+这一遍重点检查边界：模型输出不等于授权，工具不能绕过 Workspace 和 policy，Memory
+不能无来源注入，反思结果不能静默写入长期事实。
 
-这一遍要能讲清楚：**为什么 Sage 不只是"另一个 ChatGPT"，差异化在哪。**
+### 第三遍：理解知识与并行能力
 
-### 第四遍：安全与收尾
+9. [Knowledge Platform](09-knowledge-platform.md)
+10. [受限子代理](10-subagents-research.md)
+11. [持久 Timeline 与断线重连](11-timeline-reconnect.md)
 
-12. [[12-security-audit]] - 安全审计与防注入
-13. [[13-module-map]] - 模块速查表
+这一遍要能解释 citation、proposal、child evidence 和 user-visible timeline 各自解决什么
+问题，以及为什么它们不能共用一个模糊的“记忆”概念。
 
-这一遍重点看：**哪些地方必须 fail-closed，哪些攻击面已经被覆盖，哪些还没有。**
+### 第四遍：完成风险审查
 
-### 第五遍：框架深入（面试高频考点）
+12. [安全审计与防注入](12-security-audit.md)
+13. [模块速查表](13-module-map.md)
 
-14. [[14-create-agent-langchain-langgraph]] - create_agent 与 LangChain/LangGraph 深入
+重点判断哪些入口必须 fail closed、哪些风险已有测试、哪些仍是生产发布阻断项。
 
-这一遍重点看：**LangChain 和 LangGraph 的区别、create_agent 内部做了什么、State/reducer/checkpointer/middleware 的协作机制、为什么选这套而不是自研 XML 协议。** 面试必问。
+### 第五遍：理解底层框架
 
-## 一张图记住主线
+14. [create_agent 与 LangChain/LangGraph](14-create-agent-langchain-langgraph.md)
+
+用本章建立 LangChain 抽象、LangGraph state/checkpointer 和 middleware 的协作模型，再回到
+Sage adapter 验证这些框架概念如何映射到真实产品运行时。
+
+## 一条主调用链
 
 ```text
-Vue Assistant Shell / Coding Workbench
-  -> Pinia useCodingStore
-  -> CodingStream(WebSocket)
-  -> api/coding.py::coding_stream
-  -> CodingRuntime.run_turn (legacy)
-     或 HarnessRuntimeAdapter.run_turn (deerflow_v2)
-  -> Engine.run_turn / create_agent
-  -> ToolExecutor.execute / Middleware 链
-  -> RegisteredTool.execute
+Vue Product Surface
+  -> Pinia store / API adapter
+  -> REST or CodingStream(WebSocket)
+  -> FastAPI route
+  -> CodingRuntime (legacy) or SageHarnessRuntimeAdapter (deerflow_v2)
+  -> Engine or create_agent
+  -> ToolExecutor / Middleware / Capability Adapter
   -> typed RunEvent
-  -> SessionEventJournal (SQLite) + RunStore trace + WebSocket
-  -> applyCodingEvent reducer
-  -> 聊天、审批、Diff、Run History、引用更新
+  -> SessionEventJournal + RunStore + Artifact
+  -> frontend event reducer
+  -> reply / approval / diff / citation / run trace
 ```
 
-## 读源码的方法
+这条链路是阅读导航，不是所有请求都必经的唯一流程。例如 Knowledge ingest job 和 Cloud
+控制面有独立入口；进入对应章节后应以 import、route、adapter 和测试确认实际调用关系。
 
-每章都按同一个动作读：
+## 每章的学习动作
 
-1. 先打开章节列出的"第一入口"。
-2. 只跟一条调用链，不同时展开所有 import。
-3. 找到状态落点：内存对象、session JSON、trace JSONL、timeline SQLite 或 diff artifact。
-4. 打开对应测试，观察测试怎样构造输入、怎样断言事件。
-5. 用自己的话回答章末自测题。
+1. 打开章节列出的第一入口，不从目录树顺序浏览。
+2. 只跟一条调用链，记录输入、输出、状态所有者和副作用。
+3. 找到状态落点：内存、数据库、checkpoint、timeline、artifact 或 Git workspace。
+4. 打开对应测试，观察它如何制造失败、断线、越权或终态冲突。
+5. 运行最小验证，用自己的话回答章末问题。
+6. 如果文档与源码冲突，直接修改本章并更新 source ref，而不是另写一篇“补充说明”。
 
-## 不要混淆的几套系统
+## 容易混淆的事实层
 
-| 系统 | 回答的问题 | 当前阶段 |
+| 系统 | 回答的问题 | 主要信任边界 |
 | --- | --- | --- |
-| Durable Memory | 用户明确要求 Sage 长期记住什么 | V7 已实现 SQLite revisioned |
-| Knowledge RAG | 当前问题应该检索哪些知识片段 | V7 已实现 PostgreSQL + pgvector + RRF |
-| Context Summary | 当前任务怎么接着干 | V7 已实现结构化 compaction |
-| AST 知识图谱 | 类、函数、文件之间如何结构化连接 | V8 规划 |
-| Learning State | 用户对某个知识点掌握到什么程度 | V7 Practice profile 候选实现 |
+| Working Context | 当前这一轮模型应该看到什么 | 可压缩、可重建 |
+| Checkpoint | Agent 运行如何继续 | 运行状态，不是完整展示历史 |
+| Timeline | 用户看到了哪些事件与终态 | 可回放，不直接等于模型上下文 |
+| Durable Memory | 用户确认要长期记住什么 | 显式写入或批准 proposal |
+| Knowledge | 当前问题可以引用哪些来源 | 来源、revision、proposal 与 citation |
+| Learning Evidence | 哪次实践支持了什么判断 | 必须指向可复核产物 |
 
-Memory 不是 RAG，RAG 也不是知识图谱，Context Summary 不是 Memory。它们生命周期、信任等级、写入语义都不同，不能因为"听起来像记忆"就塞进同一个模块。
+Memory 不是 RAG，RAG 不是知识图谱，Context Summary 也不是 Timeline。名字相似不代表
+生命周期、信任等级和写入语义可以合并。
 
-## 相关资料
+## 外部参考的使用边界
 
-- 设计书：`docs/superpowers/specs/`
-- Obsidian 学习库：`Obsidian-Knowledge-Base/03_项目/tourswarm/技术沉淀/sage-learning/`（40+ 篇复盘）
-- 竞品参考：Claude Code / Hermes Agent / OpenClaw / Hermes Studio / DeerFlow 2.x / Pico v3
+Claude Code、Hermes、DeerFlow、Pico 等项目可以提供交互或架构启发，但本手册不依靠
+“对方没有、Sage 独有”来证明设计。涉及外部项目时，应重新查阅其当前一手文档或源码，
+标注版本和验证方法；没有完成复核的内容只记录为设计参考。
+
+## 维护入口
+
+- 版本索引：`release/v7-beta/README.md`
+- 架构设计：`docs/superpowers/specs/`
+- 实施计划：`docs/superpowers/plans/`
+- 开发协作与收口：`AGENTS.md`

@@ -1,5 +1,7 @@
 # 04 - Context 组装与 Prompt Caching
 
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+
 > 本章目标：能画出 Sage 的 prompt 五段式拼装顺序，解释三层 system prompt 怎么命中 provider prefix cache，讲清压力分级（normal/budget/snip/compact/high/emergency）的触发条件和行为。
 
 ## Prompt 不是 messages list
@@ -261,19 +263,11 @@ class ToolResultStore:
 
 这样大工具结果（如 `grep -r` 输出 50KB）不会塞满 model context，但通过 `call_id` 可以随时取回全文。
 
-## 和 Pico v3 / Claude Code 的对标
+## 外部参考的使用边界
 
-| 维度 | Sage v7-beta | Pico v3 | Claude Code |
-| --- | --- | --- | --- |
-| Prompt 分段 | 5 段（prefix/skill/memory/history/current） | section + 预算 | system parts + user context |
-| Cache 命中 | 三层 + boundary 标记 | 无显式 cache 策略 | system prompt parts |
-| 预算单位 | 字符（legacy）/ token（v6.6+） | 字符 | token |
-| 压缩触发 | 6 级压力分级 + turn boundary | 手动 compact | 自动 compact |
-| 压缩产物 | 结构化 summary + checkpoint + HMAC | summary 文本 | compact 后消息 |
-| 大结果归档 | ToolResultStore（>16KB 外存） | artifact | 无 |
-| 断路器 | 连续 2 次无效压缩禁用 | 无 | 无 |
-
-Sage 的压力分级 + 断路器是 Pico/Claude Code 没有的设计，来自 OpenClaw 的 safeguard compaction 思路。
+Prompt cache、token 计算和压缩语义会随模型 Provider 与 SDK 版本变化。外部实现只作为
+问题来源，不能据此断言某产品“没有”缓存或断路器。本章对 Sage 的结论必须能回到
+Context controller、middleware、usage 记录和对应测试。
 
 ## 第一入口
 
@@ -300,10 +294,10 @@ Sage 的压力分级 + 断路器是 Pico/Claude Code 没有的设计，来自 Op
 
 > [!warning] Context 组装在 legacy 和 v2 之间有差距
 > - legacy 用 `ContextManager`（字符预算 + `tail_clip`）
-> - v6.6+ 引入 `ContextPolicy`（token 预算），但 legacy runtime 默认还是字符预算
+> - v2 使用 token budget；只有显式选择的 legacy session 继续使用字符预算
 > - v2 的 `SummarizationMiddleware` 设计完成但实现未完成
 > - mid-turn emergency stop 在 legacy 里通过 `before_model_request` 回调实现，v2 还没接
-> - 大工具结果归档只在 v6.6+ 有，legacy 默认 inline
+> - 大工具结果归档已进入新运行链；legacy 行为仍需单独回归
 
 ## 自测
 
@@ -314,4 +308,4 @@ Sage 的压力分级 + 断路器是 Pico/Claude Code 没有的设计，来自 Op
 5. `skill_prompt` 和 `memory_block` 为什么不写 history？
 6. 大工具结果归档（>16KB 外存）为什么不能直接 inline 到 history？
 
-下一章：[[05-tools-registry]]
+下一章：[Tool Registry 与工具系统](05-tools-registry.md)

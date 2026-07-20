@@ -1,151 +1,155 @@
 # 01 - 为什么做 Sage
 
-> 本章目标：能回答"Sage 是什么、为什么不是另一个 ChatGPT、为什么不在 Coding 工具赛道和 Codex/Claude Code 硬碰硬"。
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
 
-## Sage 到底解决什么问题
+> 本章目标：解释 Sage 解决的问题、学习闭环、Practice Engine 的位置，以及当前产品边界。
 
-Sage 的起点是一个朴素观察：**程序员的学习和成长缺一个"懂你"的系统。**
+## 问题：个人材料很多，学习过程却无法连续
 
-一个程序员在学习新技术、维护老项目、准备面试时，手上的资料是分散的：
+一个开发者在学习技术和维护项目时，信息通常散落在不同位置：
 
-- 电脑里的代码仓库（GitHub clone、公司项目、个人实验）
-- Obsidian/Notion 里的笔记（踩坑记录、设计思路、面试题）
-- 浏览器收藏夹里的文章、论文、视频链接
-- 飞书/微信里和同事讨论的片段
-- 自己写过但已经忘记的代码
+- 本地与远程代码仓库；
+- Markdown、Obsidian 或其他笔记；
+- 网页、论文、文档和收藏；
+- 讨论记录、运行日志、测试结果与历史决策；
+- 已经完成但很难再次解释的代码。
 
-这些资料之间是有联系的：一段笔记解释了某个仓库里的设计，一篇论文是某个面试题的答案，一段代码验证了某个概念。但**没有任何系统把这些资料连起来**。
+这些材料之间存在真实联系，但普通对话很难持续保留来源、实践过程和验证结果。每次重新
+粘贴上下文既昂贵，也无法区分“模型推测”“原始来源”和“已经验证的个人经验”。
 
-ChatGPT/Claude 能回答通用问题，但它们**不知道你的项目、不知道你的笔记、不知道你上次踩过什么坑**。每次对话都从零开始。
+Sage 的产品问题因此不是“再做一个聊天框”，而是：
 
-Sage 要解决的就是这个：**连接个人项目、笔记、文档和外部资料，通过检索、对话、实践、验证、复盘与人工批准，持续形成个人知识资产。**
+> 如何把个人材料、AI 对话和真实实践组织成一条可恢复、可引用、可审查的成长路径？
 
-## 为什么不做"另一个 ChatGPT"
+## 产品回答：从问题到证据的闭环
 
-市面上已经有 ChatGPT、Claude、Gemini、通义、Kimi、DeepSeek。再做一个通用聊天框没有差异化。Sage 的差异化在于：
-
-**Sage 知道你的材料，回答基于你自己的资料，带可验证引用。**
-
-举个例子：
-- 问 ChatGPT："React Fiber 架构解决了什么问题？" -> 回答基于训练数据，可能过时，无引用
-- 问 Sage（已导入 `facebook/react` 仓库）："React Fiber 架构解决了什么问题？" -> 回答基于仓库里的源码 + 你的笔记，每段附 `[来源: packages/react-reconciler/src/ReactFiber.js:45]`，点击跳转
-
-这个差异化的本质是：**Sage 的回答是可验证的，不是模型瞎编的。** 引用必须指向真实的知识源 revision，模型不能凭空生成引用。
-
-## 为什么不做"另一个 Claude Code"
-
-Codex、Claude Code、Cursor、Continue 已经覆盖通用编码。它们有更强的模型、更成熟的工具、更完整的生态。Sage 在"更多工具 / 更像 Claude Code 的 UI"上竞争是高投入低差异化。
-
-Sage 的判断是：**通用编码工具的赛道已经卷死了，但"连接个人材料的 AI 学习伴侣"还是空白。**
-
-所以 Sage 保留 Coding Runtime，但把它降级为 **Practice Engine**：
-
-```
-Sage = 个人助手主壳
-  ├── Knowledge Platform（连接材料 + RAG + 引用 + Wiki）
-  ├── Coding Runtime（Practice Engine：源码阅读、代码实验、测试验证）
-  ├── Memory（用户确认的长期事实）
-  ├── Dream（反思 proposal，不自动写入）
-  └── 受限子代理（Research/Synthesize/Practice）
+```mermaid
+flowchart LR
+    A[目标] --> B[探索材料]
+    B --> C[形成知识]
+    C --> D[设计练习]
+    D --> E[真实执行]
+    E --> F[保留证据]
+    F --> G[复盘与下一步]
+    G --> A
 ```
 
-Coding Runtime 不再是首页唯一叙事。首页是 `/assistant`，不是 `/coding`。
+这个闭环包含三个不能被模型话术替代的约束：
 
-## Sage 的核心闭环
+1. **回答必须可以回到来源。** Knowledge citation 指向实际 revision 或来源片段，而不是
+   由模型临时编造一个看起来像引用的字符串。
+2. **理解必须可以经过实践。** Practice Engine 能读源码、运行命令、修改文件和执行测试，
+   其结果以 tool event、artifact、diff 和 run trace 保存。
+3. **长期写入必须受控。** Memory、Wiki 和其他长期事实通过显式命令或 proposal/approval
+   写入，反思结果本身不能静默成为事实。
+
+## 为什么 Coding 是 Practice Engine
+
+Sage 保留完整 Coding Runtime，但它服务于学习闭环，而不是成为产品唯一入口：
 
 ```text
-知识摄取（导入仓库/笔记/网页/PDF）
-  ↓
-知识建模（概念/技能/依赖/来源/掌握度）
-  ↓
-目标 + 诊断（用户想学什么，当前掌握到什么程度）
-  ↓
-学习计划（分阶段，可调整）
-  ↓
-实践 + 验证（coding/Q&A/test/Feynman 解释/真实产物）
-  ↓
-复盘 + 沉淀（错误归因、能力证据、Memory Proposal、下一步调整）
-  ↓
-（循环）
+Sage Product Shell
+  ├── Assistant：目标、对话与任务入口
+  ├── Knowledge：来源、Wiki、检索与引用
+  ├── Practice Engine：阅读、修改、执行与验证
+  ├── Memory：经过确认的长期信息
+  ├── Evidence：timeline、artifact、citation、diff、usage
+  └── Public Profile：经过筛选的项目与成长记录
 ```
 
-这个闭环里有几个关键设计约束：
+因此首页是 `/#/assistant`，而不是直接进入某个代码 session。用户可以先从目标和知识出发，
+需要验证时再进入 Practice；Practice 产生的证据又能回到后续学习，而不是留在孤立终端里。
 
-1. **Learning State 更新必须绑定可验证证据**。不能靠模型说"用户应该懂了"就更新掌握度。掌握度来自能力权重和验证证据（Practice profile 产生的 Mastery Evidence 候选）。
-2. **Dream 只能生成 proposal**。不能自动修改长期记忆或已验证 Wiki。涉及长期事实、Knowledge/Wiki 或敏感偏好时必须用户确认。
-3. **知识写入必须走 proposal**。模型不能直接持久化到 KnowledgeStore，避免幻觉污染知识库。
+## 为什么使用统一 Chat Harness
 
-## 和竞品的对标
+Assistant、Knowledge 和 Practice 都需要流式输出、工具状态、审批、恢复和上下文管理。
+如果每个页面各写一套 chat loop，会出现事件语义、重连、终态和权限规则逐渐分叉的问题。
 
-| 维度 | Sage v7-beta | ChatGPT | Claude Code | Hermes Studio |
-| --- | --- | --- | --- | --- |
-| 主产品 | 个人 AI 学习伴侣 | 通用聊天 | 通用编码 | 多渠道 Agent 控制台 |
-| 知识源连接 | GitHub 仓库 + Obsidian + 网页 + PDF | 无 | 当前 workspace | 文件系统 |
-| 引用可验证 | ✅ Knowledge revision + content hash | ❌ | ❌ | 部分 |
-| 长期记忆 | ✅ SQLite revisioned + proposal | ❌ | CLAUDE.md | ✅ Mem0 |
-| 梦境反思 | ✅ Dream proposal-only | ❌ | ❌ | ✅ background review |
-| 受限子代理 | ✅ Research/Synthesize/Practice | ❌ | ✅ Task tool | ✅ delegate |
-| 持久 timeline | ✅ SQLite + 重连重放 | ❌ | ❌ | ✅ session DB |
-| 部署形态 | Web + Docker Compose | 云端 SaaS | 本地 CLI | Web + Electron |
-| 开源 | ✅ MIT | ❌ | ❌ | BSL 1.1 |
+Sage 将通用能力抽离到 `packages/sage_harness/`，再通过 `core/harness/` adapter 接入产品
+事实。这样可以同时保持：
 
-Sage 的优势不在单一功能，而在**把这些能力组合成一个学习闭环**：连接材料 -> 检索 -> 对话 -> 实践 -> 验证 -> 沉淀 -> 复盘。
+- 通用 runtime 不依赖 Sage 的用户、知识或页面模型；
+- 产品层可以统一身份、Workspace、Knowledge 和 Sandbox；
+- 前端复用 typed events，不需要猜测后端字符串状态；
+- legacy runtime 仍可用于迁移回归，但新会话默认进入 `deerflow_v2` profile。
 
-## 为什么选 Web 形态
+## 为什么选择 Web 产品壳
 
-Pico 是本地 CLI/TUI，Claude Code 是本地 CLI，Cursor 是 Electron 桌面应用。Sage 选 Web 是因为：
+Web 形态让 Assistant、Knowledge 图谱、Practice Diff、审批和公开成长主页共享同一套界面，
+也便于桌面与手机访问。它同时引入了必须正视的成本：
 
-1. **群友试用零门槛**。发个链接就能用，不用安装。
-2. **多用户隔离天然**。每个用户一个 workspace，互不可见。
-3. **移动端可用**。手机浏览器直接访问，不用做 App。
-4. **服务器端 RAG**。embedding 和检索在服务器跑，不占用用户本地资源。
+- 浏览器不能自然获得本机目录权限，必须经过 Workspace 或后续本地 companion；
+- 公网运行需要身份、租户隔离、Sandbox、限流、备份和故障恢复；
+- 网络断线不能等同于取消任务，因此需要 durable timeline 和服务端 run ownership。
 
-代价是：
-- 浏览器不能直接读用户电脑上的任意目录（需要 V8 Local Companion）
-- 需要服务器运维（部署、备份、监控）
-- 延迟比本地 CLI 高（网络往返）
+当前本地开发路径已经可用，但这些成本尚未全部完成生产验证。Web 是产品选择，不是“天然
+多用户安全”的证明。
 
-## 现在的判断
+## 公开成长主页为什么独立
 
-Sage v7-beta 已经形成一个可评审的 harness：
+`/#/public` 面向外部读者展示经过筛选的项目、笔记和成长轨迹。它与主对话必须保持权限
+隔离：
 
-- `packages/sage_harness/` 是应用中立的 Harness 包（可独立发布）
-- `core/harness/` 是 21 个 adapter，把 Sage 业务事实接到 Harness Port
-- `core/coding/` 是 legacy runtime（XML Engine，历史兼容）
-- `core/knowledge/` 是 Knowledge Platform（Wiki + RAG + citation）
-- `frontend/src/` 是 Vue 工作台（Assistant 首页 + Coding 工作台 + Knowledge 视图）
+- 当前问答只使用限定静态公开资料；
+- 不读取私有 Workspace、Memory 或 timeline；
+- 不把本地主 Harness 描述成已经部署的公网 Agent；
+- 未来如接入动态公开问答，应使用独立 corpus、tool allowlist、预算和审计。
 
-它不是 Codex/Claude Code 的替代品，也不是 ChatGPT 的克隆。它是一个**面向程序员个人学习和知识沉淀的 AI 伴侣**。
+这让“展示成长”可以成为产品的一部分，同时不把私人学习系统的权限直接暴露给访问者。
 
-## 第一入口
+## 如何评价 Sage 的差异
 
-按顺序打开：
+Sage 的价值不依赖“其他产品一定没有某个功能”的结论，而在于这些能力是否形成一致的
+本地工作流：
 
-1. `frontend/src/views/AssistantHomeView.vue` - 首页主入口
-2. `api/coding.py::coding_stream` - WebSocket 边界
-3. `core/coding/runtime.py::CodingRuntime.__init__` - legacy runtime 组装
-4. `core/harness/runtime_adapter.py` - v2 runtime 适配
-5. `packages/sage_harness/sage_harness/agents/factory.py` - create_agent 工厂
+```text
+个人材料 -> 可引用知识 -> 统一对话 -> 受控实践 -> 可复核证据 -> 下一轮学习
+```
 
-## 测试证据
+外部 Agent、编码工具和知识产品可以作为设计参考，但比较必须重新基于它们当前的一手
+文档、源码和版本。未完成复核时，本手册只陈述 Sage 自身已经可以由代码和测试证明的
+行为。
 
-- `tests/api/test_coding_routes.py` - API 契约
-- `tests/harness/test_agent_factory.py` - Harness agent 工厂
-- `tests/core/coding/test_runtime_run_lifecycle.py` - run 生命周期
+## 当前实现
+
+- Harness 2.0 已是新会话默认 runtime profile。
+- Assistant、Knowledge、Practice 和 Public Profile 已有可运行界面。
+- 本地 Workspace 工具、审批、Diff、timeline、checkpoint 和 artifact 已有测试覆盖。
+- 本地 Knowledge 来源、Wiki proposal、混合检索和 citation 已形成主路径。
+- Cloud 已有身份、Workspace ownership 和 Provider 基础。
 
 ## 当前边界
 
-> [!warning] v7-beta 不是生产就绪
-> - 多用户隔离的 Container Sandbox 未在目标服务器真实验证
-> - `deerflow_v2` 默认 gate 关闭，默认走 legacy runtime
-> - onboarding 引导和知识源导入入口前端不完整
-> - 审批的 LangGraph durable interrupt 未实现
+- `docker-compose.yml` 是本地依赖编排，不是生产部署栈。
+- `local_workspace` 只适合可信开发机；公网必须强制 Container Sandbox。
+- Knowledge 的云端 tenant-scoped 来源与元数据工作流尚未开放。
+- 公开主页不是公网 Harness，也没有主账号的私有工具权限。
+- Loop Engineer 自动扫描服务暂停，不属于当前运行能力。
 
-## 自测
+## 第一入口
 
-1. Sage 和 ChatGPT 的核心差异是什么？为什么这个差异能留住用户？
-2. 为什么不直接和 Claude Code 在编码工具赛道竞争？
-3. Sage 的学习闭环里，为什么 Learning State 不能靠模型自评分更新？
-4. 为什么选 Web 形态而不是本地 CLI？
+1. `frontend/src/views/AssistantHomeView.vue` - 产品首页
+2. `frontend/src/views/KnowledgeView.vue` - Knowledge 工作台
+3. `frontend/src/views/CodingView.vue` - Practice 工作台
+4. `api/coding.py::coding_stream` - WebSocket 边界
+5. `core/harness/runtime_adapter.py` - Sage 到 Harness 的适配
+6. `packages/sage_harness/sage_harness/agents/factory.py` - `create_agent` 工厂
 
-下一章：[[02-overall-architecture]]
+## 测试证据
+
+- `frontend/src/views/AssistantHomeView.test.ts`
+- `frontend/src/views/ProductShellViews.test.ts`
+- `tests/api/test_coding_routes.py`
+- `tests/core/harness/test_harness_runtime_adapter.py`
+- `tests/harness/test_agent_factory.py`
+- `tests/core/knowledge/`
+
+## 理解检查
+
+1. Sage 的产品问题为什么不是“如何做更强的聊天 UI”？
+2. Citation、Practice artifact 和 Memory proposal 分别解决什么信任问题？
+3. 为什么 Coding 适合成为 Practice Engine，而不是消失或占据全部产品叙事？
+4. Web 产品壳带来了哪些必须由后端和运维承担的新边界？
+5. 公开主页为什么不能直接复用主账号 Harness 的权限？
+
+下一章：[总体架构](02-overall-architecture.md)

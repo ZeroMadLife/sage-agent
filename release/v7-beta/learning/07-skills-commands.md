@@ -1,5 +1,7 @@
 # 07 - Skills 与命令系统
 
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+
 > 本章目标：能讲清 SKILL.md 的格式、slash 命令的解析与展开流程、8 个 bundled skill 各自做什么、以及 skill 的 `allowed_tools` 当前为什么没强制执行。
 
 ## Skill 是什么
@@ -187,7 +189,7 @@ class Skill:
 - skill 结束时清除 active skill
 - 多 skill 嵌套的处理
 
-这是一个明确的待办（V4 工具系统强化 Task 5），当前没做。
+这是一个明确的待办，当前不能把 frontmatter 中的声明当作已执行的权限边界。
 
 ## Skill 与 Tool 的协作
 
@@ -223,18 +225,11 @@ def create_sage_agent(
 
 `SkillActivationMiddleware` 负责把 active skill 的 context 注入 `SageThreadState.skill_context`。state 只保存 skill 引用和版本，不保存完整 Skill 正文。
 
-## 和 Pico v3 / Claude Code / Hermes 的对标
+## 外部参考的使用边界
 
-| 维度 | Sage v7-beta | Pico v3 | Claude Code | Hermes |
-| --- | --- | --- | --- | --- |
-| Skill 格式 | SKILL.md + YAML frontmatter | SKILL.md | SKILL.md | SKILL.md |
-| 触发方式 | `/name args` slash 命令 | `/name args` | `/name args` | `/name args` |
-| 变量替换 | `$ARGUMENTS` + `${SAGE_SKILL_DIR}` | `$ARGUMENTS` | `$ARGUMENTS` | `$ARGUMENTS` |
-| 发现顺序 | builtin -> home -> workspace | builtin -> workspace | builtin -> user -> project | AST 扫描 |
-| 工具白名单 | 解析了没强制 | 无 | 无 | 强制 |
-| 持久化 | per-turn，不写 history | per-turn | per-turn | per-turn |
-
-Sage 的 skill 系统和 Pico/Claude Code 基本一致，差异在 `allowed_tools` 当前没强制（Pico/Claude Code 也没有）。Hermes 有强制的工具白名单，是 Sage V4 的改进方向。
+`SKILL.md` 只是常见载体，不代表不同系统拥有相同的发现顺序、变量语义或工具权限。
+Sage 的结论必须以自己的 registry、renderer 和 activation 测试为准。`allowed_tools` 是否
+真正参与 capability 过滤要由执行路径证明，不能根据 frontmatter 字段存在就宣称生效。
 
 ## 第一入口
 
@@ -259,9 +254,9 @@ Sage 的 skill 系统和 Pico/Claude Code 基本一致，差异在 `allowed_tool
 ## 当前边界
 
 > [!warning] Skill 系统有几个已知局限
-> - `allowed_tools` 解析了但没强制执行（V4 Task 5 待办）
+> - `allowed_tools` 已解析但尚未进入强制 capability 过滤
 > - 没有 `sage skill install <path|git-url>` CLI（外部 skill 安装要手动放目录）
-> - 没有 AST 自动扫描（Hermes 风格），靠目录遍历
+> - 没有 AST 自动扫描，当前依赖目录遍历
 > - skill 嵌套没处理（一个 skill 触发另一个 skill）
 > - v2 的 `SkillActivationMiddleware` 实现完成，但 `allowed_tools` 强制未接
 
@@ -274,4 +269,4 @@ Sage 的 skill 系统和 Pico/Claude Code 基本一致，差异在 `allowed_tool
 5. `/travel 杭州 3天` 这个命令从输入到最终回答，经过哪些步骤？
 6. 如果要实现 `allowed_tools` 强制执行，需要改哪些地方？
 
-下一章：[[08-memory-dream]]
+下一章：[长短记忆与 Dream](08-memory-dream.md)

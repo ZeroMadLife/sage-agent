@@ -1,5 +1,7 @@
 # 10 - 受限子代理：Research / Synthesize / Practice
 
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+
 > 本章目标：能讲清三个受限子代理 profile（Research/Synthesize/Practice）的职责、工具白名单、预算限制、Evidence Bundle 的安全边界，以及为什么父 timeline 不看到 child 的工具参数和网页正文。
 
 ## 为什么需要受限子代理
@@ -249,20 +251,11 @@ def build_subagent_capability(...):
 - 父取消传播到所有 child
 - child 不能独立绕过审批或写入 Memory/Knowledge
 
-## 和 Pico / Claude Code / Hermes 的对标
+## 外部参考的使用边界
 
-| 维度 | Sage v7-beta | Pico v3 | Claude Code | Hermes |
-| --- | --- | --- | --- | --- |
-| 子代理类型 | Research/Synthesize/Practice | WorkerManager worker | Task tool | delegate |
-| 工具白名单 | ✅ per-profile enforced | write_scope | task scope | DELEGATE_BLOCKED_TOOLS |
-| 预算限制 | token/step/wall-clock | 无显式 | 无显式 | timeout |
-| 并行 | ✅ 共享总预算 | 串行 | ✅ | ✅ |
-| Evidence Bundle | ✅ 服务端生成 + fail-closed | 无 | 无 | 无 |
-| 父子 timeline 隔离 | ✅ child 不进父 timeline | 部分 | 部分 | ✅ |
-| 取消传播 | ✅ | 无 | ✅ | ✅ |
-| 递归限制 | child 不能 spawn child | 无限制 | 限制 | 限制 |
-
-Sage 的 Evidence Bundle + fail-closed + 父子 timeline 隔离是 Pico/Claude Code 没有的设计，主要解决 prompt injection 通过 child 工具结果污染父 Agent 的风险。
+“子代理”可能表示独立进程、嵌套模型调用或仅仅是任务委派，不能直接横向等同。本章只
+陈述 Sage profile 的 capability allowlist、预算、取消传播和 Evidence Bundle 边界；
+外部系统的并行、递归和隔离能力必须基于明确版本重新验证。
 
 ## 第一入口
 
@@ -279,10 +272,10 @@ Sage 的 Evidence Bundle + fail-closed + 父子 timeline 隔离是 Pico/Claude C
 ## 测试证据
 
 - `tests/harness/test_subagent_executor.py` - 子代理执行
-- `tests/harness/test_subagent_lifecycle.py` - 生命周期 + 取消
+- `tests/harness/test_subagent_executor.py` - 执行、超时与取消
 - `tests/core/harness/test_evidence_bundle.py` - Evidence Bundle
 - `tests/core/harness/test_subagent_adapter.py` - capability 可用性
-- `tests/harness/test_research_profile.py` - Research profile 约束
+- `tests/core/harness/test_subagent_adapter.py` - Research/Synthesize/Practice profile 约束
 
 ## 当前边界
 
@@ -304,4 +297,4 @@ Sage 的 Evidence Bundle + fail-closed + 父子 timeline 隔离是 Pico/Claude C
 6. Practice 的 Mastery Evidence 为什么不用模型自评分？
 7. 子代理的 capability 可用性为什么要动态暴露？
 
-下一章：[[11-timeline-reconnect]]
+下一章：[持久 Timeline 与断线重连](11-timeline-reconnect.md)

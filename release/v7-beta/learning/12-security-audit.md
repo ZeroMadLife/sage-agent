@@ -1,5 +1,7 @@
 # 12 - 安全审计与防注入
 
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+
 > 本章目标：能讲清 Sage 的六层安全防御（路径安全 / 输入净化 / 远程内容净化 / Prompt Injection 防护 / 凭证保护 / fail-closed 策略）、AES-GCM 加密、以及哪些攻击面已被覆盖哪些还没有。
 
 ## Sage 的威胁模型
@@ -18,7 +20,7 @@ Sage 用六层防御覆盖这些威胁。
 
 ## ① 路径安全（5 层防御）
 
-详见 [[06-permissions-approval-sandbox]]。这里总结：
+详见 [权限、审批与沙盒](06-permissions-approval-sandbox.md)。这里总结：
 
 | 层 | 防什么 | 实现 |
 | --- | --- | --- |
@@ -103,7 +105,7 @@ Research child 抓取的网页可能包含恶意 prompt injection。如果不标
 **第 3 层：父子 timeline 隔离**
 - Research child 的 tool args / 网页正文不进父 timeline
 - 父只看到 evidence_refs（chunk_id），不看到正文
-- 详见 [[10-subagents-research]]
+- 详见 [受限子代理](10-subagents-research.md)
 
 ### Memory 的不可信标签
 
@@ -237,11 +239,12 @@ class Workspace:
 - workspace mount（只读或受限读写）
 - 终止回收
 
-**当前状态**：ContainerSandbox 代码实现但未在目标服务器真实验证。群友试用前必须验证。
+**当前状态**：Container Sandbox 有实现与契约测试，但尚未完成目标生产环境的 admission
+与故障恢复验证。完成前不能开放公网任务执行。
 
 ## 危险命令检测
 
-11 个危险模式（详见 [[06-permissions-approval-sandbox]]）：
+11 个危险模式（详见 [权限、审批与沙盒](06-permissions-approval-sandbox.md)）：
 
 ```python
 DANGEROUS_PATTERNS = (
@@ -283,19 +286,11 @@ if approval.args_digest != current_args_digest:
 | 跨 agent 文件冲突 | ❌ | FileStateRegistry 未实现 |
 | 审批跨进程恢复 | ❌ | LangGraph durable interrupt 未实现 |
 
-## 和 Pico v3 / Claude Code / Hermes 的对标
+## 外部参考的使用边界
 
-| 维度 | Sage v7-beta | Pico v3 | Claude Code | Hermes |
-| --- | --- | --- | --- | --- |
-| 路径安全 | 5 层 | workspace path | permission context | path_security.py |
-| 输入净化 | ✅ InputSanitizationMiddleware | 无 | 无 | 无 |
-| 远程内容净化 | ✅ RemoteContentSanitizationMiddleware | 无 | 无 | 无 |
-| 凭证加密 | ✅ AES-GCM | 无 | 无 | 无 |
-| 危险命令 | 11 模式 | shell 分类 | permission context | CANNOT_AUTO_APPROVE |
-| 跨 agent 文件状态 | ❌ 未实现 | 无 | FileStateRegistry | FileStateRegistry |
-| 沙盒 | Local + Container | local | 无显式 | sandbox |
-
-Sage 的输入净化 + 远程内容净化 + AES-GCM 凭证加密是 Pico/Claude Code 都没有的。但跨 agent 文件状态协调（Hermes 的 FileStateRegistry）还没实现。
+安全评审不能由功能勾选表完成，也不能通过“别的产品没有”来降低 Sage 的风险等级。
+本章以 Sage 的威胁模型、默认配置、绕过路径和失败行为为对象。外部项目只能提供待测试
+的设计线索，不能成为发布结论的证据。
 
 ## 第一入口
 
@@ -316,16 +311,16 @@ Sage 的输入净化 + 远程内容净化 + AES-GCM 凭证加密是 Pico/Claude 
 - `tests/core/coding/test_workspace.py` - 路径安全
 - `tests/core/coding/test_transcript_store.py` - 文件类型验证 + inode
 - `tests/core/coding/test_approval.py` - 危险命令 + 审批
-- `tests/api/test_cloud_auth.py` - OAuth + cookie
-- `tests/core/cloud/test_security.py` - AES-GCM 加密
+- `tests/api/test_cloud_auth_routes.py` - session cookie 与登录边界
+- `tests/api/test_cloud_github_oauth_routes.py` - OAuth PKCE、binding 与 token 加密
 
 ## 当前边界
 
 > [!warning] 安全审计有几个已知边界
-> - Container Sandbox 未在目标服务器真实验证（CPU/内存/PID/网络/workspace mount）
+> - Container Sandbox 尚未完成目标生产环境的 admission 验证
 > - 跨 agent 文件状态协调（FileStateRegistry）未实现
 > - 审批的 LangGraph durable interrupt 未实现（服务器重启丢 pending approval）
-> - OS 级资源限制未做（ulimit / cgroups）
+> - OS 级资源限制必须在实际容器运行时再次验证，不能只依赖配置对象
 > - 只验证过 Chromium 内置浏览器，Safari/Firefox 兼容性未测
 > - `always` 审批当前等同于 `session`（无跨 session 永久语义）
 > - 超时不 kill 底层操作（ThreadPoolExecutor 固有限制）
@@ -342,4 +337,4 @@ Sage 的输入净化 + 远程内容净化 + AES-GCM 凭证加密是 Pico/Claude 
 8. fail-closed 和 fail-open 的区别？哪些场景必须 fail-closed？
 9. 哪些攻击面还没覆盖？
 
-下一章：[[13-module-map]]
+下一章：[模块速查表](13-module-map.md)

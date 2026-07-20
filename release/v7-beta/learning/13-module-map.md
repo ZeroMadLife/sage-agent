@@ -1,5 +1,7 @@
 # 13 - 模块速查表
 
+> Last verified against: `dev/sage-v7@23a0090` (2026-07-20)
+
 > 遇到问题先按"现象"找模块，再打开入口符号和对应测试。不要从 `__init__.py` 顺序翻文件。
 
 ## 后端 Harness
@@ -8,12 +10,12 @@
 | --- | --- | --- | --- |
 | Runtime 组装（legacy） | `core/coding/runtime.py` | `CodingRuntime.__init__` | `test_runtime_run_lifecycle.py` |
 | Run 生命周期 | `core/coding/runtime.py` | `CodingRuntime.run_turn` | `test_runtime_run_lifecycle.py` |
-| Runtime 适配（v2） | `core/harness/runtime_adapter.py` | `SageHarnessRuntimeAdapter` | `test_runtime_adapter.py` |
+| Runtime 适配（v2） | `core/harness/runtime_adapter.py` | `SageHarnessRuntimeAdapter` | `test_harness_runtime_adapter.py` |
 | Agent 工厂（v2） | `packages/sage_harness/sage_harness/agents/factory.py` | `create_sage_agent` | `test_agent_factory.py` |
 | Agent 循环（legacy） | `core/coding/engine/engine.py` | `Engine.run_turn` | `test_engine.py`、`test_agent_loop.py` |
 | 模型输出解析 | `core/coding/engine/model_output.py` | `parse` | `test_model_output.py` |
 | Typed events | `core/coding/engine/events.py` | `RunEventBase` | `test_events.py` |
-| Middleware 链（v2） | `packages/sage_harness/sage_harness/middleware/builtin.py` | 10 个 middleware | `test_middleware_order.py` |
+| Middleware 链（v2） | `packages/sage_harness/sage_harness/middleware/registry.py` | 默认 8 个 middleware | `test_middleware_order.py` |
 | Prompt 构建 | `core/coding/context/manager.py` | `ContextManager.build` | `test_context_compact.py` |
 | Token 压力分级 | `core/coding/context/budget.py` | `ContextPolicy` | `test_context_budget.py` |
 | 不可变投影 | `core/coding/context/projection.py` | `ContextProjector` | `test_context_projection.py` |
@@ -53,18 +55,18 @@
 | Run coordinator | `core/coding/run_coordinator.py` | `RunCoordinator` | `test_run_coordinator.py` |
 | Knowledge store | `core/knowledge/store.py` | `KnowledgeStore` | `test_store.py` |
 | Knowledge retrieval | `core/knowledge/retrieval.py` | `retrieve` | `test_retrieval.py` |
-| Knowledge proposals | `core/knowledge/source_proposals/` | `KnowledgeSourceProposal` | `test_source_proposals.py` |
+| Knowledge proposals | `core/knowledge/source_proposals/` | `KnowledgeSourceProposal` | `source_proposals/test_service.py` |
 | Evidence bundle | `core/harness/evidence_bundle.py` | `CodingEvidenceBundlePort` | `test_evidence_bundle.py` |
 | 子代理 adapter | `core/harness/subagent_adapter.py` | `build_subagent_capability` | `test_subagent_adapter.py` |
 | Container sandbox | `core/harness/container_sandbox.py` | `ContainerSandbox` | `test_sandbox_contract.py` |
 | Local sandbox | `core/harness/local_sandbox.py` | `LocalWorkspaceSandbox` | `test_sandbox_contract.py` |
 | MCP adapter | `core/harness/mcp_adapter.py` | `McpAdapter` | `test_mcp_adapter.py` |
-| Event adapter | `core/harness/event_adapter.py` | `HarnessEventAdapter` | `test_event_adapter.py` |
+| Event adapter | `core/harness/event_adapter.py` | `HarnessEventAdapter` | `test_harness_runtime_adapter.py` |
 | Memory adapter | `core/harness/memory_adapter.py` | `MemoryAdapter` | `test_memory_adapter.py` |
 | Knowledge adapter | `core/harness/knowledge_adapter.py` | `KnowledgeAdapter` | `test_knowledge_adapter.py` |
-| Cloud auth | `core/cloud/auth/repository.py` | `CloudAuthRepository` | `test_cloud_auth.py` |
-| GitHub OAuth | `core/cloud/github/oauth.py` | `GitHubOAuth` | `test_github_oauth.py` |
-| Secret cipher | `core/cloud/security.py` | `CloudSecretCipher` | `test_security.py` |
+| Cloud auth | `core/cloud/auth/repository.py` | `CloudAuthRepository` | `auth/test_repository.py` |
+| GitHub OAuth | `core/cloud/github/oauth.py` | `GitHubOAuth` | `test_cloud_github_oauth_routes.py` |
+| Secret cipher | `core/cloud/security.py` | `CloudSecretCipher` | `test_cloud_model_provider_routes.py` |
 
 ## API
 
@@ -102,7 +104,7 @@ API 测试主入口：`tests/api/test_coding_routes.py`。
 | WebSocket | `frontend/src/stores/codingStream.ts` | 连接、代际、防竞态 |
 | API client | `frontend/src/api/coding.ts` | REST URL 和类型化请求 |
 | Event/API types | `frontend/src/types/api.ts` | 前端契约 |
-| 路由 | `frontend/src/composables/useCodingSessionRoute.ts` | URL 深链接 |
+| 路由 | `frontend/src/router/index.ts` | URL 深链接 |
 | 偏好 | `frontend/src/composables/useWorkbenchPreferences.ts` | localStorage 持久化 |
 | 侧栏 | `components/coding/sidebar/CodingSidebar.vue` | sessions/skills/memory/runs/MCP |
 | 输入框 | `components/coding/composer/CodingComposer.vue` | send/stop/skill/mode |
@@ -125,10 +127,10 @@ API 测试主入口：`tests/api/test_coding_routes.py`。
 | Agent factory | `packages/sage_harness/sage_harness/agents/factory.py` | create_sage_agent |
 | Runtime manager | `packages/sage_harness/sage_harness/runtime/manager.py` | HarnessRunManager |
 | Middleware registry | `packages/sage_harness/sage_harness/middleware/registry.py` | MiddlewareRegistry |
-| Builtin middleware | `packages/sage_harness/sage_harness/middleware/builtin.py` | 10 个 middleware |
+| Builtin middleware | `packages/sage_harness/sage_harness/middleware/builtin.py` | 默认 registry 所用实现 |
 | Durable context | `packages/sage_harness/sage_harness/middleware/durable_context.py` | DurableContextMiddleware |
-| Tool registry | `packages/sage_harness/sage_harness/tools/registry.py` | ToolRegistry |
-| Tool metadata | `packages/sage_harness/sage_harness/tools/metadata.py` | risk_level/permission_scope/... |
+| Capability registry | `packages/sage_harness/sage_harness/capabilities/registry.py` | CapabilityRegistry |
+| Deferred tools | `packages/sage_harness/sage_harness/deferred_tools.py` | 按需暴露工具 |
 | Sandbox base | `packages/sage_harness/sage_harness/sandbox/base.py` | SandboxPort Protocol |
 | MCP manager | `packages/sage_harness/sage_harness/mcp/manager.py` | McpManager |
 | Subagent contracts | `packages/sage_harness/sage_harness/subagents/contracts.py` | AgentProfile |
@@ -146,7 +148,7 @@ API 测试主入口：`tests/api/test_coding_routes.py`。
 | `evals/coding/metrics.py` | 聚合指标 |
 | `evals/coding/report.py` | HTML 报告 |
 | `tests/evals/test_benchmark.py` | Benchmark 自身的回归测试 |
-| `evals/knowledge/benchmark.py` | Knowledge 检索 benchmark |
+| `evals/knowledge_golden_queries.json` | Knowledge 检索 golden queries |
 
 ## 常见问题快速定位
 
@@ -172,9 +174,9 @@ API 测试主入口：`tests/api/test_coding_routes.py`。
 | 系统 | 回答的问题 | 当前阶段 | 源码 |
 | --- | --- | --- | --- |
 | Durable Memory | 用户明确要求 Sage 长期记住什么 | V7 SQLite revisioned | `core/coding/memory/` |
-| Knowledge RAG | 当前问题应该检索哪些知识片段 | V7 PostgreSQL + pgvector + RRF | `core/knowledge/` |
+| Knowledge 检索 | 当前问题应该检索哪些知识片段 | SQLite FTS5 + hashing baseline + RRF | `core/knowledge/` |
 | Context Summary | 当前任务怎么接着干 | V7 结构化 compaction | `core/coding/context/compact.py` |
-| AST 知识图谱 | 类、函数、文件之间如何结构化连接 | V8 规划 | - |
+| AST 知识图谱 | 类、函数、文件之间如何结构化连接 | 设计方向，未交付 | - |
 | Learning State | 用户对某个知识点掌握到什么程度 | V7 Practice profile 候选 | `core/knowledge/understanding.py` |
 
 Memory 不是 RAG，RAG 也不是知识图谱，Context Summary 不是 Memory。它们生命周期、信任等级、写入语义都不同。
@@ -183,6 +185,6 @@ Memory 不是 RAG，RAG 也不是知识图谱，Context Summary 不是 Memory。
 
 | 版本 | 目标 | 必须完成 | 明确不做 |
 | --- | --- | --- | --- |
-| V7-beta | 群友试用 | onboarding / 知识源导入 / 多用户隔离 | 生产稳定 |
-| V7 | 受邀用户云 workspace | auth / GitHub import / sandbox / quota / terminal | 读取用户未 push 的本地改动 |
-| V8 | 本地/云混合代码智能 | Local Companion / Code RAG / AST graph / 公网硬化 | 将 LLM 推断边冒充 AST 事实 |
+| V7 Beta | 本地使用与受控私测 | onboarding / 受控来源导入 / 生产 Sandbox 门禁 | 无条件公网开放 |
+| 公网候选版 | 受邀用户云 workspace | auth / tenant scope / sandbox / quota / recovery | 读取用户未授权的本地改动 |
+| 后续设计 | 本地/云混合代码智能 | Local Companion / Code RAG / AST graph | 将 LLM 推断边冒充 AST 事实 |
