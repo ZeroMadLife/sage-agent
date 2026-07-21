@@ -92,3 +92,11 @@ def test_bootstrap_repairs_macos_hidden_flags_for_editable_packages() -> None:
 
     assert 'if [[ "$(uname -s)" == "Darwin" ]]' in script
     assert 'chflags -R nohidden "${VENV_DIR}"' in script
+
+
+def test_dev_script_exports_repository_packages_to_reload_children() -> None:
+    script = DEV_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'REPOSITORY_PYTHONPATH="${ROOT_DIR}/packages/sage_harness:${ROOT_DIR}"' in script
+    assert 'export PYTHONPATH="${REPOSITORY_PYTHONPATH}:${PYTHONPATH}"' in script
+    assert "--reload-exclude '.venv/*'" in script
