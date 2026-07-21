@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ DEFAULT_GIT_BIN = shutil.which("git") or "/usr/bin/git"
 DEFAULT_GH_BIN = shutil.which("gh") or "gh"
 DEFAULT_SSH_BIN = shutil.which("ssh") or "/usr/bin/ssh"
 DEFAULT_CURL_BIN = shutil.which("curl") or "/usr/bin/curl"
+DEFAULT_OPENSSL_BIN = shutil.which("openssl") or "/usr/bin/openssl"
 
 
 class CanaryError(RuntimeError):
@@ -82,6 +84,7 @@ class CanaryConfig:
     gh_bin: str = DEFAULT_GH_BIN
     ssh_bin: str = DEFAULT_SSH_BIN
     curl_bin: str = DEFAULT_CURL_BIN
+    openssl_bin: str = DEFAULT_OPENSSL_BIN
     cc_connect_bin: str = "cc-connect"
     notify_project: str | None = None
     notify_session: str | None = None
@@ -202,6 +205,7 @@ def validate_config(config: CanaryConfig) -> None:
         ("gh", config.gh_bin),
         ("ssh", config.ssh_bin),
         ("curl", config.curl_bin),
+        ("openssl", config.openssl_bin),
         ("cc-connect", config.cc_connect_bin),
     ):
         path = Path(executable).expanduser()
@@ -233,6 +237,7 @@ def config_from_values(values: Mapping[str, object]) -> CanaryConfig:
         gh_bin=string("gh_bin", DEFAULT_GH_BIN),
         ssh_bin=string("ssh_bin", DEFAULT_SSH_BIN),
         curl_bin=string("curl_bin", DEFAULT_CURL_BIN),
+        openssl_bin=string("openssl_bin", DEFAULT_OPENSSL_BIN),
         cc_connect_bin=string("cc_connect_bin", "cc-connect"),
         notify_project=string("notify_project") or None,
         notify_session=string("notify_session") or None,
@@ -552,9 +557,48 @@ class CanaryController:
             ],
             timeout=20,
         )
-        return (
+        if (
             curl.returncode == 0
             and "<title>ZeroMadLife / Sage</title>" in curl.stdout
+        ):
+            return True
+        return self._openssl_public_http_healthy()
+
+    def _openssl_public_http_healthy(self) -> bool:
+        try:
+            parsed = urllib.parse.urlsplit(self.config.public_health_url)
+            hostname = parsed.hostname
+            port = parsed.port or 443
+        except ValueError:
+            return False
+        if parsed.scheme != "https" or not hostname:
+            return False
+        target = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        if any(character in target for character in "\r\n"):
+            return False
+        host_header = hostname if port == 443 else f"{hostname}:{port}"
+        request = (
+            f"GET {target} HTTP/1.1\r\n"
+            f"Host: {host_header}\r\n"
+            "Connection: close\r\n\r\n"
+        )
+        result = self.runner(
+            [
+                self.config.openssl_bin,
+                "s_client",
+                "-quiet",
+                "-connect",
+                f"{hostname}:{port}",
+                "-servername",
+                hostname,
+            ],
+            request,
+            20,
+        )
+        return (
+            result.returncode == 0
+            and result.stdout.startswith("HTTP/1.1 200 ")
+            and "<title>ZeroMadLife / Sage</title>" in result.stdout
         )
 
     def _wait_public_http_healthy(self, attempts: int = 30) -> bool:
@@ -941,6 +985,7 @@ def install_command(args: argparse.Namespace) -> int:
             "gh_bin": config.gh_bin,
             "ssh_bin": config.ssh_bin,
             "curl_bin": config.curl_bin,
+            "openssl_bin": config.openssl_bin,
             "cc_connect_bin": config.cc_connect_bin,
             "notify_project": config.notify_project,
             "notify_session": config.notify_session,

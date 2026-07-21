@@ -345,7 +345,11 @@ class DeployController:
             raise DeployError("部署 Docker 不是 rootless 模式")
 
         free_before = shutil.disk_usage(self.config.repo_root).free
-        self._run(["docker", "builder", "prune", "--force"], label="清理构建缓存", timeout=600)
+        self._run(
+            ["docker", "builder", "prune", "--force", "--filter", "until=168h"],
+            label="清理过期构建缓存",
+            timeout=600,
+        )
         self._run(["docker", "image", "prune", "--force"], label="清理悬空镜像", timeout=300)
 
         state = self._load_state()

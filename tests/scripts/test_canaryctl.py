@@ -52,6 +52,7 @@ def _config(tmp_path: Path, **overrides: object) -> CanaryConfig:
         "gh_bin": "/usr/bin/false",
         "ssh_bin": "/usr/bin/env",
         "curl_bin": "/bin/echo",
+        "openssl_bin": "/usr/bin/true",
         "cc_connect_bin": "/usr/bin/printf",
         "notify_project": "sage",
         "notify_session": "feishu:test",
@@ -258,7 +259,11 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
 
 
 def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
-    config = _config(tmp_path, curl_bin="/usr/bin/false")
+    config = _config(
+        tmp_path,
+        curl_bin="/usr/bin/false",
+        openssl_bin="/usr/bin/false",
+    )
     healthy = True
     notifications: list[str] = []
 
@@ -355,6 +360,64 @@ def test_public_https_wait_allows_initial_certificate_issuance(
 
     assert controller._wait_public_http_healthy() is True
     assert sleeps == [1, 1]
+
+
+def test_public_https_probe_falls_back_to_openssl_http_request(tmp_path: Path) -> None:
+    calls: list[tuple[list[str], str | None, int]] = []
+
+    def runner(command, input_text, timeout):
+        calls.append((list(command), input_text, timeout))
+        if command[0] == "/usr/bin/false":
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if command[0] == "/usr/bin/true":
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "HTTP/1.1 200 OK\r\n\r\n<title>ZeroMadLife / Sage</title>",
+                    "stderr": "",
+                },
+            )()
+        raise AssertionError(command)
+
+    controller = CanaryController(
+        _config(
+            tmp_path,
+            curl_bin="/usr/bin/false",
+            openssl_bin="/usr/bin/true",
+            public_health_url="https://sagecompanion.top/path?q=1",
+        ),
+        runner=runner,
+        public_http_probe=lambda _url: False,
+    )
+
+    assert controller._public_http_healthy() is True
+    openssl_call = next(call for call in calls if call[0][0] == "/usr/bin/true")
+    assert openssl_call[0] == [
+        "/usr/bin/true",
+        "s_client",
+        "-quiet",
+        "-connect",
+        "sagecompanion.top:443",
+        "-servername",
+        "sagecompanion.top",
+    ]
+    assert openssl_call[1] == (
+        "GET /path?q=1 HTTP/1.1\r\n"
+        "Host: sagecompanion.top\r\n"
+        "Connection: close\r\n\r\n"
+    )
+    assert openssl_call[2] == 20
+
+
+def test_public_https_openssl_probe_rejects_invalid_port(tmp_path: Path) -> None:
+    controller = CanaryController(
+        _config(tmp_path, public_health_url="https://sagecompanion.top:invalid/"),
+        runner=lambda *_args, **_kwargs: pytest.fail("runner must not be called"),
+    )
+
+    assert controller._openssl_public_http_healthy() is False
 
 
 def test_run_once_reuses_proxy_free_probe_after_deploy(tmp_path: Path) -> None:

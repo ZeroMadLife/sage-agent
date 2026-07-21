@@ -233,7 +233,14 @@ def test_cleanup_removes_only_rebuildable_data_and_retains_release_images(
 
     assert result["removed_sage_images"] == 2
     assert result["volumes"] == "untouched"
-    assert ["docker", "builder", "prune", "--force"] in commands
+    assert [
+        "docker",
+        "builder",
+        "prune",
+        "--force",
+        "--filter",
+        "until=168h",
+    ] in commands
     assert ["docker", "image", "prune", "--force"] in commands
     remove = next(
         command for command in commands if command[:3] == ["docker", "image", "rm"]
