@@ -2,9 +2,102 @@
 
 > 本章定义 Sage 下一阶段要达到的分层目标：参考 CodeBuddy / WorkBuddy 的闭环思路，结合 Sage 已有 Harness、Knowledge、MCP、Timeline 能力，形成“规范输入 → 约束执行 → 外部数据 → 外部能力 → 生成反馈”的完整系统。
 
-![Sage 目标架构五层图](assets/sage-target-architecture-5layers.png)
+![Sage 五层架构封面](assets/sage-five-layer-cover.png)
 
-![Sage 五层反馈闭环](assets/sage-five-layer-feedback-loop.png)
+**图 1：Sage 五层目标架构**
+
+```mermaid
+flowchart TB
+    classDef l1 fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef l2 fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a8a
+    classDef l3 fill:#d1fae5,stroke:#059669,stroke-width:2px,color:#064e3b
+    classDef l4 fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#4c1d95
+    classDef l5 fill:#ffe4e6,stroke:#e11d48,stroke-width:2px,color:#881337
+
+    subgraph L1["Layer 1 · 输入层（规范输入）"]
+        direction LR
+        L1a["Spec 规范\nrequirements / task / acceptance"]
+        L1b["Grill 对齐\n需求澄清问题流"]
+        L1c["自然语言指令"]
+        L1d["代码 / 笔记上下文\nsurface_context / timeline"]
+    end
+
+    subgraph L2["Layer 2 · Harness 约束层（核心）"]
+        direction LR
+        L2a["Rules 硬红线\n.sage/rules"]
+        L2b["Skills 软流程\nskill registry"]
+        L2c["Tools 可执行动作\nbefore/execute/after"]
+        L2d["上下文压缩\nbudget / compact"]
+        L2e["记忆 / Dream\nproposal-only"]
+        L2f["审批 / Policy\n五道门"]
+        L2g["Plan / Agent 模式\n规划与执行分离"]
+    end
+
+    subgraph L3["Layer 3 · 外部数据层"]
+        direction LR
+        L3a["Knowledge RAG"]
+        L3b["GitHub 仓库"]
+        L3c["Obsidian 笔记"]
+        L3d["Wiki / Citation"]
+        L3e["Timeline 证据"]
+    end
+
+    subgraph L4["Layer 4 · 外部能力层"]
+        direction LR
+        L4a["MCP DB Schema"]
+        L4b["MCP API"]
+        L4c["MCP CI/CD"]
+        L4d["MCP Monitor"]
+        L4e["Web Search/Fetch"]
+        L4f["Sandbox\n安全执行"]
+    end
+
+    subgraph L5["Layer 5 · 生成与反馈层"]
+        direction TB
+        L5A["5A 生成：代码 / 单测 / 文档 / Diff"]
+        L5B["5B 反馈：可视化 · 指标 · 复盘 · 回写"]
+        L5A --> L5B
+    end
+
+    L1 --> L2
+    L2 --> L3
+    L3 --> L4
+    L4 --> L5A
+    L5B -. 回写规范 .-> L1
+    L5B -. 回写约束 .-> L2
+
+    class L1,L1a,L1b,L1c,L1d l1
+    class L2,L2a,L2b,L2c,L2d,L2e,L2f,L2g l2
+    class L3,L3a,L3b,L3c,L3d,L3e l3
+    class L4,L4a,L4b,L4c,L4d,L4e,L4f l4
+    class L5,L5A,L5B l5
+```
+
+**图 2：Sage 五层反馈闭环**
+
+```mermaid
+flowchart LR
+    classDef node fill:#fff,stroke:#374151,stroke-width:2px,color:#111827
+    classDef feedback fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f,stroke-dasharray: 5 5
+
+    L1["Layer 1 输入层\n规范输入\nSpec · Grill · 自然语言 · 上下文"]
+    L2["Layer 2 Harness 约束层\nRules · Skills · Tools\n压缩 · 记忆 · 审批 · Plan"]
+    L3["Layer 3 外部数据层\nKnowledge RAG · GitHub\nObsidian · Wiki · Timeline"]
+    L4["Layer 4 外部能力层\nMCP DB/API/CI/Monitor\nWeb Search · Sandbox"]
+    L5A["Layer 5A 生成\n代码 · 单测\n文档 · Diff"]
+    L5B["Layer 5B 反馈\n可视化 · 指标\n复盘 · 回写"]
+
+    L1 -->|"规范如何进入"| L2
+    L2 -->|"系统如何约束 Agent"| L3
+    L3 -->|"Agent 如何拿到数据"| L4
+    L4 -->|"Agent 如何拿到能力"| L5A
+    L5A -->|"产出代码/测试/文档"| L5B
+    L5B -.->|"回写优化规范"| L1
+    L5B -.->|"回写优化约束"| L2
+
+    class L1,L2,L3,L4,L5A,L5B node
+    class L5B feedback
+```
 
 ## 1. 为什么要重画分层
 

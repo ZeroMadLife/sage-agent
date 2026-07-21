@@ -1,0 +1,23 @@
+%% Sage 五层反馈闭环图 - 替换原 grok 乱码 PNG
+%% 强调五层之间的循环反馈关系
+flowchart LR
+    classDef node fill:#fff,stroke:#374151,stroke-width:2px,color:#111827
+    classDef feedback fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f,stroke-dasharray: 5 5
+
+    L1["Layer 1 输入层\n规范输入\nSpec · Grill · 自然语言 · 上下文"]
+    L2["Layer 2 Harness 约束层\nRules · Skills · Tools\n压缩 · 记忆 · 审批 · Plan"]
+    L3["Layer 3 外部数据层\nKnowledge RAG · GitHub\nObsidian · Wiki · Timeline"]
+    L4["Layer 4 外部能力层\nMCP DB/API/CI/Monitor\nWeb Search · Sandbox"]
+    L5A["Layer 5A 生成\n代码 · 单测\n文档 · Diff"]
+    L5B["Layer 5B 反馈\n可视化 · 指标\n复盘 · 回写"]
+
+    L1 -->|"规范如何进入"| L2
+    L2 -->|"系统如何约束 Agent"| L3
+    L3 -->|"Agent 如何拿到数据"| L4
+    L4 -->|"Agent 如何拿到能力"| L5A
+    L5A -->|"产出代码/测试/文档"| L5B
+    L5B -.->|"回写优化规范"| L1
+    L5B -.->|"回写优化约束"| L2
+
+    class L1,L2,L3,L4,L5A,L5B node
+    class L5B feedback
