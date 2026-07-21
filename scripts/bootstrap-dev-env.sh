@@ -41,6 +41,12 @@ echo "Installing Sage Python dependencies..."
 # editable packages disappear even though their dist-info metadata is present.
 if [[ "$(uname -s)" == "Darwin" ]]; then
   chflags -R nohidden "${VENV_DIR}"
+  # Python 3.12 skips hidden .pth files on macOS. uv creates editable-package
+  # path files in site-packages, so clear the flag on the files themselves as
+  # well instead of relying only on a recursive directory flag update.
+  while IFS= read -r -d '' path_file; do
+    chflags nohidden "${path_file}"
+  done < <(find "${VENV_DIR}" -type f -name '*.pth' -print0)
 fi
 
 "${VENV_DIR}/bin/python" - <<'PY'

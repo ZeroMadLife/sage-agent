@@ -11,6 +11,13 @@ FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 API_TARGET="${VITE_API_PROXY_TARGET:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
 PYTHON_BIN="${SAGE_PYTHON:-${ROOT_DIR}/.venv/bin/python}"
+REPOSITORY_PYTHONPATH="${ROOT_DIR}/packages/sage_harness:${ROOT_DIR}"
+
+if [[ -n "${PYTHONPATH:-}" ]]; then
+  export PYTHONPATH="${REPOSITORY_PYTHONPATH}:${PYTHONPATH}"
+else
+  export PYTHONPATH="${REPOSITORY_PYTHONPATH}"
+fi
 
 BACKEND_PID=""
 FRONTEND_PID=""
@@ -155,6 +162,7 @@ echo "Starting backend: http://${BACKEND_HOST}:${BACKEND_PORT}"
   --host "${BACKEND_HOST}" \
   --port "${BACKEND_PORT}" \
   --reload \
+  --reload-exclude '.venv/*' \
   --env-file "${ENV_FILE}" &
 BACKEND_PID="$!"
 
