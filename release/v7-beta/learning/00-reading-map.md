@@ -97,6 +97,13 @@
 用本章建立 LangChain 抽象、LangGraph state/checkpointer 和 middleware 的协作模型，再回到
 Sage adapter 验证这些框架概念如何映射到真实产品运行时。
 
+### 第六遍：目标架构与团队 Harness
+
+15. [Sage 五层目标架构](15-sage-five-layer-target-architecture.md)
+
+重点看规范输入、Harness 约束、数据/能力、生成与反馈回写如何组成闭环，以及如何对齐
+CodeBuddy / WorkBuddy 的分层思路。
+
 ## 一条主调用链
 
 ```text
