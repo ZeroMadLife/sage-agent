@@ -538,7 +538,32 @@ class CanaryController:
             ],
             timeout=20,
         )
-        return curl.returncode == 0
+        if curl.returncode == 0:
+            return True
+        return self._remote_loopback_http_healthy()
+
+    def _remote_loopback_http_healthy(self) -> bool:
+        result = self._ssh(
+            [
+                "curl",
+                "--noproxy",
+                "*",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "15",
+                "http://127.0.0.1:8080/health",
+            ],
+            timeout=20,
+        )
+        if result.returncode != 0:
+            return False
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and payload.get("status") == "ok"
 
     def _public_http_healthy(self) -> bool:
         if self.public_http_probe(self.config.public_health_url):

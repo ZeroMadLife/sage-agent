@@ -349,6 +349,58 @@ def test_availability_falls_back_to_proxy_free_curl(tmp_path: Path) -> None:
     assert curl[curl.index("--noproxy") + 1] == "*"
 
 
+def test_private_https_probe_falls_back_to_authenticated_loopback(tmp_path: Path) -> None:
+    calls: list[tuple[list[str], str | None, int]] = []
+
+    def runner(command, input_text, timeout):
+        calls.append((list(command), input_text, timeout))
+        if command[0] == "/usr/bin/false":
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if command[0] == "/usr/bin/env":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": '{"status":"ok"}', "stderr": ""},
+            )()
+        raise AssertionError(command)
+
+    controller = CanaryController(
+        _config(tmp_path, curl_bin="/usr/bin/false"),
+        runner=runner,
+        http_probe=lambda _url: False,
+    )
+
+    assert controller._http_healthy() is True
+    ssh_call = next(call for call in calls if call[0][0] == "/usr/bin/env")
+    assert ssh_call[1] == (
+        "set -eu\n"
+        "curl --noproxy '*' --fail --silent --show-error --max-time 15 "
+        "http://127.0.0.1:8080/health"
+    )
+    assert ssh_call[2] == 20
+
+
+def test_private_loopback_probe_rejects_unexpected_payload(tmp_path: Path) -> None:
+    def runner(command, input_text, timeout):
+        if command[0] == "/usr/bin/false":
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
+        if command[0] == "/usr/bin/env":
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""},
+            )()
+        raise AssertionError(command)
+
+    controller = CanaryController(
+        _config(tmp_path, curl_bin="/usr/bin/false"),
+        runner=runner,
+        http_probe=lambda _url: False,
+    )
+
+    assert controller._http_healthy() is False
+
+
 def test_public_https_wait_allows_initial_certificate_issuance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
