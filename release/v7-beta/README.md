@@ -9,6 +9,7 @@
 
 | 文档 | 适合何时阅读 | 回答的问题 |
 | --- | --- | --- |
+| [SHOWCASE](SHOWCASE.md) | 3 分钟了解项目 | Sage 是什么，技术含量在哪里 |
 | [CHANGELOG](CHANGELOG.md) | 先了解版本变化 | V7 Beta 改了什么 |
 | [REVIEW](REVIEW.md) | 评估架构与风险 | 为什么这样设计，边界在哪里 |
 | [TESTING](TESTING.md) | 准备运行或验收 | 如何复现和验证 |

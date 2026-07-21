@@ -93,24 +93,18 @@ Harness 2.0 是新会话的默认 runtime profile。开发机默认使用 `local
 
 ```mermaid
 flowchart TB
-    UI[Vue 3 + Pinia] -->|REST + WebSocket| API[FastAPI]
-    API --> HOME[Assistant Home]
-    API --> CHAT[Chat Harness]
-    API --> KNOWLEDGE[Knowledge Engine]
-    API --> CLOUD[Cloud Control Plane]
-
-    CHAT --> RUNTIME[sage_harness runtime]
-    RUNTIME --> MID[Middleware / Skills / MCP]
-    RUNTIME --> PRACTICE[Practice Engine]
-    RUNTIME --> EVIDENCE[Timeline / Artifact / Usage]
-
-    PRACTICE --> WORKSPACE[Local Workspace or Container Sandbox]
-    KNOWLEDGE --> SOURCES[Source Snapshots / Wiki Proposals]
-    KNOWLEDGE --> RETRIEVAL[Hybrid Retrieval / Citations]
-
-    API --> POSTGRES[(PostgreSQL / Redis cloud and job foundation)]
-    API --> REDIS[(Redis Streams)]
-    RUNTIME --> SQLITE[(SQLite runtime and local Knowledge stores)]
+    subgraph CONTROL[控制面]
+        UI[Vue 3 + Pinia] -->|REST + WebSocket| API[FastAPI] --> RUNTIME[CodingRuntime / HarnessRuntimeAdapter]
+        RUNTIME --> ENGINE[Engine / LangGraph create_agent] --> TOOLS[ToolExecutor / Middleware]
+    end
+    subgraph STATE[状态面]
+        SESSION[Session] --> MEMORY[Memory] --> KNOWLEDGE[KnowledgeStore] --> CHECKPOINT[Checkpoint] --> SUBAGENT[Subagent] --> TODO[Todo]
+    end
+    subgraph EVIDENCE[证据面]
+        TIMELINE[Timeline SQLite] --> RUNSTORE[RunStore trace] --> DIFF[Diff artifact] --> EVAL[Benchmark / Metrics]
+    end
+    RUNTIME --> SESSION
+    TOOLS --> TIMELINE
 ```
 
 通用 Harness 作为独立 Python package 维护在 `packages/sage_harness/`。产品层负责将用户、
