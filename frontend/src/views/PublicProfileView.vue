@@ -36,6 +36,8 @@ const question = ref('')
 const activeSection = ref('home')
 const activeWork = ref<string | null>(null)
 const isAnswering = ref(false)
+const motionReady = ref(false)
+const scrollProgress = ref(0)
 
 const workItems = [
   {
@@ -200,29 +202,68 @@ function openSource(source: PublicAgentSource) {
 }
 
 let sectionObserver: IntersectionObserver | null = null
+let revealObserver: IntersectionObserver | null = null
+let scrollFrame: number | null = null
+
+function updateScrollProgress() {
+  if (scrollFrame !== null) return
+  scrollFrame = window.requestAnimationFrame(() => {
+    const scrollable = document.documentElement.scrollHeight - window.innerHeight
+    scrollProgress.value = scrollable > 0 ? Math.min(window.scrollY / scrollable, 1) : 0
+    scrollFrame = null
+  })
+}
 
 onMounted(() => {
-  if (typeof IntersectionObserver === 'undefined') return
-  sectionObserver = new IntersectionObserver(
-    (entries) => {
-      const visible = entries
-        .filter((entry) => entry.isIntersecting)
-        .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
-      if (visible?.target.id) activeSection.value = visible.target.id
-    },
-    { rootMargin: '-18% 0px -64% 0px', threshold: [0.05, 0.2, 0.5] },
-  )
-  for (const section of document.querySelectorAll<HTMLElement>('#work, #path, #writing')) {
-    sectionObserver.observe(section)
+  window.addEventListener('scroll', updateScrollProgress, { passive: true })
+  window.addEventListener('resize', updateScrollProgress)
+  updateScrollProgress()
+
+  if (typeof IntersectionObserver !== 'undefined') {
+    sectionObserver = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0]
+        if (visible?.target.id) activeSection.value = visible.target.id
+      },
+      { rootMargin: '-18% 0px -64% 0px', threshold: [0.05, 0.2, 0.5] },
+    )
+    for (const section of document.querySelectorAll<HTMLElement>('#work, #path, #writing')) {
+      sectionObserver.observe(section)
+    }
+
+    revealObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue
+          entry.target.classList.add('is-visible')
+          revealObserver?.unobserve(entry.target)
+        }
+      },
+      { rootMargin: '0px 0px -10% 0px', threshold: 0.08 },
+    )
+    for (const element of document.querySelectorAll<HTMLElement>('[data-reveal]')) {
+      revealObserver.observe(element)
+    }
   }
+
+  window.requestAnimationFrame(() => { motionReady.value = true })
 })
 
-onBeforeUnmount(() => sectionObserver?.disconnect())
+onBeforeUnmount(() => {
+  sectionObserver?.disconnect()
+  revealObserver?.disconnect()
+  window.removeEventListener('scroll', updateScrollProgress)
+  window.removeEventListener('resize', updateScrollProgress)
+  if (scrollFrame !== null) window.cancelAnimationFrame(scrollFrame)
+})
 </script>
 
 <template>
-  <div class="public-profile">
+  <div class="public-profile" :class="{ 'is-motion-ready': motionReady }">
     <header class="public-header">
+      <span class="reading-progress" aria-hidden="true" :style="{ transform: `scaleX(${scrollProgress})` }"></span>
       <div class="public-header__inner">
         <button class="public-brand" type="button" @click="selectSection('home')">
           <span class="brand-mark"><Sparkles :size="15" /></span>
@@ -230,9 +271,9 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
         </button>
 
         <nav aria-label="公开站点导航">
-          <button type="button" data-section="work" :class="{ active: activeSection === 'work' }" @click="selectSection('work')">项目</button>
-          <button type="button" data-section="path" :class="{ active: activeSection === 'path' }" @click="selectSection('path')">成长轨迹</button>
-          <button type="button" data-section="writing" :class="{ active: activeSection === 'writing' }" @click="selectSection('writing')">工程笔记</button>
+          <button type="button" data-section="work" :class="{ active: activeSection === 'work' }" :aria-current="activeSection === 'work' ? 'location' : undefined" @click="selectSection('work')">项目</button>
+          <button type="button" data-section="path" :class="{ active: activeSection === 'path' }" :aria-current="activeSection === 'path' ? 'location' : undefined" @click="selectSection('path')">成长轨迹</button>
+          <button type="button" data-section="writing" :class="{ active: activeSection === 'writing' }" :aria-current="activeSection === 'writing' ? 'location' : undefined" @click="selectSection('writing')">工程笔记</button>
         </nav>
 
         <button class="ask-sage" type="button" @click="openAgent()">
@@ -245,6 +286,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
       <section id="top" class="public-hero">
         <div class="hero-inner">
           <div class="hero-copy">
+            <p class="hero-kicker">PUBLIC ENGINEERING PORTFOLIO · 2026</p>
             <h1>ZeroMadLife <em>/ Sage</em></h1>
             <p class="hero-positioning">Personal AI Learning Companion</p>
             <p class="hero-support">把目标、知识、真实实践和可验证成长连接成一个可恢复的个人学习系统。</p>
@@ -296,7 +338,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
             <p>面向程序员与技术学习者：由目标进入主对话，用 Knowledge 组织上下文，在 Practice 中验证，再由 Evidence 约束长期沉淀。</p>
           </header>
 
-          <div class="project-layout">
+          <div class="project-layout" data-reveal>
             <div class="project-copy">
               <span class="project-name"><Target :size="16" />Sage / Personal AI Learning Companion</span>
               <h3>目标驱动，证据收口。</h3>
@@ -323,11 +365,11 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
             </figure>
           </div>
 
-          <div class="evidence-heading">
+          <div class="evidence-heading" data-reveal>
             <span>ENGINEERING EVIDENCE</span>
             <strong>三条能追到代码与测试的判断</strong>
           </div>
-          <div class="work-list">
+          <div class="work-list" data-reveal>
             <div v-for="item in workItems" :key="item.id" class="work-entry">
               <button
                 class="work-row"
@@ -347,24 +389,26 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
                 <span class="work-trace">{{ item.trace }}</span>
                 <ChevronDown :size="17" class="row-arrow" :class="{ expanded: activeWork === item.id }" />
               </button>
-              <section
-                v-if="activeWork === item.id"
-                :id="`work-evidence-${item.id}`"
-                class="work-evidence"
-                :data-work-evidence="item.id"
-              >
-                <div class="work-tags"><span v-for="tag in item.tags" :key="tag">{{ tag }}</span></div>
-                <dl>
-                  <div><dt>为什么做</dt><dd>{{ item.reason }}</dd></div>
-                  <div><dt>核心取舍</dt><dd>{{ item.decision }}</dd></div>
-                  <div><dt>怎么判断有效</dt><dd>{{ item.evidence }}</dd></div>
-                  <div><dt>当前边界</dt><dd>{{ item.boundary }}</dd></div>
-                </dl>
-                <footer>
-                  <a :href="item.href" target="_blank" rel="noreferrer">{{ item.linkLabel }} <ExternalLink :size="13" /></a>
-                  <button type="button" @click="openAgent(item.question)"><MessageCircle :size="13" />围绕这项提问</button>
-                </footer>
-              </section>
+              <Transition name="evidence-expand">
+                <section
+                  v-if="activeWork === item.id"
+                  :id="`work-evidence-${item.id}`"
+                  class="work-evidence"
+                  :data-work-evidence="item.id"
+                >
+                  <div class="work-tags"><span v-for="tag in item.tags" :key="tag">{{ tag }}</span></div>
+                  <dl>
+                    <div><dt>为什么做</dt><dd>{{ item.reason }}</dd></div>
+                    <div><dt>核心取舍</dt><dd>{{ item.decision }}</dd></div>
+                    <div><dt>怎么判断有效</dt><dd>{{ item.evidence }}</dd></div>
+                    <div><dt>当前边界</dt><dd>{{ item.boundary }}</dd></div>
+                  </dl>
+                  <footer>
+                    <a :href="item.href" target="_blank" rel="noreferrer">{{ item.linkLabel }} <ExternalLink :size="13" /></a>
+                    <button type="button" @click="openAgent(item.question)"><MessageCircle :size="13" />围绕这项提问</button>
+                  </footer>
+                </section>
+              </Transition>
             </div>
           </div>
         </div>
@@ -372,13 +416,13 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
       <section id="path" class="public-section path-section">
         <div class="section-inner">
-          <header class="section-heading compact">
+          <header class="section-heading compact" data-reveal>
             <span>02 / LEARNING PATH</span>
             <h2>成长轨迹</h2>
             <p>只记录已经形成的工程切片，不把路线图当成交付。</p>
           </header>
           <ol class="milestone-list">
-            <li v-for="(milestone, index) in milestones" :key="milestone.date + milestone.title">
+            <li v-for="(milestone, index) in milestones" :key="milestone.date + milestone.title" data-reveal :style="{ '--reveal-delay': `${index * 70}ms` }">
               <span class="milestone-marker"><Check v-if="index > 0" :size="14" /><CircleDot v-else :size="14" /></span>
               <div>
                 <time>{{ milestone.date }}</time>
@@ -393,13 +437,13 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
       <section id="writing" class="public-section notes-section">
         <div class="section-inner">
-          <header class="section-heading compact">
+          <header class="section-heading compact" data-reveal>
             <span>03 / ENGINEERING NOTES</span>
             <h2>工程笔记</h2>
             <p>短记录保留关键判断；实现、测试与边界仍以仓库为准。</p>
           </header>
           <div class="notes-list">
-            <article v-for="note in engineeringNotes" :key="note.date + note.title">
+            <article v-for="(note, index) in engineeringNotes" :key="note.date + note.title" data-reveal :style="{ '--reveal-delay': `${index * 55}ms` }">
               <time>{{ note.date }}</time>
               <span>{{ note.category }}</span>
               <div><h3>{{ note.title }}</h3><p>{{ note.text }}</p></div>
@@ -410,7 +454,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
       </section>
 
       <section class="ask-boundary" aria-labelledby="ask-boundary-title">
-        <div class="section-inner ask-boundary__inner">
+        <div class="section-inner ask-boundary__inner" data-reveal>
           <div>
             <span>ASK SAGE</span>
             <h2 id="ask-boundary-title">受限公开资料问答</h2>
@@ -438,65 +482,71 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
       </div>
     </footer>
 
-    <div v-if="drawerOpen" class="agent-layer">
-      <button class="agent-scrim" type="button" aria-label="关闭公开问答" @click="drawerOpen = false"></button>
-      <aside class="public-agent" role="dialog" aria-modal="true" aria-label="受限公开资料问答" @keydown.esc="drawerOpen = false">
-        <header>
-          <div class="agent-title">
-            <span class="agent-mark"><Sparkles :size="16" /></span>
-            <span><strong>Ask Sage</strong><small>受限公开资料问答</small></span>
-          </div>
-          <button class="icon-button" type="button" aria-label="关闭公开助手" title="关闭" @click="drawerOpen = false"><X :size="17" /></button>
-        </header>
-
-        <div class="agent-boundary">
-          <span><FileCheck2 :size="13" />已发布资料</span>
-          <span><LockKeyhole :size="13" />无私人数据</span>
-          <span><RotateCcw :size="13" />确定性回答</span>
-        </div>
-
-        <section class="agent-body" aria-live="polite">
-          <div v-for="(message, index) in agentMessages" :key="index" class="agent-message" :class="message.role">
-            <span>{{ message.role === 'sage' ? 'Sage' : '你' }}</span>
-            <p>{{ message.text }}</p>
-            <div v-if="message.sources?.length" class="agent-sources">
-              <strong>回答依据</strong>
-              <button
-                v-for="source in message.sources"
-                :key="source.id"
-                type="button"
-                class="agent-source"
-                :data-target="source.target"
-                @click="openSource(source)"
-              >
-                <span>{{ source.label }}</span>
-                <small>{{ source.detail }}</small>
-                <ArrowRight :size="13" />
-              </button>
+    <Transition name="agent-drawer">
+      <div v-if="drawerOpen" class="agent-layer">
+        <button class="agent-scrim" type="button" aria-label="关闭公开问答" @click="drawerOpen = false"></button>
+        <aside class="public-agent" role="dialog" aria-modal="true" aria-label="受限公开资料问答" @keydown.esc="drawerOpen = false">
+          <header>
+            <div class="agent-title">
+              <span class="agent-mark"><Sparkles :size="16" /></span>
+              <span><strong>Ask Sage</strong><small>受限公开资料问答</small></span>
             </div>
+            <button class="icon-button" type="button" aria-label="关闭公开助手" title="关闭" @click="drawerOpen = false"><X :size="17" /></button>
+          </header>
+
+          <div class="agent-boundary">
+            <span><FileCheck2 :size="13" />已发布资料</span>
+            <span><LockKeyhole :size="13" />无私人数据</span>
+            <span><RotateCcw :size="13" />确定性回答</span>
           </div>
-        </section>
 
-        <div class="agent-prompts">
-          <span>公开问题</span>
-          <button type="button" @click="openAgent('Sage 是做什么的？')">Sage 是做什么的？</button>
-          <button type="button" @click="openAgent('Harness 2.0 解决什么问题？')">Harness 如何恢复运行？</button>
-          <button type="button" @click="openAgent('Mastery Evidence 为什么不是模型自评？')">Mastery Evidence 如何成立？</button>
-        </div>
+          <section class="agent-body" aria-live="polite">
+            <div v-for="(message, index) in agentMessages" :key="index" class="agent-message" :class="message.role">
+              <span>{{ message.role === 'sage' ? 'Sage' : '你' }}</span>
+              <p>{{ message.text }}</p>
+              <div v-if="message.sources?.length" class="agent-sources">
+                <strong>回答依据</strong>
+                <button
+                  v-for="source in message.sources"
+                  :key="source.id"
+                  type="button"
+                  class="agent-source"
+                  :data-target="source.target"
+                  @click="openSource(source)"
+                >
+                  <span>{{ source.label }}</span>
+                  <small>{{ source.detail }}</small>
+                  <ArrowRight :size="13" />
+                </button>
+              </div>
+            </div>
+          </section>
 
-        <form class="agent-form" :aria-busy="isAnswering" @submit.prevent="answerQuestion">
-          <textarea v-model="question" rows="3" aria-label="询问公开资料" placeholder="询问公开的项目与方法…" :disabled="isAnswering"></textarea>
-          <button type="submit" aria-label="发送问题" title="发送问题" :disabled="isAnswering || !question.trim()"><Send :size="16" /></button>
-        </form>
-        <p class="agent-disclaimer">静态公开 corpus · CSP connect-src none</p>
-      </aside>
-    </div>
+          <div class="agent-prompts">
+            <span>公开问题</span>
+            <button type="button" @click="openAgent('Sage 是做什么的？')">Sage 是做什么的？</button>
+            <button type="button" @click="openAgent('Harness 2.0 解决什么问题？')">Harness 如何恢复运行？</button>
+            <button type="button" @click="openAgent('Mastery Evidence 为什么不是模型自评？')">Mastery Evidence 如何成立？</button>
+          </div>
+
+          <form class="agent-form" :aria-busy="isAnswering" @submit.prevent="answerQuestion">
+            <textarea v-model="question" rows="3" aria-label="询问公开资料" placeholder="询问公开的项目与方法…" :disabled="isAnswering"></textarea>
+            <button type="submit" aria-label="发送问题" title="发送问题" :disabled="isAnswering || !question.trim()"><Send :size="16" /></button>
+          </form>
+          <p class="agent-disclaimer">静态公开 corpus · CSP connect-src none</p>
+        </aside>
+      </div>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
 :global(html) { scroll-behavior: smooth; }
-:global(body) { background: #fff; }
+:global(body) {
+  background: #fff;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
 
 .public-profile {
   --public-ink: #182019;
@@ -508,16 +558,24 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   --public-green-dark: #255b3f;
   --public-green-soft: #edf4ef;
   --public-band: #f4f7f5;
-  --public-glint: #a9d4b5;
+  --public-font-display: ui-serif, "Iowan Old Style", Baskerville, "Songti SC", STSong, serif;
+  --public-font-body: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  --public-font-mono: "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
   min-height: 100dvh;
   overflow-x: clip;
   color: var(--public-ink);
   background: #fff;
-  font-family: var(--sage-font-sans);
+  font-family: var(--public-font-body);
+  font-synthesis: none;
 }
 
 .public-profile button,
 .public-profile textarea { font: inherit; }
+
+.public-profile :is(button, a, textarea):focus-visible {
+  outline: 2px solid #4c8a63;
+  outline-offset: 3px;
+}
 
 .section-inner,
 .public-header__inner,
@@ -535,16 +593,16 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   backdrop-filter: blur(12px);
 }
 
-.public-header::after {
+.reading-progress {
   position: absolute;
-  right: 0;
   bottom: -1px;
-  width: 20%;
+  left: 0;
+  width: 100%;
   height: 1px;
-  background: linear-gradient(90deg, transparent, rgb(75 139 99 / 72%), transparent);
-  content: '';
+  background: var(--public-green);
   pointer-events: none;
-  animation: public-signal-line 8s ease-in-out infinite;
+  transform-origin: left center;
+  transition: transform .12s linear;
 }
 
 .public-header__inner {
@@ -582,32 +640,6 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
 .brand-mark { border-radius: 50%; }
 
-.brand-mark,
-.ask-sage,
-.primary-action,
-.ask-boundary button {
-  position: relative;
-  overflow: hidden;
-  isolation: isolate;
-}
-
-.brand-mark::after,
-.ask-sage::after,
-.primary-action::after,
-.ask-boundary button::after {
-  position: absolute;
-  z-index: 0;
-  inset: -40% auto -40% -45%;
-  width: 30%;
-  background: linear-gradient(90deg, transparent, rgb(255 255 255 / 34%), transparent);
-  content: '';
-  pointer-events: none;
-  transform: skewX(-18deg) translateX(-260%);
-}
-
-.brand-mark::after { animation: public-mark-glint 7.5s ease-in-out infinite; }
-.brand-mark > svg { position: relative; z-index: 1; }
-
 .public-header nav { display: flex; align-items: center; gap: 32px; }
 .public-header nav button {
   min-height: 40px;
@@ -641,12 +673,6 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 .ask-sage:hover,
 .primary-action:hover,
 .ask-boundary button:hover { border-color: var(--public-green-dark); background: var(--public-green-dark); }
-.ask-sage:hover::after,
-.ask-sage:focus-visible::after,
-.primary-action:hover::after,
-.primary-action:focus-visible::after,
-.ask-boundary button:hover::after,
-.ask-boundary button:focus-visible::after { animation: public-action-glint .72s ease-out; }
 
 .public-hero { border-bottom: 1px solid var(--public-line); }
 .hero-inner {
@@ -657,26 +683,35 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   min-height: 714px;
   padding: 48px 0 56px;
 }
-.hero-copy { min-width: 0; animation: public-copy-reveal .72s cubic-bezier(.2, .72, .2, 1) both; }
+.hero-copy { min-width: 0; }
+.hero-copy > * { animation: public-copy-reveal .68s cubic-bezier(.2, .72, .2, 1) both; }
+.hero-copy > :nth-child(2) { animation-delay: .06s; }
+.hero-copy > :nth-child(3) { animation-delay: .12s; }
+.hero-copy > :nth-child(4) { animation-delay: .18s; }
+.hero-copy > :nth-child(5) { animation-delay: .24s; }
+.hero-copy > :nth-child(6) { animation-delay: .3s; }
+.hero-kicker {
+  margin: 0 0 18px;
+  color: var(--public-green);
+  font-family: var(--public-font-mono);
+  font-size: 10px;
+  font-weight: 650;
+}
 .hero-copy h1 {
   margin: 0;
+  font-family: var(--public-font-display);
   font-size: 64px;
+  font-weight: 600;
   line-height: 1.02;
   letter-spacing: 0;
 }
 .hero-copy h1 em {
-  color: #6f9877;
-  background: linear-gradient(100deg, #54745d 8%, #75a17f 40%, #cce8d3 50%, #75a17f 60%, #54745d 92%);
-  background-size: 260% 100%;
-  background-clip: text;
+  color: #5f8b69;
   font-style: normal;
-  font-weight: 650;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  animation: public-title-glint 9s ease-in-out infinite;
+  font-weight: 600;
 }
-.hero-positioning { margin: 12px 0 0; font-size: 28px; line-height: 1.25; letter-spacing: 0; }
-.hero-support { max-width: 570px; margin: 22px 0 0; color: var(--public-muted); font-size: 15px; line-height: 1.8; }
+.hero-positioning { margin: 15px 0 0; font-size: 26px; font-weight: 520; line-height: 1.3; letter-spacing: 0; }
+.hero-support { max-width: 570px; margin: 22px 0 0; color: var(--public-muted); font-size: 16px; line-height: 1.8; }
 .hero-actions { display: flex; align-items: center; gap: 21px; margin-top: 26px; }
 .hero-actions a,
 .inline-link {
@@ -691,7 +726,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 .hero-actions a:hover,
 .inline-link:hover { color: var(--public-ink); }
 
-.hero-evidence { margin-top: 34px; border-top: 1px solid var(--public-line); animation: public-copy-reveal .72s .18s cubic-bezier(.2, .72, .2, 1) both; }
+.hero-evidence { margin-top: 34px; border-top: 1px solid var(--public-line); }
 .hero-evidence__row {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr) auto;
@@ -703,15 +738,18 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   border: 0;
   border-bottom: 1px solid var(--public-line);
   color: var(--public-ink);
-  background: transparent;
+  background: linear-gradient(90deg, var(--public-green-soft) 0 3px, transparent 3px) no-repeat;
+  background-size: 0 100%;
   text-align: left;
+  transition: background-size .25s ease, padding .25s ease;
 }
-.hero-evidence__row > span:first-child { color: var(--evidence-accent); font-family: var(--sage-font-mono); font-size: 19px; }
+.hero-evidence__row > span:first-child { color: var(--evidence-accent); font-family: var(--public-font-mono); font-size: 19px; }
 .hero-evidence__row > span:nth-child(2) { display: grid; gap: 4px; }
 .hero-evidence__row strong { font-size: 14px; font-weight: 700; }
-.hero-evidence__row strong em { margin-left: 7px; color: var(--evidence-accent); font-family: var(--sage-font-mono); font-size: 11px; font-style: normal; font-weight: 500; }
-.hero-evidence__row small { color: var(--public-muted); font-size: 11px; line-height: 1.55; }
+.hero-evidence__row strong em { margin-left: 7px; color: var(--evidence-accent); font-family: var(--public-font-mono); font-size: 11px; font-style: normal; font-weight: 500; }
+.hero-evidence__row small { color: var(--public-muted); font-size: 12px; line-height: 1.6; }
 .hero-evidence__row > svg { color: var(--public-faint); transition: transform .18s ease, color .18s ease; }
+.hero-evidence__row:hover { padding-right: 8px; padding-left: 12px; background-size: 100% 100%; }
 .hero-evidence__row:hover > svg { color: var(--evidence-accent); transform: translateX(3px); }
 
 .hero-product {
@@ -722,20 +760,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   justify-content: center;
   min-width: 0;
   margin: 0;
-  animation: public-product-reveal .82s .08s cubic-bezier(.2, .72, .2, 1) both;
-}
-.hero-product::before,
-.product-preview::before {
-  position: absolute;
-  z-index: 2;
-  top: 0;
-  left: 0;
-  width: 22%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--public-glint), transparent);
-  content: '';
-  pointer-events: none;
-  animation: public-frame-glint 7.2s ease-in-out infinite;
+  animation: public-product-reveal .82s .18s cubic-bezier(.2, .72, .2, 1) both;
 }
 .hero-product img {
   display: block;
@@ -758,12 +783,12 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   border-radius: 0 0 4px 4px;
   color: var(--public-faint);
   background: #fff;
-  font-family: var(--sage-font-mono);
-  font-size: 9px;
+  font-family: var(--public-font-mono);
+  font-size: 10px;
 }
 .hero-product figcaption > span:first-child { display: grid; gap: 1px; }
-.hero-product figcaption strong { color: #344039; font-family: var(--sage-font-sans); font-size: 11px; }
-.hero-product figcaption small { color: var(--public-faint); font-family: var(--sage-font-sans); font-size: 9px; }
+.hero-product figcaption strong { color: #344039; font-family: var(--public-font-body); font-size: 12px; }
+.hero-product figcaption small { color: var(--public-faint); font-family: var(--public-font-body); font-size: 10px; }
 
 .public-section { scroll-margin-top: 68px; padding: 104px 0; border-bottom: 1px solid var(--public-line); }
 .section-heading {
@@ -777,12 +802,19 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 .evidence-heading > span,
 .ask-boundary__inner > div > span {
   color: var(--public-faint);
-  font-family: var(--sage-font-mono);
-  font-size: 10px;
+  font-family: var(--public-font-mono);
+  font-size: 11px;
 }
-.section-heading h2 { margin: 0; font-size: 43px; line-height: 1.16; letter-spacing: 0; }
-.section-heading > p { margin: 0; color: var(--public-muted); font-size: 12px; line-height: 1.75; }
-.section-heading.compact h2 { font-size: 36px; }
+.section-heading h2 {
+  margin: 0;
+  font-family: var(--public-font-display);
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+.section-heading > p { margin: 0; color: var(--public-muted); font-size: 14px; line-height: 1.8; }
+.section-heading.compact h2 { font-size: 38px; }
 
 .project-layout {
   display: grid;
@@ -792,32 +824,32 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 }
 .project-copy { max-width: 470px; }
 .project-name { display: inline-flex; align-items: center; gap: 7px; color: var(--public-green); font-size: 12px; font-weight: 650; }
-.project-copy h3 { margin: 18px 0 14px; font-size: 30px; line-height: 1.25; letter-spacing: 0; }
-.project-copy > p { margin: 0; color: var(--public-muted); font-size: 14px; line-height: 1.85; }
+.project-copy h3 { margin: 18px 0 14px; font-family: var(--public-font-display); font-size: 32px; font-weight: 600; line-height: 1.3; letter-spacing: 0; }
+.project-copy > p { margin: 0; color: var(--public-muted); font-size: 15px; line-height: 1.85; }
 .project-facts { margin: 30px 0 24px; border-top: 1px solid var(--public-line); }
 .project-facts div { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 14px; padding: 11px 0; border-bottom: 1px solid var(--public-line); }
-.project-facts dt { color: var(--public-faint); font-size: 10px; }
-.project-facts dd { margin: 0; color: #3f4b43; font-family: var(--sage-font-mono); font-size: 10px; }
+.project-facts dt { color: var(--public-faint); font-size: 11px; }
+.project-facts dd { margin: 0; color: #3f4b43; font-family: var(--public-font-mono); font-size: 11px; }
 
 .product-preview { position: relative; min-width: 0; margin: 0; overflow: hidden; padding: 9px 9px 0; border: 1px solid var(--public-line-strong); border-radius: 4px; background: #fff; box-shadow: 0 18px 42px rgb(38 68 48 / 8%); }
-.preview-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; color: var(--public-faint); font-size: 9px; }
+.preview-bar { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 32px; color: var(--public-faint); font-size: 10px; }
 .preview-bar > span { display: flex; gap: 4px; }
 .preview-bar i { width: 6px; height: 6px; border-radius: 50%; background: #b7c6bb; }
 .preview-bar i:first-child { background: #b86b5c; }
 .preview-bar i:nth-child(2) { background: #c49b46; }
 .preview-bar i:nth-child(3) { background: #659374; }
-.preview-bar strong { color: #465249; font-size: 10px; }
+.preview-bar strong { color: #465249; font-size: 11px; }
 .product-preview img { display: block; width: 100%; aspect-ratio: 16 / 9; border: 1px solid #e4e9e5; object-fit: cover; }
-.product-preview figcaption { display: flex; justify-content: space-between; gap: 12px; padding: 9px 1px 8px; color: var(--public-faint); font-family: var(--sage-font-mono); font-size: 9px; }
+.product-preview figcaption { display: flex; justify-content: space-between; gap: 12px; padding: 9px 1px 8px; color: var(--public-faint); font-family: var(--public-font-mono); font-size: 10px; }
 
 .evidence-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-top: 86px; padding-bottom: 15px; border-bottom: 1px solid var(--public-line-strong); }
-.evidence-heading strong { font-size: 13px; }
+.evidence-heading strong { font-size: 14px; }
 .work-list { border-bottom: 1px solid var(--public-line-strong); }
 .work-entry { border-bottom: 1px solid var(--public-line); }
 .work-entry:last-child { border-bottom: 0; }
 .work-row {
   display: grid;
-  grid-template-columns: 54px 150px minmax(0, 1fr) 160px 24px;
+  grid-template-columns: 54px 150px minmax(0, 1fr) minmax(220px, .75fr) 150px 24px;
   align-items: center;
   gap: 16px;
   width: 100%;
@@ -828,26 +860,26 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   background: transparent;
   text-align: left;
 }
-.work-index { color: var(--evidence-accent); font-family: var(--sage-font-mono); font-size: 17px; }
+.work-index { color: var(--evidence-accent); font-family: var(--public-font-mono); font-size: 17px; }
 .work-main { display: contents; }
-.work-main > span { color: var(--public-muted); font-size: 11px; }
-.work-main > strong { font-size: 17px; }
-.work-main > small { color: var(--public-muted); font-size: 11px; line-height: 1.6; }
-.work-trace { color: var(--evidence-accent); font-family: var(--sage-font-mono); font-size: 10px; text-align: right; }
+.work-main > span { color: var(--public-muted); font-size: 12px; }
+.work-main > strong { font-size: 18px; }
+.work-main > small { color: var(--public-muted); font-size: 13px; line-height: 1.65; }
+.work-trace { color: var(--evidence-accent); font-family: var(--public-font-mono); font-size: 11px; text-align: right; }
 .row-arrow { color: var(--public-faint); transition: transform .18s ease, color .18s ease; }
 .row-arrow.expanded { color: var(--evidence-accent); transform: rotate(180deg); }
 .work-row:hover .row-arrow { color: var(--evidence-accent); }
 .work-evidence { padding: 2px 0 30px 70px; }
 .work-tags { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
-.work-tags span { padding: 4px 7px; border: 1px solid var(--public-line); border-radius: 3px; color: var(--public-muted); background: var(--public-band); font-family: var(--sage-font-mono); font-size: 9px; }
+.work-tags span { padding: 4px 7px; border: 1px solid var(--public-line); border-radius: 3px; color: var(--public-muted); background: var(--public-band); font-family: var(--public-font-mono); font-size: 10px; }
 .work-evidence dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--public-line); }
 .work-evidence dl > div { padding: 17px 28px 17px 0; border-bottom: 1px solid var(--public-line); }
 .work-evidence dl > div:nth-child(even) { padding-right: 0; padding-left: 28px; border-left: 1px solid var(--public-line); }
-.work-evidence dt { color: var(--public-faint); font-size: 10px; font-weight: 650; }
-.work-evidence dd { margin: 7px 0 0; color: #465249; font-size: 12px; line-height: 1.75; }
+.work-evidence dt { color: var(--public-faint); font-size: 11px; font-weight: 650; }
+.work-evidence dd { margin: 7px 0 0; color: #465249; font-size: 14px; line-height: 1.75; }
 .work-evidence footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding-top: 15px; }
 .work-evidence footer a,
-.work-evidence footer button { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: var(--public-green); background: transparent; font-size: 11px; font-weight: 650; text-decoration: none; }
+.work-evidence footer button { display: inline-flex; align-items: center; gap: 6px; padding: 0; border: 0; color: var(--public-green); background: transparent; font-size: 12px; font-weight: 650; text-decoration: none; }
 
 .path-section { background: var(--public-band); }
 .milestone-list { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; }
@@ -860,37 +892,26 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 .milestone-list strong,
 .milestone-list p,
 .milestone-list small { display: block; }
-.milestone-list time { color: var(--public-faint); font-family: var(--sage-font-mono); font-size: 9px; }
-.milestone-list strong { margin-top: 8px; font-size: 14px; }
-.milestone-list p { min-height: 58px; margin: 7px 0 0; color: var(--public-muted); font-size: 11px; line-height: 1.65; }
-.milestone-list small { margin-top: 9px; color: var(--public-green); font-size: 10px; }
+.milestone-list time { color: var(--public-faint); font-family: var(--public-font-mono); font-size: 10px; }
+.milestone-list strong { margin-top: 8px; font-size: 16px; }
+.milestone-list p { min-height: 66px; margin: 7px 0 0; color: var(--public-muted); font-size: 13px; line-height: 1.7; }
+.milestone-list small { margin-top: 9px; color: var(--public-green); font-size: 11px; }
 
 .notes-list { border-top: 1px solid var(--public-line-strong); border-bottom: 1px solid var(--public-line-strong); }
 .notes-list article { display: grid; grid-template-columns: 64px 130px minmax(0, 1fr) auto; align-items: start; gap: 22px; padding: 23px 0; border-bottom: 1px solid var(--public-line); }
 .notes-list article:last-child { border-bottom: 0; }
-.notes-list time { color: var(--public-faint); font-family: var(--sage-font-mono); font-size: 10px; }
-.notes-list article > span { color: var(--public-green); font-family: var(--sage-font-mono); font-size: 10px; }
-.notes-list h3 { margin: 0; font-size: 15px; }
-.notes-list p { max-width: 780px; margin: 6px 0 0; color: var(--public-muted); font-size: 12px; line-height: 1.7; }
+.notes-list time { color: var(--public-faint); font-family: var(--public-font-mono); font-size: 11px; }
+.notes-list article > span { color: var(--public-green); font-family: var(--public-font-mono); font-size: 11px; }
+.notes-list h3 { margin: 0; font-size: 17px; }
+.notes-list p { max-width: 780px; margin: 6px 0 0; color: var(--public-muted); font-size: 14px; line-height: 1.75; }
 .notes-list svg { color: var(--public-faint); }
 
 .ask-boundary { position: relative; overflow: hidden; padding: 50px 0; border-bottom: 1px solid var(--public-line); background: #182019; color: #fff; }
-.ask-boundary::before {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 26%;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, rgb(151 205 167 / 75%), transparent);
-  content: '';
-  pointer-events: none;
-  animation: public-frame-glint 8.5s 1.4s ease-in-out infinite;
-}
 .ask-boundary__inner { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr) auto; align-items: center; gap: 54px; }
 .ask-boundary__inner > div > span { color: #8fa99a; }
-.ask-boundary h2 { margin: 7px 0 0; font-size: 25px; }
-.ask-boundary p { max-width: 470px; margin: 9px 0 0; color: #b5c1b9; font-size: 12px; line-height: 1.7; }
-.ask-boundary ul { display: grid; gap: 8px; margin: 0; padding: 0; color: #c5d0c8; font-size: 11px; list-style: none; }
+.ask-boundary h2 { margin: 7px 0 0; font-family: var(--public-font-display); font-size: 27px; font-weight: 600; }
+.ask-boundary p { max-width: 470px; margin: 9px 0 0; color: #b5c1b9; font-size: 14px; line-height: 1.75; }
+.ask-boundary ul { display: grid; gap: 8px; margin: 0; padding: 0; color: #c5d0c8; font-size: 12px; list-style: none; }
 .ask-boundary li { display: flex; align-items: center; gap: 8px; }
 .ask-boundary li svg { color: #78aa87; }
 .ask-boundary button { white-space: nowrap; }
@@ -941,44 +962,39 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 .agent-form textarea { min-height: 58px; resize: none; border: 0; outline: 0; color: var(--public-ink); background: transparent; font-size: 12px; line-height: 1.55; }
 .agent-form button { display: grid; place-items: center; width: 34px; height: 34px; border: 0; border-radius: 4px; color: #fff; background: var(--public-green); }
 .agent-form button:disabled { color: #9aa89e; background: #e4ebe5; cursor: not-allowed; }
-.agent-disclaimer { margin: 8px 18px 14px; color: var(--public-faint); font-family: var(--sage-font-mono); font-size: 9px; }
+.agent-disclaimer { margin: 8px 18px 14px; color: var(--public-faint); font-family: var(--public-font-mono); font-size: 9px; }
+
+.is-motion-ready [data-reveal] {
+  opacity: 0;
+  transform: translateY(22px);
+  transition: opacity .62s cubic-bezier(.2, .72, .2, 1), transform .62s cubic-bezier(.2, .72, .2, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+
+.is-motion-ready [data-reveal].is-visible { opacity: 1; transform: translateY(0); }
+
+.evidence-expand-enter-active,
+.evidence-expand-leave-active { transition: opacity .2s ease, transform .2s ease; }
+.evidence-expand-enter-from,
+.evidence-expand-leave-to { opacity: 0; transform: translateY(-8px); }
+
+.agent-drawer-enter-active,
+.agent-drawer-leave-active { transition: opacity .24s ease; }
+.agent-drawer-enter-active .public-agent,
+.agent-drawer-leave-active .public-agent { transition: transform .3s cubic-bezier(.2, .72, .2, 1); }
+.agent-drawer-enter-from,
+.agent-drawer-leave-to { opacity: 0; }
+.agent-drawer-enter-from .public-agent,
+.agent-drawer-leave-to .public-agent { transform: translateX(100%); }
 
 @keyframes public-copy-reveal {
-  from { opacity: 0; transform: translateY(14px); filter: blur(5px); }
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes public-product-reveal {
-  from { opacity: 0; transform: translateY(18px) scale(.992); filter: blur(6px); }
-  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
-}
-
-@keyframes public-title-glint {
-  0%, 24% { background-position: 100% 50%; }
-  54%, 100% { background-position: 0 50%; }
-}
-
-@keyframes public-signal-line {
-  0%, 14% { opacity: 0; transform: translateX(-520%); }
-  24%, 70% { opacity: 1; }
-  82%, 100% { opacity: 0; transform: translateX(500%); }
-}
-
-@keyframes public-frame-glint {
-  0%, 18% { opacity: 0; transform: translateX(-120%); }
-  30%, 66% { opacity: 1; }
-  78%, 100% { opacity: 0; transform: translateX(470%); }
-}
-
-@keyframes public-mark-glint {
-  0%, 68% { opacity: 0; transform: skewX(-18deg) translateX(-260%); }
-  74% { opacity: 1; }
-  86%, 100% { opacity: 0; transform: skewX(-18deg) translateX(620%); }
-}
-
-@keyframes public-action-glint {
-  from { transform: skewX(-18deg) translateX(-260%); }
-  to { transform: skewX(-18deg) translateX(620%); }
+  from { opacity: 0; transform: translateY(20px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @media (max-width: 1180px) {
@@ -990,7 +1006,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   .hero-positioning { font-size: 24px; }
   .section-heading { grid-template-columns: 118px minmax(0, 1fr) 250px; }
   .project-layout { gap: 48px; }
-  .work-row { grid-template-columns: 45px 120px minmax(0, 1fr) 135px 22px; }
+  .work-row { grid-template-columns: 45px 120px minmax(0, 1fr) minmax(190px, .75fr) 120px 22px; }
 }
 
 @media (max-width: 860px) {
@@ -1004,7 +1020,7 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   .section-heading > p { grid-column: 2; max-width: 480px; }
   .project-layout { grid-template-columns: 1fr; }
   .project-copy { max-width: 620px; }
-  .work-row { grid-template-columns: 44px 112px minmax(0, 1fr) 22px; }
+  .work-row { grid-template-columns: 44px 112px minmax(0, 1fr) minmax(180px, .85fr) 22px; }
   .work-trace { display: none; }
   .milestone-list { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 38px 0; }
   .milestone-list li:nth-child(2)::after { display: none; }
@@ -1021,19 +1037,20 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   .public-brand strong { font-size: 12px; }
   .public-brand small { font-size: 9px; }
   .ask-sage { min-height: 34px; padding: 0 9px; font-size: 10px; }
-  .hero-inner { gap: 24px; padding: 38px 0 28px; }
-  .hero-copy h1 { max-width: 340px; font-size: 40px; line-height: 1.08; }
-  .hero-positioning { margin-top: 10px; font-size: 19px; }
-  .hero-support { margin-top: 15px; font-size: 12px; line-height: 1.7; }
-  .hero-actions { gap: 16px; margin-top: 19px; }
-  .primary-action { min-height: 35px; padding: 0 10px; font-size: 10px; }
-  .hero-evidence { margin-top: 24px; }
-  .hero-evidence__row { grid-template-columns: 31px minmax(0, 1fr) auto; gap: 8px; min-height: 65px; padding: 9px 0; }
+  .hero-inner { gap: 20px; padding: 28px 0 20px; }
+  .hero-kicker { margin-bottom: 10px; font-size: 9px; }
+  .hero-copy h1 { max-width: 350px; font-size: 40px; line-height: 1.06; }
+  .hero-positioning { margin-top: 11px; font-size: 19px; }
+  .hero-support { margin-top: 12px; font-size: 13px; line-height: 1.65; }
+  .hero-actions { gap: 16px; margin-top: 15px; }
+  .primary-action { min-height: 37px; padding: 0 11px; font-size: 11px; }
+  .hero-evidence { margin-top: 20px; }
+  .hero-evidence__row { grid-template-columns: 31px minmax(0, 1fr) auto; gap: 8px; min-height: 62px; padding: 7px 0; }
   .hero-evidence__row > span:first-child { font-size: 15px; }
-  .hero-evidence__row strong { font-size: 12px; }
-  .hero-evidence__row strong em { display: block; margin: 2px 0 0; font-size: 9px; }
-  .hero-evidence__row small { display: -webkit-box; overflow: hidden; font-size: 9px; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  .hero-product img { aspect-ratio: 16 / 7; border-radius: 4px; object-position: center top; }
+  .hero-evidence__row strong { font-size: 13px; }
+  .hero-evidence__row strong em { display: block; margin: 2px 0 0; font-size: 10px; }
+  .hero-evidence__row small { display: -webkit-box; overflow: hidden; font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+  .hero-product img { aspect-ratio: 16 / 5.5; border-radius: 4px; object-position: center top; }
   .hero-product figcaption { display: none; }
   .public-section { padding: 62px 0; }
   .project-section { padding-top: 16px; }
@@ -1043,16 +1060,16 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
   .section-heading.compact h2 { font-size: 30px; }
   .project-layout { gap: 35px; }
   .project-copy h3 { font-size: 24px; }
-  .project-copy > p { font-size: 12px; }
+  .project-copy > p { font-size: 14px; }
   .project-facts div { grid-template-columns: 72px minmax(0, 1fr); }
   .preview-bar { grid-template-columns: auto 1fr; }
   .preview-bar small { display: none; }
   .evidence-heading { align-items: flex-start; flex-direction: column; gap: 7px; margin-top: 58px; }
   .work-row { grid-template-columns: 34px minmax(0, 1fr) 20px; gap: 9px; min-height: 92px; }
   .work-main { display: grid; gap: 3px; }
-  .work-main > span { font-size: 9px; }
-  .work-main > strong { font-size: 14px; }
-  .work-main > small { font-size: 9px; }
+  .work-main > span { font-size: 10px; }
+  .work-main > strong { font-size: 15px; }
+  .work-main > small { font-size: 11px; }
   .work-evidence { padding-left: 43px; }
   .work-evidence dl { grid-template-columns: 1fr; }
   .work-evidence dl > div,
@@ -1078,18 +1095,17 @@ onBeforeUnmount(() => sectionObserver?.disconnect())
 
 @media (prefers-reduced-motion: reduce) {
   :global(html) { scroll-behavior: auto; }
-  .public-header::after,
-  .brand-mark::after,
-  .hero-copy,
-  .hero-copy h1 em,
-  .hero-evidence,
-  .hero-product,
-  .hero-product::before,
-  .product-preview::before,
-  .ask-boundary::before,
-  .ask-sage::after,
-  .primary-action::after,
-  .ask-boundary button::after { animation: none; }
+  .hero-copy > *,
+  .hero-product { animation: none; }
+  .is-motion-ready [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .reading-progress,
+  .hero-evidence__row,
+  .evidence-expand-enter-active,
+  .evidence-expand-leave-active,
+  .agent-drawer-enter-active,
+  .agent-drawer-leave-active,
+  .agent-drawer-enter-active .public-agent,
+  .agent-drawer-leave-active .public-agent { transition: none; }
   .hero-evidence__row > svg,
   .row-arrow { transition: none; }
 }
