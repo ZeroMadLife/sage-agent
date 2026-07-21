@@ -50,6 +50,10 @@ from api.schemas import (
     KnowledgeLearningGoalResponse,
     KnowledgeLearningGoalUpdateRequest,
     KnowledgeLearningRequest,
+    KnowledgeMasteryCapabilityResponse,
+    KnowledgeMasteryEvidenceInvalidateRequest,
+    KnowledgeMasteryEvidenceResponse,
+    KnowledgeMasteryResponse,
     KnowledgeMigrationApplyRequest,
     KnowledgeMigrationPlanItemResponse,
     KnowledgeMigrationPlanResponse,
@@ -131,6 +135,13 @@ from core.knowledge.jobs import (
 )
 from core.knowledge.parsing import ParseArtifact
 from core.knowledge.sources import default_source_adapter_registry, fetch_source_by_key
+from core.learning import (
+    MasteryCapability,
+    MasteryGoalProjection,
+    MasteryLedger,
+    MasteryLedgerConflictError,
+    MasteryLedgerNotFoundError,
+)
 
 router = APIRouter(dependencies=[Depends(require_cloud_authentication_in_production)])
 _MAX_DIFF_CHARS = 200_000
@@ -184,14 +195,10 @@ async def get_knowledge_sources(
                 last_error_code=item.last_error_code,
                 last_error_message=item.last_error_message,
                 last_scan_started_at=(
-                    item.last_scan_started_at.isoformat()
-                    if item.last_scan_started_at
-                    else None
+                    item.last_scan_started_at.isoformat() if item.last_scan_started_at else None
                 ),
                 last_scan_completed_at=(
-                    item.last_scan_completed_at.isoformat()
-                    if item.last_scan_completed_at
-                    else None
+                    item.last_scan_completed_at.isoformat() if item.last_scan_completed_at else None
                 ),
             )
             for item in states
@@ -288,6 +295,86 @@ async def update_knowledge_learning_goal(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     response.headers["Cache-Control"] = "no-store"
     return _learning_goal_response(goal)
+
+
+@router.get("/api/v1/knowledge/mastery", response_model=KnowledgeMasteryResponse)
+async def get_knowledge_mastery(
+    request: Request,
+    response: Response,
+) -> KnowledgeMasteryResponse:
+    """Project the current Learning Goal from server-validated evidence only."""
+    store = _require_store(request)
+    try:
+        goal = await asyncio.to_thread(store.learning_goal)
+        projection = await asyncio.to_thread(
+            _require_mastery_ledger(request).project,
+            owner_id="local",
+            workspace_id=store.knowledge_index.workspace_id,
+            learning_goal_id=goal.goal_id,
+            learning_goal_revision=goal.goal_revision,
+            capabilities=tuple(
+                MasteryCapability(
+                    capability_id=item.capability_id,
+                    label=item.label,
+                    weight=item.weight,
+                    required=item.required,
+                )
+                for item in goal.capabilities
+            ),
+        )
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _mastery_response(projection)
+
+
+@router.post(
+    "/api/v1/knowledge/mastery/evidence/{evidence_id}/invalidate",
+    response_model=KnowledgeMasteryResponse,
+)
+async def invalidate_knowledge_mastery_evidence(
+    evidence_id: Annotated[str, Path(min_length=1, max_length=256)],
+    payload: KnowledgeMasteryEvidenceInvalidateRequest,
+    request: Request,
+    response: Response,
+) -> KnowledgeMasteryResponse:
+    """Invalidate one receipt with CAS, then recompute the current Goal projection."""
+    store = _require_store(request)
+    ledger = _require_mastery_ledger(request)
+    try:
+        goal = await asyncio.to_thread(store.learning_goal)
+        await asyncio.to_thread(
+            ledger.invalidate,
+            owner_id="local",
+            workspace_id=store.knowledge_index.workspace_id,
+            evidence_id=evidence_id,
+            expected_revision=payload.expected_revision,
+            reason=payload.reason,
+        )
+        projection = await asyncio.to_thread(
+            ledger.project,
+            owner_id="local",
+            workspace_id=store.knowledge_index.workspace_id,
+            learning_goal_id=goal.goal_id,
+            learning_goal_revision=goal.goal_revision,
+            capabilities=tuple(
+                MasteryCapability(
+                    capability_id=item.capability_id,
+                    label=item.label,
+                    weight=item.weight,
+                    required=item.required,
+                )
+                for item in goal.capabilities
+            ),
+        )
+    except MasteryLedgerNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="mastery evidence not found") from exc
+    except MasteryLedgerConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LearningGoalError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    response.headers["Cache-Control"] = "no-store"
+    return _mastery_response(projection)
 
 
 @router.get(
@@ -516,7 +603,9 @@ async def get_knowledge_citation(
     try:
         chunk = await asyncio.to_thread(_require_store(request).citation, citation_id)
     except (KeyError, ValueError) as exc:
-        raise HTTPException(status_code=404, detail="knowledge citation is stale or unknown") from exc
+        raise HTTPException(
+            status_code=404, detail="knowledge citation is stale or unknown"
+        ) from exc
     response.headers["Cache-Control"] = "no-store"
     return _citation_response(citation_id, chunk)
 
@@ -571,9 +660,7 @@ async def ingest_knowledge_source(
         document = await asyncio.to_thread(store.parser_registry.parse, loaded.parse_request())
         prepared = await asyncio.to_thread(store.prepare_parsed_source, loaded, document)
         proposal = await asyncio.to_thread(store.ingest_prepared, prepared)
-        proposal = await asyncio.to_thread(
-            store.evaluate_and_apply_policy, proposal.proposal_id
-        )
+        proposal = await asyncio.to_thread(store.evaluate_and_apply_policy, proposal.proposal_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="knowledge source root not found") from exc
     except FileNotFoundError as exc:
@@ -961,6 +1048,13 @@ def _require_store(request: Request) -> KnowledgeStore:
     return store
 
 
+def _require_mastery_ledger(request: Request) -> MasteryLedger:
+    ledger = getattr(request.app.state, "mastery_ledger", None)
+    if not isinstance(ledger, MasteryLedger):
+        raise HTTPException(status_code=503, detail="mastery ledger is not configured")
+    return ledger
+
+
 def _require_job_service(request: Request) -> KnowledgeJobService:
     _require_store(request)
     service = getattr(request.app.state, "knowledge_job_service", None)
@@ -1177,6 +1271,51 @@ def _learning_goal_response(goal: LearningGoal) -> KnowledgeLearningGoalResponse
         goal_revision=goal.goal_revision,
         git_commit=goal.git_commit,
         structured=goal.structured,
+    )
+
+
+def _mastery_response(projection: MasteryGoalProjection) -> KnowledgeMasteryResponse:
+    return KnowledgeMasteryResponse(
+        workspace_id=projection.workspace_id,
+        learning_goal_id=projection.learning_goal_id,
+        learning_goal_revision=projection.learning_goal_revision,
+        rubric_revision=projection.rubric_revision,
+        score=projection.score,
+        status=projection.status,
+        capabilities=[
+            KnowledgeMasteryCapabilityResponse(
+                capability_id=item.capability_id,
+                label=item.label,
+                weight=item.weight,
+                required=item.required,
+                score=item.score,
+                status=item.status,
+                evidence_count=item.evidence_count,
+                positive_kinds=list(item.positive_kinds),
+                evidence_ids=list(item.evidence_ids),
+            )
+            for item in projection.capabilities
+        ],
+        evidence=[
+            KnowledgeMasteryEvidenceResponse(
+                evidence_id=item.evidence_id,
+                capability_id=item.capability_id,
+                kind=item.kind,
+                result=item.result,
+                rubric_revision=item.rubric_revision,
+                source_ref=item.source_ref,
+                source_evidence_id=item.source_evidence_id,
+                session_id=item.session_id,
+                run_id=item.run_id,
+                summary=item.summary,
+                status=item.status,
+                revision=item.revision,
+                created_at=item.created_at,
+                invalidated_at=item.invalidated_at,
+                invalidation_reason=item.invalidation_reason,
+            )
+            for item in projection.evidence
+        ],
     )
 
 

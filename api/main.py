@@ -54,6 +54,7 @@ from core.knowledge.jobs import (
 )
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
+from core.learning import MasteryLedger
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
@@ -454,9 +455,7 @@ def create_app(
         else coding_sandbox_provider
     )
     app.state.coding_sandbox_image = str(
-        settings.sage_coding_sandbox_image
-        if coding_sandbox_image is None
-        else coding_sandbox_image
+        settings.sage_coding_sandbox_image if coding_sandbox_image is None else coding_sandbox_image
     ).strip()
     if not app.state.coding_sandbox_image:
         raise ValueError("coding sandbox image must not be empty")
@@ -507,9 +506,7 @@ def create_app(
         app.state.coding_web_fetch_port = None
     app.state.coding_workspace_root = resolved_workspace_root
     app.state.coding_storage_root = Path(
-        coding_storage_root
-        or settings.sage_coding_storage_root
-        or (repo_root / ".coding")
+        coding_storage_root or settings.sage_coding_storage_root or (repo_root / ".coding")
     ).resolve()
     configured_knowledge_root = (
         Path(knowledge_workspace_root).expanduser()
@@ -578,6 +575,9 @@ def create_app(
     app.state.coding_usage_store = UsageStore(resolved_workspace_root / ".sage" / "usage.sqlite3")
     app.state.harness_capability_health_store = CapabilityHealthStore(
         app.state.coding_storage_root / "capability-health.sqlite3"
+    )
+    app.state.mastery_ledger = MasteryLedger(
+        app.state.coding_storage_root / "mastery-ledger.sqlite3"
     )
     app.state.coding_sessions = {}
     from api.coding_runs import CodingRunRegistry

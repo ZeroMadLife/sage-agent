@@ -68,6 +68,7 @@ class ThreadGoalContinue:
 class ThreadGoalPostTurn:
     goal: dict[str, Any]
     reservation: dict[str, Any] | None
+    mastery_deposit: dict[str, Any] | None = None
 
 
 class ThreadGoalService:
@@ -86,6 +87,7 @@ class ThreadGoalService:
         description: str,
         completion_criteria: Iterable[str],
         expected_revision: int,
+        learning_goal: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         self._require_idle()
         description_text = _bounded_text(description, field="description", maximum=2_000)
@@ -121,6 +123,17 @@ class ThreadGoalService:
             "created_at": str(current.get("created_at")) if current else now,
             "updated_at": now,
         }
+        binding = _learning_goal_binding(learning_goal, criterion_count=len(criteria))
+        if binding is not None:
+            goal["learning_goal"] = binding
+        elif current is not None and isinstance(current.get("learning_goal"), Mapping):
+            if list(current.get("completion_criteria", [])) != criteria:
+                raise ValueError(
+                    "learning_goal binding must be resubmitted when completion_criteria change"
+                )
+            goal["learning_goal"] = _learning_goal_binding(
+                current["learning_goal"], criterion_count=len(criteria)
+            )
         try:
             stored = self.journal.append_thread_goal(
                 event_type="thread_goal_updated",
@@ -262,6 +275,13 @@ class ThreadGoalService:
             "updated_at": now,
         }
         reservation = None
+        mastery_deposit = _mastery_deposit(
+            goal=current,
+            request=request,
+            decision=decision,
+            created_at=now,
+            session_id=self.journal.session_id,
+        )
         if schedule:
             run_id = _followup_run_id(
                 self.journal.session_id,
@@ -283,6 +303,7 @@ class ThreadGoalService:
                 expected_revision=request.goal_revision,
                 goal=goal,
                 reservation=reservation,
+                mastery_deposit=mastery_deposit,
             )
         except SessionRunLeaseConflictError as exc:
             raise ThreadGoalBusyError("Thread Goal cannot evaluate while a run is active") from exc
@@ -296,7 +317,12 @@ class ThreadGoalService:
             if scheduled is not None
             else None
         )
-        return ThreadGoalPostTurn(goal=stored_goal, reservation=stored_reservation)
+        stored_mastery = evaluated.payload.get("mastery_deposit")
+        return ThreadGoalPostTurn(
+            goal=stored_goal,
+            reservation=stored_reservation,
+            mastery_deposit=(dict(stored_mastery) if isinstance(stored_mastery, Mapping) else None),
+        )
 
     def clear(self, *, expected_revision: int) -> None:
         self._require_idle()
@@ -410,6 +436,142 @@ def _criteria(values: Iterable[str]) -> list[str]:
     return items
 
 
+def _learning_goal_binding(
+    value: Mapping[str, Any] | None,
+    *,
+    criterion_count: int,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    workspace_id = _bounded_text(
+        value.get("workspace_id"), field="learning workspace_id", maximum=256
+    )
+    goal_id = _bounded_text(value.get("goal_id"), field="learning goal_id", maximum=256)
+    goal_revision = _bounded_text(
+        value.get("goal_revision"), field="learning goal_revision", maximum=256
+    )
+    raw_capabilities = value.get("capabilities")
+    if not isinstance(raw_capabilities, list | tuple) or not 1 <= len(raw_capabilities) <= 32:
+        raise ValueError("learning goal capabilities must contain between 1 and 32 items")
+    capabilities: list[dict[str, Any]] = []
+    seen_capabilities: set[str] = set()
+    claimed_criteria: set[int] = set()
+    for raw in raw_capabilities:
+        if not isinstance(raw, Mapping):
+            raise ValueError("learning goal capability binding must be an object")
+        capability_id = _bounded_text(raw.get("capability_id"), field="capability_id", maximum=256)
+        if capability_id in seen_capabilities:
+            raise ValueError("learning goal capability bindings must be unique")
+        seen_capabilities.add(capability_id)
+        label = _bounded_text(raw.get("label"), field="capability label", maximum=160)
+        weight = raw.get("weight")
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, int | float)
+            or not 0.1 <= float(weight) <= 10
+        ):
+            raise ValueError("capability weight must be between 0.1 and 10")
+        required = raw.get("required")
+        if not isinstance(required, bool):
+            raise ValueError("capability required must be boolean")
+        raw_indexes = raw.get("criterion_indexes")
+        if not isinstance(raw_indexes, list | tuple) or not raw_indexes:
+            raise ValueError("criterion_indexes must not be empty")
+        indexes: list[int] = []
+        for index in raw_indexes:
+            if type(index) is not int or not 0 <= index < criterion_count:
+                raise ValueError("criterion index is outside completion_criteria")
+            if index in claimed_criteria:
+                raise ValueError("a completion criterion can bind only one capability")
+            claimed_criteria.add(index)
+            indexes.append(index)
+        capabilities.append(
+            {
+                "capability_id": capability_id,
+                "label": label,
+                "weight": float(weight),
+                "required": required,
+                "criterion_indexes": indexes,
+            }
+        )
+    return {
+        "workspace_id": workspace_id,
+        "goal_id": goal_id,
+        "goal_revision": goal_revision,
+        "capabilities": capabilities,
+    }
+
+
+def _mastery_deposit(
+    *,
+    goal: Mapping[str, Any],
+    request: ThreadGoalEvaluationRequest,
+    decision: GoalEvaluationDecision,
+    created_at: str,
+    session_id: str,
+) -> dict[str, Any] | None:
+    binding = goal.get("learning_goal")
+    if not isinstance(binding, Mapping) or not request.mastery_evidence:
+        return None
+    raw_capabilities = binding.get("capabilities")
+    if not isinstance(raw_capabilities, list | tuple):
+        return None
+    capability_by_criterion: dict[int, str] = {}
+    for capability in raw_capabilities:
+        if not isinstance(capability, Mapping):
+            continue
+        capability_id = str(capability.get("capability_id", "")).strip()
+        indexes = capability.get("criterion_indexes")
+        if not capability_id or not isinstance(indexes, list | tuple):
+            continue
+        for index in indexes:
+            if type(index) is int:
+                capability_by_criterion[index] = capability_id
+    items: dict[str, dict[str, Any]] = {}
+    candidates = {
+        ref: candidate
+        for candidate in request.mastery_evidence
+        for ref in (candidate.evidence_id, candidate.source_ref)
+    }
+    for criterion in decision.criteria:
+        if criterion.status != "met":
+            continue
+        mapped_capability_id = capability_by_criterion.get(criterion.index)
+        if mapped_capability_id is None:
+            continue
+        for reference in criterion.evidence_refs:
+            candidate = candidates.get(reference)
+            if candidate is None:
+                continue
+            identity = (
+                f"{binding.get('workspace_id')}\0{binding.get('goal_id')}\0"
+                f"{binding.get('goal_revision')}\0{mapped_capability_id}\0{candidate.evidence_id}"
+            )
+            evidence_id = "mastery_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+            items[evidence_id] = {
+                "evidence_id": evidence_id,
+                "capability_id": mapped_capability_id,
+                "kind": candidate.kind,
+                "result": candidate.result,
+                "source_ref": candidate.source_ref,
+                "source_evidence_id": candidate.evidence_id,
+                "session_id": session_id,
+                "run_id": request.source_run_id,
+                "summary": candidate.summary,
+                "metadata": dict(candidate.metadata),
+                "created_at": created_at,
+            }
+    if not items:
+        return None
+    return {
+        "version": 1,
+        "workspace_id": str(binding.get("workspace_id", "")),
+        "learning_goal_id": str(binding.get("goal_id", "")),
+        "learning_goal_revision": str(binding.get("goal_revision", "")),
+        "items": list(items.values()),
+    }
+
+
 def _evidence_refs(events: Iterable[object]) -> list[str]:
     refs: list[str] = []
 
@@ -453,15 +615,11 @@ def _continuation(goal: Mapping[str, Any]) -> dict[str, Any]:
     mode = str(value.get("mode", "manual"))
     default["mode"] = mode if mode in {"manual", "bounded_auto"} else "manual"
     maximum = value.get("max_auto_followups", 1)
-    default["max_auto_followups"] = (
-        maximum if type(maximum) is int and 1 <= maximum <= 4 else 1
-    )
+    default["max_auto_followups"] = maximum if type(maximum) is int and 1 <= maximum <= 4 else 1
     for key in ("auto_followups_started", "no_progress_streak"):
         item = value.get(key, 0)
         default[key] = item if type(item) is int and item >= 0 else 0
-    default["last_progress_fingerprint"] = str(
-        value.get("last_progress_fingerprint", "")
-    )[:128]
+    default["last_progress_fingerprint"] = str(value.get("last_progress_fingerprint", ""))[:128]
     stop_reason = value.get("stop_reason")
     default["stop_reason"] = str(stop_reason)[:64] if stop_reason else None
     return default
@@ -493,9 +651,7 @@ def _continuation_prompt(goal: Mapping[str, Any]) -> str:
     )
     evaluation = goal.get("evaluation")
     next_action = (
-        str(evaluation.get("next_action", "")).strip()
-        if isinstance(evaluation, Mapping)
-        else ""
+        str(evaluation.get("next_action", "")).strip() if isinstance(evaluation, Mapping) else ""
     )
     return (
         "这是用户已显式启用的受限自动跟进。继续同一个 Thread Goal，不创建新目标。\n\n"

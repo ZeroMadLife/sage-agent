@@ -177,6 +177,7 @@ from core.knowledge.source_proposals import (
     KnowledgeSourceProposalEvent,
     KnowledgeSourceProposalNotFoundError,
 )
+from core.learning import MasteryEvidenceInput, MasteryLedger
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 logger = logging.getLogger(__name__)
@@ -799,7 +800,9 @@ def _track_goal_task(app: Any, coroutine: Any) -> asyncio.Task[Any] | None:
     return task
 
 
-def _attach_goal_post_turn(app: Any, session_id: str, run_id: str, task: asyncio.Task[None]) -> None:
+def _attach_goal_post_turn(
+    app: Any, session_id: str, run_id: str, task: asyncio.Task[None]
+) -> None:
     """Schedule durable evaluation after the coordinator releases its run lease."""
 
     def finished(done: asyncio.Task[None]) -> None:
@@ -825,7 +828,9 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
     if current is None:
         return
     continuation = current.get("continuation")
-    if not isinstance(continuation, Mapping) or continuation.get("mode") != "bounded_auto":
+    if not isinstance(frozen_goal.get("learning_goal"), Mapping) and (
+        not isinstance(continuation, Mapping) or continuation.get("mode") != "bounded_auto"
+    ):
         return
     terminal = next(
         (
@@ -882,8 +887,69 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
         ThreadGoalBusyError,
     ):
         return
+    await _drain_mastery_outbox(app, session_id)
     if result.reservation is not None:
         await _start_pending_goal_followup(app, session_id)
+
+
+async def _drain_mastery_outbox(app: Any, session_id: str) -> None:
+    ledger = getattr(app.state, "mastery_ledger", None)
+    if not isinstance(ledger, MasteryLedger):
+        return
+    coordinator = app.state.coding_run_registry.get(session_id)
+    journal = coordinator.journal
+    sessions: dict[str, CodingRuntime] = getattr(app.state, "coding_sessions", {})
+    runtime = sessions.get(session_id)
+    owner_id = (runtime.owner_user_id or "local") if runtime is not None else "local"
+    pending = await asyncio.to_thread(journal.pending_mastery_deposits)
+    for deposit in pending:
+        raw_items = deposit.get("items")
+        if not isinstance(raw_items, list | tuple):
+            continue
+        inputs: list[MasteryEvidenceInput] = []
+        for raw in raw_items:
+            if not isinstance(raw, Mapping):
+                continue
+            try:
+                inputs.append(
+                    MasteryEvidenceInput(
+                        owner_id=owner_id,
+                        evidence_id=str(raw.get("evidence_id", "")),
+                        workspace_id=str(deposit.get("workspace_id", "")),
+                        learning_goal_id=str(deposit.get("learning_goal_id", "")),
+                        learning_goal_revision=str(deposit.get("learning_goal_revision", "")),
+                        capability_id=str(raw.get("capability_id", "")),
+                        kind=cast(Any, raw.get("kind", "")),
+                        result=cast(Any, raw.get("result", "")),
+                        source_ref=str(raw.get("source_ref", "")),
+                        source_evidence_id=str(raw.get("source_evidence_id", "")),
+                        session_id=str(raw.get("session_id", "")),
+                        run_id=str(raw.get("run_id", "")),
+                        summary=str(raw.get("summary", "")),
+                        metadata=(
+                            dict(raw["metadata"])
+                            if isinstance(raw.get("metadata"), Mapping)
+                            else {}
+                        ),
+                        created_at=str(raw.get("created_at", "")),
+                    )
+                )
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid Mastery outbox item")
+        if not inputs:
+            continue
+        try:
+            recorded = await asyncio.to_thread(ledger.record_many, inputs)
+            await asyncio.to_thread(
+                journal.append_mastery_deposit_receipt,
+                source_event_id=str(deposit["source_event_id"]),
+                source_run_id=str(deposit["source_run_id"]),
+                evidence_ids=tuple(item.evidence_id for item in recorded),
+                learning_goal_id=str(deposit["learning_goal_id"]),
+                learning_goal_revision=str(deposit["learning_goal_revision"]),
+            )
+        except Exception:
+            logger.warning("Unable to drain Mastery outbox", exc_info=True)
 
 
 def _goal_evaluator(app: Any, runtime: CodingRuntime, source_run_id: str) -> Any:
@@ -983,6 +1049,7 @@ def _schedule_goal_reconciliation(app: Any, session_id: str) -> None:
 
 async def _reconcile_goal_followup(app: Any, session_id: str) -> None:
     coordinator = app.state.coding_run_registry.get(session_id)
+    await _drain_mastery_outbox(app, session_id)
     pending = await asyncio.to_thread(coordinator.journal.pending_thread_goal_followup)
     if pending is not None:
         await _start_pending_goal_followup(app, session_id)
@@ -1460,10 +1527,12 @@ async def upsert_coding_thread_goal(
     """Create or revise the primary Goal with optimistic concurrency control."""
     service = await _thread_goal_service(request, session_id)
     try:
+        learning_goal = await _canonical_thread_learning_goal_binding(request, payload)
         goal = service.upsert(
             description=payload.description,
             completion_criteria=payload.completion_criteria,
             expected_revision=payload.expected_revision,
+            learning_goal=learning_goal,
         )
     except SessionThreadGoalConflictError as exc:
         raise _thread_goal_conflict(exc) from exc
@@ -1474,6 +1543,55 @@ async def upsert_coding_thread_goal(
     return CodingThreadGoalResponse(
         goal=CodingThreadGoal.model_validate(goal), revision=int(goal["revision"])
     )
+
+
+async def _canonical_thread_learning_goal_binding(
+    request: Request,
+    payload: CodingThreadGoalUpsertRequest,
+) -> dict[str, Any] | None:
+    binding = payload.learning_goal
+    if binding is None:
+        return None
+    store = _coding_knowledge_store(request)
+    if not isinstance(store, KnowledgeStore):
+        raise HTTPException(
+            status_code=409,
+            detail="Knowledge Learning Goal is unavailable for this Thread",
+        )
+    goal = await asyncio.to_thread(store.learning_goal)
+    if goal.goal_id != binding.goal_id or goal.goal_revision != binding.goal_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "learning_goal_revision_conflict",
+                "current_goal_id": goal.goal_id,
+                "current_goal_revision": goal.goal_revision,
+            },
+        )
+    available = {item.capability_id: item for item in goal.capabilities}
+    canonical: list[dict[str, Any]] = []
+    for item in binding.capabilities:
+        capability = available.get(item.capability_id)
+        if capability is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown Learning Goal capability: {item.capability_id}",
+            )
+        canonical.append(
+            {
+                "capability_id": capability.capability_id,
+                "label": capability.label,
+                "weight": capability.weight,
+                "required": capability.required,
+                "criterion_indexes": item.criterion_indexes,
+            }
+        )
+    return {
+        "workspace_id": store.knowledge_index.workspace_id,
+        "goal_id": goal.goal_id,
+        "goal_revision": goal.goal_revision,
+        "capabilities": canonical,
+    }
 
 
 @router.patch(

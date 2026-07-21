@@ -8,8 +8,9 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from api.coding import _goal_evaluator
+from api.coding import _drain_mastery_outbox, _goal_evaluator
 from api.main import create_app
+from core.coding.persistence.session_event_journal import SessionEventJournal
 from core.coding.usage_store import UsageStore
 from core.harness.thread_goal import ThreadGoalService
 from core.harness.thread_goal_evaluator import (
@@ -17,6 +18,8 @@ from core.harness.thread_goal_evaluator import (
     GoalEvaluationDecision,
     build_thread_goal_evaluation_request,
 )
+from core.knowledge import KnowledgeSourceRoot
+from core.learning import MasteryCapability, MasteryLedger
 from tests.api.test_coding_routes import FakeModel
 
 
@@ -26,6 +29,32 @@ def _app(tmp_path: Path):
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",
         coding_default_runtime_profile="legacy",
+    )
+
+
+def _knowledge_app(tmp_path: Path):
+    coding = tmp_path / "coding"
+    coding.mkdir()
+    knowledge = tmp_path / "knowledge"
+    knowledge.mkdir()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    return create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=coding,
+        coding_storage_root=tmp_path / ".coding",
+        coding_default_runtime_profile="legacy",
+        knowledge_workspace_root=knowledge,
+        knowledge_database_path=knowledge / ".sage" / "knowledge.sqlite3",
+        knowledge_source_roots={
+            "sage-learning": KnowledgeSourceRoot(
+                root_id="sage-learning",
+                kind="obsidian",
+                label="Sage Learning",
+                path=vault,
+            )
+        },
+        knowledge_jobs_enabled=False,
     )
 
 
@@ -182,6 +211,82 @@ def test_thread_goal_crud_evaluate_continue_and_timeline_audit(tmp_path: Path) -
         assert recreated.json()["goal"]["revision"] == 4
 
 
+def test_thread_goal_learning_binding_is_canonicalized_from_knowledge_goal(
+    tmp_path: Path,
+) -> None:
+    app = _knowledge_app(tmp_path)
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        current = client.get("/api/v1/knowledge/goal").json()
+        learning = client.put(
+            "/api/v1/knowledge/goal",
+            json={
+                "expected_goal_revision": current["goal_revision"],
+                "goal_id": "langgraph",
+                "title": "LangGraph",
+                "description": "恢复能力",
+                "capabilities": [
+                    {
+                        "capability_id": "checkpoint",
+                        "label": "Checkpoint 恢复",
+                        "description": "正确恢复线程",
+                        "keywords": ["checkpoint"],
+                        "weight": 2.5,
+                        "required": True,
+                    }
+                ],
+            },
+        ).json()
+        created = client.put(
+            f"/api/v1/coding/{session_id}/goal",
+            json={
+                "expected_revision": 0,
+                "description": "验证 checkpoint",
+                "completion_criteria": ["测试通过"],
+                "learning_goal": {
+                    "goal_id": "langgraph",
+                    "goal_revision": learning["goal_revision"],
+                    "capabilities": [{"capability_id": "checkpoint", "criterion_indexes": [0]}],
+                },
+            },
+        )
+
+    assert created.status_code == 200
+    binding = created.json()["goal"]["learning_goal"]
+    assert binding["workspace_id"] == "knowledge-local"
+    assert binding["capabilities"] == [
+        {
+            "capability_id": "checkpoint",
+            "label": "Checkpoint 恢复",
+            "weight": 2.5,
+            "required": True,
+            "criterion_indexes": [0],
+        }
+    ]
+
+
+def test_thread_goal_rejects_stale_learning_goal_revision(tmp_path: Path) -> None:
+    app = _knowledge_app(tmp_path)
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        response = client.put(
+            f"/api/v1/coding/{session_id}/goal",
+            json={
+                "expected_revision": 0,
+                "description": "stale binding",
+                "completion_criteria": ["one"],
+                "learning_goal": {
+                    "goal_id": "personal-learning",
+                    "goal_revision": "kgoal_stale",
+                    "capabilities": [{"capability_id": "missing", "criterion_indexes": [0]}],
+                },
+            },
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "learning_goal_revision_conflict"
+
+
 def test_stale_continue_revision_is_rejected_before_model_execution(tmp_path: Path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as client:
@@ -257,12 +362,10 @@ def test_bounded_auto_followup_runs_once_without_faking_a_user_message(tmp_path:
         assert len(run_starts) == 2
         followup_start = run_starts[1]
         assert followup_start["run_id"].startswith("run_goal_")
-        assert followup_start["payload"]["goal_followup"]["source_run_id"] == run_starts[0][
-            "run_id"
-        ]
-        assert any(
-            item["payload"].get("type") == "thread_goal_followup_started" for item in events
+        assert (
+            followup_start["payload"]["goal_followup"]["source_run_id"] == run_starts[0]["run_id"]
         )
+        assert any(item["payload"].get("type") == "thread_goal_followup_started" for item in events)
         assert [item for item in events if item["kind"] == "user"] == [
             next(item for item in events if item["kind"] == "user")
         ]
@@ -383,6 +486,74 @@ async def test_default_goal_evaluator_records_real_provider_usage(tmp_path: Path
     assert summary["total_tokens"] == 150
 
 
+@pytest.mark.asyncio
+async def test_mastery_outbox_commits_receipt_and_does_not_replay(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path / "sessions", "session-mastery")
+    source_event = journal.append(
+        run_id="thread-goal",
+        kind="harness",
+        status="completed",
+        payload={
+            "type": "thread_goal_evaluated",
+            "version": 2,
+            "source_run_id": "run-practice",
+            "mastery_deposit": {
+                "workspace_id": "workspace-a",
+                "learning_goal_id": "goal-a",
+                "learning_goal_revision": "goal-rev-1",
+                "items": [
+                    {
+                        "evidence_id": "mastery-evidence-1",
+                        "capability_id": "checkpoint",
+                        "kind": "code_test",
+                        "result": "pass",
+                        "source_ref": "subagent://run-practice/result/1",
+                        "source_evidence_id": "practice-1",
+                        "session_id": "session-mastery",
+                        "run_id": "run-practice",
+                        "summary": "目标测试通过",
+                        "metadata": {"exit_code": 0},
+                        "created_at": "2026-07-20T00:00:01+00:00",
+                    }
+                ],
+            },
+        },
+    )
+    ledger = MasteryLedger(tmp_path / "mastery.sqlite3")
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            mastery_ledger=ledger,
+            coding_run_registry=SimpleNamespace(
+                get=lambda session_id: SimpleNamespace(journal=journal)
+            ),
+            coding_sessions={
+                "session-mastery": SimpleNamespace(owner_user_id="owner-a")
+            },
+        )
+    )
+
+    await _drain_mastery_outbox(app, "session-mastery")
+    await _drain_mastery_outbox(app, "session-mastery")
+
+    assert journal.pending_mastery_deposits() == ()
+    receipts = [
+        event
+        for event in journal.events_for_run("run-practice")
+        if event.payload.get("type") == "mastery_evidence_recorded"
+    ]
+    assert len(receipts) == 1
+    assert receipts[0].payload["source_event_id"] == source_event.event_id
+    projection = ledger.project(
+        owner_id="owner-a",
+        workspace_id="workspace-a",
+        learning_goal_id="goal-a",
+        learning_goal_revision="goal-rev-1",
+        capabilities=(MasteryCapability("checkpoint", "Checkpoint", 1.0),),
+    )
+    assert projection.score == 0.5
+    assert projection.evidence[0].evidence_id == "mastery-evidence-1"
+
+
 def test_restart_resumes_one_durable_goal_followup_without_duplication(tmp_path: Path) -> None:
     (tmp_path / "README.md").write_text("# restart evidence\n", encoding="utf-8")
     storage_root = tmp_path / ".coding"
@@ -450,18 +621,14 @@ def test_restart_resumes_one_durable_goal_followup_without_duplication(tmp_path:
                 blocker="goal_not_met_yet",
                 evidence_refs=("evidence:before-restart",),
                 next_action="继续读取 README",
-                criteria=(
-                    GoalCriterionDecision(index=0, status="unmet", evidence_refs=()),
-                ),
+                criteria=(GoalCriterionDecision(index=0, status="unmet", evidence_refs=()),),
             ),
             terminal_status="completed",
         )
         assert reserved.reservation is not None
 
     evaluator = ContinueEvaluator()
-    with TestClient(
-        create_app(**options, coding_goal_evaluator_factory=evaluator)
-    ) as restarted:
+    with TestClient(create_app(**options, coding_goal_evaluator_factory=evaluator)) as restarted:
         resumed = restarted.post(f"/api/v1/coding/session/{session_id}/resume")
         assert resumed.status_code == 200
         deadline = monotonic() + 3
@@ -478,9 +645,9 @@ def test_restart_resumes_one_durable_goal_followup_without_duplication(tmp_path:
         second_resume = restarted.post(f"/api/v1/coding/session/{session_id}/resume")
         assert second_resume.status_code == 200
         sleep(0.05)
-        timeline = restarted.get(
-            f"/api/v1/coding/session/{session_id}/timeline?limit=100"
-        ).json()["items"]
+        timeline = restarted.get(f"/api/v1/coding/session/{session_id}/timeline?limit=100").json()[
+            "items"
+        ]
         followup_starts = [
             item
             for item in timeline

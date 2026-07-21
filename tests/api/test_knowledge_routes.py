@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from api.main import create_app
 from core.knowledge import KnowledgeSourceRoot
+from core.learning import MasteryEvidenceInput
 
 
 def _app(tmp_path: Path):
@@ -58,6 +59,67 @@ def test_unconfigured_knowledge_is_explicitly_unavailable(tmp_path: Path) -> Non
 
     assert response.status_code == 503
     assert response.json() == {"detail": "knowledge workspace is not configured"}
+
+
+def test_mastery_projection_and_invalidation_use_current_learning_goal(tmp_path: Path) -> None:
+    app, _vault, _knowledge = _app(tmp_path)
+    client = TestClient(app)
+    current = client.get("/api/v1/knowledge/goal").json()
+    updated = client.put(
+        "/api/v1/knowledge/goal",
+        json={
+            "expected_goal_revision": current["goal_revision"],
+            "goal_id": "langgraph",
+            "title": "掌握 LangGraph 恢复",
+            "description": "使用可验证的测试和测验证据。",
+            "capabilities": [
+                {
+                    "capability_id": "checkpoint",
+                    "label": "Checkpoint 恢复",
+                    "description": "正确恢复线程。",
+                    "keywords": ["checkpoint", "thread"],
+                    "weight": 1.0,
+                    "required": True,
+                }
+            ],
+        },
+    ).json()
+    app.state.mastery_ledger.record(
+        MasteryEvidenceInput(
+            owner_id="local",
+            evidence_id="evidence-1",
+            workspace_id="knowledge-local",
+            learning_goal_id="langgraph",
+            learning_goal_revision=updated["goal_revision"],
+            capability_id="checkpoint",
+            kind="code_test",
+            result="pass",
+            source_ref="subagent://session-1/child-1/tool-results/1",
+            source_evidence_id="practice-1",
+            session_id="session-1",
+            run_id="run-1",
+            summary="Deterministic test command passed.",
+            created_at="2026-07-20T00:00:00+00:00",
+        )
+    )
+
+    projection = client.get("/api/v1/knowledge/mastery")
+    assert projection.status_code == 200
+    assert projection.headers["cache-control"] == "no-store"
+    body = projection.json()
+    assert body["status"] == "in_progress"
+    assert body["score"] == 0.5
+    assert body["capabilities"][0]["status"] == "developing"
+    assert body["evidence"][0]["source_ref"].startswith("subagent://")
+    assert "metadata" not in body["evidence"][0]
+
+    invalidated = client.post(
+        "/api/v1/knowledge/mastery/evidence/evidence-1/invalidate",
+        json={"expected_revision": 1, "reason": "测试 fixture 不符合当前 rubric"},
+    )
+    assert invalidated.status_code == 200
+    assert invalidated.json()["status"] == "unverified"
+    assert invalidated.json()["evidence"][0]["status"] == "invalidated"
 
 
 def test_versioned_knowledge_graph_api_etag_and_neighborhood(tmp_path: Path) -> None:
@@ -116,9 +178,7 @@ def test_versioned_knowledge_graph_api_etag_and_neighborhood(tmp_path: Path) -> 
     assert neighbors.json()["center"]["node_id"] == center["node_id"]
     assert len(neighbors.json()["edges"]) == 2
 
-    missing = client.get(
-        "/api/v1/knowledge/graph", params={"graph_revision": "kgraph_missing"}
-    )
+    missing = client.get("/api/v1/knowledge/graph", params={"graph_revision": "kgraph_missing"})
     assert missing.status_code == 404
 
     goal = client.get("/api/v1/knowledge/goal")
@@ -169,9 +229,7 @@ def test_versioned_knowledge_graph_api_etag_and_neighborhood(tmp_path: Path) -> 
     assert community_payload["analysis"]["algorithm_id"] == "networkx.louvain"
     assert community_payload["analysis"]["seed"] == 42
     assert community_payload["communities"]
-    assert all(
-        metric["community_id"] for metric in community_payload["node_metrics"]
-    )
+    assert all(metric["community_id"] for metric in community_payload["node_metrics"])
 
     insights = client.get("/api/v1/knowledge/graph/insights")
     assert insights.status_code == 200
@@ -398,9 +456,7 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert body["citations"][0]["source_relative_path"] == "memory.md"
     assert str(vault) not in found.text
 
-    citation = client.get(
-        f"/api/v1/knowledge/citations/{body['citations'][0]['citation_id']}"
-    )
+    citation = client.get(f"/api/v1/knowledge/citations/{body['citations'][0]['citation_id']}")
     assert citation.status_code == 200
     assert citation.headers["cache-control"] == "no-store"
     citation_body = citation.json()
@@ -487,25 +543,17 @@ def test_auto_applied_ingest_can_be_undone_once_through_api(tmp_path: Path) -> N
 
     undone = client.post(
         f"/api/v1/knowledge/proposals/{proposal['proposal_id']}/undo-auto-apply",
-        json={
-            "expected_page_revision": proposal["policy_decision"]["applied_page_revision"]
-        },
+        json={"expected_page_revision": proposal["policy_decision"]["applied_page_revision"]},
     )
 
     assert undone.status_code == 200
     assert undone.json()["change_kind"] == "retraction"
-    detail = client.get(
-        f"/api/v1/knowledge/proposals/{proposal['proposal_id']}"
-    ).json()
+    detail = client.get(f"/api/v1/knowledge/proposals/{proposal['proposal_id']}").json()
     assert detail["proposal"]["policy_decision"]["undo_available"] is False
-    assert detail["proposal"]["policy_decision"]["undo_proposal_id"] == undone.json()[
-        "proposal_id"
-    ]
+    assert detail["proposal"]["policy_decision"]["undo_proposal_id"] == undone.json()["proposal_id"]
     page = client.get("/api/v1/knowledge/pages").json()["pages"][0]
     assert page["revisions"][-1]["change_kind"] == "retraction"
-    assert "此自动沉淀已由用户撤销" in (knowledge / page["path"]).read_text(
-        encoding="utf-8"
-    )
+    assert "此自动沉淀已由用户撤销" in (knowledge / page["path"]).read_text(encoding="utf-8")
 
 
 def test_workspace_synthesis_api_requires_approved_sources_and_returns_evidence(
@@ -532,9 +580,7 @@ def test_workspace_synthesis_api_requires_approved_sources_and_returns_evidence(
     assert created.json()["change_kind"] == "synthesis"
     assert created.json()["policy_decision"]["risk_level"] == "medium"
     assert created.json()["policy_decision"]["action"] == "draft"
-    detail = client.get(
-        f"/api/v1/knowledge/proposals/{created.json()['proposal_id']}"
-    ).json()
+    detail = client.get(f"/api/v1/knowledge/proposals/{created.json()['proposal_id']}").json()
     assert detail["parse_artifact"] is None
     assert detail["source_understanding"] is None
     synthesis = detail["workspace_synthesis"]

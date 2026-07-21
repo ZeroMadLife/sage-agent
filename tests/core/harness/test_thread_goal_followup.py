@@ -114,9 +114,10 @@ def test_post_turn_evaluation_and_reservation_commit_atomically(tmp_path: Path) 
         goal_followup=pending,
     )
     assert journal.pending_thread_goal_followup() is None
-    assert journal.run_goal_followup(str(pending["run_id"]))["reservation_id"] == pending[
-        "reservation_id"
-    ]
+    assert (
+        journal.run_goal_followup(str(pending["run_id"]))["reservation_id"]
+        == pending["reservation_id"]
+    )
 
 
 def test_two_no_progress_turns_stop_without_another_reservation(tmp_path: Path) -> None:
@@ -330,3 +331,131 @@ def test_auto_followup_limit_stops_even_when_new_evidence_arrives(tmp_path: Path
     assert second.reservation is None
     assert second.goal["status"] == "active"
     assert second.goal["continuation"]["stop_reason"] == "max_auto_followups"
+
+
+def test_bound_practice_evidence_creates_recoverable_mastery_outbox(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    service = ThreadGoalService(journal)
+    goal = service.upsert(
+        description="通过确定性测试验证 checkpoint 恢复",
+        completion_criteria=["最小恢复测试通过"],
+        expected_revision=0,
+        learning_goal={
+            "workspace_id": "knowledge-local",
+            "goal_id": "langgraph",
+            "goal_revision": "kgoal-1",
+            "capabilities": [
+                {
+                    "capability_id": "checkpoint",
+                    "label": "Checkpoint 恢复",
+                    "weight": 1.0,
+                    "required": True,
+                    "criterion_indexes": [0],
+                }
+            ],
+        },
+    )
+    begun = journal.begin_run(
+        "run-practice",
+        owner_id="test-owner",
+        owner_pid=os.getpid(),
+        thread_goal=goal,
+        expected_thread_goal_revision=1,
+    )
+    source_ref = "subagent://session-1/child-1/tool-results/1"
+    journal.append(
+        run_id="run-practice",
+        kind="agent",
+        status="completed",
+        payload={
+            "type": "subagent_completed",
+            "subagent_type": "practice",
+            "mastery_evidence": [
+                {
+                    "evidence_id": "practice-1",
+                    "kind": "code_test",
+                    "result": "pass",
+                    "source_ref": source_ref,
+                    "summary": "Deterministic test command passed.",
+                    "metadata": {"exit_code": 0},
+                }
+            ],
+        },
+        lease_owner_id="test-owner",
+        fencing_token=begun.fencing_token,
+    )
+    journal.append_terminal_and_release(
+        run_id="run-practice",
+        status="completed",
+        payload={"event": "run_completed"},
+        lease_owner_id="test-owner",
+        fencing_token=begun.fencing_token,
+    )
+    request = build_thread_goal_evaluation_request(
+        goal=goal,
+        run_id="run-practice",
+        events=journal.events_for_run("run-practice"),
+    )
+    result = service.evaluate_post_turn(
+        request=request,
+        decision=GoalEvaluationDecision(
+            status="satisfied",
+            blocker=None,
+            evidence_refs=(source_ref,),
+            next_action="保留证据",
+            criteria=(GoalCriterionDecision(index=0, status="met", evidence_refs=(source_ref,)),),
+        ),
+        terminal_status="completed",
+    )
+
+    assert result.reservation is None
+    assert result.mastery_deposit is not None
+    pending = journal.pending_mastery_deposits()
+    assert len(pending) == 1
+    assert pending[0]["items"][0]["source_evidence_id"] == "practice-1"
+    assert pending[0]["items"][0]["capability_id"] == "checkpoint"
+
+    receipt = journal.append_mastery_deposit_receipt(
+        source_event_id=pending[0]["source_event_id"],
+        source_run_id="run-practice",
+        evidence_ids=(pending[0]["items"][0]["evidence_id"],),
+        learning_goal_id="langgraph",
+        learning_goal_revision="kgoal-1",
+    )
+    assert receipt.payload["type"] == "mastery_evidence_recorded"
+    assert SessionEventJournal(tmp_path, "session-1").pending_mastery_deposits() == ()
+
+
+def test_unreferenced_practice_candidate_does_not_enter_mastery_outbox(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    service = ThreadGoalService(journal)
+    goal = service.upsert(
+        description="验证测试",
+        completion_criteria=["测试相关且通过"],
+        expected_revision=0,
+        learning_goal={
+            "workspace_id": "knowledge-local",
+            "goal_id": "langgraph",
+            "goal_revision": "kgoal-1",
+            "capabilities": [
+                {
+                    "capability_id": "checkpoint",
+                    "label": "Checkpoint",
+                    "weight": 1.0,
+                    "required": True,
+                    "criterion_indexes": [0],
+                }
+            ],
+        },
+    )
+    _complete_run(journal, run_id="run-empty", goal=goal)
+    request = build_thread_goal_evaluation_request(
+        goal=goal, run_id="run-empty", events=journal.events_for_run("run-empty")
+    )
+    result = service.evaluate_post_turn(
+        request=request,
+        decision=_continue_decision(),
+        terminal_status="completed",
+    )
+    assert result.mastery_deposit is None
+    assert journal.pending_mastery_deposits() == ()
