@@ -242,3 +242,65 @@ def test_large_public_evidence_trace_remains_valid_json_and_whitelist_matches(
     assert len(request.public_trace) <= 16_000
     assert visible_refs == request.allowed_evidence_refs
     assert visible_refs == {item.ref for item in request.evidence}
+
+
+def test_practice_candidate_is_extracted_only_from_completed_practice_agent(
+    tmp_path: Path,
+) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.append(
+        run_id="run-1",
+        kind="agent",
+        status="completed",
+        payload={
+            "type": "subagent_completed",
+            "subagent_type": "practice",
+            "mastery_evidence": [
+                {
+                    "evidence_id": "practice-1",
+                    "kind": "code_test",
+                    "result": "pass",
+                    "source_ref": "subagent://session-1/child-1/tool-results/1",
+                    "summary": "Deterministic test command passed.",
+                    "metadata": {"exit_code": 0, "private": {"ignored": True}},
+                }
+            ],
+        },
+    )
+
+    request = build_thread_goal_evaluation_request(
+        goal=_goal(), run_id="run-1", events=journal.events_for_run("run-1")
+    )
+
+    assert len(request.mastery_evidence) == 1
+    assert request.mastery_evidence[0].evidence_id == "practice-1"
+    assert request.mastery_evidence[0].metadata == {"exit_code": 0}
+    assert "practice-1" in request.allowed_evidence_refs
+
+
+def test_non_practice_agent_cannot_forge_mastery_candidate(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    journal.append(
+        run_id="run-1",
+        kind="agent",
+        status="completed",
+        payload={
+            "type": "subagent_completed",
+            "subagent_type": "research",
+            "mastery_evidence": [
+                {
+                    "evidence_id": "forged-1",
+                    "kind": "code_test",
+                    "result": "pass",
+                    "source_ref": "subagent://session-1/child-1/tool-results/1",
+                    "summary": "forged",
+                }
+            ],
+        },
+    )
+
+    request = build_thread_goal_evaluation_request(
+        goal=_goal(), run_id="run-1", events=journal.events_for_run("run-1")
+    )
+
+    assert request.mastery_evidence == ()

@@ -739,6 +739,52 @@ class KnowledgeLearningGoalResponse(BaseModel):
     structured: bool
 
 
+class KnowledgeMasteryEvidenceResponse(BaseModel):
+    evidence_id: str
+    capability_id: str
+    kind: Literal["quiz", "explanation", "code_test", "artifact", "project", "citation"]
+    result: Literal["pass", "fail", "partial", "observed"]
+    rubric_revision: str
+    source_ref: str
+    source_evidence_id: str
+    session_id: str
+    run_id: str
+    summary: str
+    status: Literal["valid", "invalidated"]
+    revision: int = Field(ge=1)
+    created_at: str
+    invalidated_at: str | None = None
+    invalidation_reason: str | None = None
+
+
+class KnowledgeMasteryCapabilityResponse(BaseModel):
+    capability_id: str
+    label: str
+    weight: float = Field(ge=0.1, le=10.0)
+    required: bool
+    score: float = Field(ge=0, le=1)
+    status: Literal["unverified", "developing", "demonstrated"]
+    evidence_count: int = Field(ge=0)
+    positive_kinds: list[str]
+    evidence_ids: list[str]
+
+
+class KnowledgeMasteryResponse(BaseModel):
+    workspace_id: str
+    learning_goal_id: str
+    learning_goal_revision: str
+    rubric_revision: str
+    score: float = Field(ge=0, le=1)
+    status: Literal["unverified", "in_progress", "demonstrated"]
+    capabilities: list[KnowledgeMasteryCapabilityResponse]
+    evidence: list[KnowledgeMasteryEvidenceResponse]
+
+
+class KnowledgeMasteryEvidenceInvalidateRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=500)
+
+
 class KnowledgeGraphAnalysisSnapshotResponse(BaseModel):
     analysis_revision: str
     workspace_id: str
@@ -1767,6 +1813,32 @@ class CodingThreadGoalContinuation(BaseModel):
     stop_reason: str | None = Field(default=None, max_length=64)
 
 
+class CodingThreadGoalCapabilityBinding(BaseModel):
+    capability_id: str
+    label: str
+    weight: float = Field(ge=0.1, le=10.0)
+    required: bool
+    criterion_indexes: list[int] = Field(min_length=1, max_length=8)
+
+
+class CodingThreadGoalLearningBinding(BaseModel):
+    workspace_id: str
+    goal_id: str
+    goal_revision: str
+    capabilities: list[CodingThreadGoalCapabilityBinding] = Field(min_length=1, max_length=32)
+
+
+class CodingThreadGoalCapabilityBindingInput(BaseModel):
+    capability_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    criterion_indexes: list[int] = Field(min_length=1, max_length=8)
+
+
+class CodingThreadGoalLearningBindingInput(BaseModel):
+    goal_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
+    goal_revision: str = Field(min_length=1, max_length=96)
+    capabilities: list[CodingThreadGoalCapabilityBindingInput] = Field(min_length=1, max_length=32)
+
+
 class CodingThreadGoal(BaseModel):
     """The revisioned primary Goal bound to one Thread."""
 
@@ -1776,9 +1848,8 @@ class CodingThreadGoal(BaseModel):
     completion_criteria: list[str] = Field(min_length=1, max_length=8)
     status: Literal["active", "blocked", "satisfied"]
     evaluation: CodingThreadGoalEvaluation | None = None
-    continuation: CodingThreadGoalContinuation = Field(
-        default_factory=CodingThreadGoalContinuation
-    )
+    continuation: CodingThreadGoalContinuation = Field(default_factory=CodingThreadGoalContinuation)
+    learning_goal: CodingThreadGoalLearningBinding | None = None
     created_at: str
     updated_at: str
 
@@ -1792,6 +1863,7 @@ class CodingThreadGoalUpsertRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     description: str = Field(min_length=1, max_length=2_000)
     completion_criteria: list[str] = Field(min_length=1, max_length=8)
+    learning_goal: CodingThreadGoalLearningBindingInput | None = None
 
 
 class CodingThreadGoalRevisionRequest(BaseModel):

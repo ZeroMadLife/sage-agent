@@ -31,6 +31,7 @@ _REFERENCE_KEYS = frozenset(
         "artifact_ref",
         "result_ref",
         "source_ref",
+        "evidence_id",
         "page_revision",
         "revision_ref",
     }
@@ -56,6 +57,16 @@ class GoalEvidenceItem:
     kind: str
     summary: str
     progress_key: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class GoalMasteryEvidenceCandidate:
+    evidence_id: str
+    kind: Literal["code_test"]
+    result: Literal["pass", "fail"]
+    source_ref: str
+    summary: str
+    metadata: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +96,7 @@ class ThreadGoalEvaluationRequest:
     allowed_evidence_refs: frozenset[str]
     public_trace: str
     progress_fingerprint: str
+    mastery_evidence: tuple[GoalMasteryEvidenceCandidate, ...] = ()
 
 
 class ThreadGoalEvaluator(Protocol):
@@ -130,8 +142,7 @@ class StructuredThreadGoalEvaluator:
             parameters = {}
         kwargs: dict[str, Any] = {}
         if "max_tokens" in parameters or any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
         ):
             kwargs["max_tokens"] = self.max_output_tokens
         elif "max_completion_tokens" in parameters:
@@ -155,14 +166,15 @@ def build_thread_goal_evaluation_request(
 ) -> ThreadGoalEvaluationRequest:
     """Build a bounded catalog from already-public durable timeline events."""
     criteria_value = goal.get("completion_criteria")
-    criteria = tuple(
-        str(item).strip()[:500]
-        for item in criteria_value
-        if str(item).strip()
-    ) if isinstance(criteria_value, list | tuple) else ()
+    criteria = (
+        tuple(str(item).strip()[:500] for item in criteria_value if str(item).strip())
+        if isinstance(criteria_value, list | tuple)
+        else ()
+    )
     assistant_parts: list[str] = []
     evidence: list[GoalEvidenceItem] = []
     seen_refs: set[str] = set()
+    mastery_evidence: dict[str, GoalMasteryEvidenceCandidate] = {}
 
     for event in events:
         kind = str(getattr(event, "kind", ""))
@@ -173,13 +185,18 @@ def build_thread_goal_evaluation_request(
         if kind == "assistant":
             delta = payload.get("delta")
             if isinstance(delta, str) and sum(map(len, assistant_parts)) < _MAX_ASSISTANT_CHARS:
-                assistant_parts.append(delta[: _MAX_ASSISTANT_CHARS - sum(map(len, assistant_parts))])
+                assistant_parts.append(
+                    delta[: _MAX_ASSISTANT_CHARS - sum(map(len, assistant_parts))]
+                )
             continue
         if kind not in {"tool", "agent", "context", "harness"} or status not in {
             "completed",
             "done",
         }:
             continue
+        if kind == "agent" and payload.get("type") == "subagent_completed":
+            for candidate in _mastery_candidates(payload):
+                mastery_evidence[candidate.evidence_id] = candidate
         summary = _public_event_summary(payload)
         event_id = str(getattr(event, "event_id", "")).strip()
         if summary and event_id and len(evidence) < _MAX_EVIDENCE_ITEMS:
@@ -222,15 +239,13 @@ def build_thread_goal_evaluation_request(
     bounded_items: list[GoalEvidenceItem] = []
     public_trace = _serialized_trace(run_id, bounded_items)
     for item in evidence[:_MAX_EVIDENCE_ITEMS]:
-        candidate = _serialized_trace(run_id, [*bounded_items, item])
-        if len(candidate) > _MAX_TRACE_CHARS:
+        serialized = _serialized_trace(run_id, [*bounded_items, item])
+        if len(serialized) > _MAX_TRACE_CHARS:
             continue
         bounded_items.append(item)
-        public_trace = candidate
+        public_trace = serialized
     bounded_evidence = tuple(bounded_items)
-    progress_keys = sorted(
-        {item.progress_key for item in bounded_evidence if item.progress_key}
-    )
+    progress_keys = sorted({item.progress_key for item in bounded_evidence if item.progress_key})
     fingerprint = (
         hashlib.sha256("\n".join(progress_keys).encode("utf-8")).hexdigest()
         if progress_keys
@@ -249,7 +264,56 @@ def build_thread_goal_evaluation_request(
         allowed_evidence_refs=frozenset(item.ref for item in bounded_evidence),
         public_trace=public_trace,
         progress_fingerprint=fingerprint,
+        mastery_evidence=tuple(mastery_evidence.values()),
     )
+
+
+def _mastery_candidates(
+    payload: Mapping[object, object],
+) -> tuple[GoalMasteryEvidenceCandidate, ...]:
+    if str(payload.get("subagent_type", "")).lower() != "practice":
+        return ()
+    raw_items = payload.get("mastery_evidence")
+    if not isinstance(raw_items, list | tuple):
+        return ()
+    candidates: list[GoalMasteryEvidenceCandidate] = []
+    for raw in raw_items[:16]:
+        if not isinstance(raw, Mapping):
+            continue
+        evidence_id = str(raw.get("evidence_id", "")).strip()[:256]
+        source_ref = str(raw.get("source_ref", "")).strip()[:1_000]
+        kind = str(raw.get("kind", ""))
+        result = str(raw.get("result", ""))
+        if (
+            not evidence_id
+            or not source_ref.startswith("subagent://")
+            or kind != "code_test"
+            or result not in {"pass", "fail"}
+        ):
+            continue
+        raw_metadata = raw.get("metadata", {})
+        metadata: dict[str, object] = {}
+        if isinstance(raw_metadata, Mapping):
+            for key, value in list(raw_metadata.items())[:16]:
+                normalized_key = str(key).strip()[:128]
+                if not normalized_key:
+                    continue
+                if isinstance(value, str):
+                    metadata[normalized_key] = value[:1_000]
+                elif isinstance(value, bool | int | float) or value is None:
+                    metadata[normalized_key] = value
+        candidates.append(
+            GoalMasteryEvidenceCandidate(
+                evidence_id=evidence_id,
+                kind="code_test",
+                result=result,  # type: ignore[arg-type]
+                source_ref=source_ref,
+                summary=" ".join(str(raw.get("summary", "")).split())[:500]
+                or "Deterministic Practice evidence.",
+                metadata=metadata,
+            )
+        )
+    return tuple(candidates)
 
 
 def _serialized_trace(run_id: str, evidence: Iterable[GoalEvidenceItem]) -> str:
@@ -257,8 +321,7 @@ def _serialized_trace(run_id: str, evidence: Iterable[GoalEvidenceItem]) -> str:
         {
             "source_run_id": run_id,
             "untrusted_evidence": [
-                {"ref": item.ref, "kind": item.kind, "summary": item.summary}
-                for item in evidence
+                {"ref": item.ref, "kind": item.kind, "summary": item.summary} for item in evidence
             ],
         },
         ensure_ascii=False,
@@ -276,9 +339,7 @@ def _evaluation_prompt(request: ThreadGoalEvaluationRequest) -> str:
         ),
         "evidence_refs": ["only refs from untrusted_evidence"],
         "next_action": "one bounded public action",
-        "criteria": [
-            {"index": 0, "status": "met | unmet | blocked", "evidence_refs": []}
-        ],
+        "criteria": [{"index": 0, "status": "met | unmet | blocked", "evidence_refs": []}],
     }
     data = {
         "goal": {
@@ -369,11 +430,16 @@ def _criterion_decisions(
             continue
         index = item.get("index")
         status = str(item.get("status", ""))
-        if type(index) is not int or not 0 <= index < count or status not in {
-            "met",
-            "unmet",
-            "blocked",
-        }:
+        if (
+            type(index) is not int
+            or not 0 <= index < count
+            or status
+            not in {
+                "met",
+                "unmet",
+                "blocked",
+            }
+        ):
             continue
         refs = _allowed_refs(item.get("evidence_refs"), allowed)
         by_index[index] = GoalCriterionDecision(
@@ -467,6 +533,7 @@ __all__ = [
     "GoalCriterionDecision",
     "GoalEvaluationDecision",
     "GoalEvidenceItem",
+    "GoalMasteryEvidenceCandidate",
     "StructuredThreadGoalEvaluator",
     "ThreadGoalEvaluationRequest",
     "ThreadGoalEvaluator",

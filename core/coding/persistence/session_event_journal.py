@@ -70,6 +70,12 @@ def _deterministic_goal_event_id(
     value = f"sage:thread-goal:{session_id}:{purpose}:{source_run_id}:{revision}"
     return f"goal-{uuid.uuid5(uuid.NAMESPACE_URL, value).hex}"
 
+
+def _deterministic_mastery_receipt_id(session_id: str, source_event_id: str) -> str:
+    value = f"sage:mastery-receipt:{session_id}:{source_event_id}"
+    return f"mastery-{uuid.uuid5(uuid.NAMESPACE_URL, value).hex}"
+
+
 _EVENTS_SQL = """
 CREATE TABLE session_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -880,6 +886,7 @@ class SessionEventJournal:
         expected_revision: int,
         goal: Mapping[str, Any],
         reservation: Mapping[str, Any] | None,
+        mastery_deposit: Mapping[str, Any] | None = None,
     ) -> tuple[SessionEvent, SessionEvent | None]:
         """Atomically persist a terminal evaluation and optional follow-up reservation."""
         validated_source = _validate_identifier("source_run_id", source_run_id)
@@ -887,6 +894,7 @@ class SessionEventJournal:
             raise ValueError("expected_revision must be positive")
         goal_snapshot = dict(goal)
         reservation_snapshot = dict(reservation) if reservation is not None else None
+        mastery_snapshot = dict(mastery_deposit) if mastery_deposit is not None else None
         evaluation_event_id = _deterministic_goal_event_id(
             self.session_id,
             "evaluation",
@@ -940,13 +948,14 @@ class SessionEventJournal:
                 ).fetchone()
                 if terminal is None:
                     raise SessionEventJournalError("source run is not terminal")
-                if connection.execute(
-                    "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
-                    (int(terminal["sequence"]),),
-                ).fetchone() is not None:
-                    raise SessionEventJournalError(
-                        "source run was superseded by newer user input"
-                    )
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
+                        (int(terminal["sequence"]),),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise SessionEventJournalError("source run was superseded by newer user input")
                 started = connection.execute(
                     "SELECT * FROM session_events WHERE run_id = ? "
                     "AND kind = 'system' ORDER BY sequence LIMIT 1",
@@ -971,6 +980,11 @@ class SessionEventJournal:
                         "version": 2,
                         "source_run_id": validated_source,
                         "goal": goal_snapshot,
+                        **(
+                            {"mastery_deposit": mastery_snapshot}
+                            if mastery_snapshot is not None
+                            else {}
+                        ),
                     },
                     event_id=evaluation_event_id,
                     timestamp=None,
@@ -1035,15 +1049,19 @@ class SessionEventJournal:
             current = self._current_thread_goal(connection)
             if current is None or current.get("status") != "active":
                 return None
-            if connection.execute(
-                "SELECT 1 FROM active_run_lease WHERE lease_key = 1"
-            ).fetchone() is not None:
+            if (
+                connection.execute("SELECT 1 FROM active_run_lease WHERE lease_key = 1").fetchone()
+                is not None
+            ):
                 return None
             followup_run_id = str(reservation.get("run_id", ""))
-            if connection.execute(
-                "SELECT 1 FROM session_events WHERE run_id = ? LIMIT 1",
-                (followup_run_id,),
-            ).fetchone() is not None:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM session_events WHERE run_id = ? LIMIT 1",
+                    (followup_run_id,),
+                ).fetchone()
+                is not None
+            ):
                 return None
             newer_user = connection.execute(
                 "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
@@ -1053,6 +1071,85 @@ class SessionEventJournal:
                 return None
             reservation["scheduled_sequence"] = scheduled_event.sequence
             return reservation
+
+    def pending_mastery_deposits(self, *, limit: int = 100) -> tuple[dict[str, Any], ...]:
+        """Return journal-backed Mastery outbox entries without a durable receipt."""
+        if type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("limit must be between 1 and 500")
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM session_events WHERE run_id = 'thread-goal' "
+                "AND kind = 'harness' "
+                "AND json_type(payload_json, '$.mastery_deposit') = 'object' "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM session_events receipt "
+                "WHERE receipt.kind = 'harness' "
+                "AND json_extract(receipt.payload_json, '$.type') = 'mastery_evidence_recorded' "
+                "AND json_extract(receipt.payload_json, '$.source_event_id') = session_events.event_id"
+                ") ORDER BY sequence DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        pending: list[dict[str, Any]] = []
+        for row in reversed(rows):
+            event = _event_from_row(row, self.session_id)
+            deposit = event.payload.get("mastery_deposit")
+            if (
+                event.payload.get("type") != "thread_goal_evaluated"
+                or not isinstance(deposit, Mapping)
+            ):
+                continue
+            pending.append(
+                {
+                    "source_event_id": event.event_id,
+                    "source_run_id": str(event.payload.get("source_run_id", "")),
+                    **dict(deposit),
+                }
+            )
+            if len(pending) >= limit:
+                break
+        return tuple(pending)
+
+    def append_mastery_deposit_receipt(
+        self,
+        *,
+        source_event_id: str,
+        source_run_id: str,
+        evidence_ids: tuple[str, ...],
+        learning_goal_id: str,
+        learning_goal_revision: str,
+    ) -> SessionEvent:
+        """Acknowledge one outbox entry after the cross-session Ledger commits."""
+        validated_source_event = _validate_identifier("source_event_id", source_event_id)
+        validated_run = _validate_identifier("source_run_id", source_run_id)
+        ids = tuple(
+            dict.fromkeys(_validate_identifier("evidence_id", item) for item in evidence_ids)
+        )
+        if not ids or len(ids) > 32:
+            raise ValueError("evidence_ids must contain between 1 and 32 items")
+        event_id = _deterministic_mastery_receipt_id(self.session_id, validated_source_event)
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT * FROM session_events WHERE event_id = ?", (event_id,)
+            ).fetchone()
+            if existing is not None:
+                return _event_from_row(existing, self.session_id)
+        return self.append(
+            run_id=validated_run,
+            kind="harness",
+            status="completed",
+            payload={
+                "type": "mastery_evidence_recorded",
+                "version": 1,
+                "source_event_id": validated_source_event,
+                "learning_goal_id": _validate_identifier("learning_goal_id", learning_goal_id),
+                "learning_goal_revision": _validate_identifier(
+                    "learning_goal_revision", learning_goal_revision
+                ),
+                "evidence_ids": list(ids),
+                "evidence_count": len(ids),
+            },
+            event_id=event_id,
+        )
 
     def run_goal_followup(self, run_id: str) -> dict[str, Any] | None:
         """Return the reservation receipt atomically consumed by run_started."""
@@ -1248,9 +1345,7 @@ class SessionEventJournal:
         payload = scheduled.payload
         for field in ("run_id", "source_run_id", "goal_id", "goal_revision", "prompt"):
             if payload.get(field) != goal_followup.get(field):
-                raise SessionEventJournalError(
-                    f"goal follow-up {field} does not match reservation"
-                )
+                raise SessionEventJournalError(f"goal follow-up {field} does not match reservation")
         if payload.get("run_id") != run_id:
             raise SessionEventJournalError("goal follow-up run does not match requested run")
         current = self._current_thread_goal(connection)
@@ -1258,10 +1353,13 @@ class SessionEventJournal:
             raise SessionThreadGoalConflictError(self._thread_goal_revision(connection))
         if payload.get("goal_revision") != self._thread_goal_revision(connection):
             raise SessionThreadGoalConflictError(self._thread_goal_revision(connection))
-        if connection.execute(
-            "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
-            (scheduled.sequence,),
-        ).fetchone() is not None:
+        if (
+            connection.execute(
+                "SELECT 1 FROM session_events WHERE sequence > ? AND kind = 'user' LIMIT 1",
+                (scheduled.sequence,),
+            ).fetchone()
+            is not None
+        ):
             raise SessionEventJournalError("goal follow-up was superseded by user input")
 
     def _insert(
