@@ -131,21 +131,21 @@ it('emits the compact graph navigation controls without owning graph state', asy
 
   const rail = mount(KnowledgeSourceRail, { props: { activeMode: 'graph', attentionCount: 12 } })
   await rail.get('button[data-mode="wiki"]').trigger('click')
-  await rail.get('.rail-import').trigger('click')
   expect(rail.emitted('select')).toEqual([['wiki']])
-  expect(rail.emitted('import')).toHaveLength(1)
+  expect(rail.find('.rail-import').exists()).toBe(false)
 })
 
 it('keeps workspace status and source actions in one restrained header', async () => {
   const wrapper = mount(KnowledgeWorkspaceHeader, {
     props: {
       workspaceName: 'Sage-knowledge', connected: true, stale: false,
-      syncing: false, graphRevision: 'kgraph_1234567890abcdef',
+      syncing: false,
     },
   })
 
   expect(wrapper.text()).toContain('来源与索引已连接')
-  expect(wrapper.text()).toContain('kgraph_123456789')
+  expect(wrapper.text()).not.toContain('kgraph_')
+  expect(wrapper.text()).toContain('导入知识库')
   await wrapper.get('button[aria-label="同步图谱"]').trigger('click')
   await wrapper.get('.import-action').trigger('click')
   expect(wrapper.emitted('sync')).toHaveLength(1)
@@ -251,7 +251,8 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
     },
   })
 
-  expect(wrapper.text()).toContain('wiki/sources/harness.md')
+  expect(wrapper.text()).toContain('Agent Harness')
+  expect(wrapper.text()).not.toContain('wiki/sources/harness.md')
   await flushPromises()
   expect(document.activeElement).toBe(wrapper.get('button[aria-label="关闭知识详情"]').element)
   await wrapper.findAll('.inspector-tabs button')[1].trigger('click')

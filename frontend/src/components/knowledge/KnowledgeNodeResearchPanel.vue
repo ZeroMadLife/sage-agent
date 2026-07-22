@@ -14,10 +14,6 @@ const emit = defineEmits<{
   choose: [intent: KnowledgeNodeResearchIntent]
 }>()
 
-function shortRevision(value: string | null) {
-  if (!value) return ''
-  return value.length > 12 ? `${value.slice(0, 12)}...` : value
-}
 </script>
 
 <template>
@@ -29,15 +25,15 @@ function shortRevision(value: string | null) {
         <strong id="node-research-title" :title="model.label">研究「{{ model.label }}」</strong>
       </div>
       <em :class="{ limited: !model.evidenceBound }">
-        {{ model.evidenceBound ? 'revision 已绑定' : '证据待补' }}
+        {{ model.evidenceBound ? '证据已绑定' : '证据待补' }}
       </em>
     </header>
 
     <p class="research-boundary">
       <span>提交上下文</span>
-      <code v-if="model.graphRevision">graph {{ shortRevision(model.graphRevision) }}</code>
-      <code v-if="model.pageRevision">page {{ shortRevision(model.pageRevision) }}</code>
-      <code v-if="model.sourceRevision">source {{ shortRevision(model.sourceRevision) }}</code>
+      <span v-if="model.graphRevision">图谱</span>
+      <span v-if="model.pageRevision">知识页</span>
+      <span v-if="model.sourceRevision">来源</span>
       <span v-if="loading">邻域读取中</span>
       <span v-else-if="model.directConnectionCount !== null">1 跳 · {{ model.directConnectionCount }} 条连接</span>
       <span v-if="model.goalCapability">目标 · {{ model.goalCapability }}</span>
@@ -54,7 +50,7 @@ function shortRevision(value: string | null) {
         <Dumbbell :size="15" /><span>生成练习</span>
       </button>
     </div>
-    <p class="research-guardrail">动作只填入可编辑任务；发送时才冻结节点与 revision。</p>
+    <p class="research-guardrail">动作只填入可编辑任务；发送时才冻结所选节点与版本。</p>
   </section>
 </template>
 

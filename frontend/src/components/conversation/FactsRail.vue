@@ -6,7 +6,6 @@ import {
   ChevronRight,
   Circle,
   FileSearch,
-  ListTree,
   LoaderCircle,
   PanelRightClose,
   RotateCcw,
@@ -29,13 +28,11 @@ const props = withDefaults(defineProps<{
   reviewBundle: HarnessReviewBundle
   sourceProposalCount?: number
   context?: HarnessSurfaceContext | null
-  toolCallCount?: number
   goalBusy?: boolean
   showHeader?: boolean
 }>(), {
   sourceProposalCount: 0,
   context: null,
-  toolCallCount: 0,
   goalBusy: false,
   showHeader: true,
 })
@@ -71,9 +68,14 @@ const hasEvidence = computed(() => (
   || props.reviewBundle.practice.completedToolCount > 0
   || pendingProposalCount.value > 0
 ))
+const showRunStatus = computed(() => (
+  visualState.value === 'running'
+  || visualState.value === 'tool'
+  || visualState.value === 'approval'
+))
 const hasFacts = computed(() => Boolean(
   props.threadGoal
-  || props.projection.runId
+  || showRunStatus.value
   || hasEvidence.value
   || props.context
   || failureOrRecovery.value,
@@ -89,7 +91,7 @@ const blockerLabel = computed(() => ({
 </script>
 
 <template>
-  <section class="facts-rail" :class="{ 'without-header': !showHeader }" aria-label="本轮事实" :data-run-id="projection.runId" :data-run-state="visualState">
+  <section class="facts-rail" :class="{ 'without-header': !showHeader }" aria-label="本轮事实" :data-run-state="visualState">
     <header v-if="showHeader" class="facts-header">
       <span><small>Facts</small><strong>本轮事实</strong></span>
       <button type="button" aria-label="收起事实栏" title="收起事实栏" @click="emit('close')"><PanelRightClose :size="16" /></button>
@@ -103,12 +105,12 @@ const blockerLabel = computed(() => ({
 
       <section v-if="failureOrRecovery" class="fact-section fact-recovery" data-fact="recovery">
         <header><component :is="stateMeta.icon" :size="14" /><strong>{{ stateMeta.label }}</strong></header>
-        <p>{{ visualState === 'recovering' ? `从 sequence ${projection.lastSequence || 0} 继续订阅，不重新执行。` : currentStage?.detail || '本轮运行未完成，已保留现有 timeline。' }}</p>
-        <button type="button" @click="emit('openDetails')">查看稳定点<ChevronRight :size="13" /></button>
+        <p>{{ visualState === 'recovering' ? '正在恢复对话，不会重复执行已经完成的步骤。' : currentStage?.detail || '本轮没有完成，已有进度已保留。' }}</p>
+        <button type="button" @click="emit('openDetails')">查看运行详情<ChevronRight :size="13" /></button>
       </section>
 
       <section v-if="threadGoal" class="fact-section fact-goal" data-fact="goal">
-        <header><Target :size="14" /><strong>当前目标</strong><code>rev {{ threadGoal.revision }}</code></header>
+        <header><Target :size="14" /><strong>当前目标</strong></header>
         <p class="fact-primary">{{ threadGoal.description }}</p>
         <p v-if="threadGoal.evaluation" class="fact-secondary">{{ blockerLabel }} · {{ threadGoal.evaluation.next_action }}</p>
         <ul><li v-for="(criterion, index) in threadGoal.completion_criteria.slice(0, 3)" :key="criterion"><span>{{ threadGoal.evaluation?.criteria[index]?.status === 'met' ? '✓' : '○' }}</span>{{ criterion }}</li></ul>
@@ -118,10 +120,8 @@ const blockerLabel = computed(() => ({
         </div>
       </section>
 
-      <section v-if="projection.runId" class="fact-section fact-run" data-fact="run">
-        <header><ListTree :size="14" /><strong>本轮 Run</strong><code>{{ projection.runId.slice(0, 12) }}</code></header>
-        <div class="run-summary"><component :is="stateMeta.icon" :size="15" /><span><strong>{{ stateMeta.label }}</strong><small>{{ currentStage?.label || '等待下一阶段' }}</small></span><em>{{ toolCallCount }} 工具</em></div>
-        <div class="run-stage-track" :aria-label="`${projection.stages.filter((stage) => stage.status === 'completed').length}/${projection.stages.length} 个阶段完成`"><i v-for="stage in projection.stages" :key="stage.id" :class="stage.status" :title="`${stage.label} · ${stage.status}`"></i></div>
+      <section v-if="showRunStatus" class="fact-section fact-run" data-fact="run">
+        <div class="run-summary"><component :is="stateMeta.icon" :size="15" /><span><strong>{{ stateMeta.label }}</strong><small>{{ currentStage?.label || '准备下一步' }}</small></span></div>
       </section>
 
       <section v-if="hasEvidence" class="fact-section fact-evidence" data-fact="evidence">
@@ -141,7 +141,7 @@ const blockerLabel = computed(() => ({
       <div v-if="!hasFacts && !$slots.attention" class="facts-empty"><Circle :size="17" /><strong>等待你的下一步</strong><span>发送消息后，这里只显示影响下一步决策的事实。</span></div>
     </div>
 
-    <footer class="facts-footer"><button type="button" @click="emit('openDetails')">打开完整运行详情<ChevronRight :size="14" /></button></footer>
+    <footer v-if="hasFacts || $slots.attention" class="facts-footer"><button type="button" @click="emit('openDetails')">查看完整过程<ChevronRight :size="14" /></button></footer>
   </section>
 </template>
 
@@ -160,8 +160,7 @@ const blockerLabel = computed(() => ({
 .fact-recovery > button,.proposal-action { display: flex; align-items: center; gap: 5px; min-height: 30px; margin-top: 9px; padding: 0; border: 0; color: var(--sage-source); background: transparent; font-size: 10px; }
 .fact-goal ul { display: grid; gap: 5px; margin: 10px 0 0; padding: 0; list-style: none; }.fact-goal li { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 5px; color: var(--sage-text-muted); font-size: 10px; line-height: 1.4; }.fact-goal li span { color: var(--sage-success); }
 .fact-actions { display: flex; gap: 6px; margin-top: 11px; }.fact-actions button { min-height: 30px; padding: 0 8px; border: 1px solid var(--sage-border); border-radius: var(--sage-radius-sm); color: var(--sage-text-secondary); background: var(--sage-surface); font-size: 10px; }.fact-actions button.primary { border-color: var(--sage-brand-strong); color: white; background: var(--sage-brand-strong); }.fact-actions button:disabled { cursor: not-allowed; opacity: .5; }
-.run-summary { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; align-items: center; gap: 7px; }.run-summary > span { display: grid; }.run-summary strong { font-size: 11px; }.run-summary small,.run-summary em { color: var(--sage-text-muted); font-size: 9px; font-style: normal; }
-.run-stage-track { display: grid; grid-template-columns: repeat(auto-fit, minmax(12px, 1fr)); gap: 3px; height: 3px; margin-top: 9px; }.run-stage-track i { border-radius: 2px; background: var(--sage-border); }.run-stage-track i.completed { background: var(--sage-success); }.run-stage-track i.running { background: var(--sage-source); }.run-stage-track i.blocked { background: var(--sage-warning); }.run-stage-track i.failed,.run-stage-track i.cancelled { background: var(--sage-danger); }
+.run-summary { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 7px; }.run-summary > span { display: grid; }.run-summary strong { font-size: 11px; }.run-summary small { color: var(--sage-text-muted); font-size: 9px; }
 .fact-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--sage-border); border-radius: var(--sage-radius); }.fact-metrics > span { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; min-height: 48px; padding: 7px 8px; border-right: 1px solid var(--sage-border); }.fact-metrics > span:last-child { border-right: 0; }.fact-metrics svg { grid-row: 1 / 3; color: var(--sage-source); }.fact-metrics strong { font-size: 13px; }.fact-metrics small { color: var(--sage-text-muted); font-size: 9px; }
 .proposal-action { width: 100%; justify-content: flex-start; color: var(--sage-review-strong); }.proposal-action svg:last-child { margin-left: auto; }
 .fact-context :deep(.context-receipt-chip) { grid-template-columns: 18px minmax(0, 1fr) auto; }.fact-context :deep(.context-receipt-state) { grid-column: 2; }.fact-context :deep(.context-receipt-chip button) { grid-column: 3; grid-row: 1 / 3; }

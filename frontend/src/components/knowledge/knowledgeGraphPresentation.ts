@@ -259,6 +259,59 @@ function stableFraction(value: string) {
   return (hash >>> 0) / 0xffffffff
 }
 
+export function visualCommunityAssignments(
+  graph: KnowledgeGraph,
+  communities: KnowledgeGraphCommunities | null,
+) {
+  const nodes = new Map(graph.nodes.map((node) => [node.node_id, node]))
+  const metrics = new Map(communities?.node_metrics.map((item) => [item.node_id, item]) ?? [])
+  const majorCommunities = (communities?.communities ?? [])
+    .filter((community) => community.node_count >= 3)
+    .sort((left, right) => right.node_count - left.node_count || left.community_id.localeCompare(right.community_id))
+  const majorIds = new Set(majorCommunities.map((community) => community.community_id))
+  const assigned = new Map<string, string>()
+  const load = new Map(majorCommunities.map((community) => [community.community_id, community.node_count]))
+  for (const node of graph.nodes) {
+    const communityId = metrics.get(node.node_id)?.community_id
+    if (communityId && majorIds.has(communityId)) assigned.set(node.node_id, communityId)
+  }
+
+  const directCandidates = new Map<string, Map<string, number>>()
+  for (const edge of graph.edges) {
+    for (const [nodeId, neighborId] of [
+      [edge.source_node_id, edge.target_node_id],
+      [edge.target_node_id, edge.source_node_id],
+    ]) {
+      if (nodes.get(nodeId)?.kind === 'source') continue
+      const majorCommunityId = assigned.get(neighborId)
+      if (!majorCommunityId) continue
+      const candidates = directCandidates.get(nodeId) ?? new Map<string, number>()
+      candidates.set(majorCommunityId, (candidates.get(majorCommunityId) ?? 0) + edge.weight)
+      directCandidates.set(nodeId, candidates)
+    }
+  }
+
+  const satellites = graph.nodes
+    .filter((node) => node.kind !== 'source' && !assigned.has(node.node_id))
+    .sort((left, right) => left.node_id.localeCompare(right.node_id))
+  for (const node of satellites) {
+    const direct = [...(directCandidates.get(node.node_id) ?? [])]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0]
+    const balanced = majorCommunities
+      .slice()
+      .sort((left, right) => (
+        (load.get(left.community_id) ?? 0) - (load.get(right.community_id) ?? 0)
+        || stableFraction(`${node.node_id}:${left.community_id}`)
+          - stableFraction(`${node.node_id}:${right.community_id}`)
+      ))[0]?.community_id
+    const communityId = direct ?? balanced
+    if (!communityId) continue
+    assigned.set(node.node_id, communityId)
+    load.set(communityId, (load.get(communityId) ?? 0) + 1)
+  }
+  return assigned
+}
+
 function nodePriority(node: KnowledgeGraphNode, weightedDegree: number, bridgeScore: number) {
   const kindWeight = node.kind === 'source' ? 0 : 1
   return [kindWeight, weightedDegree, bridgeScore] as const
@@ -405,69 +458,188 @@ export function communitySeedPositions(
   graph: KnowledgeGraph,
   communities: KnowledgeGraphCommunities | null,
 ) {
-  const communityByNode = new Map(
-    communities?.node_metrics.map((item) => [item.node_id, item.community_id]) ?? [],
+  const metricByNode = new Map(
+    communities?.node_metrics.map((item) => [item.node_id, item]) ?? [],
   )
-  for (let pass = 0; pass < 2; pass += 1) {
-    for (const edge of graph.edges) {
-      const sourceCommunity = communityByNode.get(edge.source_node_id)
-      const targetCommunity = communityByNode.get(edge.target_node_id)
-      if (sourceCommunity && !targetCommunity) {
-        communityByNode.set(edge.target_node_id, sourceCommunity)
-      } else if (targetCommunity && !sourceCommunity) {
-        communityByNode.set(edge.source_node_id, targetCommunity)
-      }
-    }
-  }
-  const groups = new Map<string, KnowledgeGraphNode[]>()
-  for (const node of graph.nodes) {
-    const communityId = communityByNode.get(node.node_id) ?? `unassigned:${node.node_id}`
-    const group = groups.get(communityId) ?? []
-    group.push(node)
-    groups.set(communityId, group)
+  const nodeById = new Map(graph.nodes.map((node) => [node.node_id, node]))
+  const semanticNodes = graph.nodes.filter((node) => node.kind !== 'source')
+  const semanticNodeIds = new Set(semanticNodes.map((node) => node.node_id))
+  const semanticDegree = new Map(semanticNodes.map((node) => [node.node_id, 0]))
+  const semanticWeight = new Map(semanticNodes.map((node) => [node.node_id, 0]))
+  const semanticNeighbors = new Map<string, string[]>()
+
+  for (const edge of graph.edges) {
+    if (!semanticNodeIds.has(edge.source_node_id) || !semanticNodeIds.has(edge.target_node_id)) continue
+    semanticDegree.set(edge.source_node_id, (semanticDegree.get(edge.source_node_id) ?? 0) + 1)
+    semanticDegree.set(edge.target_node_id, (semanticDegree.get(edge.target_node_id) ?? 0) + 1)
+    semanticWeight.set(edge.source_node_id, (semanticWeight.get(edge.source_node_id) ?? 0) + edge.weight)
+    semanticWeight.set(edge.target_node_id, (semanticWeight.get(edge.target_node_id) ?? 0) + edge.weight)
+    semanticNeighbors.set(edge.source_node_id, [
+      ...(semanticNeighbors.get(edge.source_node_id) ?? []),
+      edge.target_node_id,
+    ])
+    semanticNeighbors.set(edge.target_node_id, [
+      ...(semanticNeighbors.get(edge.target_node_id) ?? []),
+      edge.source_node_id,
+    ])
   }
 
-  const orderedGroups = [...groups.entries()].sort((left, right) => (
+  const rawGroups = new Map<string, KnowledgeGraphNode[]>()
+  for (const node of semanticNodes) {
+    const communityId = metricByNode.get(node.node_id)?.community_id ?? 'unassigned'
+    const group = rawGroups.get(communityId) ?? []
+    group.push(node)
+    rawGroups.set(communityId, group)
+  }
+
+  const allGroups = [...rawGroups.entries()].sort((left, right) => (
     right[1].length - left[1].length || left[0].localeCompare(right[0])
   ))
+  const majorGroups = allGroups.filter(([, group]) => group.length >= 3)
+  const orderedGroups = majorGroups.length ? majorGroups : allGroups.slice(0, 1)
+  const majorCommunityIds = new Set(orderedGroups.map(([communityId]) => communityId))
+  const satelliteNodes = allGroups
+    .filter(([communityId]) => !majorCommunityIds.has(communityId))
+    .flatMap(([, group]) => group)
+    .sort((left, right) => left.node_id.localeCompare(right.node_id))
   const positions = new Map<string, { x: number; y: number }>()
-  const communityCenters: Array<{ x: number; y: number }> = [{ x: 0, y: 0 }]
-  let communityCursor = 1
-  let ring = 1
-  while (communityCursor < orderedGroups.length) {
-    const ringCount = Math.min(ring * 8, orderedGroups.length - communityCursor)
-    const ringRadius = ring * 8
-    const ringPhase = ring % 2 === 0 ? Math.PI / ringCount : 0
-    for (let index = 0; index < ringCount; index += 1) {
-      const angle = ringPhase + (Math.PI * 2 * index) / ringCount
-      communityCenters.push({
-        x: Math.cos(angle) * ringRadius,
-        y: Math.sin(angle) * ringRadius,
-      })
+  const largestGroupRadius = Math.max(3.8, Math.sqrt(orderedGroups[0]?.[1].length ?? 1) * 1.8)
+  const communityCenters = orderedGroups.map(([communityId, group], index) => {
+    if (index === 0) return { x: 0, y: 0 }
+    const ringIndex = Math.floor((index - 1) / 7)
+    const indexOnRing = (index - 1) % 7
+    const countOnRing = Math.min(7, orderedGroups.length - 1 - ringIndex * 7)
+    const phase = stableFraction(`community:${communityId}`) * 0.22 - 0.11
+    const angle = phase + (Math.PI * 2 * indexOnRing) / Math.max(1, countOnRing)
+    const groupRadius = Math.max(2.4, Math.sqrt(group.length) * 1.35)
+    const radius = largestGroupRadius + 17 + ringIndex * (largestGroupRadius + 18) + groupRadius
+    return {
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius * 0.78,
     }
-    communityCursor += ringCount
-    ring += 1
-  }
+  })
 
   orderedGroups.forEach(([communityId, group], communityIndex) => {
     const center = communityCenters[communityIndex] ?? { x: 0, y: 0 }
-    const localRadius = Math.max(1.6, 1.25 * Math.sqrt(group.length))
     const phase = stableFraction(communityId) * Math.PI * 2
-
-    group
+    const ranked = group
       .slice()
-      .sort((left, right) => left.node_id.localeCompare(right.node_id))
-      .forEach((node, nodeIndex) => {
-        const angle = phase + (Math.PI * 2 * nodeIndex) / Math.max(group.length, 1)
-        const radius = group.length === 1
-          ? 0
-          : localRadius * (0.72 + stableFraction(node.node_id) * 0.45)
-        positions.set(node.node_id, {
-          x: center.x + Math.cos(angle) * radius,
-          y: center.y + Math.sin(angle) * radius,
-        })
+      .sort((left, right) => {
+        const leftMetric = metricByNode.get(left.node_id)
+        const rightMetric = metricByNode.get(right.node_id)
+        const leftScore = (semanticWeight.get(left.node_id) ?? 0) * 4
+          + (semanticDegree.get(left.node_id) ?? 0) * 2
+          + (leftMetric?.bridge_score ?? 0)
+        const rightScore = (semanticWeight.get(right.node_id) ?? 0) * 4
+          + (semanticDegree.get(right.node_id) ?? 0) * 2
+          + (rightMetric?.bridge_score ?? 0)
+        return rightScore - leftScore || left.node_id.localeCompare(right.node_id)
       })
+    const hub = ranked[0]
+    if (!hub) return
+    positions.set(hub.node_id, center)
+
+    const connected = ranked.slice(1).filter((node) => (semanticDegree.get(node.node_id) ?? 0) > 1)
+    const leaves = ranked.slice(1).filter((node) => (semanticDegree.get(node.node_id) ?? 0) <= 1)
+    const innerRingCapacity = Math.max(6, Math.ceil(Math.sqrt(group.length) * 2.2))
+
+    connected.forEach((node, nodeIndex) => {
+      const ringIndex = Math.floor(nodeIndex / innerRingCapacity)
+      const indexOnRing = nodeIndex % innerRingCapacity
+      const countOnRing = Math.min(innerRingCapacity, connected.length - ringIndex * innerRingCapacity)
+      const angle = phase + (Math.PI * 2 * indexOnRing) / Math.max(1, countOnRing)
+      const radius = 2.05 + ringIndex * 1.75
+      positions.set(node.node_id, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      })
+    })
+
+    const connectedRings = connected.length ? Math.ceil(connected.length / innerRingCapacity) : 0
+    const leafRingCapacity = Math.max(10, Math.ceil(Math.sqrt(Math.max(1, leaves.length)) * 3.2))
+    const leafBaseRadius = 3.7 + connectedRings * 1.75
+    leaves.forEach((node, nodeIndex) => {
+      const ringIndex = Math.floor(nodeIndex / leafRingCapacity)
+      const indexOnRing = nodeIndex % leafRingCapacity
+      const countOnRing = Math.min(leafRingCapacity, leaves.length - ringIndex * leafRingCapacity)
+      const angle = phase + 0.18 + (Math.PI * 2 * indexOnRing) / Math.max(1, countOnRing)
+      const radius = leafBaseRadius + ringIndex * 1.35
+      positions.set(node.node_id, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      })
+    })
   })
+
+  const visualCommunityByNode = visualCommunityAssignments(graph, communities)
+  const satelliteBuckets = new Map(orderedGroups.map(([communityId]) => (
+    [communityId, [] as KnowledgeGraphNode[]]
+  )))
+  satelliteNodes.forEach((node, nodeIndex) => {
+    const targetCommunity = visualCommunityByNode.get(node.node_id)
+      ?? orderedGroups[nodeIndex % Math.max(1, orderedGroups.length)]?.[0]
+    if (!targetCommunity) return
+    satelliteBuckets.get(targetCommunity)?.push(node)
+  })
+
+  orderedGroups.forEach(([communityId, group], communityIndex) => {
+    const center = communityCenters[communityIndex] ?? { x: 0, y: 0 }
+    const satellites = satelliteBuckets.get(communityId) ?? []
+    const phase = stableFraction(`satellite-ring:${communityId}`) * Math.PI * 2
+    const ringCapacity = Math.max(12, Math.ceil(Math.sqrt(Math.max(1, satellites.length)) * 4))
+    const baseRadius = 4.5 + Math.ceil(Math.sqrt(group.length)) * 0.85
+    satellites.forEach((node, nodeIndex) => {
+      const ringIndex = Math.floor(nodeIndex / ringCapacity)
+      const indexOnRing = nodeIndex % ringCapacity
+      const countOnRing = Math.min(ringCapacity, satellites.length - ringIndex * ringCapacity)
+      const angle = phase + (Math.PI * 2 * indexOnRing) / Math.max(1, countOnRing)
+      const radius = baseRadius + ringIndex * 1.4
+      positions.set(node.node_id, {
+        x: center.x + Math.cos(angle) * radius,
+        y: center.y + Math.sin(angle) * radius,
+      })
+    })
+  })
+
+  const sourceNeighbors = new Map<string, string[]>()
+  for (const edge of graph.edges) {
+    const sourceNode = nodeById.get(edge.source_node_id)
+    const targetNode = nodeById.get(edge.target_node_id)
+    if (sourceNode?.kind === 'source' && targetNode?.kind !== 'source') {
+      sourceNeighbors.set(sourceNode.node_id, [
+        ...(sourceNeighbors.get(sourceNode.node_id) ?? []),
+        targetNode?.node_id ?? '',
+      ])
+    }
+    if (targetNode?.kind === 'source' && sourceNode?.kind !== 'source') {
+      sourceNeighbors.set(targetNode.node_id, [
+        ...(sourceNeighbors.get(targetNode.node_id) ?? []),
+        sourceNode?.node_id ?? '',
+      ])
+    }
+  }
+  const sourceNodes = graph.nodes.filter((node) => node.kind === 'source')
+  sourceNodes.forEach((node, nodeIndex) => {
+    const anchorId = sourceNeighbors.get(node.node_id)?.find((candidate) => positions.has(candidate))
+    const anchor = anchorId ? positions.get(anchorId) : undefined
+    const angle = stableFraction(`source:${node.node_id}`) * Math.PI * 2
+    const radius = anchor ? 0.95 + stableFraction(node.node_id) * 0.6 : 8 + nodeIndex * 0.08
+    positions.set(node.node_id, {
+      x: (anchor?.x ?? 0) + Math.cos(angle) * radius,
+      y: (anchor?.y ?? 0) + Math.sin(angle) * radius,
+    })
+  })
+
+  for (const node of semanticNodes) {
+    if (positions.has(node.node_id)) continue
+    const neighbors = semanticNeighbors.get(node.node_id) ?? []
+    const anchor = neighbors.map((nodeId) => positions.get(nodeId)).find(Boolean)
+    const angle = stableFraction(node.node_id) * Math.PI * 2
+    positions.set(node.node_id, {
+      x: (anchor?.x ?? 0) + Math.cos(angle) * 2.8,
+      y: (anchor?.y ?? 0) + Math.sin(angle) * 2.8,
+    })
+  }
 
   return positions
 }

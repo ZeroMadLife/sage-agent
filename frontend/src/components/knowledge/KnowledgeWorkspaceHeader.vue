@@ -6,13 +6,11 @@ withDefaults(defineProps<{
   connected?: boolean
   stale?: boolean
   syncing?: boolean
-  graphRevision?: string
 }>(), {
   workspaceName: '本地知识空间',
   connected: false,
   stale: false,
   syncing: false,
-  graphRevision: '',
 })
 
 defineEmits<{
@@ -33,9 +31,8 @@ defineEmits<{
       </span>
     </div>
     <div class="knowledge-workspace-actions">
-      <code v-if="graphRevision">{{ graphRevision.slice(0, 16) }}</code>
-      <button type="button" :disabled="syncing" aria-label="同步图谱" title="同步图谱" @click="$emit('sync')"><RefreshCw :size="16" :class="{ spinning: syncing }" /><span class="sr-only">同步图谱</span></button>
-      <button class="import-action primary-button" type="button" @click="$emit('import')"><Upload :size="15" /><span>导入来源</span></button>
+      <button type="button" :disabled="syncing" aria-label="同步图谱" title="同步图谱" @click="$emit('sync')"><RefreshCw :size="16" :class="{ spinning: syncing }" /></button>
+      <button class="import-action primary-button" type="button" @click="$emit('import')"><Upload :size="15" /><span>导入知识库</span></button>
     </div>
   </header>
 </template>
@@ -47,10 +44,9 @@ defineEmits<{
 .knowledge-workspace-identity>button:hover,.knowledge-workspace-actions>button:not(.import-action):hover { color:var(--sage-text); background:var(--sage-surface-muted); }
 .workspace-symbol { display:grid; place-items:center; width:32px; height:32px; flex:none; border-radius:var(--sage-radius); color:var(--sage-brand-strong); background:var(--sage-brand-bg); }
 .workspace-copy { display:grid; min-width:0; gap:1px; }.workspace-copy strong { max-width:280px; overflow:hidden; font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.workspace-copy small { display:flex; align-items:center; gap:5px; color:var(--sage-text-muted); font-size:10px; }.workspace-copy i { width:6px; height:6px; border-radius:50%; background:var(--sage-border-strong); }.workspace-copy i.ready { background:var(--sage-success); }
-.knowledge-workspace-actions code { max-width:150px; overflow:hidden; color:var(--sage-text-muted); font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
 .import-action { display:flex; align-items:center; justify-content:center; gap:6px; min-height:34px; padding:0 11px; border:1px solid var(--sage-brand-strong); border-radius:var(--sage-radius); color:white; background:var(--sage-brand-strong); font-size:var(--sage-font-xs); font-weight:650; }
 .knowledge-workspace-actions button:disabled { cursor:not-allowed; opacity:.55; }
 .spinning { animation:spin .9s linear infinite; }@keyframes spin { to { transform:rotate(360deg); } }
-@media (max-width:620px) { .knowledge-workspace-header { padding-left:52px; }.workspace-symbol,.knowledge-workspace-actions code,.import-action span { display:none; }.workspace-copy strong { max-width:165px; }.import-action { width:34px; padding:0; } }
+@media (max-width:620px) { .knowledge-workspace-header { padding-left:52px; }.workspace-symbol,.import-action span { display:none; }.workspace-copy strong { max-width:165px; }.import-action { width:34px; padding:0; } }
 @media (prefers-reduced-motion:reduce) { .spinning { animation:none; } }
 </style>

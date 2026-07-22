@@ -22,6 +22,7 @@ import {
   graphScopeNodeIds,
   selectedNodePresentation,
   shortestGraphPath,
+  visualCommunityAssignments,
   type KnowledgeGraphScopeMode,
 } from './knowledgeGraphPresentation'
 
@@ -60,6 +61,7 @@ let themeObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 let layoutSupervisor: { start(): void; stop(): void; kill(): void } | null = null
 let layoutStopTimer: ReturnType<typeof setTimeout> | null = null
+let layoutSettleFrame: number | null = null
 let renderRequest = 0
 let rendererPending = false
 let rendererDirty = true
@@ -158,16 +160,16 @@ const metricByNode = computed(() => {
   }
   return metrics
 })
-const communityByNode = computed(() => new Map(
-  [...metricByNode.value]
-    .filter(([, item]) => item.community_id)
-    .map(([nodeId, item]) => [nodeId, item.community_id as string]),
-))
+const visualCommunityByNode = computed(() => {
+  return visualCommunityAssignments(props.graph, props.communities)
+})
 const degreeByNode = computed(() => new Map(
   [...metricByNode.value].map(([nodeId, item]) => [nodeId, item.degree]),
 ))
 const communityColor = computed(() => {
-  const ids = [...new Set(props.communities?.communities.map((item) => item.community_id) ?? [])]
+  const ids = [...new Set(props.communities?.communities
+    .filter((item) => item.node_count >= 3)
+    .map((item) => item.community_id) ?? [])]
   ids.sort()
   return new Map(ids.map((id, index) => [id, communityPalette[index % communityPalette.length]]))
 })
@@ -227,13 +229,13 @@ function isNodeVisible(node: KnowledgeGraphNode) {
 
 function nodeColor(node: KnowledgeGraphNode) {
   if (props.colorMode === 'type') return typeColors[node.kind]
-  const communityId = communityByNode.value.get(node.node_id)
-  return (communityId && communityColor.value.get(communityId)) || typeColors[node.kind]
+  const communityId = visualCommunityByNode.value.get(node.node_id)
+  return communityId ? communityColor.value.get(communityId) ?? '#aeb5bd' : typeColors[node.kind]
 }
 
 function layoutCacheKey() {
   const analysisRevision = props.communities?.analysis.analysis_revision ?? 'unclustered'
-  return `sage.knowledge.graph.layout.v9.${props.graph.snapshot.graph_revision}.${analysisRevision}`
+  return `sage.knowledge.graph.layout.v12.${props.graph.snapshot.graph_revision}.${analysisRevision}`
 }
 
 function canvasLabel(label: string) {
@@ -264,6 +266,47 @@ function savePositions(graph: Graph) {
   } catch {
     // Layout persistence is an enhancement; private browsing must not break the graph.
   }
+}
+
+function settleToCommunityOrbits(
+  graph: Graph,
+  targets: Map<string, { x: number; y: number }>,
+  durationMs = 420,
+) {
+  if (layoutSettleFrame !== null) cancelAnimationFrame(layoutSettleFrame)
+  const starts = new Map<string, { x: number; y: number }>()
+  const ends = new Map<string, { x: number; y: number }>()
+  graph.forEachNode((nodeId, attributes) => {
+    const start = { x: Number(attributes.x), y: Number(attributes.y) }
+    const target = targets.get(nodeId) ?? start
+    starts.set(nodeId, start)
+    ends.set(nodeId, {
+      x: start.x * 0.05 + target.x * 0.95,
+      y: start.y * 0.05 + target.y * 0.95,
+    })
+  })
+  const startedAt = performance.now()
+
+  const step = (now: number) => {
+    if (sigmaGraph !== graph) return
+    const progress = Math.min(1, (now - startedAt) / durationMs)
+    const eased = 1 - Math.pow(1 - progress, 3)
+    graph.forEachNode((nodeId) => {
+      const start = starts.get(nodeId)
+      const end = ends.get(nodeId)
+      if (!start || !end) return
+      graph.setNodeAttribute(nodeId, 'x', start.x + (end.x - start.x) * eased)
+      graph.setNodeAttribute(nodeId, 'y', start.y + (end.y - start.y) * eased)
+    })
+    renderer?.refresh()
+    if (progress < 1) {
+      layoutSettleFrame = requestAnimationFrame(step)
+      return
+    }
+    layoutSettleFrame = null
+    savePositions(graph)
+  }
+  layoutSettleFrame = requestAnimationFrame(step)
 }
 
 function applyPresentation() {
@@ -378,6 +421,8 @@ function hasRenderableArea() {
 function destroyRenderer() {
   if (layoutStopTimer) clearTimeout(layoutStopTimer)
   layoutStopTimer = null
+  if (layoutSettleFrame !== null) cancelAnimationFrame(layoutSettleFrame)
+  layoutSettleFrame = null
   layoutSupervisor?.kill()
   layoutSupervisor = null
   renderer?.kill()
@@ -554,14 +599,14 @@ async function mountRenderer(requestId: number) {
       if (requestId !== renderRequest || sigmaGraph !== graph) return
       layoutSupervisor = new FA2LayoutSupervisor(graph, {
         settings: {
-          edgeWeightInfluence: 0.55,
-          gravity: 0.24,
+          edgeWeightInfluence: 0.28,
+          gravity: 0.12,
           linLogMode: true,
           scalingRatio: performanceProfile.value.tier === 'large'
-            ? 32
-            : performanceProfile.value.tier === 'medium' ? 22 : 16,
+            ? 48
+            : performanceProfile.value.tier === 'medium' ? 36 : 24,
           strongGravityMode: false,
-          slowDown: performanceProfile.value.tier === 'small' ? 18 : 22,
+          slowDown: performanceProfile.value.tier === 'small' ? 32 : 38,
           barnesHutOptimize: performanceProfile.value.barnesHutOptimize,
           barnesHutTheta: 0.7,
         },
@@ -572,11 +617,12 @@ async function mountRenderer(requestId: number) {
         layoutSupervisor?.kill()
         layoutSupervisor = null
         layoutStopTimer = null
-        savePositions(graph)
-        renderer?.refresh()
+        settleToCommunityOrbits(graph, seedPositions)
       }, missingCachedPosition
-        ? performanceProfile.value.layoutDurationMs
-        : Math.min(650, performanceProfile.value.layoutDurationMs))
+        ? Math.min(900, performanceProfile.value.layoutDurationMs)
+        : Math.min(360, performanceProfile.value.layoutDurationMs))
+    } else {
+      savePositions(graph)
     }
     rendererDirty = false
   } catch (reason) {

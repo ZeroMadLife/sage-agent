@@ -15,7 +15,7 @@ it('shows factual submission boundaries and emits a research intent', async () =
   })
 
   expect(wrapper.text()).toContain('研究「Agent Harness」')
-  expect(wrapper.text()).toContain('revision 已绑定')
+  expect(wrapper.text()).toContain('证据已绑定')
   expect(wrapper.text()).toContain('1 跳 · 4 条连接')
   expect(wrapper.text()).toContain('动作只填入可编辑任务')
 

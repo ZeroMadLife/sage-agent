@@ -161,10 +161,12 @@ describe('CodingView chat route lifecycle', () => {
     const store = useCodingStore()
     store.sessionId = 'session-a'
     store.restoreCurrentSession = vi.fn()
+    store.disconnect = vi.fn()
     const { router, root } = await mountChat('/coding/session/session-a')
 
     await vi.waitFor(() => expect(store.restoreCurrentSession).toHaveBeenCalledTimes(1))
     await router.push('/settings/appearance')
+    expect(store.disconnect).not.toHaveBeenCalled()
     await router.push('/coding/session/session-a')
     await vi.waitFor(() => expect(store.restoreCurrentSession).toHaveBeenCalledTimes(2))
     root.unmount()
@@ -180,6 +182,8 @@ describe('CodingView chat route lifecycle', () => {
     await vi.waitFor(() => expect(store.selectSession).toHaveBeenCalledWith('session-b'))
     expect(wrapper().find('.pane-right').exists()).toBe(false)
     expect(wrapper().find('.conversation-workspace').exists()).toBe(true)
+    expect(wrapper().find('.facts-rail').exists()).toBe(false)
+    await wrapper().get('.facts-closed-rail button').trigger('click')
     expect(wrapper().find('.facts-rail').exists()).toBe(true)
     expect(wrapper().find('.coding-harness-workbench').exists()).toBe(false)
     await wrapper().get('button[aria-label="打开运行详情"]').trigger('click')
@@ -355,9 +359,8 @@ describe('CodingView chat route lifecycle', () => {
     ], { next_cursor: 4, has_more: false, active_run: null })
     const { root, wrapper } = await mountChat('/coding/session/session-a')
 
-    expect(wrapper().get('.facts-rail').attributes('data-run-id')).toBe('run-b')
+    expect(wrapper().get('[data-timeline-turn-id="turn:run-b"]').attributes('data-harness-selected')).toBe('true')
     await wrapper().get('[data-timeline-turn-id="turn:run-a"]').trigger('click')
-    expect(wrapper().get('.facts-rail').attributes('data-run-id')).toBe('run-a')
     expect(wrapper().get('[data-timeline-turn-id="turn:run-a"]').attributes('data-harness-selected')).toBe('true')
     root.unmount()
   })

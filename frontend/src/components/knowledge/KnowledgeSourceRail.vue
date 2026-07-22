@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { AlertTriangle, BookOpenText, History, Network, PanelLeftOpen, Upload } from 'lucide-vue-next'
+import { AlertTriangle, BookOpenText, History, Network, PanelLeftOpen } from 'lucide-vue-next'
 
 type KnowledgeMode = 'graph' | 'wiki' | 'activity' | 'attention'
 
@@ -11,7 +11,6 @@ defineProps<{
 defineEmits<{
   select: [mode: KnowledgeMode]
   openLibrary: []
-  import: []
 }>()
 
 const modes = [
@@ -37,8 +36,6 @@ const modes = [
       :aria-current="activeMode === item.id ? 'page' : undefined"
       @click="$emit('select', item.id)"
     ><component :is="item.icon" :size="17" /><em v-if="item.id === 'attention' && attentionCount">{{ attentionCount > 9 ? '9+' : attentionCount }}</em></button>
-    <span class="rail-spacer"></span>
-    <button class="rail-import" type="button" aria-label="导入知识来源" title="导入来源" @click="$emit('import')"><Upload :size="17" /></button>
   </aside>
 </template>
 
@@ -47,6 +44,6 @@ const modes = [
 .knowledge-source-rail button { position:relative; display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-radius:var(--sage-radius); color:var(--sage-text-muted); background:transparent; }
 .knowledge-source-rail button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.knowledge-source-rail button.active { color:var(--sage-brand-strong); background:var(--sage-brand-bg); }
 .knowledge-source-rail em { position:absolute; top:2px; right:2px; display:grid; place-items:center; min-width:14px; height:14px; padding:0 3px; border:2px solid var(--sage-surface); border-radius:7px; color:white; background:var(--sage-review-strong); font-size:8px; font-style:normal; }
-.rail-separator { width:24px; height:1px; margin:2px 0; background:var(--sage-border); }.rail-spacer { flex:1; }.knowledge-source-rail .rail-import { color:white; background:var(--sage-brand-strong); }
+.rail-separator { width:24px; height:1px; margin:2px 0; background:var(--sage-border); }
 @media (max-width:899px) { .knowledge-source-rail { display:none; } }
 </style>

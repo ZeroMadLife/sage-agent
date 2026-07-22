@@ -20,22 +20,14 @@ const label = computed(() => (
   || (props.context.surface === 'knowledge' ? 'Knowledge 上下文' : '当前上下文')
 ))
 
-function shortRef(value: string) {
-  return value.length > 14 ? `${value.slice(0, 14)}...` : value
-}
-
 const receipt = computed(() => {
   const parts: string[] = []
-  if (props.context.graphRevision) parts.push(`graph ${shortRef(props.context.graphRevision)}`)
+  if (props.context.graphRevision) parts.push('已绑定图谱')
   if (props.context.selection) {
-    const type = props.context.selection.type === 'graph_node' ? 'node' : props.context.selection.type
-    const revision = props.context.selection.revision ? `@${shortRef(props.context.selection.revision)}` : ''
-    parts.push(`${type} ${shortRef(props.context.selection.id)}${revision}`)
+    parts.push(props.context.selection.type === 'graph_node' ? '已选节点' : '已选内容')
   }
   if (props.context.resource) {
-    const type = props.context.resource.type === 'knowledge_page' ? 'page' : 'source'
-    const revision = props.context.resource.revision ? `@${shortRef(props.context.resource.revision)}` : ''
-    parts.push(`${type} ${shortRef(props.context.resource.id)}${revision}`)
+    parts.push(props.context.resource.type === 'knowledge_page' ? '已绑定知识页' : '已绑定来源')
   }
   return parts.join(' · ')
 })
@@ -76,7 +68,7 @@ const receipt = computed(() => {
 .context-receipt-copy strong,
 .context-receipt-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-receipt-copy strong { color: var(--sage-text-secondary); font-size: var(--sage-font-xs); }
-.context-receipt-copy small { color: var(--sage-text-muted); font-family: var(--sage-font-mono); font-size: 9px; }
+.context-receipt-copy small { color: var(--sage-text-muted); font-size: 9px; }
 .context-receipt-state { color: var(--sage-source); font-size: 10px; white-space: nowrap; }
 .context-receipt-chip[data-state="frozen"] { color: var(--sage-success); background: var(--sage-success-bg); }
 .context-receipt-chip[data-state="frozen"] .context-receipt-state { color: var(--sage-success); }

@@ -16,8 +16,9 @@ it('labels Knowledge context as pending until the backend confirms a frozen rece
 
   expect(wrapper.text()).toContain('Agent Harness')
   expect(wrapper.text()).toContain('提交时冻结')
-  expect(wrapper.text()).toContain('graph graph-1')
-  expect(wrapper.text()).toContain('node node-1@node-rev-7')
+  expect(wrapper.text()).toContain('已绑定图谱')
+  expect(wrapper.text()).toContain('已选节点')
+  expect(wrapper.text()).not.toContain('node-rev-7')
   await wrapper.get('button[aria-label="移除上下文 Agent Harness"]').trigger('click')
   expect(wrapper.emitted('remove')).toHaveLength(1)
 })

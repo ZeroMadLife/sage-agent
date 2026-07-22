@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ArrowUpRight,
@@ -14,15 +14,23 @@ import { openCommandPalette } from '../product-shell'
 const route = useRoute()
 const compact = ref(window.innerWidth < 900)
 
-const primaryItems = [
-  { id: 'conversation', label: '主对话', target: '/assistant', icon: MessageCircle },
-  { id: 'knowledge', label: 'Knowledge', target: '/knowledge', icon: BookOpenText },
-]
+const conversationTarget = computed(() => {
+  if (route.path.startsWith('/coding/session/')) return route.fullPath
+  const recentSessionId = localStorage.getItem('sage.coding.recentSessionId') || ''
+  return recentSessionId
+    ? `/coding/session/${encodeURIComponent(recentSessionId)}`
+    : '/assistant'
+})
 
-const mobileItems = [
-  ...primaryItems,
+const primaryItems = computed(() => [
+  { id: 'conversation', label: '主对话', target: conversationTarget.value, icon: MessageCircle },
+  { id: 'knowledge', label: 'Knowledge', target: '/knowledge', icon: BookOpenText },
+])
+
+const mobileItems = computed(() => [
+  ...primaryItems.value,
   { id: 'settings', label: '设置', target: '/settings/appearance', icon: Settings },
-]
+])
 
 function isActive(id: string) {
   if (id === 'conversation') return route.path === '/assistant' || route.path.startsWith('/coding')

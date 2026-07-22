@@ -6,6 +6,7 @@ import { closeCommandPalette, useCommandPalette } from '../product-shell'
 
 afterEach(() => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1200 })
+  localStorage.clear()
   closeCommandPalette(false)
 })
 
@@ -36,7 +37,7 @@ it('keeps only the approved primary destinations and treats coding sessions as m
   expect(labels).toEqual(['主对话', 'Knowledge'])
   expect(wrapper.text()).not.toContain('今天')
   expect(wrapper.text()).not.toContain('成长记录')
-  expect(wrapper.get('a[href="/assistant"]').classes()).toContain('active')
+  expect(wrapper.get('a[href="/coding/session/session-a"]').classes()).toContain('active')
   expect(wrapper.get('.public-link').text()).toContain('公开门面')
   expect(wrapper.get('.settings-link').text()).toContain('设置')
 })
@@ -58,5 +59,18 @@ it('uses a three-item bottom navigation and command trigger on mobile', async ()
 
   await wrapper.get('button[aria-label="打开命令面板"]').trigger('click')
   expect(useCommandPalette().commandPaletteOpen.value).toBe(true)
+  wrapper.unmount()
+})
+
+it('returns from knowledge to the most recent conversation', async () => {
+  localStorage.setItem('sage.coding.recentSessionId', 'session-active')
+  const router = createTestRouter()
+  await router.push('/knowledge')
+  const wrapper = mount(AssistantNavigation, {
+    slots: { default: '<p>知识图谱</p>' },
+    global: { plugins: [router] },
+  })
+
+  expect(wrapper.get('a[href="/coding/session/session-active"]').text()).toContain('主对话')
   wrapper.unmount()
 })
