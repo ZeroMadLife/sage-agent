@@ -35,7 +35,7 @@ const context: HarnessSurfaceContext = {
   graphRevision: 'graph-1', operationRefs: [],
 }
 
-it('orders decision facts before run, evidence, and context', () => {
+it('orders decisions before goal, evidence, and context without exposing run ids', () => {
   const review = emptyHarnessReviewBundle('run-1')
   review.evidence = {
     status: 'ready', query: '恢复', omittedCount: 0,
@@ -45,18 +45,20 @@ it('orders decision facts before run, evidence, and context', () => {
   const wrapper = mount(FactsRail, {
     props: {
       projection: projection(), connectionState: 'connected', threadGoal: goal(),
-      reviewBundle: review, sourceProposalCount: 1, context, toolCallCount: 2,
+      reviewBundle: review, sourceProposalCount: 1, context,
     },
     slots: { attention: '<button type="button">批准工具</button>' },
   })
 
   expect(wrapper.findAll('.fact-section').map((item) => item.attributes('data-fact'))).toEqual([
-    'attention', 'recovery', 'goal', 'run', 'evidence', 'context',
+    'attention', 'recovery', 'goal', 'evidence', 'context',
   ])
   expect(wrapper.text()).toContain('批准工具')
   expect(wrapper.text()).toContain('恢复最后稳定运行')
   expect(wrapper.text()).toContain('1 条证据')
   expect(wrapper.text()).toContain('2 条待审阅沉淀')
+  expect(wrapper.text()).not.toContain('run-1')
+  expect(wrapper.text()).not.toContain('rev 1')
 })
 
 it('does not render empty fact modules', () => {

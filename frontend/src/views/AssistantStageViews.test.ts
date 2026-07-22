@@ -19,9 +19,9 @@ import KnowledgeView from './KnowledgeView.vue'
 
 vi.mock('../components/knowledge', () => ({
   KnowledgeWorkspaceHeader: {
-    props: ['workspaceName', 'connected', 'stale', 'syncing', 'graphRevision'],
+    props: ['workspaceName', 'connected', 'stale', 'syncing'],
     emits: ['openLibrary', 'sync', 'import'],
-    template: '<header class="workspace-header-stub"><strong>{{ workspaceName }}</strong><button type="button" @click="$emit(\'sync\')">同步图谱</button><button class="primary-button" type="button" @click="$emit(\'import\')">导入来源</button></header>',
+    template: '<header class="workspace-header-stub"><strong>{{ workspaceName }}</strong><button type="button" @click="$emit(\'sync\')">同步图谱</button><button class="primary-button" type="button" @click="$emit(\'import\')">导入知识库</button></header>',
   },
   KnowledgeSourceRail: {
     props: ['activeMode', 'attentionCount'],
@@ -258,7 +258,7 @@ it('renders the versioned graph workspace without a duplicate RAG question form'
   expect(wrapper.text()).toContain('Sage-knowledge')
   expect(wrapper.text()).toContain('成为全栈 AI 应用工程师')
   expect(wrapper.get('.graph-stub').text()).toContain('真实图谱 2')
-  expect(wrapper.get('.knowledge-graph-toolbar').text()).toContain('source')
+  expect(wrapper.get('.knowledge-graph-toolbar').text()).not.toContain('source')
   expect(wrapper.find('.graph-heading').exists()).toBe(false)
   expect(wrapper.find('.knowledge-canvas-shell').exists()).toBe(true)
   expect(wrapper.find('.workbench-dock').exists()).toBe(false)
@@ -303,10 +303,10 @@ it('stages a revision-bound node draft for the canonical main chat without sendi
   wrapper.unmount()
 })
 
-it('keeps source nodes visible so evidence edges exist in the default graph', async () => {
+it('hides source nodes by default and reveals a selected evidence source', async () => {
   const wrapper = await mountKnowledge()
 
-  expect(wrapper.get('.graph-stub').text()).toContain('source')
+  expect(wrapper.get('.graph-stub').text()).not.toContain('source')
   await wrapper.get('.graph-stub').trigger('click')
   await flushPromises()
   await wrapper.get('.select-source').trigger('click')
@@ -484,7 +484,7 @@ it('shows a truthful empty state when the current graph has no nodes', async () 
   })
   const wrapper = await mountKnowledge()
 
-  expect(wrapper.text()).toContain('当前 revision 还没有图谱节点')
+  expect(wrapper.text()).toContain('当前知识库还没有图谱节点')
   expect(wrapper.find('.graph-stub').exists()).toBe(false)
   wrapper.unmount()
 })

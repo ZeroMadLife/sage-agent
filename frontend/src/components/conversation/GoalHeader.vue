@@ -28,7 +28,7 @@ const status = computed(() => {
     <div class="goal-leading">
       <span class="goal-mark"><Target :size="16" /></span>
       <span class="goal-copy">
-        <small>{{ threadGoal ? `当前目标 · rev ${threadGoal.revision}` : '当前会话' }}</small>
+        <small>{{ threadGoal ? '当前目标' : '当前会话' }}</small>
         <strong :title="threadGoal?.description || sessionTitle">{{ threadGoal?.description || sessionTitle }}</strong>
         <span v-if="threadGoal?.evaluation?.next_action">下一步：{{ threadGoal.evaluation.next_action }}</span>
         <span v-else>{{ threadGoal ? `${metCriteria} / ${threadGoal.completion_criteria.length} 条标准已有证据` : '尚未绑定长期目标，可以先直接对话' }}</span>

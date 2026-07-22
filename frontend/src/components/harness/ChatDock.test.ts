@@ -36,7 +36,7 @@ describe('ChatDock', () => {
     expect(wrapper.get('.run-strip-title').text()).toContain('调用工具')
     expect(wrapper.get('.surface-context-bar').text()).toContain('Agent Harness')
     expect(wrapper.get('.context-receipt-copy small').text()).toBe(
-      'graph graph-1 · node node-1@node-rev-7 · page page-1@page-rev-3',
+      '已绑定图谱 · 已选节点 · 已绑定知识页',
     )
     expect(wrapper.get('.surface-context-bar').text()).toContain('提交时冻结')
   })

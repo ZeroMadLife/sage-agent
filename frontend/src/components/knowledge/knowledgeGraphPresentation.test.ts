@@ -11,6 +11,7 @@ import {
   graphInteractionPalette,
   graphLegendItems,
   shortestGraphPath,
+  visualCommunityAssignments,
 } from './knowledgeGraphPresentation'
 
 const nodes = [
@@ -70,7 +71,24 @@ it('creates deterministic community-separated seed positions', () => {
   const second = communitySeedPositions(graph, communities)
 
   expect(first).toEqual(second)
+  expect(first.get('center')).toEqual({ x: 0, y: 0 })
+  expect(Math.hypot(first.get('page-neighbor')?.x ?? 0, first.get('page-neighbor')?.y ?? 0))
+    .toBeGreaterThan(3)
   expect(first.get('isolated')).not.toEqual(first.get('center'))
+})
+
+it('assigns small communities to a bounded set of visual communities', () => {
+  const analyzed = {
+    ...communities,
+    communities: [
+      { community_id: 'community-a', label: 'Harness', node_count: 3, edge_count: 2, cohesion: 0.7, properties: {} },
+      { community_id: 'community-b', label: '孤立知识', node_count: 1, edge_count: 0, cohesion: 0, properties: {} },
+    ],
+  }
+  const assignments = visualCommunityAssignments(graph, analyzed)
+
+  expect(new Set(assignments.values())).toEqual(new Set(['community-a']))
+  expect(assignments.get('isolated')).toBe('community-a')
 })
 
 it('builds a real legend for the active graph color mode', () => {

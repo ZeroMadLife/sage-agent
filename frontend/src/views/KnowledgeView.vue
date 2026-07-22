@@ -113,7 +113,7 @@ const graphScope = ref<KnowledgeGraphScopeMode>('global')
 const graphDepth = ref<1 | 2 | 3>(2)
 const showGoalPath = ref(false)
 const visibleKinds = ref<KnowledgeGraphNodeKind[]>([
-  'page', 'source', 'project', 'concept', 'decision', 'tool',
+  'page', 'project', 'concept', 'decision', 'tool',
 ])
 const query = ref('')
 const relativePath = ref('')
@@ -359,7 +359,7 @@ function selectPage(page: KnowledgePage) {
   else {
     selectedNodeId.value = null
     neighborhood.value = null
-    notice.value = '该页面尚未进入当前图谱 revision，但仍可阅读 Wiki 正文。'
+    notice.value = '该页面尚未进入当前图谱，但仍可阅读知识正文。'
   }
 }
 
@@ -396,7 +396,7 @@ async function rebuildIndex() {
   error.value = ''
   try {
     indexSummary.value = await rebuildKnowledgeIndex()
-    notice.value = '检索索引已按当前 Wiki revision 重建。'
+    notice.value = '检索索引已按当前知识版本重建。'
   } catch (reason) {
     error.value = explain(reason)
   } finally {
@@ -471,7 +471,7 @@ async function decide(proposal: KnowledgeProposal, action: 'approve' | 'reject')
   error.value = ''
   try {
     await transitionKnowledgeProposal(proposal.proposal_id, action, proposal.revision)
-    notice.value = action === 'approve' ? '异常知识已批准并形成新 revision。' : '异常知识已拒绝。'
+    notice.value = action === 'approve' ? '异常知识已批准并形成新版本。' : '异常知识已拒绝。'
     await refreshWorkspace()
   } catch (reason) {
     error.value = explain(reason)
@@ -488,7 +488,7 @@ async function undoAutoApply(proposal: KnowledgeProposal) {
   error.value = ''
   try {
     await undoKnowledgeAutoApply(proposal.proposal_id, revision)
-    notice.value = '已为自动沉淀内容创建撤销 revision。'
+    notice.value = '已为自动沉淀内容创建撤销版本。'
     await refreshWorkspace()
   } catch (reason) {
     error.value = explain(reason)
@@ -503,7 +503,7 @@ async function rollback(page: KnowledgePage, revisionId: string) {
   error.value = ''
   try {
     await proposeKnowledgeRollback(page.page_id, revisionId, page.current_revision)
-    notice.value = '回滚已生成可审核 diff，不会覆盖历史 revision。'
+    notice.value = '回滚已生成可审核差异，不会覆盖历史版本。'
     mode.value = 'attention'
     await refreshWorkspace()
   } catch (reason) {
@@ -603,7 +603,6 @@ onBeforeUnmount(() => {
       :connected="Boolean(summary)"
       :stale="Boolean(graph?.snapshot.stale)"
       :syncing="Boolean(busy.graph)"
-      :graph-revision="graph?.snapshot.graph_revision"
       @open-library="libraryOpen = true"
       @sync="rebuildGraphProjection"
       @import="importOpen = true"
@@ -624,7 +623,6 @@ onBeforeUnmount(() => {
         :attention-count="attentionCount"
         @select="mode = $event"
         @open-library="libraryOpen = true"
-        @import="importOpen = true"
       />
       <div
         v-if="libraryOpen"
@@ -664,7 +662,7 @@ onBeforeUnmount(() => {
         <section v-if="goal" class="goal-summary">
           <span><Target :size="15" />当前学习目标</span>
           <strong>{{ goal.title }}</strong>
-          <small>{{ goal.capabilities.length }} 项能力模型 · {{ goal.goal_revision.slice(0, 13) }}</small>
+          <small>{{ goal.capabilities.length }} 项能力模型</small>
         </section>
 
         <nav class="library-nav stage-tabs" role="tablist" aria-label="知识空间视图">
@@ -688,7 +686,7 @@ onBeforeUnmount(() => {
           <div class="tree-heading"><span>Wiki 页面</span><small>{{ filteredPages.length }}</small></div>
           <button v-for="page in pageTreePages" :key="page.page_id" type="button" @click="selectPage(page)">
             <BookOpenText :size="14" />
-            <span><strong>{{ page.title }}</strong><small>{{ page.revisions.length }} 个 revision</small></span>
+            <span><strong>{{ page.title }}</strong><small>{{ page.revisions.length }} 个版本</small></span>
           </button>
           <button v-if="mode === 'graph' && filteredPages.length > pageTreePages.length" type="button" class="page-tree-more" @click="mode = 'wiki'">
             查看全部 {{ filteredPages.length }} 个页面 <ChevronRight :size="14" />
@@ -697,7 +695,7 @@ onBeforeUnmount(() => {
         </div>
 
         <button type="button" class="library-import" @click="importOpen = true; libraryOpen = false">
-          <FilePlus2 :size="15" />添加知识来源
+          <FilePlus2 :size="15" />添加知识库
         </button>
       </aside>
 
@@ -724,7 +722,7 @@ onBeforeUnmount(() => {
 
         <div v-if="loading" class="stage-state" role="status">
           <RefreshCw :size="20" class="spinning" /><strong>正在装配本地图谱</strong>
-          <span>读取 Git Wiki revision、引用证据与社区分析...</span>
+            <span>正在读取知识页面、引用证据与社区结构...</span>
         </div>
 
         <template v-else-if="summary">
@@ -745,27 +743,27 @@ onBeforeUnmount(() => {
               @select="selectNode"
             />
             <div v-else class="stage-state empty">
-              <Network :size="26" /><strong>当前 revision 还没有图谱节点</strong>
+              <Network :size="26" /><strong>当前知识库还没有图谱节点</strong>
               <span>先从已授权来源导入 Markdown、HTML 或文本 PDF，再生成本地图谱。</span>
-              <button type="button" class="primary-button" @click="importOpen = true">导入来源</button>
+              <button type="button" class="primary-button" @click="importOpen = true">导入知识库</button>
             </div>
           </section>
 
           <section v-else-if="mode === 'wiki'" class="list-stage" aria-labelledby="wiki-title">
-            <header><div><h1 id="wiki-title">Git Wiki</h1><p>每次沉淀和回滚都会形成新的 revision，不覆盖来源和历史。</p></div><strong>{{ pages.length }}</strong></header>
+            <header><div><h1 id="wiki-title">知识页面</h1><p>每次沉淀和回滚都会形成新版本，不覆盖来源和历史。</p></div><strong>{{ pages.length }}</strong></header>
             <div class="wiki-list">
               <article v-for="page in filteredPages" :key="page.page_id">
                 <button type="button" class="wiki-main" @click="selectPage(page)">
                   <BookOpenText :size="18" />
-                  <span><strong>{{ page.title }}</strong><code>{{ page.path }}</code></span>
+                  <span><strong>{{ page.title }}</strong><small>知识页面</small></span>
                 </button>
                 <div><span>{{ page.revisions.length }} 个版本</span><span>{{ formatTime(page.updated_at) }}</span></div>
                 <button
                   v-if="page.revisions.length > 1"
                   type="button"
                   class="icon-button"
-                  title="回滚到上一个 revision"
-                  aria-label="回滚到上一个 revision"
+                  title="回滚到上一个版本"
+                  aria-label="回滚到上一个版本"
                   :disabled="busy[`rollback:${page.page_id}`]"
                   @click="rollback(page, page.revisions[1].revision_id)"
                 ><RotateCcw :size="16" /></button>
@@ -783,8 +781,7 @@ onBeforeUnmount(() => {
             </header>
             <div class="index-line" v-if="indexSummary">
               <Database :size="17" />
-              <span><strong>{{ indexSummary.status === 'ready' ? 'Hybrid 索引就绪' : '索引已降级' }}</strong><small>{{ indexSummary.indexed_revision_count }}/{{ indexSummary.revision_count }} revisions · {{ indexSummary.active_chunk_count }} chunks</small></span>
-              <code>{{ indexSummary.embedding_model }}@{{ indexSummary.embedding_revision }}</code>
+              <span><strong>{{ indexSummary.status === 'ready' ? '检索索引就绪' : '索引已降级' }}</strong><small>{{ indexSummary.indexed_revision_count }}/{{ indexSummary.revision_count }} 个版本 · {{ indexSummary.active_chunk_count }} 个知识片段</small></span>
             </div>
             <div class="projection-status" aria-label="知识投影状态">
               <span><BookOpenText :size="14" /><strong>Wiki</strong>{{ pages.length }} 页</span>
@@ -794,7 +791,7 @@ onBeforeUnmount(() => {
             <p v-if="!jobsAvailable" class="inline-warning">持久任务尚未启用；单文件导入仍可使用。</p>
             <div class="job-list">
               <article v-for="job in jobs" :key="job.job_id">
-                <header><span><strong>{{ job.source_label }} / {{ job.relative_directory }}</strong><small>{{ jobStatus(job.status) }} · {{ job.processed_items }}/{{ job.total_items }}</small></span><code>{{ job.job_id.slice(0, 16) }}</code></header>
+                <header><span><strong>{{ job.source_label }} / {{ job.relative_directory }}</strong><small>{{ jobStatus(job.status) }} · {{ job.processed_items }}/{{ job.total_items }}</small></span></header>
                 <div class="job-progress" role="progressbar" :aria-valuenow="jobPercent(job)" aria-valuemin="0" aria-valuemax="100"><i :style="{ width: `${jobPercent(job)}%` }"></i></div>
                 <footer>
                   <span>成功 {{ job.succeeded_items }}</span><span>跳过 {{ job.skipped_items }}</span><span>失败 {{ job.failed_items }}</span>
@@ -829,7 +826,7 @@ onBeforeUnmount(() => {
                   <pre>{{ proposal.diff }}</pre>
                   <footer>
                     <button type="button" class="reject" :disabled="busy[proposal.proposal_id]" @click="decide(proposal, 'reject')"><X :size="14" />忽略</button>
-                    <button type="button" class="approve" :disabled="busy[proposal.proposal_id]" @click="decide(proposal, 'approve')"><Check :size="14" />批准 revision</button>
+                    <button type="button" class="approve" :disabled="busy[proposal.proposal_id]" @click="decide(proposal, 'approve')"><Check :size="14" />批准版本</button>
                   </footer>
                 </article>
                 <p v-if="!proposals.length" class="empty-row">没有需要人工确认的异常。</p>
@@ -847,7 +844,7 @@ onBeforeUnmount(() => {
             <details v-if="autoApplied.length" class="auto-applied">
               <summary>最近自动沉淀 {{ autoApplied.length }} 条</summary>
               <article v-for="proposal in autoApplied" :key="proposal.proposal_id">
-                <span><strong>{{ proposal.title }}</strong><code>{{ proposal.policy_decision?.applied_page_revision }}</code></span>
+                <span><strong>{{ proposal.title }}</strong><small>已形成知识版本</small></span>
                 <button type="button" :disabled="busy[`undo:${proposal.proposal_id}`]" @click="undoAutoApply(proposal)"><RotateCcw :size="14" />撤销</button>
               </article>
             </details>

@@ -243,7 +243,7 @@ onMounted(() => {
         <section v-if="sourceDetails" aria-labelledby="source-title">
           <div class="section-title"><FileText :size="16" /><h3 id="source-title">原始来源</h3></div>
           <strong>{{ sourceDetails.relativePath }}</strong>
-          <p>{{ sourceDetails.sourceKind }} 来源只读保留；Wiki、索引与图谱均可从该 revision 重建。</p>
+          <p>{{ sourceDetails.sourceKind }} 来源只读保留；知识页、索引与图谱均可从该版本重建。</p>
         </section>
         <section v-if="community" aria-labelledby="community-title">
           <div class="section-title"><Network :size="16" /><h3 id="community-title">所属社区</h3></div>
@@ -252,8 +252,8 @@ onMounted(() => {
         </section>
         <section v-if="page" aria-labelledby="page-title">
           <div class="section-title"><BookOpenText :size="16" /><h3 id="page-title">Wiki 页面</h3></div>
-          <code>{{ page.path }}</code>
-          <p>当前 revision {{ page.current_revision.slice(0, 18) }} · 共 {{ page.revisions.length }} 个版本</p>
+          <strong>{{ page.title }}</strong>
+          <p>当前版本已绑定 · 共 {{ page.revisions.length }} 个历史版本</p>
         </section>
         <section v-if="nodeInsights.length" aria-labelledby="insight-title">
           <div class="section-title"><Target :size="16" /><h3 id="insight-title">本地洞察</h3></div>
@@ -264,19 +264,19 @@ onMounted(() => {
         <section v-if="node" aria-labelledby="revision-title">
           <div class="section-title"><Link2 :size="16" /><h3 id="revision-title">版本绑定</h3></div>
           <dl>
-            <div><dt>Page</dt><dd>{{ node.page_revision?.slice(0, 20) || '无' }}</dd></div>
-            <div><dt>Source</dt><dd>{{ node.source_revision?.slice(0, 20) || '无' }}</dd></div>
+            <div><dt>知识页</dt><dd>{{ node.page_revision ? '已绑定' : '未绑定' }}</dd></div>
+            <div><dt>来源快照</dt><dd>{{ node.source_revision ? '已绑定' : '未绑定' }}</dd></div>
           </dl>
         </section>
       </div>
 
       <div v-else-if="tab === 'content'" class="inspector-body wiki-content">
-        <p v-if="pageLoading" class="inspector-state" role="status">正在读取当前 Wiki revision...</p>
+        <p v-if="pageLoading" class="inspector-state" role="status">正在读取当前知识版本...</p>
         <p v-else-if="pageError" class="inspector-state error" role="alert">{{ pageError }}</p>
         <template v-else-if="pageDocument">
           <header>
-            <code>{{ pageDocument.path }}</code>
-            <span>revision {{ pageDocument.revision.sequence }} · {{ pageDocument.revision.revision_id.slice(0, 18) }}</span>
+            <strong>{{ page?.title || '知识正文' }}</strong>
+            <span>版本 {{ pageDocument.revision.sequence }}</span>
           </header>
           <article v-html="render(pageDocument.content)"></article>
           <p v-if="pageDocument.truncated" class="content-truncated">正文已按浏览器展示上限截断。</p>
@@ -343,7 +343,6 @@ onMounted(() => {
       <section v-if="goal">
         <div class="section-title"><Target :size="16" /><h3>当前目标</h3></div>
         <p>{{ goal.description }}</p>
-        <code>{{ goal.goal_revision }}</code>
       </section>
       <section v-if="alignments.length" aria-labelledby="alignment-title">
         <div class="section-title"><Network :size="16" /><h3 id="alignment-title">能力覆盖</h3></div>

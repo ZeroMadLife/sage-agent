@@ -68,6 +68,7 @@ const stateMeta = computed(() => ({
 const completedStages = computed(() => props.projection.stages.filter(
   (stage) => stage.status === 'completed',
 ).length)
+const showRuntimeStrip = computed(() => !['idle', 'completed'].includes(visualState.value))
 
 function handleAnchorChange(eventId: string, offset: number) {
   emit('anchorChange', eventId, offset)
@@ -81,11 +82,10 @@ function handleAnchorChange(eventId: string, offset: number) {
     :data-run-state="visualState"
     aria-label="Chat Harness"
   >
-    <header class="chat-run-strip">
+    <header v-if="showRuntimeStrip" class="chat-run-strip">
       <div class="run-strip-title">
         <component :is="stateMeta.icon" :size="15" />
         <span><strong>{{ stateMeta.label }}</strong><small v-if="!compactStatus">来自 timeline 与连接状态</small></span>
-        <code v-if="projection.runId">{{ projection.runId.slice(0, 12) }}</code>
       </div>
       <div class="run-stage-track" :aria-label="`${completedStages}/${projection.stages.length} 个阶段完成`">
         <i

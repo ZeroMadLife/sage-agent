@@ -51,7 +51,7 @@ const composer = ref<{
   hasDraft: () => boolean
 } | null>(null)
 const bridgedContext = ref<HarnessSurfaceContext | null>(null)
-const initialFactsOpen = typeof window === 'undefined' || window.innerWidth > 1100
+const initialFactsOpen = false
 const { showToolProcess } = useWorkbenchPreferences()
 
 // Wire Naive UI message/dialog bridge for store-level notifications
@@ -404,6 +404,9 @@ function handleLeftSheetKeydown(event: KeyboardEvent) {
 }
 
 watch(() => route.fullPath, () => { void synchronizeRoute() })
+watch(() => store.pendingApproval?.approval_id, (approvalId) => {
+  if (approvalId) openFacts()
+})
 
 onMounted(async () => {
   await store.bootstrapModelCatalog()
@@ -413,8 +416,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   viewGeneration.value += 1
-  // Runs are owned by the server; closing this view only detaches the observer transport.
-  store.disconnect()
 })
 </script>
 
@@ -532,7 +533,6 @@ onBeforeUnmount(() => {
               :review-bundle="harnessReviewBundle"
               :source-proposal-count="harnessSourceProposals.length"
               :context="bridgedContext"
-              :tool-call-count="harnessToolCallCount"
               :goal-busy="store.threadGoalBusy"
               :show-header="false"
               @open-details="openHarnessDetails"
