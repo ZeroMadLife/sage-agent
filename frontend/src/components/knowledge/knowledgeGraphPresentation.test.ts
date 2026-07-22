@@ -118,12 +118,12 @@ it('keeps the full relationship network visible before focus', () => {
     color: '#c8cace',
     hidden: false,
   })
-  expect(wikiEdge.size).toBeCloseTo(0.672)
+  expect(wikiEdge.size).toBeCloseTo(0.768)
   expect(evidenceEdge).toMatchObject({
-    color: '#e3e5e7',
+    color: '#d8dadd',
     hidden: false,
   })
-  expect(evidenceEdge.size).toBeCloseTo(0.576)
+  expect(evidenceEdge.size).toBeCloseTo(0.704)
 })
 
 it('uses a quiet background and the focused node color for local exploration', () => {

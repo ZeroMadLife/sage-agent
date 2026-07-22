@@ -219,22 +219,22 @@ export function graphEdgePresentation(
         darkTheme ? [32, 33, 36] : [255, 255, 255],
         strengthBase + strength * strengthRange,
       ),
-      size: Math.min(0.72, 0.34 + weight * 0.08) * edgeScale,
+      size: Math.min(0.78, 0.38 + weight * 0.1) * edgeScale,
       hidden: false,
     }
   }
 
   const strengthBase = darkTheme
     ? tier === 'small' ? 0.12 : tier === 'medium' ? 0.08 : 0.055
-    : tier === 'small' ? 0.13 : tier === 'medium' ? 0.09 : 0.06
-  const strengthRange = darkTheme ? 0.055 : 0.07
+    : tier === 'small' ? 0.19 : tier === 'medium' ? 0.13 : 0.08
+  const strengthRange = darkTheme ? 0.07 : 0.09
   return {
     color: mixedHex(
       darkTheme ? [145, 154, 168] : [116, 123, 134],
       darkTheme ? [32, 33, 36] : [255, 255, 255],
       strengthBase + strength * strengthRange,
     ),
-    size: Math.min(0.5, 0.24 + confidence * 0.12) * edgeScale,
+    size: Math.min(0.56, 0.3 + confidence * 0.14) * edgeScale,
     hidden: false,
   }
 }
@@ -436,7 +436,7 @@ export function communitySeedPositions(
   let ring = 1
   while (communityCursor < orderedGroups.length) {
     const ringCount = Math.min(ring * 8, orderedGroups.length - communityCursor)
-    const ringRadius = ring * 12
+    const ringRadius = ring * 8
     const ringPhase = ring % 2 === 0 ? Math.PI / ringCount : 0
     for (let index = 0; index < ringCount; index += 1) {
       const angle = ringPhase + (Math.PI * 2 * index) / ringCount
@@ -451,7 +451,7 @@ export function communitySeedPositions(
 
   orderedGroups.forEach(([communityId, group], communityIndex) => {
     const center = communityCenters[communityIndex] ?? { x: 0, y: 0 }
-    const localRadius = Math.max(1.8, 1.45 * Math.sqrt(group.length))
+    const localRadius = Math.max(1.6, 1.25 * Math.sqrt(group.length))
     const phase = stableFraction(communityId) * Math.PI * 2
 
     group

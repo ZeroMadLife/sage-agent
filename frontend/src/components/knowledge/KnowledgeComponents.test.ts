@@ -7,7 +7,10 @@ import type {
   KnowledgeGraphNeighborhood,
 } from '../../types/api'
 import KnowledgeGraphCanvas from './KnowledgeGraphCanvas.vue'
+import KnowledgeGraphToolbar from './KnowledgeGraphToolbar.vue'
 import KnowledgeInspector from './KnowledgeInspector.vue'
+import KnowledgeSourceRail from './KnowledgeSourceRail.vue'
+import KnowledgeWorkspaceHeader from './KnowledgeWorkspaceHeader.vue'
 import { selectedNodePresentation } from './knowledgeGraphPresentation'
 
 vi.mock('../../api/knowledge', () => ({
@@ -108,6 +111,47 @@ it('keeps the selected node color and disables Sigma white highlight overlays', 
   expect(presentation.zIndex).toBe(6)
 })
 
+it('emits the compact graph navigation controls without owning graph state', async () => {
+  const toolbar = mount(KnowledgeGraphToolbar, {
+    props: {
+      query: '', scope: 'global', depth: 1, colorMode: 'community',
+      visibleKinds: ['page', 'source'], canUseGoal: true, canUseLocal: true,
+      canShowGoalPath: true, showGoalPath: false,
+    },
+  })
+
+  await toolbar.get('input[type="search"]').setValue('Harness')
+  await toolbar.get('.scope-control button:last-child').trigger('click')
+  await toolbar.get('.path-action').trigger('click')
+  await toolbar.get('.kind-filter input').setValue(false)
+  expect(toolbar.emitted('update:query')).toEqual([['Harness']])
+  expect(toolbar.emitted('update:scope')).toEqual([['local']])
+  expect(toolbar.emitted('toggleGoalPath')).toHaveLength(1)
+  expect(toolbar.emitted('toggleKind')).toEqual([['page']])
+
+  const rail = mount(KnowledgeSourceRail, { props: { activeMode: 'graph', attentionCount: 12 } })
+  await rail.get('button[data-mode="wiki"]').trigger('click')
+  await rail.get('.rail-import').trigger('click')
+  expect(rail.emitted('select')).toEqual([['wiki']])
+  expect(rail.emitted('import')).toHaveLength(1)
+})
+
+it('keeps workspace status and source actions in one restrained header', async () => {
+  const wrapper = mount(KnowledgeWorkspaceHeader, {
+    props: {
+      workspaceName: 'Sage-knowledge', connected: true, stale: false,
+      syncing: false, graphRevision: 'kgraph_1234567890abcdef',
+    },
+  })
+
+  expect(wrapper.text()).toContain('来源与索引已连接')
+  expect(wrapper.text()).toContain('kgraph_123456789')
+  await wrapper.get('button[aria-label="同步图谱"]').trigger('click')
+  await wrapper.get('.import-action').trigger('click')
+  expect(wrapper.emitted('sync')).toHaveLength(1)
+  expect(wrapper.emitted('import')).toHaveLength(1)
+})
+
 it('keeps the interactive graph on mobile within the compact performance budget', async () => {
   const wrapper = mount(KnowledgeGraphCanvas, {
     props: {
@@ -168,7 +212,7 @@ it('waits for a measurable desktop container before mounting Sigma', async () =>
   wrapper.unmount()
 })
 
-it('summarizes the selected neighborhood without exposing every graph label', () => {
+it('keeps selection detail out of the canvas overlay and limits the legend', () => {
   Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
   const wrapper = mount(KnowledgeGraphCanvas, {
     props: {
@@ -177,11 +221,10 @@ it('summarizes the selected neighborhood without exposing every graph label', ()
     },
   })
 
-  expect(wrapper.get('.graph-focus-summary').text()).toContain('Agent Harness')
-  expect(wrapper.get('.graph-focus-summary').text()).toContain('1 条直接连接')
+  expect(wrapper.find('.graph-focus-summary').exists()).toBe(false)
   expect(wrapper.find('.graph-global-summary').exists()).toBe(false)
   expect(wrapper.get('.graph-legend-panel').attributes('data-mode')).toBe('community')
-  expect(wrapper.get('.graph-legend-panel').text()).toContain('Harness2')
+  expect(wrapper.get('.graph-legend-panel').text()).toBe('Harness')
   wrapper.unmount()
 })
 

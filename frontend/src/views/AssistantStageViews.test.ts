@@ -18,6 +18,21 @@ import { consumeHarnessChatDraft } from '../harness/chatDraftBridge'
 import KnowledgeView from './KnowledgeView.vue'
 
 vi.mock('../components/knowledge', () => ({
+  KnowledgeWorkspaceHeader: {
+    props: ['workspaceName', 'connected', 'stale', 'syncing', 'graphRevision'],
+    emits: ['openLibrary', 'sync', 'import'],
+    template: '<header class="workspace-header-stub"><strong>{{ workspaceName }}</strong><button type="button" @click="$emit(\'sync\')">同步图谱</button><button class="primary-button" type="button" @click="$emit(\'import\')">导入来源</button></header>',
+  },
+  KnowledgeSourceRail: {
+    props: ['activeMode', 'attentionCount'],
+    emits: ['select', 'openLibrary', 'import'],
+    template: '<nav class="knowledge-source-rail"><button v-for="item in [\'graph\', \'wiki\', \'activity\', \'attention\']" :key="item" type="button" :data-mode="item" @click="$emit(\'select\', item)">{{ item }}</button></nav>',
+  },
+  KnowledgeGraphToolbar: {
+    props: ['query', 'scope', 'depth', 'colorMode', 'visibleKinds'],
+    emits: ['update:query', 'update:scope', 'update:depth', 'update:colorMode', 'toggleKind', 'toggleGoalPath'],
+    template: '<div class="knowledge-graph-toolbar">{{ scope }} · {{ visibleKinds.join(\',\') }}</div>',
+  },
   KnowledgeGraphCanvas: {
     props: ['graph', 'selectedNodeId', 'visibleKinds'],
     emits: ['select'],
@@ -242,8 +257,9 @@ it('renders the versioned graph workspace without a duplicate RAG question form'
 
   expect(wrapper.text()).toContain('Sage-knowledge')
   expect(wrapper.text()).toContain('成为全栈 AI 应用工程师')
-  expect(wrapper.text()).toContain('2 个节点 · 1 条证据连接 · 1 个社区')
   expect(wrapper.get('.graph-stub').text()).toContain('真实图谱 2')
+  expect(wrapper.get('.knowledge-graph-toolbar').text()).toContain('source')
+  expect(wrapper.find('.graph-heading').exists()).toBe(false)
   expect(wrapper.find('.knowledge-canvas-shell').exists()).toBe(true)
   expect(wrapper.find('.workbench-dock').exists()).toBe(false)
   expect(wrapper.find('.knowledge-detail-rail').exists()).toBe(false)
@@ -287,10 +303,10 @@ it('stages a revision-bound node draft for the canonical main chat without sendi
   wrapper.unmount()
 })
 
-it('reveals a source node when evidence navigation selects a hidden kind', async () => {
+it('keeps source nodes visible so evidence edges exist in the default graph', async () => {
   const wrapper = await mountKnowledge()
 
-  expect(wrapper.get('.graph-stub').text()).not.toContain('source')
+  expect(wrapper.get('.graph-stub').text()).toContain('source')
   await wrapper.get('.graph-stub').trigger('click')
   await flushPromises()
   await wrapper.get('.select-source').trigger('click')

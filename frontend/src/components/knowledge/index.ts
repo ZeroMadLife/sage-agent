@@ -1,3 +1,6 @@
 export { default as KnowledgeGraphCanvas } from './KnowledgeGraphCanvas.vue'
 export { default as KnowledgeInspector } from './KnowledgeInspector.vue'
 export { default as KnowledgeNodeResearchPanel } from './KnowledgeNodeResearchPanel.vue'
+export { default as KnowledgeGraphToolbar } from './KnowledgeGraphToolbar.vue'
+export { default as KnowledgeSourceRail } from './KnowledgeSourceRail.vue'
+export { default as KnowledgeWorkspaceHeader } from './KnowledgeWorkspaceHeader.vue'

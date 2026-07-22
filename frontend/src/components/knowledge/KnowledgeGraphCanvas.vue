@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Focus, Minus, Plus, X } from 'lucide-vue-next'
+import { Focus, Minus, Plus } from 'lucide-vue-next'
 import Graph from 'graphology'
 import type Sigma from 'sigma'
 import type { NodeHoverDrawingFunction } from 'sigma/rendering'
@@ -186,17 +186,10 @@ const scopeNodeIds = computed(() => {
   for (const nodeId of goalPath.value?.nodeIds ?? []) ids.add(nodeId)
   return ids
 })
-const featuredLabels = computed(() => featuredNodeIds(props.graph, props.communities, 1))
-const focus = computed(() => graphFocus(props.graph, props.selectedNodeId, 1))
+const featuredLabels = computed(() => featuredNodeIds(props.graph, props.communities, 3))
+const focus = computed(() => graphFocus(props.graph, props.selectedNodeId, 5))
 const selectedNode = computed(() => props.graph.nodes.find(
   (node) => node.node_id === props.selectedNodeId,
-) ?? null)
-const selectedNodeVisible = computed(() => Boolean(selectedNode.value && isNodeVisible(selectedNode.value)))
-const selectedMetric = computed(() => (
-  props.selectedNodeId ? metricByNode.value.get(props.selectedNodeId) : null
-))
-const selectedCommunity = computed(() => props.communities?.communities.find(
-  (item) => item.community_id === selectedMetric.value?.community_id,
 ) ?? null)
 const scopeLabel = computed(() => ({ global: '全局图谱', goal: '目标图谱', local: '局部图谱' }[props.scopeMode]))
 const sourceCount = computed(() => props.graph.nodes.filter(
@@ -214,6 +207,7 @@ const legendItems = computed(() => graphLegendItems(
   props.communities,
   props.colorMode,
   { type: typeColors, community: communityColor.value },
+  4,
 ))
 const mobileNodes = computed(() => props.graph.nodes
   .filter(isNodeVisible)
@@ -239,7 +233,7 @@ function nodeColor(node: KnowledgeGraphNode) {
 
 function layoutCacheKey() {
   const analysisRevision = props.communities?.analysis.analysis_revision ?? 'unclustered'
-  return `sage.knowledge.graph.layout.v8.${props.graph.snapshot.graph_revision}.${analysisRevision}`
+  return `sage.knowledge.graph.layout.v9.${props.graph.snapshot.graph_revision}.${analysisRevision}`
 }
 
 function canvasLabel(label: string) {
@@ -277,7 +271,7 @@ function applyPresentation() {
   const focusNodeId = props.selectedNodeId ?? hoveredNodeId
   const focusValue = focusNodeId === props.selectedNodeId
     ? focus.value
-    : graphFocus(props.graph, focusNodeId, 0)
+    : graphFocus(props.graph, focusNodeId, 5)
   const focusBaseColor = focusNodeId && sigmaGraph.hasNode(focusNodeId)
     ? String(sigmaGraph.getNodeAttribute(focusNodeId, 'baseColor'))
     : focusFallbackColor
@@ -497,7 +491,9 @@ async function mountRenderer(requestId: number) {
       baseSize: edgePresentation.size,
       hidden: edgePresentation.hidden,
       globalHidden: edgePresentation.hidden,
-      weight: edge.kind === 'WIKILINK' ? Math.max(0.5, edge.weight) : 0.06,
+      weight: edge.kind === 'WIKILINK'
+        ? Math.max(0.5, edge.weight)
+        : Math.max(0.18, edge.weight * edge.confidence * 0.2),
       type: 'line',
       zIndex: 0,
     })
@@ -559,11 +555,11 @@ async function mountRenderer(requestId: number) {
       layoutSupervisor = new FA2LayoutSupervisor(graph, {
         settings: {
           edgeWeightInfluence: 0.55,
-          gravity: 0.12,
+          gravity: 0.24,
           linLogMode: true,
           scalingRatio: performanceProfile.value.tier === 'large'
-            ? 44
-            : performanceProfile.value.tier === 'medium' ? 30 : 24,
+            ? 32
+            : performanceProfile.value.tier === 'medium' ? 22 : 16,
           strongGravityMode: false,
           slowDown: performanceProfile.value.tier === 'small' ? 18 : 22,
           barnesHutOptimize: performanceProfile.value.barnesHutOptimize,
@@ -715,21 +711,7 @@ onBeforeUnmount(() => {
     :data-interaction="interactionMode"
   >
     <div v-if="!listFallback && visibleNodeCount" ref="container" class="sigma-container" aria-label="本地知识图谱"></div>
-    <div v-if="!listFallback && selectedNode && selectedNodeVisible" class="graph-focus-summary" role="status">
-      <i :style="{ background: nodeColor(selectedNode) }"></i>
-      <span>
-        <strong>{{ selectedNode.label }}</strong>
-        <small>
-          {{ selectedNode.kind }} · {{ focus.connectedNodeIds.size }} 条直接连接
-          <template v-if="selectedCommunity && selectedCommunity.node_count > 1"> · {{ selectedCommunity.label }}</template>
-          <template v-if="goalPath"> · 到目标 {{ goalPath.edgeIds.length }} 跳</template>
-        </small>
-      </span>
-      <button type="button" title="退出聚焦" aria-label="退出节点聚焦" @click="emit('select', null)">
-        <X :size="15" />
-      </button>
-    </div>
-    <div v-else-if="!listFallback" class="graph-global-summary">
+    <div v-if="!listFallback && !selectedNode" class="graph-global-summary">
       <strong>{{ scopeLabel }}</strong>
       <span>
         {{ visibleNodeCount }} 个可见节点
@@ -746,7 +728,6 @@ onBeforeUnmount(() => {
       <span v-for="item in legendItems" :key="item.id" :title="`${item.label} · ${item.count}`">
         <i :style="{ background: item.color }"></i>
         <b>{{ item.label }}</b>
-        <small>{{ item.count }}</small>
       </span>
     </div>
     <div v-if="!listFallback" class="graph-controls" aria-label="图谱缩放">
@@ -774,7 +755,6 @@ onBeforeUnmount(() => {
 <style scoped>
 .graph-surface { position:relative; min-width:0; min-height:0; height:100%; overflow:hidden; background:var(--sage-surface); }
 .sigma-container { position:absolute; inset:0; cursor:grab; }.sigma-container:active { cursor:grabbing; }.graph-controls { position:absolute; right:16px; bottom:16px; display:flex; flex-direction:column; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(10px); }.graph-controls button { display:grid; place-items:center; width:36px; height:36px; padding:0; border:0; border-bottom:1px solid var(--sage-border); color:var(--sage-text-secondary); background:transparent; }.graph-controls button:last-child { border-bottom:0; }.graph-controls button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }.graph-error { position:absolute; top:16px; left:50%; margin:0; padding:8px 11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-danger); background:var(--sage-surface); transform:translateX(-50%); }
-.graph-focus-summary { position:absolute; left:16px; bottom:16px; display:grid; grid-template-columns:10px minmax(0,1fr) 28px; align-items:center; gap:10px; width:min(390px,calc(100% - 82px)); min-height:54px; padding:8px 8px 8px 12px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); color:var(--sage-text); background:color-mix(in srgb,var(--sage-surface) 92%,transparent); box-shadow:var(--sage-shadow-sm); backdrop-filter:blur(12px); }.graph-focus-summary>i { width:9px; height:9px; border-radius:50%; box-shadow:0 0 0 4px color-mix(in srgb,currentColor 12%,transparent); }.graph-focus-summary span,.graph-focus-summary strong,.graph-focus-summary small { display:block; min-width:0; }.graph-focus-summary strong { overflow:hidden; font-size:var(--sage-font-sm); text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary small { overflow:hidden; margin-top:3px; color:var(--sage-text-muted); font-size:11px; text-overflow:ellipsis; white-space:nowrap; }.graph-focus-summary button { display:grid; place-items:center; width:28px; height:28px; padding:0; border:0; border-radius:var(--sage-radius); color:var(--sage-text-muted); background:transparent; }.graph-focus-summary button:hover { color:var(--sage-text); background:var(--sage-surface-muted); }
 .graph-global-summary { position:absolute; left:16px; bottom:16px; display:flex; align-items:center; gap:7px; padding:7px 9px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:color-mix(in srgb,var(--sage-surface) 90%,transparent); font-size:11px; backdrop-filter:blur(8px); }.graph-global-summary strong { color:var(--sage-text-secondary); font-size:11px; }
 .graph-scope-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; flex-direction:column; gap:5px; padding:24px; color:var(--sage-text-muted); text-align:center; }.graph-scope-empty strong { color:var(--sage-text-secondary); font-size:var(--sage-font-md); }.graph-scope-empty span { max-width:320px; font-size:var(--sage-font-xs); line-height:1.55; }
 .graph-legend-panel { position:absolute; top:14px; left:14px; display:flex; flex-wrap:wrap; gap:5px; width:min(520px,calc(100% - 100px)); pointer-events:none; }.graph-legend-panel span { display:grid; grid-template-columns:8px minmax(0,auto) auto; align-items:center; gap:5px; min-width:0; height:26px; padding:0 7px; border:1px solid color-mix(in srgb,var(--sage-border) 76%,transparent); border-radius:var(--sage-radius-sm); color:var(--sage-text-secondary); background:color-mix(in srgb,var(--sage-surface) 84%,transparent); font-size:10px; backdrop-filter:blur(8px); }.graph-legend-panel i { width:7px; height:7px; border-radius:50%; }.graph-legend-panel b { max-width:105px; overflow:hidden; font-weight:600; text-overflow:ellipsis; white-space:nowrap; }.graph-legend-panel small { color:var(--sage-text-muted); font-size:9px; }
