@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { ArrowUp, RefreshCw, Sparkles } from 'lucide-vue-next'
+import { ArrowRight, ArrowUp, BookOpenText, History, RefreshCw, Sparkles, Target } from 'lucide-vue-next'
 import { useRoute, useRouter } from 'vue-router'
-import { AssistantHomeSummary } from '../components/assistant'
 import { useAssistantHomeStore } from '../stores/assistantHome'
 import { useCodingStore } from '../stores/coding'
 import { runViewTransition } from '../composables/useViewTransition'
@@ -19,6 +18,7 @@ const today = new Intl.DateTimeFormat('zh-CN', {
   month: 'long', day: 'numeric', weekday: 'long',
 }).format(new Date())
 const canSend = computed(() => Boolean(prompt.value.trim()) && !sending.value)
+const recentSession = computed(() => home.summary?.sessions.items[0] ?? null)
 
 const promptIdeas = [
   '继续复盘 Sage 的当前开发进度',
@@ -55,6 +55,11 @@ function handleKeydown(event: KeyboardEvent) {
   }
 }
 
+function usePrompt(value: string) {
+  prompt.value = value
+  void nextTick(() => promptInput.value?.focus())
+}
+
 function focusComposer() {
   if (route.query.action !== 'compose') return
   void nextTick(() => promptInput.value?.focus())
@@ -86,10 +91,24 @@ onMounted(() => {
 
       <div v-if="home.loading && !home.summary" class="home-loading" aria-live="polite"><i></i><span>正在读取你的项目与对话...</span></div>
       <div v-else-if="home.error && !home.summary" class="home-load-error" role="alert"><span>{{ home.error }}</span><button type="button" @click="home.load(true)">重试</button></div>
-      <template v-else-if="home.summary">
+      <section v-else-if="home.summary" class="next-actions" aria-labelledby="next-actions-title">
+        <header><span>Start here</span><h2 id="next-actions-title">从一个明确动作开始</h2></header>
+        <div class="next-action-list">
+          <RouterLink v-if="recentSession" :to="recentSession.target">
+            <History :size="17" /><span><strong>继续最近对话</strong><small>{{ recentSession.title }} · {{ recentSession.message_count }} 条消息</small></span><ArrowRight :size="16" />
+          </RouterLink>
+          <button v-else type="button" @click="usePrompt('帮我设定一个今天可以完成的学习目标')">
+            <History :size="17" /><span><strong>开始第一段对话</strong><small>先告诉 Sage 你想推进什么</small></span><ArrowRight :size="16" />
+          </button>
+          <RouterLink to="/knowledge?intent=import">
+            <BookOpenText :size="17" /><span><strong>导入知识来源</strong><small>连接 Obsidian、Markdown 或 GitHub 仓库</small></span><ArrowRight :size="16" />
+          </RouterLink>
+          <button type="button" @click="usePrompt('帮我把当前目标拆成一个可验证的练习，并在完成后评估掌握度')">
+            <Target :size="17" /><span><strong>开始一个可验证目标</strong><small>从目标、证据到下一步，沿同一 Thread 跟进</small></span><ArrowRight :size="16" />
+          </button>
+        </div>
         <p v-if="home.error" class="refresh-error" role="status">{{ home.error }}</p>
-        <AssistantHomeSummary :summary="home.summary" />
-      </template>
+      </section>
   </div>
 </template>
 
@@ -97,6 +116,7 @@ onMounted(() => {
 .assistant-home { width:min(940px,100%); margin:0 auto; padding:54px 34px 50px; }.home-header { display:flex; align-items:flex-end; justify-content:space-between; gap:28px; }.home-header > div:first-child { min-width:0; }.home-header span:first-child { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.home-header h1 { margin:5px 0 5px; font-size:var(--sage-font-title); letter-spacing:0; }.home-header p { margin:0; color:var(--sage-text-secondary); font-size:var(--sage-font-md); }.identity { display:flex; align-items:center; gap:9px; flex:none; }.identity i { width:9px; height:9px; border-radius:50%; background:var(--sage-success); box-shadow:0 0 0 4px var(--sage-success-bg); }.identity span { display:flex; flex-direction:column; }.identity strong { font-size:var(--sage-font-sm); }.identity small { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }
 .home-composer { view-transition-name:sage-composer; margin-top:26px; border:1px solid var(--sage-border-strong); border-radius:var(--sage-radius-lg); background:var(--sage-surface); box-shadow:var(--sage-shadow-sm); overflow:hidden; }.home-composer:focus-within { border-color:var(--sage-brand-strong); box-shadow:0 0 0 2px color-mix(in srgb,var(--sage-brand) 16%,transparent); }.composer-label { display:flex; align-items:center; gap:7px; min-height:40px; padding:0 13px; border-bottom:1px solid var(--sage-border); color:var(--sage-brand-strong); font-size:var(--sage-font-sm); }.composer-label span { margin-left:auto; color:var(--sage-text-muted); font-size:var(--sage-font-xs); }.home-composer textarea { display:block; width:100%; min-height:112px; resize:vertical; padding:15px; border:0; outline:0; color:var(--sage-text); background:transparent; font-size:var(--sage-font-body); line-height:1.7; }.home-composer textarea::placeholder { color:var(--sage-text-muted); }.composer-footer { display:flex; align-items:flex-end; gap:12px; min-height:50px; padding:8px 9px 9px 12px; border-top:1px solid var(--sage-border); }.prompt-ideas { display:flex; gap:6px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; }.prompt-ideas button { flex:none; min-height:30px; padding:0 10px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-muted); background:var(--sage-surface); font-size:var(--sage-font-xs); }.prompt-ideas button:hover { color:var(--sage-source); border-color:var(--sage-source); background:var(--sage-source-bg); }.home-send { display:grid; place-items:center; width:34px; height:34px; flex:none; padding:0; border:0; border-radius:var(--sage-radius); color:white; background:var(--sage-brand-strong); }.home-send:disabled { color:var(--sage-text-muted); background:var(--sage-surface-muted); }.spin { animation:spin .9s linear infinite; }
 .home-error,.refresh-error { margin:8px 0 0; color:var(--sage-danger); font-size:var(--sage-font-xs); }.home-loading,.home-load-error { display:flex; align-items:center; gap:10px; min-height:100px; margin-top:24px; border-top:1px solid var(--sage-border); border-bottom:1px solid var(--sage-border); color:var(--sage-text-muted); font-size:var(--sage-font-sm); }.home-loading i { width:8px; height:8px; border-radius:50%; background:var(--sage-source); animation:pulse 1.1s ease-in-out infinite; }.home-load-error { justify-content:space-between; color:var(--sage-danger); }.home-load-error button { min-height:32px; padding:0 11px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); color:var(--sage-text-secondary); background:var(--sage-surface); font-size:var(--sage-font-sm); }
+.next-actions { margin-top:28px; padding-top:20px; border-top:1px solid var(--sage-border); }.next-actions > header { display:grid; gap:3px; margin-bottom:9px; }.next-actions > header span { color:var(--sage-brand-strong); font-size:10px; font-weight:700; text-transform:uppercase; }.next-actions h2 { margin:0; font-size:var(--sage-font-lg); }.next-action-list { border-top:1px solid var(--sage-border); }.next-action-list > a,.next-action-list > button { display:grid; grid-template-columns:24px minmax(0,1fr) 20px; align-items:center; gap:10px; width:100%; min-height:64px; padding:9px 4px; border:0; border-bottom:1px solid var(--sage-border); color:var(--sage-text); background:transparent; text-align:left; text-decoration:none; }.next-action-list > a:hover,.next-action-list > button:hover { color:var(--sage-source); background:var(--sage-surface-muted); }.next-action-list > a > svg:first-child,.next-action-list > button > svg:first-child { color:var(--sage-brand-strong); }.next-action-list > a > svg:last-child,.next-action-list > button > svg:last-child { color:var(--sage-text-muted); }.next-action-list span { display:grid; min-width:0; gap:3px; }.next-action-list strong,.next-action-list small { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.next-action-list strong { font-size:var(--sage-font-sm); }.next-action-list small { color:var(--sage-text-muted); font-size:var(--sage-font-xs); }
 @keyframes spin { to { transform:rotate(360deg); } }@keyframes pulse { 50% { opacity:.35; } }
-@media (max-width:899px) { .assistant-home { padding-top:70px; } }@media (max-width:600px) { .assistant-home { padding-right:16px; padding-left:16px; }.home-header { align-items:flex-start; }.identity { display:none; }.home-header h1 { font-size:26px; }.composer-label span { display:none; }.prompt-ideas { max-width:calc(100vw - 92px); } }@media (prefers-reduced-motion:reduce) { .spin,.home-loading i { animation:none; } }
+@media (max-width:899px) { .assistant-home { padding-top:70px; } }@media (max-width:600px) { .assistant-home { padding-right:16px; padding-bottom:42px; padding-left:16px; }.home-header { align-items:flex-start; }.identity { display:none; }.home-header h1 { font-size:26px; }.home-header p { max-width:330px; font-size:var(--sage-font-sm); }.composer-label span { display:none; }.prompt-ideas { max-width:calc(100vw - 92px); }.next-action-list > a,.next-action-list > button { min-height:60px; }.next-action-list small { white-space:normal; line-height:1.35; } }@media (prefers-reduced-motion:reduce) { .spin,.home-loading i { animation:none; } }
 </style>

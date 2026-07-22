@@ -67,7 +67,10 @@ it('loads a real summary without creating a coding session on mount', async () =
   expect(home.load).toHaveBeenCalledTimes(1)
   expect(coding.startSessionWithPrompt).not.toHaveBeenCalled()
   expect(wrapper.text()).toContain('复盘 Sage')
-  expect(wrapper.text()).toContain('待确认沉淀')
+  expect(wrapper.text()).toContain('继续最近对话')
+  expect(wrapper.text()).toContain('导入知识来源')
+  expect(wrapper.text()).not.toContain('待确认沉淀')
+  expect(wrapper.find('#projects-title').exists()).toBe(false)
   wrapper.unmount()
 })
 

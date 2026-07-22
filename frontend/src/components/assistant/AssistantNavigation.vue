@@ -215,7 +215,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
 
 @media (max-width: 899px) {
   .assistant-shell { display: block; min-height: 100dvh; }
-  .assistant-main { min-height: 100dvh; padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .assistant-main { min-height: calc(100dvh - 64px - env(safe-area-inset-bottom)); padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
   .mobile-command-trigger {
     position: fixed;
     z-index: 20;

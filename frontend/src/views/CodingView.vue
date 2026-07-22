@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Eye, EyeOff, FileText, History, House, ScrollText, Settings, X } from 'lucide-vue-next'
+import { Eye, EyeOff, FileText, History, House, ListTree, PanelRightOpen, ScrollText, Settings, X } from 'lucide-vue-next'
 import {
   CodingComposer,
   CodingApprovalCard,
@@ -15,6 +15,7 @@ import {
   CodingSidebar,
 } from '../components/coding'
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
+import { FactsRail, GoalHeader } from '../components/conversation'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { projectCodingReviewBundle } from '../harness/surfaces/codingReviewBundle'
 import { consumeHarnessChatDraft, stageHarnessChatDraft } from '../harness/chatDraftBridge'
@@ -37,6 +38,11 @@ const deepLinkError = ref('')
 const leftToggleRef = ref<HTMLButtonElement | null>(null)
 const leftSheetRef = ref<HTMLElement | null>(null)
 const leftCloseRef = ref<HTMLButtonElement | null>(null)
+const harnessLayout = ref<{ openFacts: () => void } | null>(null)
+const harnessDetailsOpen = ref(false)
+const harnessDetailsDialogRef = ref<HTMLElement | null>(null)
+const harnessDetailsCloseRef = ref<HTMLButtonElement | null>(null)
+const harnessDetailsTriggerRef = ref<HTMLElement | null>(null)
 const lastResolvedSessionId = ref<string | null>(null)
 const viewGeneration = ref(0)
 const composer = ref<{
@@ -45,6 +51,7 @@ const composer = ref<{
   hasDraft: () => boolean
 } | null>(null)
 const bridgedContext = ref<HarnessSurfaceContext | null>(null)
+const initialFactsOpen = typeof window === 'undefined' || window.innerWidth > 1100
 const { showToolProcess } = useWorkbenchPreferences()
 
 // Wire Naive UI message/dialog bridge for store-level notifications
@@ -56,7 +63,6 @@ const routeSessionId = computed(() => {
 })
 const currentSession = computed(() => store.codingSessions.find((session) => session.session_id === store.sessionId))
 const currentSessionTitle = computed(() => currentSession.value?.title || '未命名会话')
-const currentRunStatus = computed(() => store.activeRun || store.isThinking ? '运行中' : '已就绪')
 const harnessProjection = computed(() => projectLatestCodingHarness(
   store.visibleTimeline,
   selectedHarnessRunId.value || store.activeRun?.run_id || '',
@@ -103,7 +109,7 @@ const codingContext = computed<HarnessSurfaceContext | null>(() => {
   }
 })
 const activeChatContext = computed(() => bridgedContext.value ?? codingContext.value)
-const mainInert = computed(() => leftOpen.value)
+const mainInert = computed(() => leftOpen.value || harnessDetailsOpen.value)
 const drawerError = ref('')
 
 function showDeepLinkError(error: unknown) {
@@ -170,6 +176,23 @@ async function hydratePendingDraft() {
 
 function clearBridgedContext() {
   bridgedContext.value = null
+}
+
+function openFacts() {
+  harnessLayout.value?.openFacts()
+}
+
+function openHarnessDetails() {
+  harnessDetailsTriggerRef.value = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  harnessDetailsOpen.value = true
+  void nextTick(() => harnessDetailsCloseRef.value?.focus())
+}
+
+function closeHarnessDetails() {
+  harnessDetailsOpen.value = false
+  void nextTick(() => harnessDetailsTriggerRef.value?.focus())
 }
 
 function mostRecentActiveSessionId() {
@@ -338,6 +361,27 @@ function trapSheetFocus(event: KeyboardEvent) {
   }
 }
 
+function handleHarnessDetailsKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeHarnessDetails()
+    return
+  }
+  if (event.key !== 'Tab' || !harnessDetailsDialogRef.value) return
+  const focusable = focusableSheetElements(harnessDetailsDialogRef.value)
+  if (focusable.length === 0) {
+    event.preventDefault()
+    harnessDetailsDialogRef.value.focus()
+    return
+  }
+  const currentIndex = focusable.indexOf(document.activeElement as HTMLElement)
+  const nextIndex = event.shiftKey ? currentIndex - 1 : currentIndex + 1
+  if ((!event.shiftKey && (currentIndex === -1 || nextIndex >= focusable.length)) || (event.shiftKey && currentIndex <= 0)) {
+    event.preventDefault()
+    focusable[event.shiftKey ? focusable.length - 1 : 0].focus()
+  }
+}
+
 function openLeftSheet() {
   drawerError.value = ''
   leftOpen.value = true
@@ -399,73 +443,102 @@ onBeforeUnmount(() => {
 
       <main class="pane-center" :class="{ 'is-inert': mainInert }" :inert="mainInert || undefined" :aria-hidden="mainInert ? 'true' : undefined">
         <ChatHarnessLayout
+          ref="harnessLayout"
           class="coding-harness-layout"
           surface-label="主对话"
-          chat-label="主对话"
+          mode="conversation-facts"
+          facts-label="本轮事实"
+          :initial-dock-open="initialFactsOpen"
           :show-details="false"
-          :default-dock-width="560"
-          :min-dock-width="420"
-          :max-dock-width="720"
+          :default-dock-width="320"
+          :min-dock-width="288"
+          :max-dock-width="400"
         >
-          <template #canvas>
-            <section class="harness-workbench-pane">
-              <header class="session-titlebar">
-                <div class="session-title-copy"><strong :title="currentSessionTitle">{{ currentSessionTitle }}</strong><span :class="{ running: store.activeRun || store.isThinking }">{{ currentRunStatus }}</span></div>
-                <div class="titlebar-actions">
+          <template #chat>
+            <section class="conversation-workspace">
+              <GoalHeader
+                :session-title="currentSessionTitle"
+                :thread-goal="store.threadGoal"
+                :run-status="harnessProjection.status"
+              >
+                <template #actions>
                   <button ref="leftToggleRef" class="header-icon session-history-toggle" type="button" title="打开会话历史" aria-label="打开会话" @click="openLeftSheet"><History :size="16" /></button>
                   <button class="header-icon process-toggle" type="button" :title="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-label="showToolProcess ? '隐藏运行摘要' : '显示运行摘要'" :aria-pressed="showToolProcess" @click="showToolProcess = !showToolProcess"><Eye v-if="showToolProcess" :size="16" /><EyeOff v-else :size="16" /></button>
                   <RouterLink class="home-link" to="/assistant" aria-label="返回今天" title="返回今天"><House :size="16" /></RouterLink>
                   <button class="files-toggle" type="button" aria-label="打开文件" title="打开文件" @click="openFilesDrawer"><FileText :size="16" /></button>
                   <CodingGitBadge />
-                  <button class="header-icon" type="button" title="打开设置" aria-label="打开设置" @click="openSettings"><Settings :size="16" /></button>
-                </div>
-              </header>
-              <CodingHarnessWorkbench
+                  <button class="header-icon details-toggle" type="button" title="打开运行详情" aria-label="打开运行详情" @click="openHarnessDetails"><ListTree :size="16" /></button>
+                  <button class="header-icon facts-toggle" type="button" title="打开本轮事实" aria-label="打开本轮事实" @click="openFacts"><PanelRightOpen :size="16" /></button>
+                  <button class="header-icon settings-toggle" type="button" title="打开设置" aria-label="打开设置" @click="openSettings"><Settings :size="16" /></button>
+                </template>
+              </GoalHeader>
+              <ChatDock
+                compact-status
                 :projection="harnessProjection"
-                :session-title="currentSessionTitle"
-                :tool-call-count="harnessToolCallCount"
                 :connection-state="store.connectionState"
-                :review-bundle="harnessReviewBundle"
-                :deposit-busy="harnessDepositBusy"
-                :source-proposals="harnessSourceProposals"
-                :source-details="store.knowledgeSourceProposalDetails"
-                :source-busy="store.knowledgeSourceProposalBusy"
-                :source-detail-busy="store.knowledgeSourceProposalDetailBusy"
-                :source-error="store.knowledgeSourceProposalError"
-                :thread-goal="store.threadGoal"
-                :goal-busy="store.threadGoalBusy"
-                :goal-error="store.threadGoalError"
-                @approve-deposit="store.approveMemoryProposal"
-                @reject-deposit="store.rejectMemoryProposal"
-                @approve-source="store.approveKnowledgeSourceProposal"
-                @reject-source="store.rejectKnowledgeSourceProposal"
-                @load-source-detail="store.loadKnowledgeSourceProposalDetail"
-                @open-operation="openHarnessOperation"
-                @save-goal="store.saveThreadGoal"
-                @evaluate-goal="store.evaluateThreadGoal"
-                @continue-goal="store.continueThreadGoal(activeChatContext)"
-                @clear-goal="store.removeThreadGoal"
-              />
+                :context="bridgedContext"
+                context-removable
+                :output-signature="outputSignature"
+                :message-count="store.messages.length"
+                :session-key="store.sessionId"
+                :timeline-ready="store.timelineInitialized"
+                :scroll-anchor="store.scrollAnchor"
+                :has-more="store.timelineHasMore"
+                :loading="store.timelineLoading"
+                :is-empty="store.messages.length === 0"
+                :load-older="store.loadOlderTimeline"
+                empty-description="描述目标、提问或实践任务，Sage 会沿同一个 Thread 持续跟进。"
+                @anchor-change="store.setScrollAnchor"
+                @remove-context="clearBridgedContext"
+              >
+                <ChatConversation
+                  :legacy-messages="store.legacyMessages"
+                  :messages="store.messages"
+                  :turns="store.turns"
+                  :optimistic-message="store.optimisticMessage"
+                  :active-run-id="store.activeRun?.run_id || ''"
+                  :selected-run-id="harnessProjection.runId"
+                  :pending-approval="store.pendingApproval"
+                  :show-approval-card="false"
+                  :approval-busy="store.approvalBusy"
+                  :is-thinking="store.isThinking"
+                  :thinking-phase="store.thinkingPhase"
+                  :show-process="showToolProcess"
+                  :runs="store.runs"
+                  :diff-info-by-run="store.diffInfoByRun"
+                  :error-message="store.errorMessage || deepLinkError"
+                  @select-run="selectHarnessRun"
+                  @respond-approval="store.respondApproval"
+                  @open-run-diff="store.openRunDiff"
+                />
+                <template #composer>
+                  <CodingPlanApproval v-if="store.planReview" />
+                  <CodingComposer
+                    ref="composer"
+                    density="compact"
+                    :surface-context="activeChatContext"
+                    @sent="clearBridgedContext"
+                  />
+                </template>
+              </ChatDock>
             </section>
           </template>
 
-          <template #chat>
-            <ChatDock
+          <template #facts>
+            <FactsRail
               :projection="harnessProjection"
               :connection-state="store.connectionState"
-              surface-label="main"
-              :context="activeChatContext"
-              :output-signature="outputSignature"
-              :message-count="store.messages.length"
-              :session-key="store.sessionId"
-              :timeline-ready="store.timelineInitialized"
-              :scroll-anchor="store.scrollAnchor"
-              :has-more="store.timelineHasMore"
-              :loading="store.timelineLoading"
-              :is-empty="store.messages.length === 0"
-              :load-older="store.loadOlderTimeline"
-              empty-description="输入学习目标、实践任务，或使用 /review 开始审查。"
-              @anchor-change="store.setScrollAnchor"
+              :thread-goal="store.threadGoal"
+              :review-bundle="harnessReviewBundle"
+              :source-proposal-count="harnessSourceProposals.length"
+              :context="bridgedContext"
+              :tool-call-count="harnessToolCallCount"
+              :goal-busy="store.threadGoalBusy"
+              :show-header="false"
+              @open-details="openHarnessDetails"
+              @evaluate-goal="store.evaluateThreadGoal"
+              @continue-goal="store.continueThreadGoal(activeChatContext)"
+              @remove-context="clearBridgedContext"
             >
               <template v-if="store.pendingApproval" #attention>
                 <CodingApprovalCard
@@ -475,39 +548,55 @@ onBeforeUnmount(() => {
                   @respond="store.respondApproval"
                 />
               </template>
-              <ChatConversation
-                :legacy-messages="store.legacyMessages"
-                :messages="store.messages"
-                :turns="store.turns"
-                :optimistic-message="store.optimisticMessage"
-                :active-run-id="store.activeRun?.run_id || ''"
-                :selected-run-id="harnessProjection.runId"
-                :pending-approval="store.pendingApproval"
-                :show-approval-card="false"
-                :approval-busy="store.approvalBusy"
-                :is-thinking="store.isThinking"
-                :thinking-phase="store.thinkingPhase"
-                :show-process="showToolProcess"
-                :runs="store.runs"
-                :diff-info-by-run="store.diffInfoByRun"
-                :error-message="store.errorMessage || deepLinkError"
-                @select-run="selectHarnessRun"
-                @respond-approval="store.respondApproval"
-                @open-run-diff="store.openRunDiff"
-              />
-              <template #composer>
-                <CodingPlanApproval v-if="store.planReview" />
-                <CodingComposer
-                  ref="composer"
-                  density="compact"
-                  :surface-context="activeChatContext"
-                  @sent="clearBridgedContext"
-                />
-              </template>
-            </ChatDock>
+            </FactsRail>
           </template>
         </ChatHarnessLayout>
       </main>
+    </div>
+
+    <div v-if="harnessDetailsOpen" class="harness-details-backdrop" @click.self="closeHarnessDetails">
+      <section
+        ref="harnessDetailsDialogRef"
+        class="harness-details-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="完整运行详情"
+        tabindex="-1"
+        @keydown.capture="handleHarnessDetailsKeydown"
+      >
+        <header class="harness-details-header">
+          <span><ListTree :size="16" /><strong>完整运行详情</strong><small>{{ currentSessionTitle }}</small></span>
+          <button ref="harnessDetailsCloseRef" type="button" aria-label="关闭运行详情" title="关闭运行详情" @click="closeHarnessDetails"><X :size="17" /></button>
+        </header>
+        <div class="harness-details-body">
+          <CodingHarnessWorkbench
+            :projection="harnessProjection"
+            :session-title="currentSessionTitle"
+            :tool-call-count="harnessToolCallCount"
+            :connection-state="store.connectionState"
+            :review-bundle="harnessReviewBundle"
+            :deposit-busy="harnessDepositBusy"
+            :source-proposals="harnessSourceProposals"
+            :source-details="store.knowledgeSourceProposalDetails"
+            :source-busy="store.knowledgeSourceProposalBusy"
+            :source-detail-busy="store.knowledgeSourceProposalDetailBusy"
+            :source-error="store.knowledgeSourceProposalError"
+            :thread-goal="store.threadGoal"
+            :goal-busy="store.threadGoalBusy"
+            :goal-error="store.threadGoalError"
+            @approve-deposit="store.approveMemoryProposal"
+            @reject-deposit="store.rejectMemoryProposal"
+            @approve-source="store.approveKnowledgeSourceProposal"
+            @reject-source="store.rejectKnowledgeSourceProposal"
+            @load-source-detail="store.loadKnowledgeSourceProposalDetail"
+            @open-operation="openHarnessOperation"
+            @save-goal="store.saveThreadGoal"
+            @evaluate-goal="store.evaluateThreadGoal"
+            @continue-goal="store.continueThreadGoal(activeChatContext)"
+            @clear-goal="store.removeThreadGoal"
+          />
+        </div>
+      </section>
     </div>
 
     <CodingPlanPreview v-if="showPlanPreview" :plan-path="store.planPath" :topic="store.planTopic" :visible="true" @close="showPlanPreview = false" />
@@ -524,11 +613,11 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.sage-view { --chat-content-max:1120px; position:relative; display:grid; grid-template-rows:auto minmax(0,1fr); width:100%; height:100dvh; min-width:0; min-height:0; color:var(--sage-text); background:var(--sage-surface); overflow:hidden; }
+.sage-view { --chat-content-max:800px; position:relative; display:grid; grid-template-rows:auto minmax(0,1fr); width:100%; height:100dvh; min-width:0; min-height:0; color:var(--sage-text); background:var(--sage-surface); overflow:hidden; }
 .is-inert { pointer-events:none; }
 .header-icon { display:grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; }.header-icon:hover,.header-icon[aria-pressed="true"] { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }
 .plan-banner { grid-row:1; display:flex; align-items:center; gap:8px; min-height:34px; padding:0 12px; border-bottom:1px solid #cddcf2; color:#244b82; background:#eff5fd; font-size:var(--sage-font-sm); }.plan-banner span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }.plan-banner button { margin-left:auto; min-height:24px; border:1px solid #adc5e7; border-radius:5px; color:#1d4ed8; background:#fff; font-size:var(--sage-font-xs); }
-.chat-shell { grid-row:2; position:relative; min-height:0; height:100%; overflow:hidden; }.pane-left,.pane-center { min-height:0; }.pane-left { position:absolute; z-index:32; inset:0 auto 0 0; width:min(340px,100%); overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); animation:session-drawer-in .18s ease-out; }.pane-center { position:relative; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.coding-harness-layout { width:100%; height:100%; }.harness-workbench-pane { container:workbench-pane / inline-size; display:grid; grid-template-rows:48px minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; }.coding-chat-pane { --chat-content-max:100%; display:grid; grid-template-rows:minmax(0,1fr) auto; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.session-titlebar { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:0 18px; border-bottom:1px solid #edf0f3; }.session-title-copy { display:flex; align-items:center; gap:9px; min-width:0; }.session-title-copy strong { min-width:0; overflow:hidden; color:#283342; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.session-title-copy span { display:inline-flex; align-items:center; flex:none; color:#748091; font-size:var(--sage-font-xs); }.session-title-copy span::before { width:6px; height:6px; margin-right:5px; border-radius:50%; background:#a7afb9; content:''; }.session-title-copy span.running { color:#137333; }.session-title-copy span.running::before { background:#16a34a; }.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; min-width:0; }.files-toggle,.home-link { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; text-decoration:none; }.files-toggle:hover,.home-link:hover { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }
+.chat-shell { grid-row:2; position:relative; min-height:0; height:100%; overflow:hidden; }.pane-left,.pane-center { min-height:0; }.pane-left { position:absolute; z-index:32; inset:0 auto 0 0; width:min(340px,100%); overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); animation:session-drawer-in .18s ease-out; }.pane-center { position:relative; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.coding-harness-layout { width:100%; height:100%; }.conversation-workspace { display:grid; grid-template-rows:auto minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.conversation-workspace > :deep(.chat-dock) { min-height:0; }.harness-workbench-pane { container:workbench-pane / inline-size; display:grid; grid-template-rows:48px minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; }.coding-chat-pane { --chat-content-max:100%; display:grid; grid-template-rows:minmax(0,1fr) auto; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.session-titlebar { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:0 18px; border-bottom:1px solid #edf0f3; }.session-title-copy { display:flex; align-items:center; gap:9px; min-width:0; }.session-title-copy strong { min-width:0; overflow:hidden; color:#283342; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.session-title-copy span { display:inline-flex; align-items:center; flex:none; color:#748091; font-size:var(--sage-font-xs); }.session-title-copy span::before { width:6px; height:6px; margin-right:5px; border-radius:50%; background:#a7afb9; content:''; }.session-title-copy span.running { color:#137333; }.session-title-copy span.running::before { background:#16a34a; }.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; min-width:0; }.files-toggle,.home-link { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; text-decoration:none; }.files-toggle:hover,.home-link:hover { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }.facts-toggle { display:none; }
 .coding-chat-pane .message-area { padding:14px 12px 16px; }
 .coding-chat-pane :deep(.composer) { padding-right:12px; padding-left:12px; }
 .coding-chat-pane :deep(.message-turn) { gap:9px; margin-bottom:18px; }
@@ -547,6 +636,7 @@ onBeforeUnmount(() => {
 .empty-state { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; min-height:100%; color:#8a939e; text-align:center; }.empty-state strong { color:#4b5563; font-size:var(--sage-font-md); }.empty-state span { font-size:var(--sage-font-sm); }
 .diff-btn { display:flex; align-items:center; justify-content:center; gap:6px; min-height:34px; margin-bottom:14px; border:1px solid #b9cbe6; border-radius:6px; color:#1d4ed8; background:#f5f8fd; font-size:var(--sage-font-xs); }.diff-btn:hover { background:#eaf1fb; }.error-text,.drawer-error { color:#b42318; font-size:var(--sage-font-xs); }.drawer-error { margin:48px 12px 0; }
 .session-history-toggle { flex:none; }.session-backdrop { position:absolute; z-index:31; inset:0; display:block; background:rgba(20,28,38,.3); }.sheet-close { position:absolute; z-index:5; top:9px; right:9px; display:grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid #d5dbe2; border-radius:6px; color:#52606f; background:#fff; }
+.harness-details-backdrop { position:fixed; z-index:70; inset:0; display:grid; place-items:center; padding:18px; background:var(--sage-overlay); }.harness-details-dialog { display:grid; grid-template-rows:48px minmax(0,1fr); width:min(1220px,100%); height:min(860px,calc(100dvh - 36px)); min-width:0; min-height:0; overflow:hidden; border:1px solid var(--sage-border); border-radius:var(--sage-radius-lg); color:var(--sage-text); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); }.harness-details-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 10px 0 14px; border-bottom:1px solid var(--sage-border); }.harness-details-header > span { display:flex; align-items:center; min-width:0; gap:7px; }.harness-details-header strong { flex:none; font-size:var(--sage-font-sm); }.harness-details-header small { min-width:0; overflow:hidden; color:var(--sage-text-muted); font-size:var(--sage-font-xs); text-overflow:ellipsis; white-space:nowrap; }.harness-details-header button { display:grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:transparent; }.harness-details-header button:hover { border-color:var(--sage-border); color:var(--sage-text); background:var(--sage-surface-muted); }.harness-details-body { min-width:0; min-height:0; overflow:hidden; }.harness-details-body > :deep(*) { width:100%; height:100%; min-height:0; }
 @media (max-width:767px) { .pane-left { width:100%; }.session-titlebar { padding:0 10px 0 56px; gap:8px; }.session-title-copy { flex:1; }.session-title-copy span { display:none; }.titlebar-actions { flex:none; gap:3px; }.titlebar-actions :deep(.git-badge),.home-link,.process-toggle { display:none; } }
 @keyframes session-drawer-in { from { opacity:0; transform:translateX(-18px); } }
 @media (prefers-reduced-motion:reduce) { .pane-left { animation:none; } }
@@ -568,5 +658,12 @@ onBeforeUnmount(() => {
 }
 @media (max-width:1100px) {
   .home-link,.titlebar-actions :deep(.git-badge) { display:none; }
+  .facts-toggle { display:grid; }
+}
+@media (max-width:767px) {
+  .sage-view { height:calc(100dvh - 64px - env(safe-area-inset-bottom)); }
+  .details-toggle,.files-toggle,.settings-toggle,.conversation-workspace :deep(.git-badge) { display:none; }
+  .harness-details-backdrop { padding:0; }
+  .harness-details-dialog { width:100%; height:calc(100dvh - 58px - env(safe-area-inset-bottom)); margin-bottom:calc(58px + env(safe-area-inset-bottom)); border:0; border-radius:0; }
 }
 </style>

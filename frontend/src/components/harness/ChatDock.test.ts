@@ -35,7 +35,7 @@ describe('ChatDock', () => {
     expect(wrapper.attributes('data-run-state')).toBe('tool')
     expect(wrapper.get('.run-strip-title').text()).toContain('调用工具')
     expect(wrapper.get('.surface-context-bar').text()).toContain('Agent Harness')
-    expect(wrapper.get('.surface-context-copy small').text()).toBe(
+    expect(wrapper.get('.context-receipt-copy small').text()).toBe(
       'graph graph-1 · node node-1@node-rev-7 · page page-1@page-rev-3',
     )
     expect(wrapper.get('.surface-context-bar').text()).toContain('提交时冻结')
@@ -60,7 +60,7 @@ describe('ChatDock', () => {
       },
     })
 
-    expect(wrapper.get('.surface-context-bar').text()).toContain('main · tour-agent')
+    expect(wrapper.get('.surface-context-bar').text()).toContain('tour-agent')
     expect(wrapper.props('context')).toEqual(context)
   })
 

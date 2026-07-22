@@ -170,7 +170,7 @@ describe('CodingView chat route lifecycle', () => {
     root.unmount()
   })
 
-  it('selects a changed session route inside the persistent Harness and Chat workbench', async () => {
+  it('selects a changed session route inside the conversation and Facts workspace', async () => {
     const store = useCodingStore()
     store.sessionId = 'session-a'
     store.selectSession = vi.fn(async (sessionId: string) => { store.sessionId = sessionId })
@@ -179,8 +179,12 @@ describe('CodingView chat route lifecycle', () => {
     await router.push('/coding/session/session-b')
     await vi.waitFor(() => expect(store.selectSession).toHaveBeenCalledWith('session-b'))
     expect(wrapper().find('.pane-right').exists()).toBe(false)
+    expect(wrapper().find('.conversation-workspace').exists()).toBe(true)
+    expect(wrapper().find('.facts-rail').exists()).toBe(true)
+    expect(wrapper().find('.coding-harness-workbench').exists()).toBe(false)
+    await wrapper().get('button[aria-label="打开运行详情"]').trigger('click')
     expect(wrapper().find('.coding-harness-workbench').exists()).toBe(true)
-    expect(wrapper().get('.workbench-dock [role="tab"]').text()).toContain('主对话')
+    expect(wrapper().get('[aria-label="完整运行详情"]').attributes('aria-modal')).toBe('true')
     root.unmount()
   })
 
@@ -245,7 +249,7 @@ describe('CodingView chat route lifecycle', () => {
     root.unmount()
   })
 
-  it('uses a modal session drawer and central session title bar on tablet', async () => {
+  it('uses a modal session drawer and compact Goal header on tablet', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 })
     const store = useCodingStore()
     store.sessionId = 'session-a'
@@ -253,7 +257,8 @@ describe('CodingView chat route lifecycle', () => {
     const { root, wrapper } = await mountChat('/coding/session/session-a')
 
     expect(wrapper().find('.pane-left').exists()).toBe(false)
-    expect(wrapper().get('.session-titlebar').text()).toContain('修复路由')
+    expect(wrapper().get('[aria-label="当前目标"]').text()).toContain('修复路由')
+    expect(wrapper().find('.facts-rail').exists()).toBe(false)
     await wrapper().get('button[aria-label="打开会话"]').trigger('click')
     expect(wrapper().get('.pane-left').attributes('role')).toBe('dialog')
     expect(wrapper().get('.session-backdrop').classes()).toContain('visible')
@@ -350,9 +355,9 @@ describe('CodingView chat route lifecycle', () => {
     ], { next_cursor: 4, has_more: false, active_run: null })
     const { root, wrapper } = await mountChat('/coding/session/session-a')
 
-    expect(wrapper().get('.coding-harness-workbench').attributes('data-run-id')).toBe('run-b')
+    expect(wrapper().get('.facts-rail').attributes('data-run-id')).toBe('run-b')
     await wrapper().get('[data-timeline-turn-id="turn:run-a"]').trigger('click')
-    expect(wrapper().get('.coding-harness-workbench').attributes('data-run-id')).toBe('run-a')
+    expect(wrapper().get('.facts-rail').attributes('data-run-id')).toBe('run-a')
     expect(wrapper().get('[data-timeline-turn-id="turn:run-a"]').attributes('data-harness-selected')).toBe('true')
     root.unmount()
   })

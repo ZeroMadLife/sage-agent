@@ -10,6 +10,7 @@ function mountLayout(props: Record<string, unknown> = {}) {
       canvas: '<div data-testid="canvas">canvas</div>',
       chat: '<div data-testid="chat">chat</div>',
       details: '<div data-testid="details">details</div>',
+      facts: '<div data-testid="facts">facts</div>',
     },
     attachTo: document.body,
   })
@@ -35,6 +36,21 @@ describe('ChatHarnessLayout', () => {
     expect(wrapper.find('[data-testid="chat"]').exists()).toBe(true)
     expect(wrapper.find('button[aria-label="打开详情工作台"]').exists()).toBe(false)
     expect(wrapper.get('[aria-label="移动工作台视图"]').findAll('button')).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('uses one conversation stream with a collapsible Facts Rail in A1 mode', async () => {
+    const wrapper = mountLayout({ mode: 'conversation-facts', defaultDockWidth: 320 })
+
+    expect(wrapper.attributes('data-mode')).toBe('conversation-facts')
+    expect(wrapper.get('[aria-label="Coding 对话"]').text()).toContain('chat')
+    expect(wrapper.get('[aria-label="本轮事实"]').text()).toContain('facts')
+    expect(wrapper.find('[aria-label="移动工作台视图"]').exists()).toBe(false)
+
+    await wrapper.get('button[aria-label="收起事实栏"]').trigger('click')
+    expect(wrapper.attributes('data-dock-open')).toBe('false')
+    await wrapper.get('button[aria-label="打开事实栏"]').trigger('click')
+    expect(wrapper.attributes('data-dock-open')).toBe('true')
     wrapper.unmount()
   })
 
