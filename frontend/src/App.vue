@@ -13,6 +13,7 @@ import {
 } from 'naive-ui'
 import { useWorkbenchPreferences } from './composables/useWorkbenchPreferences'
 import { AssistantNavigation } from './components/assistant'
+import { CommandPalette } from './components/product-shell'
 import CloudAuthGate from './components/auth/CloudAuthGate.vue'
 import { useCloudAuth } from './composables/useCloudAuth'
 
@@ -20,6 +21,7 @@ const { themeMode } = useWorkbenchPreferences()
 const osTheme = useOsTheme()
 const route = useRoute()
 const usesAssistantShell = computed(() => route.meta.assistantShell === true)
+const usesPrivateCommands = computed(() => route.path !== '/public')
 const cloudAuthRequired = import.meta.env.VITE_CLOUD_AUTH_REQUIRED === 'true'
 const cloudAuthenticated = ref(!cloudAuthRequired)
 const cloudAuthChecking = ref(cloudAuthRequired)
@@ -64,6 +66,7 @@ watch(
               <RouterView />
             </AssistantNavigation>
             <RouterView v-else />
+            <CommandPalette v-if="usesPrivateCommands" />
           </div>
         </NDialogProvider>
       </NMessageProvider>

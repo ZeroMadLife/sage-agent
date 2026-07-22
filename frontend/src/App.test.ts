@@ -5,6 +5,7 @@ import { beforeEach, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
 import App from './App.vue'
 import { AssistantNavigation } from './components/assistant'
+import { CommandPalette } from './components/product-shell'
 
 beforeEach(() => {
   localStorage.clear()
@@ -15,7 +16,7 @@ beforeEach(() => {
   }))
 })
 
-it('keeps one shared assistant shell while personal routes change', async () => {
+it('keeps one shared assistant shell while conversation routes change and exposes commands in settings', async () => {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -44,6 +45,11 @@ it('keeps one shared assistant shell while personal routes change', async () => 
   await router.push('/settings/appearance')
   await nextTick()
   expect(wrapper.findComponent(AssistantNavigation).exists()).toBe(false)
+  expect(wrapper.findComponent(CommandPalette).exists()).toBe(true)
   expect(wrapper.text()).toContain('设置')
+
+  await router.push('/public')
+  await nextTick()
+  expect(wrapper.findComponent(CommandPalette).exists()).toBe(false)
   wrapper.unmount()
 })

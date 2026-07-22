@@ -1,37 +1,39 @@
 :root {
-  --sage-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --sage-font-mono: "SF Mono", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+  --sage-font-sans: "IBM Plex Sans", "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --sage-font-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", serif;
+  --sage-font-mono: "JetBrains Mono", "SFMono-Regular", "Cascadia Code", Consolas, monospace;
   --sage-font-xs: 12px;
   --sage-font-sm: 13px;
   --sage-font-md: 14px;
   --sage-font-body: 15px;
   --sage-font-lg: 18px;
-  --sage-font-title: 28px;
-  --sage-bg: #f7f7f8;
+  --sage-font-title: 32px;
+  --sage-bg: #f8fafc;
+  --sage-canvas: #fbfcfd;
   --sage-surface: #ffffff;
-  --sage-surface-muted: #f1f2f4;
-  --sage-surface-raised: #fbfbfc;
-  --sage-text: #202124;
-  --sage-text-secondary: #50545a;
-  --sage-text-muted: #74787e;
-  --sage-border: #dedfe2;
-  --sage-border-strong: #c7c9ce;
-  --sage-focus: #4b5563;
-  --sage-brand: #4d8b63;
-  --sage-brand-strong: #2f6845;
-  --sage-brand-bg: #eaf4ed;
-  --sage-source: #3478b9;
-  --sage-source-bg: #eaf3fb;
-  --sage-review: #d39a25;
-  --sage-review-strong: #8a5c00;
-  --sage-review-bg: #fff4d7;
+  --sage-surface-muted: #f1f5f3;
+  --sage-surface-raised: #f8faf9;
+  --sage-text: #1e293b;
+  --sage-text-secondary: #64748b;
+  --sage-text-muted: #68766f;
+  --sage-border: #d7e0dc;
+  --sage-border-strong: #cbd5e1;
+  --sage-focus: #3177c9;
+  --sage-brand: #2f6b50;
+  --sage-brand-strong: #24543f;
+  --sage-brand-bg: #e1eee7;
+  --sage-source: #3177c9;
+  --sage-source-bg: #e8f1fb;
+  --sage-review: #8a5a12;
+  --sage-review-strong: #70470c;
+  --sage-review-bg: #fff9ed;
   --sage-coral: #d4675f;
   --sage-success: #16803d;
   --sage-success-bg: #e9f7ee;
   --sage-warning: #9a6700;
   --sage-warning-bg: #fff6db;
-  --sage-danger: #b42318;
-  --sage-danger-bg: #ffedeb;
+  --sage-danger: #c2413b;
+  --sage-danger-bg: #fff1f0;
   --sage-diff-add-bg: #e6f6eb;
   --sage-diff-add-text: #116b32;
   --sage-diff-remove-bg: #fdebea;
@@ -42,9 +44,14 @@
   --sage-radius-sm: 4px;
   --sage-radius: 6px;
   --sage-radius-lg: 8px;
-  --sage-shadow-drawer: 0 18px 48px rgb(17 24 39 / 18%);
-  --sage-shadow-sm: 0 4px 14px rgb(17 24 39 / 7%);
-  --sage-overlay: rgb(17 24 39 / 36%);
+  --sage-shadow-drawer: 0 12px 32px rgb(30 41 59 / 10%);
+  --sage-shadow-sm: 0 3px 10px rgb(30 41 59 / 9%);
+  --sage-shadow-focus: 0 0 0 3px rgb(49 119 201 / 18%);
+  --sage-overlay: rgb(30 41 59 / 32%);
+  --sage-motion-fast: 120ms;
+  --sage-motion-base: 150ms;
+  --sage-motion-panel: 190ms;
+  --sage-motion-layout: 220ms;
   color: var(--sage-text);
   background: var(--sage-bg);
   color-scheme: light;
@@ -94,7 +101,7 @@
 
 * { box-sizing: border-box; }
 
-body { min-width: 320px; min-height: 100vh; margin: 0; color: var(--sage-text); background: var(--sage-bg); font-size:var(--sage-font-body); line-height:1.6; }
+body { min-width: 320px; min-height: 100vh; margin: 0; color: var(--sage-text); background: var(--sage-bg); font-size:var(--sage-font-md); line-height:1.57; letter-spacing:0; }
 button, textarea, input, select { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--sage-focus); outline-offset: 2px; }
