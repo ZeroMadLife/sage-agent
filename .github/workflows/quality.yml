@@ -26,8 +26,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip
       - run: pip install -r requirements.txt
-      - run: ruff check core/ db/ mcp_servers/ agents/ api/ evals/ tests/
-      - run: mypy core/ db/ mcp_servers/ agents/ api/ evals/
+      - run: ruff check core/ db/ mcp_servers/ agents/ api/ evals/ public_agent/ tests/
+      - run: mypy core/ db/ mcp_servers/ agents/ api/ evals/ public_agent/
       - run: pytest tests/ -q --tb=short
 
   frontend-quality:
@@ -62,13 +62,22 @@ jobs:
           --build-arg SAGE_IMAGE_TAG=${{ github.sha }}
           --tag sage-public:${{ github.sha }}
           .
+      - name: Build isolated public Agent image
+        run: >-
+          docker build
+          --file infra/docker/sage-public-agent.Dockerfile
+          --build-arg SAGE_IMAGE_TAG=${{ github.sha }}
+          --tag sage-public-agent:${{ github.sha }}
+          .
       - name: Verify image identity and isolated runtime
         run: |
           set -eu
           test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' sage-public:${{ github.sha }})" = "${{ github.sha }}"
           test "$(docker image inspect --format '{{.Config.User}}' sage-public:${{ github.sha }})" = "65532:65532"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' sage-public-agent:${{ github.sha }})" = "${{ github.sha }}"
+          test "$(docker image inspect --format '{{.Config.User}}' sage-public-agent:${{ github.sha }})" = "65532:65532"
           docker network create --driver bridge sage-public-ci >/dev/null
-          trap 'docker rm --force sage-public-ci >/dev/null 2>&1 || true; docker network rm sage-public-ci >/dev/null 2>&1 || true' EXIT
+          trap 'docker rm --force sage-public-ci sage-public-agent-ci >/dev/null 2>&1 || true; docker network rm sage-public-ci >/dev/null 2>&1 || true' EXIT
           docker run --detach --name sage-public-ci --publish 127.0.0.1:18081:8081 \
             --network sage-public-ci \
             --read-only --cap-drop ALL --security-opt no-new-privileges:true \
@@ -77,12 +86,29 @@ jobs:
             --tmpfs /tmp:rw,noexec,nosuid,mode=1777,size=8m \
             sage-public:${{ github.sha }} \
             caddy run --config /etc/caddy/Caddyfile.candidate --adapter caddyfile
+          docker run --detach --name sage-public-agent-ci --publish 127.0.0.1:18082:8082 \
+            --network sage-public-ci \
+            --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+            --tmpfs /tmp:rw,noexec,nosuid,mode=1777,size=8m \
+            sage-public-agent:${{ github.sha }}
           attempt=0
           until curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18081/ | grep -q '<title>ZeroMadLife / Sage</title>'; do
             attempt=$((attempt + 1))
             test "$attempt" -lt 20
             sleep 1
           done
+          attempt=0
+          until curl --fail --silent --show-error --max-time 5 http://127.0.0.1:18082/healthz | grep -q '"status":"not_configured"'; do
+            attempt=$((attempt + 1))
+            test "$attempt" -lt 20
+            sleep 1
+          done
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:18082/api/v1/coding/models)" = "404"
+          docker exec sage-public-agent-ci test ! -e /app/api
+          docker exec sage-public-agent-ci test ! -e /app/core
           test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' sage-public-ci)" = "true"
           test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' sage-public-ci)" = '["ALL"]'
           test "$(docker inspect --format '{{index .HostConfig.SecurityOpt 0}}' sage-public-ci)" = 'no-new-privileges:true'
+          test "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' sage-public-agent-ci)" = "true"
+          test "$(docker inspect --format '{{json .HostConfig.CapDrop}}' sage-public-agent-ci)" = '["ALL"]'
+          test "$(docker inspect --format '{{index .HostConfig.SecurityOpt 0}}' sage-public-agent-ci)" = 'no-new-privileges:true'

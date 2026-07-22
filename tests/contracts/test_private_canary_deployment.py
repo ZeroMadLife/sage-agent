@@ -69,6 +69,11 @@ def test_public_release_pipeline_has_a_bounded_root_boundary() -> None:
     assert "npm run build:public" in workflow
     assert "name: public-release" in workflow
     assert "--read-only --cap-drop ALL" in workflow
+    assert "infra/docker/sage-public-agent.Dockerfile" in workflow
+    assert "sage-public-agent:${{ github.sha }}" in workflow
+    assert '"status":"not_configured"' in workflow
+    assert "evals/ public_agent/ tests/" in workflow
+    assert "evals/ public_agent/" in workflow
     assert "NOPASSWD: /usr/local/sbin/sage-public-releasectl" in sudoers
     assert sudoers.strip().endswith('/usr/local/sbin/sage-public-releasectl ""')
     assert "visudo -cf" in installer
@@ -77,6 +82,24 @@ def test_public_release_pipeline_has_a_bounded_root_boundary() -> None:
     assert "parse_request(sys.stdin)" in controller
     assert 'COMMIT_TAG = re.compile(r"[0-9a-f]{40}")' in controller
     assert "/etc/sage/env" not in controller
+
+
+def test_public_agent_image_contains_only_public_runtime_inputs() -> None:
+    dockerfile = (ROOT / "infra/docker/sage-public-agent.Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert "requirements-public-agent.txt" in dockerfile
+    assert "COPY public_agent ./public_agent" in dockerfile
+    assert "COPY data/public ./data/public" in dockerfile
+    assert "COPY ." not in dockerfile
+    assert "COPY api" not in dockerfile
+    assert "COPY core" not in dockerfile
+    assert "USER 65532:65532" in dockerfile
+    assert "/etc/sage/env" not in dockerfile
+    assert "PIP_DEFAULT_TIMEOUT=120" in dockerfile
+    assert "PIP_RETRIES=10" in dockerfile
+    assert "--mount=type=cache,target=/root/.cache/pip" in dockerfile
 
 
 def test_private_canary_environment_template_tracks_server_topology() -> None:
