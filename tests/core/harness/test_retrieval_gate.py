@@ -8,6 +8,7 @@ from core.harness.retrieval_gate import (
     memory_retrieval_events,
     retrieval_source_event,
     retrieval_sources_from_events,
+    retrieval_tool_scope_from_events,
 )
 
 
@@ -81,6 +82,59 @@ def test_knowledge_retrieval_word_routes_to_knowledge() -> None:
 
     assert receipt.decision == "knowledge"
     assert receipt.selected_sources == ("knowledge",)
+
+
+def test_ephemeral_history_only_request_suppresses_negated_web_and_all_tools() -> None:
+    receipt = decide_retrieval_gate(
+        "上次 shell 审批恢复那轮做了什么？只根据历史运行记录概括，不要联网。",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.decision == "episodic_memory"
+    assert receipt.candidate_sources == ("episodic_memory",)
+    assert receipt.selected_sources == ("episodic_memory",)
+    assert receipt.tool_scope == "retrieval_only"
+
+
+def test_knowledge_only_request_freezes_retrieval_tool_scope_without_web() -> None:
+    receipt = decide_retrieval_gate(
+        "只检索 Sage 知识库中的 checkpoint 资料，不联网；若没有证据直接说明。",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.decision == "knowledge"
+    assert receipt.selected_sources == ("knowledge",)
+    assert receipt.tool_scope == "retrieval_only"
+
+
+def test_explicit_web_only_request_overrides_other_retrieval_signals() -> None:
+    receipt = decide_retrieval_gate(
+        "只搜索官网的 checkpoint 资料，返回来源与引用。",
+        surface_context={"selection": {"type": "graph_node", "id": "node-1"}},
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.candidate_sources == ("web",)
+    assert receipt.selected_sources == ("web",)
+    assert receipt.decision == "web"
+
+
+def test_explicit_no_tool_request_freezes_empty_tool_scope() -> None:
+    receipt = decide_retrieval_gate(
+        "1 + 1 等于多少？不要调用任何工具，只回答结果。",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.decision == "skip"
+    assert receipt.tool_scope == "no_tools"
 
 
 def test_retrieval_result_projects_actual_hits_without_content() -> None:
@@ -162,3 +216,16 @@ def test_retrieval_sources_restore_explicit_skip_and_legacy_absence() -> None:
     assert retrieval_sources_from_events(()) is None
     assert retrieval_sources_from_events((skip,)) == frozenset()
     assert retrieval_sources_from_events((skip, mixed)) == frozenset({"knowledge", "web"})
+    assert retrieval_tool_scope_from_events(()) is None
+    assert retrieval_tool_scope_from_events((skip,)) == "default"
+
+    strict = RunEvent(
+        kind="harness",
+        status="completed",
+        payload={
+            "type": "retrieval_gate_decided",
+            "selected_sources": ["knowledge"],
+            "tool_scope": "retrieval_only",
+        },
+    )
+    assert retrieval_tool_scope_from_events((skip, strict)) == "retrieval_only"

@@ -23,6 +23,7 @@ from sage_harness import (
     SubagentLifecycleMiddleware,
     SubagentLimits,
     SubagentToolConfig,
+    ToolBudgetFinalizationMiddleware,
     create_sage_agent,
     load_graph_message_compaction_plan,
     load_scoped_checkpoint,
@@ -58,6 +59,7 @@ class SageHarnessRuntimeAdapter:
         artifact_store: ToolArtifactPort | None = None,
         capability_ids_by_tool_name: Mapping[str, str] | None = None,
         capability_revision: str | None = None,
+        finalize_after_tool_calls: int | None = None,
     ) -> None:
         self.checkpointer = checkpointer
         self.config = config or HarnessConfig()
@@ -123,6 +125,16 @@ class SageHarnessRuntimeAdapter:
                     ),
                 ),
                 before="durable_context",
+            )
+        if finalize_after_tool_calls is not None:
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "tool_budget_finalization",
+                    lambda config: ToolBudgetFinalizationMiddleware(
+                        finalize_after_tool_calls,
+                    ),
+                ),
+                before="run_budget",
             )
         self.graph = create_sage_agent(
             model=model,

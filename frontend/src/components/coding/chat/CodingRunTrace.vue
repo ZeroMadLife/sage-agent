@@ -175,6 +175,13 @@ function safeArguments(tool: string, args: Record<string, unknown>) {
 function actionSummary(tool: string, args: Record<string, unknown>) {
   const path = stringArg(args, 'path')
   if (tool === 'tool_search') return `查找工具 ${stringArg(args, 'query') || '可用能力'}`
+  if (tool === 'knowledge_search') return `搜索知识 ${stringArg(args, 'query') || '知识库'}`
+  if (tool === 'search_web') {
+    const query = stringArg(args, 'query') || '公开资料'
+    const domains = stringListArg(args, 'domains')
+    return `搜索网页 ${query}${domains.length ? ` · ${domains.join(', ')}` : ''}`
+  }
+  if (tool === 'fetch_web') return `抓取网页 ${stringArg(args, 'url') || '正文'}`
   if (tool === 'read_file') return `读取 ${path || '文件'}`
   if (tool === 'list_files') return `列出 ${path || '.'}`
   if (tool === 'search') return `搜索 ${stringArg(args, 'pattern') || path || '工作区'}`
@@ -194,6 +201,12 @@ function actionSummary(tool: string, args: Record<string, unknown>) {
 function stringArg(args: Record<string, unknown>, key: string) {
   const value = args[key]
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function stringListArg(args: Record<string, unknown>, key: string) {
+  const value = args[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && Boolean(item.trim())).map(item => item.trim())
 }
 
 function shellResultSummary(result: string) {

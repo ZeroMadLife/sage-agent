@@ -34,6 +34,7 @@ from sage_harness.mcp import (
     McpToolSnapshot,
     McpTransportPort,
 )
+from sage_harness.middleware import ToolBudgetFinalizationMiddleware
 from sage_harness.ports import (
     ApprovalDecision,
     ApprovalPort,
@@ -204,6 +205,7 @@ __all__ = [
     "SubagentToolConfig",
     "ToolArtifactPort",
     "ToolArtifactReceipt",
+    "ToolBudgetFinalizationMiddleware",
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",

@@ -94,4 +94,26 @@ describe('ChatToolActivity knowledge evidence', () => {
     expect(wrapper.find('.tool-item.deferred').exists()).toBe(true)
     expect(wrapper.find('.tool-item.error').exists()).toBe(false)
   })
+
+  it('shows the actual Web query and fetched URL in the generic timeline', () => {
+    const wrapper = mount(ChatToolActivity, {
+      props: {
+        isThinking: false,
+        tools: [{
+          tool: 'search_web',
+          args: { query: 'LangGraph checkpoint', domains: ['langchain-ai.github.io'] },
+          status: 'done',
+          content: '{"status":"evidence_found"}',
+        }, {
+          tool: 'fetch_web',
+          args: { url: 'https://langchain-ai.github.io/langgraph/concepts/persistence/' },
+          status: 'done',
+          content: '{"status":"evidence_found"}',
+        }],
+      },
+    })
+
+    expect(wrapper.text()).toContain('搜索网页 · LangGraph checkpoint')
+    expect(wrapper.text()).toContain('抓取网页 · https://langchain-ai.github.io/langgraph/concepts/persistence/')
+  })
 })

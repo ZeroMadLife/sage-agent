@@ -26,7 +26,9 @@ from core.harness.tools_adapter import (
 from core.harness.web_search import SearxngWebSearchAdapter, build_web_search_tool
 
 
-def _adapter(payload: object, *, status: int = 200) -> tuple[SearxngWebSearchAdapter, list[httpx.Request]]:
+def _adapter(
+    payload: object, *, status: int = 200
+) -> tuple[SearxngWebSearchAdapter, list[httpx.Request]]:
     seen: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -166,6 +168,11 @@ def test_search_web_tool_and_timeline_keep_only_bounded_public_citations() -> No
     assert public["citations"][0]["citation_id"].startswith("wcite_")
     assert "instruction" not in public
     assert "original_url" not in public_content
+    assert events[-1].payload["args"] == {
+        "query": "Sage Harness",
+        "freshness": "all",
+        "token_budget": 2000,
+    }
 
 
 def test_search_web_enforces_a_per_call_evidence_token_budget() -> None:
@@ -183,9 +190,7 @@ def test_search_web_enforces_a_per_call_evidence_token_budget() -> None:
     )
     tool = build_web_search_tool(adapter)
 
-    content = asyncio.run(
-        tool.ainvoke({"query": "Sage Harness", "top_k": 6, "token_budget": 256})
-    )
+    content = asyncio.run(tool.ainvoke({"query": "Sage Harness", "top_k": 6, "token_budget": 256}))
     payload = json.loads(content)
 
     assert payload["status"] == "evidence_found"
@@ -194,6 +199,44 @@ def test_search_web_enforces_a_per_call_evidence_token_budget() -> None:
     assert payload["omitted_count"] >= 1
     assert payload["citations"]
     assert len(content) < 2_000
+
+
+def test_search_web_run_guard_suppresses_duplicates_and_excess_calls() -> None:
+    adapter, seen = _adapter({"results": []})
+    tool = build_web_search_tool(adapter, max_calls=2)
+
+    first = json.loads(asyncio.run(tool.ainvoke({"query": "LangGraph checkpoint"})))
+    duplicate = json.loads(asyncio.run(tool.ainvoke({"query": "  langgraph   CHECKPOINT "})))
+    second = json.loads(asyncio.run(tool.ainvoke({"query": "LangGraph persistence"})))
+    capped = json.loads(asyncio.run(tool.ainvoke({"query": "LangGraph recovery"})))
+
+    assert first["error_code"] == ""
+    assert duplicate["error_code"] == "duplicate_query"
+    assert second["error_code"] == ""
+    assert capped["error_code"] == "search_call_limit"
+    assert len(seen) == 2
+
+
+def test_search_web_normalizes_common_domain_url_and_path_shapes() -> None:
+    adapter, seen = _adapter({"results": []})
+    tool = build_web_search_tool(adapter)
+
+    payload = json.loads(
+        asyncio.run(
+            tool.ainvoke(
+                {
+                    "query": "LangGraph checkpoint",
+                    "domains": [
+                        "https://langchain-ai.github.io/langgraph/",
+                        "github.com/langchain-ai/langgraph",
+                    ],
+                }
+            )
+        )
+    )
+
+    assert payload["domains"] == ["langchain-ai.github.io", "github.com"]
+    assert len(seen) == 1
 
 
 def test_search_web_counts_non_ascii_evidence_conservatively() -> None:
@@ -236,9 +279,7 @@ def test_search_web_is_discoverable_but_deferred_from_initial_model_tools(tmp_pa
     assert "search_web" in bundle.deferred_setup.deferred_names
     assert bundle.deferred_setup.selection_index is not None
     matches = bundle.deferred_setup.selection_index.discover("public web search")
-    assert "web:search" in {
-        match.descriptor.capability_id for match in matches
-    }
+    assert "web:search" in {match.descriptor.capability_id for match in matches}
     selected = bundle.deferred_setup.selection_index.select(("web:search",))
     assert [match.tool_name for match in selected.selected] == ["search_web"]
 

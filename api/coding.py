@@ -9,6 +9,7 @@ import re
 import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
+from dataclasses import replace
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -158,6 +159,7 @@ from core.harness.retrieval_gate import (
     memory_retrieval_events,
     retrieval_source_event,
     retrieval_sources_from_events,
+    retrieval_tool_scope_from_events,
 )
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.sandbox_factory import create_coding_sandbox
@@ -192,6 +194,23 @@ logger = logging.getLogger(__name__)
 
 def _port_available(port: object) -> bool:
     return bool(port is not None and getattr(port, "available", True))
+
+
+def _retrieval_scoped_harness_config(
+    config: HarnessConfig | None,
+    *,
+    retrieval_tool_scope: str,
+) -> HarnessConfig:
+    effective = config or HarnessConfig()
+    if retrieval_tool_scope != "retrieval_only":
+        return effective
+    return replace(
+        effective,
+        max_model_calls=min(effective.max_model_calls, 6),
+        max_tool_calls=min(effective.max_tool_calls, 4),
+        max_run_tokens=min(effective.max_run_tokens, 64_000),
+        max_run_seconds=min(effective.max_run_seconds, 120.0),
+    )
 
 
 def _graph_approval_resume_value(
@@ -525,12 +544,12 @@ async def _deerflow_timeline_events(
             # would replace the decision frozen before the interrupted model/tool step.
             durable_context = {}
             retrieval_gate = None
-            retrieval_sources = retrieval_sources_from_events(
-                SessionEventJournal(
-                    runtime.storage_root,
-                    runtime.session_id,
-                ).events_for_run(run_id)
-            )
+            frozen_events = SessionEventJournal(
+                runtime.storage_root,
+                runtime.session_id,
+            ).events_for_run(run_id)
+            retrieval_sources = retrieval_sources_from_events(frozen_events)
+            retrieval_tool_scope = retrieval_tool_scope_from_events(frozen_events) or "default"
         else:
             retrieval_gate = decide_retrieval_gate(
                 content,
@@ -562,6 +581,7 @@ async def _deerflow_timeline_events(
                 retrieval_gate=retrieval_gate.to_context(),
             )
             retrieval_sources = frozenset(retrieval_gate.selected_sources)
+            retrieval_tool_scope = retrieval_gate.tool_scope
             yield RunEvent(
                 kind="harness",
                 status="completed",
@@ -693,6 +713,7 @@ async def _deerflow_timeline_events(
                 ),
                 graph_approvals=True,
                 retrieval_sources=retrieval_sources,
+                retrieval_tool_scope=retrieval_tool_scope,
             )
             if not is_resume:
                 yield RunEvent(
@@ -713,15 +734,23 @@ async def _deerflow_timeline_events(
                 model=runtime.model,
                 checkpointer=checkpointer,
                 tools=tool_bundle.tools,
-                system_prompt=build_deerflow_system_prompt(runtime),
+                system_prompt=build_deerflow_system_prompt(
+                    runtime,
+                    retrieval_tool_scope=retrieval_tool_scope,
+                    retrieval_sources=retrieval_sources,
+                ),
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
                 subagent_tool_config=subagent_config,
-                config=harness_config,
+                config=_retrieval_scoped_harness_config(
+                    harness_config,
+                    retrieval_tool_scope=retrieval_tool_scope,
+                ),
                 artifact_store=artifact_store,
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
                 capability_revision=tool_bundle.capability_revision,
+                finalize_after_tool_calls=(4 if retrieval_tool_scope == "retrieval_only" else None),
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None

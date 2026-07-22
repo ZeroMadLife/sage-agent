@@ -113,6 +113,8 @@ function toolSummary(tool: ToolActivityViewModel) {
     if (!tool.retrieval.citations.length) return '搜索知识 · 无证据'
     return `搜索知识 · ${tool.retrieval.citations.length} 条证据`
   }
+  if (tool.tool === 'search_web') return `搜索网页 · ${stringArg(tool.args, 'query') || '公开资料'}`
+  if (tool.tool === 'fetch_web') return `抓取网页 · ${stringArg(tool.args, 'url') || '正文'}`
   return tool.tool.replaceAll('_', ' ')
 }
 
@@ -182,7 +184,7 @@ async function copyPanel(key: string, content: string) {
           </span>
           <component :is="expandedTools.has(index) ? ChevronDown : ChevronRight" :size="14" />
           <Terminal v-if="tool.tool === 'run_shell'" :size="13" />
-          <Search v-else-if="tool.tool === 'knowledge_search'" :size="13" />
+          <Search v-else-if="['knowledge_search', 'search_web', 'fetch_web'].includes(tool.tool)" :size="13" />
           <span class="tool-name">{{ tool.tool }}</span>
           <span class="tool-summary">{{ toolSummary(tool) }}</span>
           <span class="tool-status">{{ statusLabel(tool) }}</span>

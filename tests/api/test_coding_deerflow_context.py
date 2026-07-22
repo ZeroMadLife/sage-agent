@@ -381,6 +381,67 @@ async def test_v2_gate_hard_routes_web_tool_visibility(
 
 
 @pytest.mark.asyncio
+async def test_v2_gate_enforces_explicit_source_only_tool_scopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    monkeypatch.setattr(
+        coding_api,
+        "CodingKnowledgePort",
+        lambda runtime: AvailableKnowledgePort(),
+    )
+
+    cases = (
+        (
+            "上次 shell 审批恢复那轮做了什么？只根据历史运行记录概括，不要联网。",
+            None,
+            set(),
+        ),
+        (
+            "只检索 Sage 知识库中的 checkpoint 资料，不联网；若没有证据直接说明。",
+            None,
+            {"knowledge_search"},
+        ),
+        (
+            "只搜索 LangGraph checkpoint 的官方资料，返回引用。",
+            AvailableWebSearchPort(),
+            {"search_web"},
+        ),
+    )
+    for index, (content, web_port, expected_tools) in enumerate(cases):
+        root = tmp_path / f"strict-{index}"
+        root.mkdir()
+        runtime = _runtime(root)
+        RecordingAdapter.runtime = runtime
+        _ = [
+            event
+            async for event in coding_api._deerflow_timeline_events(
+                runtime,
+                content=content,
+                run_id=f"run-strict-{index}",
+                surface_context={"surface": "coding"},
+                thread_goal=None,
+                checkpointer=object(),
+                mcp_catalog=None,
+                web_search_port=web_port,  # type: ignore[arg-type]
+            )
+        ]
+        tools = RecordingAdapter.init_kwargs["tools"]
+        deferred = RecordingAdapter.init_kwargs["deferred_setup"]
+        harness_config = RecordingAdapter.init_kwargs["config"]
+        assert {tool.name for tool in tools} == expected_tools
+        assert deferred.deferred_names == frozenset()
+        assert harness_config.max_model_calls == 6
+        assert harness_config.max_tool_calls == 4
+        assert harness_config.max_run_tokens == 64_000
+        assert harness_config.max_run_seconds == 120.0
+        system_prompt = str(RecordingAdapter.init_kwargs["system_prompt"])
+        assert "source-locked" in system_prompt
+        assert "at most four total retrieval calls" in system_prompt
+        assert RecordingAdapter.init_kwargs["finalize_after_tool_calls"] == 4
+
+
+@pytest.mark.asyncio
 async def test_v2_gate_builds_knowledge_only_research_profile(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -443,6 +443,51 @@ def _counter(state: Mapping[str, object], key: str) -> int:
     return max(value, 0) if isinstance(value, int) else 0
 
 
+class ToolBudgetFinalizationMiddleware(AgentMiddleware[SageThreadState, HarnessRunContext]):
+    """Force one tool-free synthesis call after a bounded retrieval budget."""
+
+    state_schema = SageThreadState
+
+    def __init__(self, max_tool_calls: int) -> None:
+        super().__init__()
+        if max_tool_calls < 1:
+            raise ValueError("max_tool_calls must be positive")
+        self.max_tool_calls = max_tool_calls
+
+    def _finalize_request(
+        self,
+        request: ModelRequest[HarnessRunContext],
+    ) -> ModelRequest[HarnessRunContext]:
+        if _counter(request.state, "run_tool_calls") < self.max_tool_calls:
+            return request
+        reminder = HumanMessage(
+            content=(
+                "The server-owned retrieval tool budget is exhausted. Do not request another "
+                "tool. Answer now using only the evidence already present in ToolMessages. If "
+                "that evidence does not satisfy the requested source constraint, say that no "
+                "qualifying evidence was found."
+            ),
+            additional_kwargs={"hide_from_ui": True, "sage_tool_budget_finalization": True},
+        )
+        return request.override(tools=[], messages=[*request.messages, reminder])
+
+    @override
+    def wrap_model_call(
+        self,
+        request: ModelRequest[HarnessRunContext],
+        handler: Callable[[ModelRequest[HarnessRunContext]], ModelCallResult],
+    ) -> ModelCallResult:
+        return handler(self._finalize_request(request))
+
+    @override
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[HarnessRunContext],
+        handler: Callable[[ModelRequest[HarnessRunContext]], Awaitable[ModelCallResult]],
+    ) -> ModelCallResult:
+        return await handler(self._finalize_request(request))
+
+
 def _child_budget_usage(state: SageThreadState, run_id: str) -> tuple[int, int, int]:
     """Aggregate only children owned by the active parent run.
 

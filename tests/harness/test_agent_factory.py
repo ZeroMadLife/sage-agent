@@ -22,6 +22,7 @@ from sage_harness.middleware import (
     RunBudgetMiddleware,
     TerminalResponseMiddleware,
     TokenBudgetMiddleware,
+    ToolBudgetFinalizationMiddleware,
     ToolErrorMiddleware,
     ToolResultArtifactMiddleware,
     neutralize_untrusted_text,
@@ -93,6 +94,40 @@ def test_user_input_sanitization_escapes_reserved_tags_and_boundaries() -> None:
     assert sanitized.startswith("--- BEGIN USER INPUT ---")
     assert "&lt;system&gt;" in sanitized
     assert "[END USER INPUT]" in sanitized
+
+
+def test_tool_budget_finalization_removes_tools_only_after_limit() -> None:
+    middleware = ToolBudgetFinalizationMiddleware(max_tool_calls=2)
+    tool = StructuredTool.from_function(
+        name="lookup",
+        description="lookup",
+        func=lambda query: query,
+    )
+    base = ModelRequest(
+        model=FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        messages=[HumanMessage(content="find evidence")],
+        tools=[tool],
+        state={"run_tool_calls": 1},
+    )
+    captured: list[ModelRequest] = []
+
+    def capture(modified: ModelRequest) -> ModelResponse:
+        captured.append(modified)
+        return ModelResponse(result=[AIMessage(content="ready")])
+
+    middleware.wrap_model_call(base, capture)
+    middleware.wrap_model_call(
+        base.override(state={"run_tool_calls": 2}),
+        capture,
+    )
+
+    assert [candidate.name for candidate in captured[0].tools] == ["lookup"]
+    assert captured[0].messages == base.messages
+    assert captured[1].tools == []
+    reminder = captured[1].messages[-1]
+    assert isinstance(reminder, HumanMessage)
+    assert reminder.additional_kwargs["hide_from_ui"] is True
+    assert "Answer now" in str(reminder.content)
 
 
 def test_multimodal_user_text_is_sanitized_without_dropping_images() -> None:

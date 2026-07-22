@@ -119,19 +119,27 @@ def build_deerflow_coding_tool_bundle(
     graph_approvals: bool = False,
     enable_deferred_tools: bool = True,
     retrieval_sources: frozenset[str] | None = None,
+    retrieval_tool_scope: str = "default",
 ) -> CodingToolBundle:
     """Build V2 tools while preserving Sage execution and approval boundaries."""
     resident_tools: list[BaseTool] = []
     deferred_tools: list[BaseTool] = []
+    strict_retrieval = retrieval_tool_scope == "retrieval_only"
+    no_tools = retrieval_tool_scope == "no_tools"
     from core.coding.tools.registry import registered_tool_definitions
 
     definitions = registered_tool_definitions()
-    tool_names = set(_DEERFLOW_TOOLS)
-    if subagent_executor is None:
+    tool_names = set() if strict_retrieval or no_tools else set(_DEERFLOW_TOOLS)
+    if subagent_executor is None and not strict_retrieval and not no_tools:
         tool_names.add("agent")
-    if knowledge_port is not None and knowledge_port.available:
+    if (
+        knowledge_port is not None
+        and knowledge_port.available
+        and not strict_retrieval
+        and not no_tools
+    ):
         tool_names.add("knowledge_learn")
-    if enable_deferred_tools:
+    if enable_deferred_tools and not strict_retrieval and not no_tools:
         tool_names.update(
             name
             for name, registered in runtime.tools.items()
@@ -152,9 +160,7 @@ def build_deerflow_coding_tool_bundle(
             args_schema=definition.schema_model,
             sandbox=sandbox,
             graph_approvals=graph_approvals,
-            allow_network_retrieval=(
-                retrieval_sources is None or "web" in retrieval_sources
-            ),
+            allow_network_retrieval=(retrieval_sources is None or "web" in retrieval_sources),
         )
         target = (
             deferred_tools
@@ -164,15 +170,42 @@ def build_deerflow_coding_tool_bundle(
         target.append(tool)
     knowledge_routed = retrieval_sources is None or "knowledge" in retrieval_sources
     web_routed = retrieval_sources is None or "web" in retrieval_sources
-    if knowledge_port is not None and knowledge_routed:
+    if knowledge_port is not None and knowledge_routed and not no_tools:
         search_definition = definitions.get("knowledge_search")
         if search_definition is not None:
+            knowledge_queries: set[str] = set()
 
             async def search_knowledge(
                 query: str,
                 top_k: int = 8,
                 token_budget: int = 3000,
             ) -> str:
+                normalized_query = " ".join(query.casefold().split())
+                if strict_retrieval and (
+                    normalized_query in knowledge_queries or len(knowledge_queries) >= 2
+                ):
+                    return json.dumps(
+                        {
+                            "status": "no_evidence",
+                            "query": " ".join(query.split()),
+                            "used_tokens": 0,
+                            "token_budget": token_budget,
+                            "omitted_count": 0,
+                            "error_code": (
+                                "duplicate_query"
+                                if normalized_query in knowledge_queries
+                                else "knowledge_call_limit"
+                            ),
+                            "instruction": (
+                                "Use the existing Knowledge citations and answer now. "
+                                "Do not issue another retrieval call."
+                            ),
+                            "citations": [],
+                        },
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                knowledge_queries.add(normalized_query)
                 result = await knowledge_port.search(
                     query,
                     workspace_id=knowledge_port.workspace_id,
@@ -200,9 +233,7 @@ def build_deerflow_coding_tool_bundle(
                             "page_revision": item.page_revision,
                             "source_revision": item.source_revision,
                             "source_kind": item.metadata.get("source_kind", ""),
-                            "source_relative_path": item.metadata.get(
-                                "source_relative_path", ""
-                            ),
+                            "source_relative_path": item.metadata.get("source_relative_path", ""),
                             "title": item.metadata.get("title", item.citation_id),
                             "heading_path": item.metadata.get("heading_path", ()),
                             "block_id": item.metadata.get("block_id", ""),
@@ -228,7 +259,7 @@ def build_deerflow_coding_tool_bundle(
                     },
                 )
             )
-    if memory_port is not None:
+    if memory_port is not None and not strict_retrieval and not no_tools:
         remember_definition = definitions.get("remember")
         if remember_definition is not None:
 
@@ -272,32 +303,52 @@ def build_deerflow_coding_tool_bundle(
             )
             (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
 
-    if subagent_executor is not None:
+    if subagent_executor is not None and not strict_retrieval and not no_tools:
         task_tool = build_task_tool(subagent_executor, subagent_config)
-        task_metadata = (
-            dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
-        )
+        task_metadata = dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
         task_metadata["capability_id"] = "subagent:explore"
         resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
 
     web_search_available = bool(
-        web_routed and web_search_port is not None and web_search_port.available
+        not no_tools and web_routed and web_search_port is not None and web_search_port.available
     )
-    if web_search_available and web_search_port is not None:
-        deferred_tools.append(build_web_search_tool(web_search_port))
+    if web_search_available and web_search_port is not None and not no_tools:
+        web_search_tool = build_web_search_tool(
+            web_search_port,
+            max_calls=2 if strict_retrieval else None,
+        )
+        (resident_tools if strict_retrieval else deferred_tools).append(web_search_tool)
     web_fetch_available = bool(
-        web_routed
+        not no_tools
+        and web_routed
         and web_fetch_port is not None
         and web_fetch_port.available
         and artifact_store is not None
     )
-    if web_fetch_available and web_fetch_port is not None and artifact_store is not None:
-        deferred_tools.append(build_web_fetch_tool(web_fetch_port, artifact_store))
+    if (
+        web_fetch_available
+        and web_fetch_port is not None
+        and artifact_store is not None
+        and not no_tools
+    ):
+        web_fetch_tool = build_web_fetch_tool(
+            web_fetch_port,
+            artifact_store,
+            max_calls=2 if strict_retrieval else None,
+        )
+        (resident_tools if strict_retrieval else deferred_tools).append(web_fetch_tool)
     web_source_proposal_available = bool(
-        knowledge_source_proposal_port is not None
+        not strict_retrieval
+        and not no_tools
+        and knowledge_source_proposal_port is not None
         and knowledge_source_proposal_port.available
     )
-    if web_source_proposal_available and knowledge_source_proposal_port is not None:
+    if (
+        web_source_proposal_available
+        and knowledge_source_proposal_port is not None
+        and not strict_retrieval
+        and not no_tools
+    ):
 
         async def save_web_source(
             artifact_ref: str,
@@ -350,15 +401,20 @@ def build_deerflow_coding_tool_bundle(
         )
 
     allow_network_retrieval = retrieval_sources is None or "web" in retrieval_sources
-    deferred_tools.extend(
-        _with_mcp_capability_ids(
-            extra_deferred_tools,
+    if not strict_retrieval and not no_tools:
+        deferred_tools.extend(
+            _with_mcp_capability_ids(
+                extra_deferred_tools,
+                allow_network_retrieval=allow_network_retrieval,
+            )
+        )
+    routed_mcp_catalog = (
+        None
+        if strict_retrieval or no_tools
+        else _route_mcp_catalog(
+            mcp_catalog,
             allow_network_retrieval=allow_network_retrieval,
         )
-    )
-    routed_mcp_catalog = _route_mcp_catalog(
-        mcp_catalog,
-        allow_network_retrieval=allow_network_retrieval,
     )
 
     capability_registry = build_sage_capability_registry(
@@ -369,11 +425,15 @@ def build_deerflow_coding_tool_bundle(
         web_fetch_available=web_fetch_available,
         web_source_proposal_available=web_source_proposal_available,
         research_subagent_available=(
-            subagent_config is not None
+            not strict_retrieval
+            and not no_tools
+            and subagent_config is not None
             and "research" in subagent_config.allowed_types
         ),
         practice_subagent_available=(
-            subagent_config is not None
+            not strict_retrieval
+            and not no_tools
+            and subagent_config is not None
             and "practice" in subagent_config.allowed_types
         ),
     )
@@ -569,9 +629,7 @@ def _build_runtime_tool(
 
         # ``from __future__ import annotations`` stringifies this nested annotation;
         # StructuredTool needs the runtime object to inject the model tool-call id.
-        graph_invoke.__annotations__["tool_call_id"] = Annotated[
-            str, InjectedToolCallId
-        ]
+        graph_invoke.__annotations__["tool_call_id"] = Annotated[str, InjectedToolCallId]
         coroutine: Any = graph_invoke
     else:
 
@@ -603,9 +661,7 @@ def _graph_approval_identity(
 ) -> tuple[str, str]:
     canonical_args = json.dumps(args, sort_keys=True, ensure_ascii=True, default=str)
     args_digest = hashlib.sha256(canonical_args.encode("utf-8")).hexdigest()
-    identity = "\0".join(
-        (runtime.session_id, run_id, tool_call_id or "missing", tool, args_digest)
-    )
+    identity = "\0".join((runtime.session_id, run_id, tool_call_id or "missing", tool, args_digest))
     approval_id = f"appr_{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:16]}"
     return approval_id, args_digest
 

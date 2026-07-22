@@ -206,10 +206,15 @@ class HarnessEventAdapter:
             is_error = projected.get("status") == "error"
             events: list[RunEvent] = []
             result_payload = _tool_result_payload(projected, tool_name, content, is_error)
+            result_args = _public_tool_result_args(tool_name, content)
+            if result_args:
+                result_payload["args"] = result_args
             pending_call = self._take_pending_tool_call(
                 tool_call_id=str(projected.get("tool_call_id", "")),
                 tool_name=tool_name,
-                args=self._public_task_args(result_payload) if tool_name == "task" else {},
+                args=(
+                    self._public_task_args(result_payload) if tool_name == "task" else result_args
+                ),
                 source_event_id=f"{source_event_id}:late-call",
             )
             if pending_call is not None:
@@ -987,6 +992,41 @@ def _public_tool_result_content(tool_name: str, value: object) -> str:
     return json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
 
 
+def _public_tool_result_args(tool_name: str, content: str) -> dict[str, object]:
+    """Recover bounded display arguments when streamed provider chunks omit them."""
+    if tool_name not in {"knowledge_search", "search_web", "fetch_web", "tool_search"}:
+        return {}
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    args: dict[str, object] = {}
+    query = _public_string(payload.get("query"), 400)
+    if query:
+        args["query"] = query
+    if tool_name == "fetch_web":
+        url = _public_string(payload.get("url"), 1_000)
+        if url.startswith("https://"):
+            args["url"] = url
+    if tool_name == "search_web":
+        domains = payload.get("domains")
+        if isinstance(domains, list | tuple):
+            public_domains = [
+                domain for domain in (_public_string(item, 253) for item in domains[:10]) if domain
+            ]
+            if public_domains:
+                args["domains"] = public_domains
+        freshness = _public_string(payload.get("freshness"), 32)
+        if freshness:
+            args["freshness"] = freshness
+    token_budget = _public_non_negative_int(payload.get("token_budget"))
+    if token_budget:
+        args["token_budget"] = token_budget
+    return args
+
+
 def _public_web_search_content(text: str) -> str:
     payload = _remote_json_payload(text)
     if payload is None:
@@ -1000,6 +1040,8 @@ def _public_web_search_content(text: str) -> str:
         if isinstance(raw_citations, list)
         else []
     )
+    raw_domains = payload.get("domains")
+    domains = raw_domains[:10] if isinstance(raw_domains, list | tuple) else ()
     omitted_count = _public_non_negative_int(payload.get("omitted_count"))
     base = {
         "status": status,
@@ -1009,6 +1051,8 @@ def _public_web_search_content(text: str) -> str:
         "token_budget": _public_non_negative_int(payload.get("token_budget")),
         "omitted_count": omitted_count,
         "error_code": _public_string(payload.get("error_code"), 80),
+        "freshness": _public_string(payload.get("freshness"), 32),
+        "domains": [domain for domain in (_public_string(item, 253) for item in domains) if domain],
         "remote_content": True,
     }
     if status != "evidence_found" or not citations:

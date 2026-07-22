@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from typing import Any
 
 from sage_harness import MemoryReference
@@ -11,7 +11,12 @@ from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
 
 
-def build_deerflow_system_prompt(runtime: CodingRuntime) -> str:
+def build_deerflow_system_prompt(
+    runtime: CodingRuntime,
+    *,
+    retrieval_tool_scope: str = "default",
+    retrieval_sources: Set[str] | None = None,
+) -> str:
     """Render run-local working state without injecting durable memory unconditionally."""
     working = runtime.memory_manager.build_working_memory(
         runtime.session,
@@ -33,6 +38,18 @@ def build_deerflow_system_prompt(runtime: CodingRuntime) -> str:
         "selection. Never use run_shell or a general HTTP client as a substitute for missing "
         "search_web or fetch_web capabilities."
     )
+    if retrieval_tool_scope == "retrieval_only":
+        sources = ", ".join(sorted(retrieval_sources or ())) or "none"
+        base = (
+            f"{base}\n\nThis turn is source-locked to: {sources}. Only the tools already bound "
+            "for those sources may be used. Make at most four total retrieval calls: no more "
+            "than two searches and two page fetches. Never repeat an equivalent query or URL. "
+            "After sufficient evidence, no evidence, an unavailable result, or any duplicate/call "
+            "limit guard, stop calling tools and answer immediately. If the requested source has "
+            "no evidence, say so plainly; do not substitute another source."
+        )
+    elif retrieval_tool_scope == "no_tools":
+        base = f"{base}\n\nThis turn is tool-locked: answer without calling any tool."
     return f"{base}\n\n{working_block}" if working_block else base
 
 

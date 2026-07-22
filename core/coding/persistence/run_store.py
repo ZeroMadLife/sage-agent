@@ -129,7 +129,9 @@ class RunStore:
             return None
         first = events[0]
         business_events = [
-            event for event in events if str(event.get("type", "")) not in {"turn_finished", "run_finished"}
+            event
+            for event in events
+            if str(event.get("type", "")) not in {"turn_finished", "run_finished"}
         ]
         last = business_events[-1] if business_events else events[-1]
         # Extract changed_files from the workspace_diff_ready event (if any) so
@@ -307,8 +309,7 @@ def _project_audit_step(state: dict[str, Any]) -> dict[str, Any]:
     )
     approval_decision = (
         approval_state.get("decision")
-        if isinstance(approval_state, dict)
-        and isinstance(approval_state.get("decision"), dict)
+        if isinstance(approval_state, dict) and isinstance(approval_state.get("decision"), dict)
         else None
     )
     source = call or result or approval or {}
@@ -418,6 +419,15 @@ def _tool_action_summary(tool: str, args: dict[str, Any]) -> str:
     if tool == "run_shell":
         command = str(args.get("command", "")).strip()
         return f"执行 {command or 'shell 命令'}"
+    if tool == "knowledge_search":
+        query = str(args.get("query", "")).strip()
+        return f"检索知识库 {query or '证据'}"
+    if tool == "search_web":
+        query = str(args.get("query", "")).strip()
+        return f"搜索网页 {query or '公开资料'}"
+    if tool == "fetch_web":
+        url = str(args.get("url", "")).strip()
+        return f"抓取网页 {url or '正文'}"
     if tool == "agent":
         task = str(args.get("task", "")).strip()
         return f"子任务 {task or '执行'}"

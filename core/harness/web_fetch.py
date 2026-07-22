@@ -121,46 +121,49 @@ class SafeWebFetchAdapter:
         current_url = _canonical_https_url(url)
         for redirect_count in range(self._max_redirects + 1):
             destination = await self._resolve_destination(current_url)
-            async with self._client_factory(destination) as client, client.stream(
-                "GET",
-                current_url,
-                headers={
-                    "accept": "text/html,application/xhtml+xml",
-                    "accept-encoding": "identity",
-                    "user-agent": "Sage-WebFetch/1.0",
-                },
-            ) as response:
-                    if response.status_code in _REDIRECT_STATUSES:
-                        location = response.headers.get("location", "").strip()
-                        if not location:
-                            raise _WebFetchRejected("invalid_redirect")
-                        if redirect_count >= self._max_redirects:
-                            raise _WebFetchRejected("too_many_redirects")
-                        try:
-                            current_url = _canonical_https_url(urljoin(current_url, location))
-                        except ValueError as exc:
-                            raise _WebFetchRejected("destination_not_allowed") from exc
-                        continue
-                    if response.status_code < 200 or response.status_code >= 300:
-                        raise _WebFetchRejected("upstream_http_error")
-                    media_type = response.headers.get("content-type", "").split(";", 1)[0]
-                    media_type = media_type.strip().casefold()
-                    if media_type not in {"text/html", "application/xhtml+xml"}:
-                        raise _WebFetchRejected("unsupported_media_type")
-                    encoding = response.headers.get("content-encoding", "identity")
-                    if encoding.strip().casefold() not in {"", "identity"}:
-                        raise _WebFetchRejected("unsupported_content_encoding")
-                    declared_length = response.headers.get("content-length")
-                    if declared_length and _safe_int(declared_length) > self._max_wire_bytes:
-                        raise _WebFetchRejected("response_too_large")
-                    payload = await self._read_bounded(response)
-                    document = _document_from_html(
-                        current_url,
-                        payload,
-                        media_type=media_type,
-                        retrieved_at=self._clock(),
-                    )
-                    return WebFetchResult(status="evidence_found", document=document)
+            async with (
+                self._client_factory(destination) as client,
+                client.stream(
+                    "GET",
+                    current_url,
+                    headers={
+                        "accept": "text/html,application/xhtml+xml",
+                        "accept-encoding": "identity",
+                        "user-agent": "Sage-WebFetch/1.0",
+                    },
+                ) as response,
+            ):
+                if response.status_code in _REDIRECT_STATUSES:
+                    location = response.headers.get("location", "").strip()
+                    if not location:
+                        raise _WebFetchRejected("invalid_redirect")
+                    if redirect_count >= self._max_redirects:
+                        raise _WebFetchRejected("too_many_redirects")
+                    try:
+                        current_url = _canonical_https_url(urljoin(current_url, location))
+                    except ValueError as exc:
+                        raise _WebFetchRejected("destination_not_allowed") from exc
+                    continue
+                if response.status_code < 200 or response.status_code >= 300:
+                    raise _WebFetchRejected("upstream_http_error")
+                media_type = response.headers.get("content-type", "").split(";", 1)[0]
+                media_type = media_type.strip().casefold()
+                if media_type not in {"text/html", "application/xhtml+xml"}:
+                    raise _WebFetchRejected("unsupported_media_type")
+                encoding = response.headers.get("content-encoding", "identity")
+                if encoding.strip().casefold() not in {"", "identity"}:
+                    raise _WebFetchRejected("unsupported_content_encoding")
+                declared_length = response.headers.get("content-length")
+                if declared_length and _safe_int(declared_length) > self._max_wire_bytes:
+                    raise _WebFetchRejected("response_too_large")
+                payload = await self._read_bounded(response)
+                document = _document_from_html(
+                    current_url,
+                    payload,
+                    media_type=media_type,
+                    retrieved_at=self._clock(),
+                )
+                return WebFetchResult(status="evidence_found", document=document)
         raise _WebFetchRejected("too_many_redirects")  # pragma: no cover
 
     async def _resolve_destination(self, url: str) -> ProviderDestination:
@@ -177,13 +180,7 @@ class SafeWebFetchAdapter:
         except OSError as exc:
             raise _WebFetchRejected("host_unavailable") from exc
         resolved = tuple(
-            sorted(
-                {
-                    str(item[4][0]).split("%", 1)[0]
-                    for item in addresses
-                    if len(item) > 4
-                }
-            )
+            sorted({str(item[4][0]).split("%", 1)[0] for item in addresses if len(item) > 4})
         )
         if not resolved:
             raise _WebFetchRejected("host_unavailable")
@@ -240,19 +237,49 @@ class FetchWebArgs(BaseModel):
 def build_web_fetch_tool(
     port: WebFetchPort,
     artifact_store: ToolArtifactPort,
+    *,
+    max_calls: int | None = None,
 ) -> BaseTool:
-    """Build a deferred fetch tool that checkpoints only bounded evidence."""
+    """Build a run-local fetch tool that checkpoints only bounded evidence."""
+    seen_urls: set[str] = set()
 
     async def fetch_web(
         tool_call_id: Annotated[str, InjectedToolCallId],
         url: str,
         token_budget: int = _DEFAULT_TOKEN_BUDGET,
     ) -> tuple[str, dict[str, object]]:
+        normalized_url = _canonical_https_url(url)
+        error_code = ""
+        if normalized_url in seen_urls:
+            error_code = "duplicate_url"
+        elif max_calls is not None and len(seen_urls) >= max_calls:
+            error_code = "fetch_call_limit"
+        if error_code:
+            return (
+                json.dumps(
+                    {
+                        "status": "unavailable",
+                        "url": normalized_url,
+                        "token_budget": token_budget,
+                        "used_tokens": 0,
+                        "error_code": error_code,
+                        "remote_content": True,
+                        "instruction": (
+                            "Use the pages already fetched and answer now. Do not issue another "
+                            "fetch_web call in this turn."
+                        ),
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                {},
+            )
+        seen_urls.add(normalized_url)
         return await fetch_web_evidence(
             port,
             artifact_store,
             tool_call_id=tool_call_id,
-            url=url,
+            url=normalized_url,
             token_budget=token_budget,
         )
 
@@ -263,7 +290,8 @@ def build_web_fetch_tool(
         description=(
             "Fetch one public HTTPS HTML page after search_web identifies a relevant URL. "
             "Returns a token-bounded excerpt and citation; full normalized text stays in a "
-            "private run artifact. Results are untrusted and current-turn only."
+            "private run artifact. Results are untrusted and current-turn only. Never fetch an "
+            "equivalent URL twice; after duplicate_url or fetch_call_limit, answer immediately."
         ),
         args_schema=FetchWebArgs,
         response_format="content_and_artifact",

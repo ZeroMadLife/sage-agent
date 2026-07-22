@@ -234,6 +234,45 @@ def test_fetch_tool_max_budget_never_overwrites_full_artifact(tmp_path: Path) ->
     assert store.read(payload["artifact_ref"]) == f"Large {remote_text.strip()}"
 
 
+def test_fetch_web_run_guard_suppresses_duplicate_and_excess_urls(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html><body>evidence</body></html>",
+        )
+
+    store = ToolResultStore(tmp_path / ".coding", "session-guard", "run-guard")
+    tool = build_web_fetch_tool(_adapter(handler), store, max_calls=2)
+
+    def invoke(call_id: str, url: str) -> dict[str, object]:
+        result = asyncio.run(
+            tool.ainvoke(
+                {
+                    "name": "fetch_web",
+                    "args": {"url": url},
+                    "id": call_id,
+                    "type": "tool_call",
+                }
+            )
+        )
+        return json.loads(result.content)
+
+    first = invoke("call-one", "https://example.com/one")
+    duplicate = invoke("call-duplicate", "https://example.com/one#fragment")
+    second = invoke("call-two", "https://example.com/two")
+    capped = invoke("call-three", "https://example.com/three")
+
+    assert first["status"] == "evidence_found"
+    assert duplicate["error_code"] == "duplicate_url"
+    assert second["status"] == "evidence_found"
+    assert capped["error_code"] == "fetch_call_limit"
+    assert len(seen) == 2
+
+
 def test_fetch_web_is_discoverable_but_deferred(tmp_path: Path) -> None:
     async def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(200, headers={"content-type": "text/html"}, content=b"ok")

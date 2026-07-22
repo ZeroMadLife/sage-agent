@@ -137,6 +137,78 @@ describe('CodingRunTrace', () => {
     expect(wrapper.text()).toContain('无匹配工具')
   })
 
+  it('shows knowledge queries, web queries, constrained domains, and fetched URLs in the audit trail', async () => {
+    const retrievalAudit: CodingRunAuditSummary = {
+      ...audit,
+      tool_count: 3,
+      completed_tool_count: 3,
+      steps: [
+        {
+          ...audit.steps[0],
+          tool: 'knowledge_search',
+          action_summary: '调用 knowledge_search',
+          arguments_preview: '{"query":"checkpoint 恢复"}',
+        },
+        {
+          ...audit.steps[0],
+          tool: 'search_web',
+          action_summary: '调用 search_web',
+          arguments_preview: '{"query":"LangGraph checkpoint official documentation","domains":["langchain-ai.github.io"]}',
+        },
+        {
+          ...audit.steps[0],
+          tool: 'fetch_web',
+          action_summary: '调用 fetch_web',
+          arguments_preview: '{"url":"https://langchain-ai.github.io/langgraph/concepts/persistence/"}',
+        },
+      ],
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: {
+        runId: 'run-retrieval',
+        audit: retrievalAudit,
+        tools: [
+          {
+            id: 'tool-knowledge-search',
+            tool: 'knowledge_search',
+            args: { query: 'checkpoint 恢复' },
+            status: 'completed',
+            result: 'evidence',
+            is_error: false,
+          },
+          {
+            id: 'tool-web-search',
+            tool: 'search_web',
+            args: {
+              query: 'LangGraph checkpoint official documentation',
+              domains: ['langchain-ai.github.io'],
+            },
+            status: 'completed',
+            result: 'results',
+            is_error: false,
+          },
+          {
+            id: 'tool-web-fetch',
+            tool: 'fetch_web',
+            args: { url: 'https://langchain-ai.github.io/langgraph/concepts/persistence/' },
+            status: 'completed',
+            result: 'page content',
+            is_error: false,
+          },
+        ],
+      },
+    })
+
+    expect(wrapper.get('summary').text()).toContain('搜索知识 checkpoint 恢复')
+    expect(wrapper.get('summary').text()).toContain('搜索网页 LangGraph checkpoint official documentation · langchain-ai.github.io')
+
+    await wrapper.get('summary').trigger('click')
+
+    expect(wrapper.text()).toContain('搜索知识 checkpoint 恢复')
+    expect(wrapper.text()).toContain('搜索网页 LangGraph checkpoint official documentation · langchain-ai.github.io')
+    expect(wrapper.text()).toContain('抓取网页 https://langchain-ai.github.io/langgraph/concepts/persistence/')
+  })
+
   it('merges durable task receipt arguments into a generic run audit step', async () => {
     const taskAudit: CodingRunAuditSummary = {
       ...audit,
