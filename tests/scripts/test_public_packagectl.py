@@ -4,12 +4,44 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from public_agent.registry import PublishedPackageError, PublishedPackageRegistry
 from scripts.public_packagectl import execute, parse_request
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_controller_import_does_not_require_the_web_runtime() -> None:
+    script = """
+import importlib.abc
+import sys
+
+class BlockWebRuntime(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.', 1)[0] in {'fastapi', 'openai'}:
+            raise ModuleNotFoundError(f'blocked optional runtime: {fullname}')
+        return None
+
+sys.meta_path.insert(0, BlockWebRuntime())
+import scripts.public_packagectl
+print('packagectl-imported')
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "packagectl-imported"
 
 
 def test_request_contract_accepts_exact_lifecycle_actions() -> None:
