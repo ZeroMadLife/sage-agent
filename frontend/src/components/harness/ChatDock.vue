@@ -144,7 +144,7 @@ function handleAnchorChange(eventId: string, offset: number) {
 .chat-dock {
   --chat-content-max: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -152,11 +152,8 @@ function handleAnchorChange(eventId: string, offset: number) {
   color: var(--sage-text);
   background: var(--sage-surface);
 }
-.chat-dock:has(.chat-attention) { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
-.chat-dock:has(.chat-context-tools) { grid-template-rows: auto auto minmax(0, 1fr) auto auto; }
-.chat-dock:has(.chat-context-tools):has(.chat-attention) { grid-template-rows: auto auto auto minmax(0, 1fr) auto auto; }
 
-.chat-run-strip { padding: 10px 12px 9px; border-bottom: 1px solid var(--sage-border); background: var(--sage-surface-muted); }
+.chat-run-strip { grid-row: 1; padding: 10px 12px 9px; border-bottom: 1px solid var(--sage-border); background: var(--sage-surface-muted); }
 .chat-dock.compact .chat-run-strip { padding-top: 8px; padding-bottom: 7px; }
 .run-strip-title { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--sage-text-muted); }
 .run-strip-title > svg { flex: none; }
@@ -179,11 +176,11 @@ function handleAnchorChange(eventId: string, offset: number) {
 .run-stage-track i.running { background: var(--sage-success); }
 .run-stage-track i.blocked { background: var(--sage-warning); }
 .run-stage-track i.failed,.run-stage-track i.cancelled { background: var(--sage-danger); }
-.chat-context-tools { min-width:0; max-height:min(32dvh,250px); overflow:auto; border-bottom:1px solid var(--sage-border); background:var(--sage-surface); }
-.chat-attention { min-width: 0; max-height:min(44dvh,420px); overflow:auto; border-bottom: 1px solid color-mix(in srgb, var(--sage-warning) 48%, var(--sage-border)); background: var(--sage-warning-bg); }
-.chat-dock-timeline { padding: 14px 12px 16px; }
-.chat-dock-composer { min-width: 0; }
-.surface-context-bar { min-width: 0; padding: 5px 11px; border-top: 1px solid var(--sage-border); }
+.chat-context-tools { grid-row:2; min-width:0; max-height:min(32dvh,250px); overflow:auto; border-bottom:1px solid var(--sage-border); background:var(--sage-surface); }
+.chat-attention { grid-row:3; min-width: 0; max-height:min(44dvh,420px); overflow:auto; border-bottom: 1px solid color-mix(in srgb, var(--sage-warning) 48%, var(--sage-border)); background: var(--sage-warning-bg); }
+.chat-dock-timeline { grid-row:4; padding: 14px 12px 16px; }
+.chat-dock-composer { grid-row:5; min-width: 0; }
+.surface-context-bar { grid-row:6; min-width: 0; padding: 5px 11px; border-top: 1px solid var(--sage-border); }
 .surface-context-bar :deep(.context-receipt-chip) { border: 0; padding: 4px 0; background: transparent; }
 .chat-empty-state { display: flex; min-height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 5px; color: var(--sage-text-muted); text-align: center; }
 .chat-empty-state strong { color: var(--sage-text-secondary); font-size: var(--sage-font-md); }

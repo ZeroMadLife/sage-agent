@@ -40,6 +40,21 @@ it('keeps only the approved primary destinations and treats coding sessions as m
   expect(wrapper.get('a[href="/coding/session/session-a"]').classes()).toContain('active')
   expect(wrapper.get('.public-link').text()).toContain('公开门面')
   expect(wrapper.get('.settings-link').text()).toContain('设置')
+  expect(wrapper.get('.assistant-shell').classes()).toContain('workspace-viewport')
+})
+
+it('only locks the application viewport for conversation workspaces', async () => {
+  const router = createTestRouter()
+  await router.push('/assistant')
+  const wrapper = mount(AssistantNavigation, {
+    slots: { default: '<p>主页内容</p>' },
+    global: { plugins: [router] },
+  })
+
+  expect(wrapper.get('.assistant-shell').classes()).not.toContain('workspace-viewport')
+  await router.push('/coding/session/session-a')
+  expect(wrapper.get('.assistant-shell').classes()).toContain('workspace-viewport')
+  wrapper.unmount()
 })
 
 it('uses a three-item bottom navigation and command trigger on mobile', async () => {

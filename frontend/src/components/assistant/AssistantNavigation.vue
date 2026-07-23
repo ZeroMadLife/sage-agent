@@ -13,6 +13,7 @@ import { openCommandPalette } from '../product-shell'
 
 const route = useRoute()
 const compact = ref(window.innerWidth < 900)
+const workspaceViewport = computed(() => route.path.startsWith('/coding'))
 
 const conversationTarget = computed(() => {
   if (route.path.startsWith('/coding/session/')) return route.fullPath
@@ -52,7 +53,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
 </script>
 
 <template>
-  <div class="assistant-shell">
+  <div class="assistant-shell" :class="{ 'workspace-viewport': workspaceViewport }">
     <aside v-if="!compact" class="assistant-navigation">
       <header class="navigation-brand">
         <span class="brand-mark"><Sparkles :size="17" /></span>
@@ -125,6 +126,19 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
   background: var(--sage-bg);
+}
+
+.assistant-shell.workspace-viewport {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-viewport .assistant-navigation,
+.workspace-viewport .assistant-main {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .assistant-navigation {
@@ -224,6 +238,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
 @media (max-width: 899px) {
   .assistant-shell { display: block; min-height: 100dvh; }
   .assistant-main { min-height: calc(100dvh - 64px - env(safe-area-inset-bottom)); padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .assistant-shell.workspace-viewport .assistant-main {
+    height: calc(100dvh - 64px - env(safe-area-inset-bottom));
+    min-height: 0;
+    padding-bottom: 0;
+  }
   .mobile-command-trigger {
     position: fixed;
     z-index: 20;

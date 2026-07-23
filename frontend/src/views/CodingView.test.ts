@@ -26,6 +26,7 @@ function createTestRouter(initialPath = '/coding') {
     routes: [
       { path: '/coding', name: 'coding.home', component: CodingView },
       { path: '/coding/session/:sessionId', name: 'coding.session', component: CodingView },
+      { path: '/assistant', component: { template: '<div>assistant</div>' } },
       { path: '/settings/:section?', component: { template: '<div>settings</div>' } },
     ],
   })
@@ -143,6 +144,18 @@ describe('CodingView chat route lifecycle', () => {
 
     await vi.waitFor(() => expect(store.selectSession).toHaveBeenCalledWith('saved-session'))
     expect(store.initialize).not.toHaveBeenCalled()
+    root.unmount()
+  })
+
+  it('keeps a clear new-conversation route in the session header', async () => {
+    const store = useCodingStore()
+    store.sessionId = 'saved-session'
+    const { root, wrapper } = await mountChat('/coding/session/saved-session')
+
+    const newConversation = wrapper().get('a[aria-label="开始新对话"]')
+    expect(newConversation.text()).toBe('新对话')
+    expect(newConversation.attributes('href')).toBe('/assistant')
+    expect(wrapper().findComponent({ name: 'CodingComposer' }).props('density')).toBe('compact')
     root.unmount()
   })
 
