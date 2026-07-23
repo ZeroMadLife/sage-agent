@@ -92,7 +92,7 @@
 
 ### 第五遍：理解底层框架
 
-14. [create_agent 与 LangChain/LangGraph](14-create-agent-langchain-langgraph.md)
+14. [create_agent 与 LangGraph](14-create-agent-langgraph.md)
 
 用本章建立 LangChain 抽象、LangGraph state/checkpointer 和 middleware 的协作模型，再回到
 Sage adapter 验证这些框架概念如何映射到真实产品运行时。
