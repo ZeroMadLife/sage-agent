@@ -11,7 +11,7 @@ import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +21,7 @@ _SAFE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _SAFE_ACTOR = re.compile(r"[A-Za-z0-9][A-Za-z0-9@._-]{0,127}")
 _MAX_PACKAGE_BYTES = 2 * 1024 * 1024
 _MAX_REGISTRY_BYTES = 8 * 1024 * 1024
-_UTC = UTC
+_UTC = timezone.utc  # noqa: UP017 - root package controller supports Python 3.10
 
 
 class PublishedPackageError(RuntimeError):

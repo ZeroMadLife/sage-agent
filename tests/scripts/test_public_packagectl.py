@@ -18,8 +18,10 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_controller_import_does_not_require_the_web_runtime() -> None:
     script = """
+import datetime as runtime_datetime
 import importlib.abc
 import sys
+import types
 
 class BlockWebRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
@@ -28,6 +30,13 @@ class BlockWebRuntime(importlib.abc.MetaPathFinder):
         return None
 
 sys.meta_path.insert(0, BlockWebRuntime())
+
+python_310_datetime = types.ModuleType('datetime')
+for name in dir(runtime_datetime):
+    if name != 'UTC':
+        setattr(python_310_datetime, name, getattr(runtime_datetime, name))
+sys.modules['datetime'] = python_310_datetime
+
 import scripts.public_packagectl
 print('packagectl-imported')
 """
