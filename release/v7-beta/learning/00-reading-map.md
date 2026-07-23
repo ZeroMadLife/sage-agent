@@ -57,16 +57,16 @@
 
 ### 第一遍：建立全局地图
 
-1. [为什么做 Sage](01-why-sage.md)
-2. [总体架构](02-overall-architecture.md)
+1. [总体架构：Sage 是学习工作台，不是聊天壳](01-overall-architecture.md)
+2. [三层架构与事实边界](02-three-planes-fact-boundary.md)
 3. [Runtime 与 Engine](03-runtime-engine.md)
 
 这一遍只回答三个问题：请求从哪里进入，谁推进任务，状态和证据最终落在哪里。
 
 ### 第二遍：理解 Harness 为什么可控
 
-4. [Context 组装与 Prompt Caching](04-context-prompt-caching.md)
-5. [Tool Registry 与工具系统](05-tools-registry.md)
+4. [Context 组装与成本治理](04-context-cost-governance.md)
+5. [工具注册与执行管线](05-tools-execution-pipeline.md)
 6. [权限、审批与沙盒](06-permissions-approval-sandbox.md)
 7. [Skills 与命令系统](07-skills-commands.md)
 8. [长短记忆与 Dream](08-memory-dream.md)
@@ -76,7 +76,7 @@
 
 ### 第三遍：理解知识与并行能力
 
-9. [Knowledge Platform](09-knowledge-platform.md)
+9. [Knowledge 与 RAG 检索](09-knowledge-rag-retrieval.md)
 10. [受限子代理](10-subagents-research.md)
 11. [持久 Timeline 与断线重连](11-timeline-reconnect.md)
 
@@ -100,9 +100,10 @@ Sage adapter 验证这些框架概念如何映射到真实产品运行时。
 ### 第六遍：目标架构与团队 Harness
 
 15. [Sage 五层目标架构](15-sage-five-layer-target-architecture.md)
+16. [RAG 检索全链路与多模型评测](16-rag-eval-benchmark.md)
 
 重点看规范输入、Harness 约束、数据/能力、生成与反馈回写如何组成闭环，以及如何对齐
-CodeBuddy / WorkBuddy 的分层思路。
+CodeBuddy / WorkBuddy 的分层思路；再用第 16 章的真实评测数据检查检索取舍。
 
 ## 一条主调用链
 

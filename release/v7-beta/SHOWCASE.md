@@ -16,7 +16,7 @@
 一次请求沿 Vue、FastAPI、Runtime、Engine 与 Tool 边界推进；Session、Knowledge、Checkpoint
 保存可恢复状态，Timeline、Run trace、Diff 与 Benchmark 保存可复核证据。入口见
 [`api/coding.py`](../../api/coding.py)、[`core/harness/runtime_adapter.py`](../../core/harness/runtime_adapter.py)
-与 [`core/coding/persistence/`](../../core/coding/persistence/)；完整边界见[总体架构](learning/02-overall-architecture.md)。
+与 [`core/coding/persistence/`](../../core/coding/persistence/)；完整边界见[总体架构](learning/01-overall-architecture.md)。
 
 ### 2. 双轨 Runtime 保留历史语义
 
@@ -32,7 +32,7 @@ middleware 运行；历史会话继续按 `legacy` 的 XML 协议回放，避免
 可供 Agent 修正的 `ToolResult`；deferred tool 只在需要时提升完整 schema。代码入口是
 [`core/coding/tools/registry.py`](../../core/coding/tools/registry.py)、
 [`core/coding/tool_executor/executor.py`](../../core/coding/tool_executor/executor.py) 与
-[`core/harness/tools_adapter.py`](../../core/harness/tools_adapter.py)，详见 [Tool Registry](learning/05-tools-registry.md)。
+[`core/harness/tools_adapter.py`](../../core/harness/tools_adapter.py)，详见[工具执行管线](learning/05-tools-execution-pipeline.md)。
 
 ### 4. Knowledge 以来源、提案和引用治理长期事实
 
@@ -40,7 +40,7 @@ middleware 运行；历史会话继续按 `legacy` 的 XML 协议回放，避免
 携带 page/source revision、content hash 与稳定 citation。当前默认后端是 SQLite FTS5 +
 deterministic hashing baseline，不把 pgvector 依赖误写成已上线的完整语义检索；实现见
 [`core/knowledge/store.py`](../../core/knowledge/store.py)、[`core/knowledge/retrieval.py`](../../core/knowledge/retrieval.py)
-和 [`core/knowledge/sources/filesystem.py`](../../core/knowledge/sources/filesystem.py)，边界见 [Knowledge Platform](learning/09-knowledge-platform.md)。
+和 [`core/knowledge/sources/filesystem.py`](../../core/knowledge/sources/filesystem.py)，边界见[Knowledge 与 RAG 检索](learning/09-knowledge-rag-retrieval.md)。
 
 ### 5. 五层目标把生成结果接回学习闭环
 
