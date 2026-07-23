@@ -1,272 +1,228 @@
-# 07 - Skills 与命令系统
+# Skills 与命令系统：经验可以沉淀成受控的可复用能力
 
-> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
+> Last verified against: `codex/release-v7-rewrite@cf1d8d6` (2026-07-23)
 
-> 本章目标：能讲清 SKILL.md 的格式、slash 命令的解析与展开流程、8 个 bundled skill 各自做什么、以及 skill 的 `allowed_tools` 当前为什么没强制执行。
+Skill 不是一段更长的 prompt，而是带来源、版本、参数和工具边界的可复用工作流包。
 
-## Skill 是什么
+![经验变成能力](assets/07-skills-commands.png)
 
-Skill 是**可复用的 prompt 工作流**，通过 `/name [args]` 触发。它不是工具（不执行动作），而是一段展开后注入 prompt 的指令文本。
+## Skill、Command 与 Tool 是三种东西
 
-举个例子：
-- 用户输入 `/review src/auth.py`
-- `SkillRegistry.resolve()` 找到 `review` skill
-- `Skill.render("src/auth.py")` 把 `$ARGUMENTS` 替换成 `src/auth.py`
-- 展开后的文本作为 `skill_prompt` 注入当前轮 prompt（不写 history）
-- 模型按这段指令执行代码审查
+| 概念 | 本质 | 谁触发 | 是否产生副作用 |
+| --- | --- | --- | --- |
+| Skill | 工作流指导与能力元数据 | 用户 slash command | 自身不产生 |
+| Command | 激活 Skill 的输入协议 | 用户显式输入 | 不产生 |
+| Tool | Host 执行的具体动作 | 模型结构化调用 | 可能产生 |
 
-Skill 和 Tool 的区别：
+Skill 告诉模型“按什么方法完成任务”，Tool 才负责读写、检索或执行。
 
-| 维度 | Skill | Tool |
+无论 Skill 写了什么，工具调用仍要经过第 05、06 章的验证与门禁。
+
+## 三层边界：内容、引用与执行能力
+
+### 第一层：SKILL.md 保存人类可维护的工作流
+
+一个 Skill 由 frontmatter 和 Markdown 正文组成。
+
+Frontmatter 声明名称、描述、允许工具、参数提示和是否允许用户调用。
+
+正文可以引用 `$ARGUMENTS`、Skill 目录与参数提示变量。
+
+它适合承载步骤、检查表、输出要求和领域约束，不适合保存凭据或运行状态。
+
+### 第二层：激活状态只保存稳定引用
+
+Harness 激活 Skill 后，checkpoint 只记录名称、`skill://source/name`、描述、revision 等小型引用。
+
+绝对 Skill 根路径不会进入持久状态。
+
+完整正文只在当前模型调用时注入，并带隐藏 UI 标记。
+
+这样既避免 prompt 正文污染 Transcript，也避免宿主路径泄漏到恢复数据。
+
+### 第三层：工具能力由 host 强制过滤
+
+Harness 的 `SkillActivationMiddleware` 同时过滤模型可见工具和真实工具调用。
+
+允许集合来自 `allowed_tools`，`tool_search` 默认始终可用。
+
+模型即使伪造未授权 tool call，也会得到 error `ToolMessage`，不会进入 handler。
+
+这比只从 prompt 隐藏工具更强：不可见与不可执行两道边界保持一致。
+
+## 从 slash command 到模型调用
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as Parser/Catalog
+    participant S as Skill Middleware
+    participant M as Model
+    participant T as Tool Middleware
+
+    U->>C: /review src/auth.py
+    C->>C: resolve + render arguments
+    C->>S: activation + revision
+    S->>M: inject bounded guidance
+    S->>M: expose allowed tool schemas
+    M->>T: tool call
+    T->>T: enforce same allowlist
+    T-->>M: result or blocked error
+```
+
+解析器只接受完整的 slash-prefixed command，不从任意自然语言中猜测 Skill。
+
+参数最多保留 4,000 字符，注入正文最多 16,000 字符。
+
+这两个上限防止超长命令借 Skill 激活挤占模型上下文。
+
+## 发现顺序表达本地定制权
+
+Legacy discovery 按以下顺序加载：
+
+1. bundled Skill；
+2. `~/.sage/skills` 用户 Skill；
+3. `<repo>/skills` 项目 Skill；
+4. `<repo>/.coding/skills` 项目私有 Skill。
+
+后加载的同名 Skill 覆盖前者。
+
+这允许仓库定制通用工作流，但也意味着来源与 revision 必须可观察。
+
+否则一个同名覆盖可能在用户不知情时改变工具范围。
+
+## 变量展开必须保持数据边界
+
+`Skill.render` 支持四类替换：
+
+- `$ARGUMENTS`；
+- `${SAGE_SKILL_DIR}`；
+- `${PICO_SKILL_DIR}` 兼容别名；
+- frontmatter 声明的参数提示变量。
+
+Harness 注入时会对正文、描述与参数进行 HTML escaping，并明确声明 Skill 是工作流指导，不是更高优先级权威。
+
+参数仍是用户数据，不能因为进入模板就升级为 system instruction。
+
+Skill 目录只应在应用侧解析资源，不能把真实绝对路径持久化进 graph state。
+
+## allowed_tools 已经有两种实现状态
+
+这是阅读源码时最容易被旧文档误导的地方。
+
+Legacy `Skill` 会解析 `allowed_tools`，但旧 `ToolExecutor` 本身没有 active-skill allowlist 参数。
+
+Harness `SkillActivationMiddleware` 已经同时完成 schema 过滤和 tool-call 阻断。
+
+因此正确表述不是“allowed_tools 没生效”，而是：
+
+- Harness 路径已经强制执行；
+- Legacy 路径不能把 frontmatter 当成独立权限边界；
+- 两条运行路径仍需继续收敛。
+
+即使在 Harness 中，allowlist 也只缩小能力，不会扩大 Permission 或 Sandbox 权限。
+
+## revision 防止静默漂移
+
+Skill revision 由原始 prompt 内容计算摘要。
+
+Checkpoint 保存 revision 而不是正文。
+
+它让恢复与审计能够识别“同名 Skill 已经不是当时版本”。
+
+但当前 revision 只覆盖 prompt 源文本，Skill 附属文件和外部依赖仍需应用层版本治理。
+
+## 为什么不是最小 Prompt 模板目录
+
+最小实现扫描 Markdown，匹配 `/name` 后直接拼接正文。
+
+它没有用户可调用性、来源覆盖、长度边界、版本引用和工具强制过滤。
+
+| 维度 | Sage | 对标系统 |
 | --- | --- | --- |
-| 本质 | prompt 指令文本 | 可执行函数 |
-| 触发 | `/name args`（用户显式）或 LLM 自动 | LLM 在 ReAct 循环中调用 |
-| 执行 | 不执行，只展开成 prompt | 真正读写文件/执行命令 |
-| 权限 | 不能绕过 ToolExecutor | 受五道门约束 |
-| 持久化 | per-turn 注入，不写 history | tool result 写 history |
+| 载体 | SKILL.md + frontmatter + 正文 | Claude Code、CodeBuddy 都有命令或扩展工作流，格式与加载规则不同 |
+| 激活 | 完整 slash command，显式参数 | 对标系统也支持显式命令，是否自动路由依产品而变 |
+| 状态 | checkpoint 保存小引用，正文 per-call 注入 | 对标产品内部状态格式通常不公开 |
+| 工具范围 | Harness 同时过滤 schema 与执行；Legacy 未完全接齐 | 对标系统可限制工具，执行层细节需按版本验证 |
+| 覆盖 | bundled、用户、项目逐级覆盖 | 对标产品通常支持项目级配置，优先级各异 |
+| 当前差距 | 双路径语义未统一；无完整安装/签名供应链 | 成熟生态在分发、签名和版本管理上更完整 |
 
-## SKILL.md 格式
+可复用能力的成熟度，不应只用“能加载多少 Markdown”衡量。
 
-```markdown
----
-name: review
-description: 代码审查
-allowed-tools: read_file, search, list_files
-argument-hint: REQUEST
----
-你正在执行 Sage 的 review skill。
+## 系统级失败模式
 
-审查目标：$ARGUMENTS
+### 1. 把 Skill 正文写入 Transcript
 
-请按以下方式处理：
-1. 先用 read_file 读取目标文件
-2. 检查代码风格、潜在 bug、安全风险
-3. 给出具体的改进建议，附行号
-```
+最危险的不是多占 token，而是旧工作流在后续 turn 被当成持续有效指令。
 
-### Frontmatter 字段
+### 2. 只隐藏工具 schema，不拦截调用
 
-| 字段 | 含义 | 必填 |
-| --- | --- | --- |
-| `name` | skill 名（`/name` 触发） | 是 |
-| `description` | 一行描述（给模型看） | 是 |
-| `allowed-tools` | 允许使用的工具白名单 | 否 |
-| `argument-hint` | 参数提示名（如 `REQUEST` / `PATH`） | 否 |
-| `user-invocable` | 是否用户可调用（默认 true） | 否 |
+最危险的不是模型猜到工具名，而是伪造 tool call 仍能越过 Skill 能力范围执行。
 
-### 变量替换
+### 3. 项目 Skill 静默覆盖用户 Skill
 
-`Skill.render(arguments)` 替换：
+最危险的不是文案变化，而是同名覆盖扩大了允许工具却没有来源与 revision 证据。
 
-| 占位符 | 替换成 |
-| --- | --- |
-| `$ARGUMENTS` | 用户传入的参数 |
-| `${SAGE_SKILL_DIR}` | skill 所在目录（访问 skill 的附属文件） |
-| `${PICO_SKILL_DIR}` | 同上（兼容旧名） |
-| `${argument_hint}` | 如 `${REQUEST}` 替换成参数 |
+### 4. 持久化绝对 Skill 路径
 
-## Skill 发现顺序
+最危险的不是换机器后失效，而是 checkpoint 泄漏用户目录结构与内部仓库位置。
 
-`discover_skills(root, home)` 按优先级搜索：
+### 5. 参数未经转义进入结构化标记
 
-```
-1. builtin:        core/coding/skills/bundled/<name>/SKILL.md
-2. home:           ~/.sage/skills/<name>/SKILL.md
-3. workspace:      <workspace>/skills/<name>/SKILL.md
-4. workspace:      <workspace>/.coding/skills/<name>/SKILL.md
-```
+最危险的不是渲染异常，而是用户文本逃出 data boundary，伪装成更高优先级指令。
 
-**后者覆盖前者**。这样用户可以在 workspace 级覆盖 builtin skill，或新增自定义 skill。
+### 6. 空 allowlist 被解释成允许全部
 
-## 8 个 Bundled Skill
+最危险的不是 Skill 无法完成任务，而是配置遗漏自动扩大为全工具权限。
 
-```
-core/coding/skills/bundled/
-├── commit/SKILL.md         - Git 提交工作流
-├── dream/SKILL.md          - 反思提案（调用 dream tool）
-├── planmode/SKILL.md       - 进入计划模式
-├── remember/SKILL.md       - 显式记忆（调用 remember tool）
-├── review/SKILL.md         - 代码审查
-├── test/SKILL.md           - 测试运行与验证
-├── travel/SKILL.md         - 旅游行程规划（多 Agent 协作）
-└── travel-planning/SKILL.md - 兼容旧入口
-```
+### 7. Legacy 与 Harness 被文档写成同一行为
 
-### 典型 skill：review
+最危险的不是读者困惑，而是安全评审错误地把 Harness 防线算到 Legacy 路径上。
 
-```markdown
----
-name: review
-description: 代码审查
-allowed-tools: read_file, search, list_files
-argument-hint: REQUEST
----
-你正在使用 Sage 的 review skill。
+## 设计文档补充：Skill 激活契约
 
-用户需求：
+### 目标
 
-$ARGUMENTS
+- 工作流以人类可审阅文件沉淀；
+- 用户通过明确命令激活，不从普通文本误触发；
+- 正文 per-call 注入，状态只保存安全引用；
+- Harness 的工具可见性与可执行性使用同一 allowlist；
+- 来源、revision 与覆盖关系可审计。
 
-请按以下方式处理：
+### 非目标
 
-1. 先确认审查目标和范围。
-2. 用 read_file 读取相关文件，用 search 查找关键模式。
-3. 检查代码风格、潜在 bug、安全风险、性能问题。
-4. 给出具体的改进建议，引用文件路径和行号。
-5. 不要直接修改文件，只给出审查意见。
-```
+- Skill 不绕过 Permission、Policy、Approval 或 Sandbox；
+- 不把 Skill 参数提升为系统权威；
+- 不宣称 Legacy 已强制执行 `allowed_tools`；
+- 不把目录扫描当成可信软件供应链。
 
-### 典型 skill：travel（领域 skill）
+### 验收清单
 
-```markdown
----
-name: travel
-description: 旅游行程规划（多Agent协作 + 预算约束 + 确定性验证）
-allowed-tools: generate_itinerary, search_attractions, get_weather, get_forecast, geocode, search_nearby, get_route
-arguments: REQUEST
----
-你正在使用 Sage 的 travel domain skill。
-
-用户需求：
-
-$ARGUMENTS
-
-请按以下方式处理：
-1. 先确认目的地、天数、预算、偏好、出发时间或当前位置是否足够明确。
-2. 如果关键信息不完整，只追问最关键的一项。
-3. 如果用户需要完整行程，调用 `generate_itinerary`。
-4. 如果用户问天气，调用 `get_weather` 或 `get_forecast`。
-5. 预算敏感，推荐时优先考虑学生消费水平。
-6. 输出要面向用户，不要暴露原始 JSON。
-```
-
-travel skill 的 `allowed-tools` 列出了 7 个 deferred travel tool。用户输入 `/travel 杭州 3天` 后，这些工具会被建议激活（但当前 `allowed_tools` 没强制执行，见下文）。
-
-## Slash 命令解析与展开
-
-```
-用户输入: /review 检查 src/auth.py
-  ↓
-api/coding.py::coding_stream
-  ↓
-runtime.resolve_slash(content)
-  ├── parse_slash_command("/review 检查 src/auth.py")
-  │   └── command="review", arguments="检查 src/auth.py"
-  ├── skill = skill_registry.get("review")
-  └── return (skill, "review", "检查 src/auth.py")
-  ↓
-expanded = skill.render("检查 src/auth.py")
-  ↓ 展开后的文本作为 skill_prompt
-WebSocket 发送 skill_invoked 事件
-  ↓
-runtime.run_turn(expanded, skill_prompt=expanded)
-  ↓
-Engine 把 skill_prompt 注入 prompt（per-turn，不写 history）
-  ↓
-模型按指令执行
-```
-
-**关键**：slash 命令展开后的文本**不写 history**。history 里只存原始用户输入（`/review 检查 src/auth.py`）。skill_prompt 是 per-turn 注入，下轮消失。这样 history 不会被大段指令文本污染。
-
-## `allowed_tools` 当前为什么没强制执行
-
-SKILL.md frontmatter 里的 `allowed-tools` 被解析到 `Skill.allowed_tools` 元数据，但**当前 ToolExecutor 没有强制执行这个白名单**。
-
-```python
-@dataclass(frozen=True)
-class Skill:
-    allowed_tools: tuple[str, ...] = ()  # 解析了但没强制
-```
-
-当前所有工具对所有 skill 都可用。这意味着：
-- `/review` skill 声明只用 `read_file, search, list_files`
-- 但模型在 review 过程中可以调用 `write_file` 或 `run_shell`
-- permission/policy 仍然检查，但不是 skill 级白名单
-
-**为什么没强制**：强制 `allowed_tools` 需要在 ToolExecutor 里加一层"当前 active skill 的工具白名单"检查。这涉及：
-- skill 激活时记录 active skill
-- ToolExecutor 检查 `tool.name in active_skill.allowed_tools`
-- skill 结束时清除 active skill
-- 多 skill 嵌套的处理
-
-这是一个明确的待办，当前不能把 frontmatter 中的声明当作已执行的权限边界。
-
-## Skill 与 Tool 的协作
-
-Skill 展开成 prompt 后，模型按 prompt 指令调用工具。比如 `/travel 杭州 3天`：
-
-```
-1. 用户输入 /travel 杭州 3天
-2. skill_prompt 展开（包含"调用 generate_itinerary"指令）
-3. 模型看到 skill_prompt，决定调用 tool_search("travel")
-4. tool_search 激活 travel 类 deferred tools
-5. 下一轮模型调用 generate_itinerary(destination="杭州", duration_days=3)
-6. 工具执行（走五道门），返回行程 JSON
-7. 模型把 JSON 格式化成用户友好的回复
-8. yield FinalEvent
-```
-
-Skill 是"指挥官"，Tool 是"执行者"。Skill 告诉模型该做什么，Tool 真正做。
-
-## v2 的 Skill Catalog
-
-v2 runtime 里，skill 通过 `SkillCatalog` 接入：
-
-```python
-# packages/sage_harness/sage_harness/agents/factory.py
-def create_sage_agent(
-    model, tools, *,
-    skill_catalog: SkillCatalog | None = None,
-    ...
-):
-    if skill_catalog is not None:
-        middleware.append(SkillActivationMiddleware(skill_catalog))
-```
-
-`SkillActivationMiddleware` 负责把 active skill 的 context 注入 `SageThreadState.skill_context`。state 只保存 skill 引用和版本，不保存完整 Skill 正文。
-
-## 外部参考的使用边界
-
-`SKILL.md` 只是常见载体，不代表不同系统拥有相同的发现顺序、变量语义或工具权限。
-Sage 的结论必须以自己的 registry、renderer 和 activation 测试为准。`allowed_tools` 是否
-真正参与 capability 过滤要由执行路径证明，不能根据 frontmatter 字段存在就宣称生效。
+- [ ] 只有完整 slash command 才能激活 Skill；
+- [ ] 超长参数与正文按上限截断；
+- [ ] `user_invocable=false` 无法由用户激活；
+- [ ] 项目覆盖 bundled 的优先级有测试；
+- [ ] 状态引用不包含绝对 host 路径；
+- [ ] 模型 schema 与真实 tool call 使用同一 allowlist；
+- [ ] 未允许工具返回 error 且不执行 handler；
+- [ ] Skill 正文不进入可见历史。
 
 ## 第一入口
 
-按顺序打开：
+按这个顺序读源码：
 
-1. `core/coding/skills/skill.py::Skill` - Skill dataclass + render
-2. `core/coding/skills/skill.py::discover_skills` - skill 发现
-3. `core/coding/skills/skill.py::parse_slash_command` - slash 解析
-4. `core/coding/skills/registry.py::SkillRegistry.resolve` - slash 命令解析
-5. `core/coding/runtime.py::resolve_slash` - runtime 入口
-6. `api/coding.py::coding_stream` - WebSocket 处理 slash
-7. `core/coding/skills/bundled/review/SKILL.md` - 典型 skill
-8. `core/coding/skills/bundled/travel/SKILL.md` - 领域 skill
+1. `core/coding/skills/skill.py::Skill`：frontmatter 模型与变量展开；
+2. `core/coding/skills/skill.py::discover_skills`：来源与覆盖顺序；
+3. `core/coding/skills/registry.py::SkillRegistry.resolve`：Legacy slash 解析；
+4. `packages/sage_harness/sage_harness/skills.py::parse_skill_activation`：Harness 严格命令协议；
+5. `packages/sage_harness/sage_harness/skills.py::SkillActivationMiddleware`：注入与双重工具过滤；
+6. `core/harness/capability_adapter.py::build_sage_capability_registry`：Skill 能力目录；
+7. `core/coding/context/manager.py::ContextManager.build`：Legacy per-turn 注入。
 
-## 测试证据
+验证证据集中在 `test_skills.py`、Harness skill middleware、capability adapter、context compact 与 coding routes 测试。
 
-- `tests/core/coding/test_skills.py` - skill 发现 + slash 解析 + render
-- `tests/api/test_coding_routes.py::test_coding_stream_resolves_slash_skill` - WebSocket slash
-- `tests/core/coding/test_skills.py::test_skill_render_substitutes_arguments` - 变量替换
-- `tests/core/coding/test_skills.py::test_workspace_skill_overrides_builtin` - 覆盖优先级
+## 面试里可以这样收束
 
-## 当前边界
+Sage 把 Skill 当成受控工作流包：Markdown 负责可维护内容，slash command 负责显式激活，checkpoint 只存安全引用，正文只在当前调用注入。Harness 还用同一 `allowed_tools` 同时过滤模型所见 schema 与真实工具调用；因此经验可以复用，但不能借模板越过执行边界。
 
-> [!warning] Skill 系统有几个已知局限
-> - `allowed_tools` 已解析但尚未进入强制 capability 过滤
-> - 没有 `sage skill install <path|git-url>` CLI（外部 skill 安装要手动放目录）
-> - 没有 AST 自动扫描，当前依赖目录遍历
-> - skill 嵌套没处理（一个 skill 触发另一个 skill）
-> - v2 的 `SkillActivationMiddleware` 实现完成，但 `allowed_tools` 强制未接
-
-## 自测
-
-1. Skill 和 Tool 的区别？为什么 Skill 不写 history？
-2. SKILL.md 的 frontmatter 有哪些字段？`allowed-tools` 当前为什么没强制？
-3. Skill 发现顺序是什么？为什么 workspace 级能覆盖 builtin？
-4. Slash 命令的展开流程？`$ARGUMENTS` 怎么替换？
-5. `/travel 杭州 3天` 这个命令从输入到最终回答，经过哪些步骤？
-6. 如果要实现 `allowed_tools` 强制执行，需要改哪些地方？
-
-下一章：[长短记忆与 Dream](08-memory-dream.md)
+下一章：[长短记忆与 Dream：记忆写入必须可回滚](08-memory-dream.md)
