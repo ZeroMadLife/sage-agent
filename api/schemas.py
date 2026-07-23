@@ -1374,6 +1374,76 @@ class CodingKnowledgeSourceProposalTransitionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class PublicationCandidateCreateRequest(BaseModel):
+    """One complete public package proposed for explicit disclosure approval."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    package: dict[str, Any]
+    reason: str = Field(default="", max_length=1_000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=64)
+
+
+class PublicationCandidateResponse(BaseModel):
+    """Bounded list projection that never returns the candidate body."""
+
+    candidate_id: str
+    package_id: str
+    package_revision: str
+    package_digest: str
+    document_count: int = Field(ge=1)
+    reason: str
+    evidence_refs: list[str] = Field(default_factory=list)
+    status: Literal["pending", "approved", "rejected"]
+    revision: int = Field(ge=1)
+    decided_by: str | None = None
+    decided_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class PublicationCandidateEventResponse(BaseModel):
+    event_id: str
+    candidate_id: str
+    sequence: int = Field(ge=1)
+    event_type: str
+    revision: int = Field(ge=1)
+    detail: dict[str, str] = Field(default_factory=dict)
+    created_at: str
+
+
+class PublicationCandidatesResponse(BaseModel):
+    candidates: list[PublicationCandidateResponse]
+
+
+class PublicationCandidateDetailResponse(BaseModel):
+    candidate: PublicationCandidateResponse
+    package: dict[str, Any]
+    events: list[PublicationCandidateEventResponse]
+
+
+class PublicationCandidateTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class PublicationStageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["stage"]
+    package: dict[str, Any]
+
+
+class PublicationStageArtifactResponse(BaseModel):
+    candidate_id: str
+    candidate_revision: int = Field(ge=1)
+    package_id: str
+    package_revision: str
+    package_digest: str
+    stage_request: PublicationStageRequest
+
+
 class CodingMemoryProposalDecisionRequest(CodingMemoryProposalTransitionRequest):
     """Legacy collection-style transition request with an explicit ID."""
 

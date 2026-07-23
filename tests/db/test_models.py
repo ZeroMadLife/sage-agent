@@ -123,6 +123,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "20260718_h2_5b2_external_parse_tasks",
         "20260718_v7_canary_invite_device_login",
         "20260718_h2_5c_knowledge_source_proposals",
+        "20260723_public_publication_candidates",
     }
     assert {
         "cloud_model_providers",
@@ -135,6 +136,8 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "knowledge_external_parse_tasks",
         "knowledge_source_proposals",
         "knowledge_source_proposal_events",
+        "public_publication_candidates",
+        "public_publication_candidate_events",
         "knowledge_ingest_idempotency",
         "knowledge_job_events",
         "knowledge_source_manifests",

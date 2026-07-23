@@ -77,6 +77,10 @@ flowchart LR
 回退到本页公开资料。资料包支持候选、原子发布、撤回和上一健康 revision 回退；它不是私人
 Harness 的匿名入口，稳定 HTTPS 地址将在正式部署后补充到这里。
 
+私有发布工作室通过独立的公开候选 API 提交完整资料包：候选正文不可变，人工批准使用
+revision guard，只有批准后的候选才能导出确定性 stage artifact。Web API 不直接持有服务器
+root 发布权限，真正的 stage、publish 与 rollback 仍由受限宿主机控制器执行。
+
 ## 核心能力
 
 | 能力 | 当前实现 |

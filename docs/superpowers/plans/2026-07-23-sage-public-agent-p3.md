@@ -64,3 +64,26 @@ stage ──> candidate ── publish(CAS) ──> active
 ## 下一阶段
 
 部署并初始化 registry 后，用博客公开页面完成真实 revision 切换、撤回和回退联调；确认稳定后再把“已批准 public_candidate -> stage”接到发布流水线，并补 P3 的发布审核 UI 契约。
+
+## P3.1：公开候选审批桥
+
+P3.1 将“公开内容审核”和“服务器发布权限”明确拆开：
+
+1. 私有 API 接收完整 `sage-public` package，先复用 Public Agent 的 disclosure、HTTPS、document digest 和 2 MiB 大小门禁。
+2. package 正文创建后不可修改；同一公开 revision 不能用不同 digest 再次提交。
+3. 候选按登录用户隔离，列表不返回正文；详情、批准、拒绝和导出均使用 `Cache-Control: no-store`。
+4. 批准/拒绝带 `expected_revision`，决策写入 append-only event；未批准候选不能导出。
+5. 已批准候选只导出确定性的 `{"action":"stage","package":...}` artifact，不直接调用 root controller。部署流水线再把 `stage_request` 交给 `sage-public-packagectl`，由宿主机 registry 记录真正的 staged receipt。
+
+接口：
+
+```text
+POST /api/v1/publication/candidates
+GET  /api/v1/publication/candidates
+GET  /api/v1/publication/candidates/{candidate_id}
+POST /api/v1/publication/candidates/{candidate_id}/approve
+POST /api/v1/publication/candidates/{candidate_id}/reject
+GET  /api/v1/publication/candidates/{candidate_id}/stage-artifact
+```
+
+本阶段不让私人 API 持有 `sudo` 或 `/var/lib/sage-public-release` 写权限，也不把私有 Knowledge Source Proposal 自动升级为公开披露授权。Publishing Studio 后续只需接候选创建与审批视图；服务器 stage/publish/rollback 继续沿用 P3 已验证的控制器。

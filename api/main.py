@@ -58,6 +58,7 @@ from core.learning import MasteryLedger
 from core.llm import create_llm
 from core.memory.compressor import ContextCompressor
 from core.memory.session_store import SessionStore
+from core.publication import PublicationCandidateRepository, PublicationCandidateService
 from core.skill import SkillRegistry, build_travel_planning_skill
 from db.database import AsyncSessionFactory
 from db.migrations import init_db
@@ -217,6 +218,7 @@ def create_app(
     knowledge_job_service: KnowledgeJobService | None = None,
     knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     knowledge_jobs_enabled: bool | None = None,
+    publication_candidate_service: PublicationCandidateService | None = None,
 ) -> FastAPI:
     """Create the Sage API app.
 
@@ -579,6 +581,10 @@ def create_app(
     app.state.mastery_ledger = MasteryLedger(
         app.state.coding_storage_root / "mastery-ledger.sqlite3"
     )
+    app.state.publication_candidate_service = (
+        publication_candidate_service
+        or PublicationCandidateService(PublicationCandidateRepository(AsyncSessionFactory))
+    )
     app.state.coding_sessions = {}
     from api.coding_runs import CodingRunRegistry
 
@@ -594,6 +600,7 @@ def create_app(
         cloud_workspaces,
         coding,
         knowledge,
+        publication,
         routes,
         ws,
     )
@@ -604,6 +611,7 @@ def create_app(
     app.include_router(ws.router)
     app.include_router(coding.router)
     app.include_router(knowledge.router)
+    app.include_router(publication.router)
     app.include_router(cloud_auth.router)
     app.include_router(cloud_model_providers.router)
     app.include_router(cloud_workspaces.router)

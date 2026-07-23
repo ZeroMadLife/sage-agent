@@ -562,6 +562,63 @@ class KnowledgeSourceProposalEventRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class PublicPublicationCandidateRecord(Base):
+    """Immutable public package candidate awaiting an explicit owner decision."""
+
+    __tablename__ = "public_publication_candidates"
+    __table_args__ = (
+        UniqueConstraint(
+            "owner_id",
+            "package_id",
+            "package_revision",
+            name="public_publication_candidate_revision_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String(128), index=True)
+    package_id: Mapped[str] = mapped_column(String(128))
+    package_revision: Mapped[str] = mapped_column(String(128), index=True)
+    package_digest: Mapped[str] = mapped_column(String(64), index=True)
+    package_json: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(String(1000), default="")
+    evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    event_sequence: Mapped[int] = mapped_column(Integer, default=0)
+    decided_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
+
+
+class PublicPublicationCandidateEventRecord(Base):
+    """Append-only approval history for a public publication candidate."""
+
+    __tablename__ = "public_publication_candidate_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "sequence",
+            name="public_publication_candidate_event_sequence_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    candidate_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("public_publication_candidates.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    revision: Mapped[int] = mapped_column(Integer)
+    detail_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class KnowledgeIdempotencyRecord(Base):
     """Cross-job content-revision claim used to prevent duplicate processing."""
 
