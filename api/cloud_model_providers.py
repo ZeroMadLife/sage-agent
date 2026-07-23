@@ -203,9 +203,7 @@ async def _owned_credential(
 
 def _validated_base_url(request: Request, base_url: str) -> str:
     try:
-        return validate_provider_base_url(
-            base_url, app_env=str(request.app.state.cloud_app_env)
-        )
+        return validate_provider_base_url(base_url, app_env=str(request.app.state.cloud_app_env))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

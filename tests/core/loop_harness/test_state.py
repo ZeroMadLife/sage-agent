@@ -234,9 +234,7 @@ def test_pr_capacity_and_review_are_bound_to_exact_head(tmp_path) -> None:
         ttl_seconds=60,
     )
     state.begin_run(lease, policy_version="2.1", mode="PR_CANARY")
-    created_day = state.require_pr_capacity(
-        lease, now=datetime(2026, 7, 16, 12, tzinfo=UTC)
-    )
+    created_day = state.require_pr_capacity(lease, now=datetime(2026, 7, 16, 12, tzinfo=UTC))
     receipt = PullRequestReceipt(
         12,
         "https://github.com/ZeroMadLife/sage-agent/pull/12",
@@ -324,8 +322,6 @@ def test_initialize_migrates_existing_phase1_database(tmp_path) -> None:
 
     with sqlite3.connect(database) as connection:
         run_columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
-        candidate_columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(candidates)")
-        }
+        candidate_columns = {row[1] for row in connection.execute("PRAGMA table_info(candidates)")}
     assert {"mode", "target_branch"} <= run_columns
     assert {"lifecycle_state", "changed_files_json", "diff_json"} <= candidate_columns

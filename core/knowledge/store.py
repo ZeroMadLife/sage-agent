@@ -599,9 +599,7 @@ class KnowledgeStore:
         _scan_source_secrets(artifact.content, media_type)
         source_id = (
             "src_"
-            + hashlib.sha256(
-                f"{source_root_id}\0{normalized.as_posix()}".encode()
-            ).hexdigest()[:32]
+            + hashlib.sha256(f"{source_root_id}\0{normalized.as_posix()}".encode()).hexdigest()[:32]
         )
         return LoadedKnowledgeSource(
             source_root_id=source_root_id,
@@ -995,9 +993,12 @@ class KnowledgeStore:
                 ("page_workspace_overview",),
             ).fetchone()
             base_revision = str(overview["current_revision"]) if overview else ""
-            proposal_id = "kprop_" + hashlib.sha256(
-                f"{synthesis.synthesis_id}\0{base_revision}".encode()
-            ).hexdigest()[:32]
+            proposal_id = (
+                "kprop_"
+                + hashlib.sha256(f"{synthesis.synthesis_id}\0{base_revision}".encode()).hexdigest()[
+                    :32
+                ]
+            )
             existing = connection.execute(
                 "SELECT * FROM knowledge_proposals WHERE proposal_id=?",
                 (proposal_id,),
@@ -1120,8 +1121,7 @@ class KnowledgeStore:
                 connection.rollback()
                 raise KnowledgeEvidenceError(str(exc)) from exc
             if any(
-                chunk.source_kind
-                not in {"obsidian", "markdown", "github", "feishu", "web"}
+                chunk.source_kind not in {"obsidian", "markdown", "github", "feishu", "web"}
                 for _citation_id, chunk in resolved
             ):
                 connection.rollback()
@@ -1164,9 +1164,12 @@ class KnowledgeStore:
             if existing is not None:
                 connection.rollback()
                 return _proposal(existing)
-            proposal_id = "kprop_" + hashlib.sha256(
-                f"{learning.learning_id}\0{base_revision}".encode()
-            ).hexdigest()[:32]
+            proposal_id = (
+                "kprop_"
+                + hashlib.sha256(f"{learning.learning_id}\0{base_revision}".encode()).hexdigest()[
+                    :32
+                ]
+            )
             now = _now()
             connection.execute(
                 """
@@ -1239,9 +1242,7 @@ class KnowledgeStore:
         if row is None:
             return None
         payload_json = str(row["payload_json"])
-        if hashlib.sha256(payload_json.encode("utf-8")).hexdigest() != str(
-            row["payload_hash"]
-        ):
+        if hashlib.sha256(payload_json.encode("utf-8")).hexdigest() != str(row["payload_hash"]):
             raise KnowledgeStoreError("evidence learning integrity check failed")
         try:
             learning = deserialize_evidence_learning(payload_json)
@@ -1486,9 +1487,7 @@ class KnowledgeStore:
         return KnowledgeMigrationItem(
             **base,
             disposition=(
-                "auto_apply"
-                if is_trusted_local_parser(document.provenance.parser_id)
-                else "review"
+                "auto_apply" if is_trusted_local_parser(document.provenance.parser_id) else "review"
             ),
             reason_codes=(
                 "trusted_local_reparse"
@@ -1605,9 +1604,12 @@ class KnowledgeStore:
                 )
             )
             now = _now()
-            decision_id = "kpol_" + hashlib.sha256(
-                f"{POLICY_ID}\0{POLICY_VERSION}\0{proposal.proposal_id}".encode()
-            ).hexdigest()[:32]
+            decision_id = (
+                "kpol_"
+                + hashlib.sha256(
+                    f"{POLICY_ID}\0{POLICY_VERSION}\0{proposal.proposal_id}".encode()
+                ).hexdigest()[:32]
+            )
             with self._lock, self._exclusive_lock(), self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 inserted = connection.execute(
@@ -2405,9 +2407,7 @@ class KnowledgeStore:
                     initial_overview = (
                         proposal.change_kind == "synthesis"
                         and proposal.target_path == "overview.md"
-                        and (self.workspace_root / proposal.target_path).read_text(
-                            encoding="utf-8"
-                        )
+                        and (self.workspace_root / proposal.target_path).read_text(encoding="utf-8")
                         == _INITIAL_OVERVIEW
                     )
                     if not initial_overview:
@@ -2675,17 +2675,13 @@ def _policy_decision(row: sqlite3.Row) -> KnowledgePolicyDecision:
         reason_codes=tuple(reason_codes),
         base_page_revision=str(row["base_page_revision"]),
         applied_page_revision=(
-            str(row["applied_page_revision"])
-            if row["applied_page_revision"] is not None
-            else None
+            str(row["applied_page_revision"]) if row["applied_page_revision"] is not None else None
         ),
         undo_proposal_id=(
             str(row["undo_proposal_id"]) if row["undo_proposal_id"] is not None else None
         ),
         undo_page_revision=(
-            str(row["undo_page_revision"])
-            if row["undo_page_revision"] is not None
-            else None
+            str(row["undo_page_revision"]) if row["undo_page_revision"] is not None else None
         ),
         undone_at=str(row["undone_at"]) if row["undone_at"] is not None else None,
         created_at=str(row["created_at"]),

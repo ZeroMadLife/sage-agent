@@ -109,21 +109,25 @@ def test_session_store_filters_out_empty_sessions(tmp_path: Path) -> None:
 
 def test_session_store_skips_sessions_with_unknown_runtime_profiles(tmp_path: Path) -> None:
     store = CodingSessionStore(tmp_path)
-    store.save({
-        "id": "s-invalid",
-        "workspace_root": "/tmp/invalid",
-        "created_at": "2026-07-08T10:00:00",
-        "updated_at": "2026-07-08T10:20:00",
-        "runtime_profile": "future_profile",
-        "history": [{"role": "user", "content": "invalid"}],
-    })
-    store.save({
-        "id": "s-valid",
-        "workspace_root": "/tmp/valid",
-        "created_at": "2026-07-08T09:00:00",
-        "updated_at": "2026-07-08T09:10:00",
-        "history": [{"role": "user", "content": "valid"}],
-    })
+    store.save(
+        {
+            "id": "s-invalid",
+            "workspace_root": "/tmp/invalid",
+            "created_at": "2026-07-08T10:00:00",
+            "updated_at": "2026-07-08T10:20:00",
+            "runtime_profile": "future_profile",
+            "history": [{"role": "user", "content": "invalid"}],
+        }
+    )
+    store.save(
+        {
+            "id": "s-valid",
+            "workspace_root": "/tmp/valid",
+            "created_at": "2026-07-08T09:00:00",
+            "updated_at": "2026-07-08T09:10:00",
+            "history": [{"role": "user", "content": "valid"}],
+        }
+    )
 
     assert [item["session_id"] for item in store.list_sessions()] == ["s-valid"]
 
@@ -142,14 +146,19 @@ def test_session_store_empty_session_title_is_新会话(tmp_path: Path) -> None:
 
 def test_session_store_metadata_is_atomic_and_pinned_first(tmp_path: Path) -> None:
     store = CodingSessionStore(tmp_path)
-    for session_id, updated_at in (("s-old", "2026-07-08T09:10:00"), ("s-new", "2026-07-08T10:20:00")):
-        store.save({
-            "id": session_id,
-            "workspace_root": "/tmp/repo",
-            "created_at": updated_at,
-            "updated_at": updated_at,
-            "history": [{"role": "user", "content": session_id}],
-        })
+    for session_id, updated_at in (
+        ("s-old", "2026-07-08T09:10:00"),
+        ("s-new", "2026-07-08T10:20:00"),
+    ):
+        store.save(
+            {
+                "id": session_id,
+                "workspace_root": "/tmp/repo",
+                "created_at": updated_at,
+                "updated_at": updated_at,
+                "history": [{"role": "user", "content": session_id}],
+            }
+        )
 
     summary = store.update_metadata("s-old", title="  Review harness  ", pinned=True)
 

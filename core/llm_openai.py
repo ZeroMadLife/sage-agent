@@ -99,7 +99,9 @@ def create_openai_llm(
         supported = ", ".join(sorted(_PROVIDERS))
         raise ValueError(f"未知 LLM provider: {provider}（支持: {supported}）")
 
-    resolved_api_key = api_key.strip() if api_key is not None else os.environ.get(config.api_key_env, "").strip()
+    resolved_api_key = (
+        api_key.strip() if api_key is not None else os.environ.get(config.api_key_env, "").strip()
+    )
     if not resolved_api_key:
         raise ValueError(
             f"LLM provider '{provider}' 的 API key 未配置" f"（环境变量: {config.api_key_env}）"

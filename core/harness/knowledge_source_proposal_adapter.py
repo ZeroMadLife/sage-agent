@@ -176,9 +176,10 @@ class CodingKnowledgeSourceProposalService:
         if not required.issubset(metadata) or metadata["artifact_kind"] != "web_fetch":
             raise ValueError("artifact is not a verified web fetch")
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        if not _CONTENT_HASH.fullmatch(str(metadata["content_hash"])) or digest != metadata[
-            "content_hash"
-        ]:
+        if (
+            not _CONTENT_HASH.fullmatch(str(metadata["content_hash"]))
+            or digest != metadata["content_hash"]
+        ):
             raise ValueError("artifact content hash does not match metadata")
         url = urlsplit(str(metadata["canonical_url"]))
         if url.scheme != "https" or not url.hostname or url.username or url.password:

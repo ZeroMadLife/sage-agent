@@ -243,9 +243,7 @@ class SageProviderSettings:
         provider_ids: set[str] = set()
         model_ids: set[str] = set()
         for index, raw_provider in enumerate(raw_providers):
-            providers.append(
-                cls._parse_provider(index, raw_provider, provider_ids, model_ids)
-            )
+            providers.append(cls._parse_provider(index, raw_provider, provider_ids, model_ids))
         if len(model_ids) > _MAX_MODELS:
             raise ValueError("too many configured models")
         if default_model not in model_ids:

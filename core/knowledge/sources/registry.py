@@ -41,9 +41,7 @@ class KnowledgeSourceAdapterRegistry:
     ) -> KnowledgeSourceAdapter:
         adapter = self._by_kind.get(source.kind.strip().lower())
         if adapter is None or (adapter_id is not None and adapter.adapter_id != adapter_id):
-            raise KnowledgeSourceNotSupportedError(
-                "knowledge source connector is not available"
-            )
+            raise KnowledgeSourceNotSupportedError("knowledge source connector is not available")
         return adapter
 
     @property

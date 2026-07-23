@@ -123,9 +123,7 @@ def test_release_gate_rejects_metric_and_latency_regressions() -> None:
         duration_ms=400.0,
     )
 
-    decision = evaluate_release_gate(
-        replace(evidence, report=ProfileParityReport(results=results))
-    )
+    decision = evaluate_release_gate(replace(evidence, report=ProfileParityReport(results=results)))
 
     assert decision.ready is False
     assert "deerflow_v2_task_completion_below_legacy" in decision.blockers
@@ -139,13 +137,10 @@ def test_release_gate_rejects_metric_and_latency_regressions() -> None:
 def test_release_gate_rejects_missing_latency_samples() -> None:
     evidence = _passing_evidence()
     results = [
-        replace(result, first_token_ms=None, duration_ms=0.0)
-        for result in evidence.report.results
+        replace(result, first_token_ms=None, duration_ms=0.0) for result in evidence.report.results
     ]
 
-    decision = evaluate_release_gate(
-        replace(evidence, report=ProfileParityReport(results=results))
-    )
+    decision = evaluate_release_gate(replace(evidence, report=ProfileParityReport(results=results)))
 
     assert "p95_first_token_missing" in decision.blockers
     assert "p95_duration_missing" in decision.blockers

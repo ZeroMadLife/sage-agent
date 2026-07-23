@@ -295,9 +295,7 @@ class LoopRunner:
                             "controlled manifest changed during Fixer execution",
                         )
                     self._fenced(lease, self.git.fetch, expected_mode=mode)
-                    current_sha = self._fenced(
-                        lease, self.git.remote_sha, expected_mode=mode
-                    )
+                    current_sha = self._fenced(lease, self.git.remote_sha, expected_mode=mode)
                     if current_sha != base_sha:
                         raise LoopBlockedError(
                             "BLOCKED_BASE_DRIFT", "target branch changed during Fixer execution"
@@ -394,9 +392,7 @@ class LoopRunner:
                         )
                         candidate_head_sha = head_sha
                         self._fenced(lease, self.git.fetch, expected_mode=mode)
-                        push_base_sha = self._fenced(
-                            lease, self.git.remote_sha, expected_mode=mode
-                        )
+                        push_base_sha = self._fenced(lease, self.git.remote_sha, expected_mode=mode)
                         if push_base_sha != base_sha:
                             raise LoopBlockedError(
                                 "BLOCKED_BASE_DRIFT", "target branch changed before push"

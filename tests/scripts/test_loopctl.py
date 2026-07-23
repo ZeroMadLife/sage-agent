@@ -86,7 +86,4 @@ def test_enable_shadow_write_is_explicit(tmp_path, monkeypatch, capsys) -> None:
     assert main(["enable", "--auto-merge-tier-a"]) == 0
     output = capsys.readouterr().out
     assert "auto-merge-tier-a enabled" in output
-    assert (
-        LoopState(state_root / "state.sqlite3").status()["mode"]
-        == "AUTO_MERGE_TIER_A"
-    )
+    assert LoopState(state_root / "state.sqlite3").status()["mode"] == "AUTO_MERGE_TIER_A"

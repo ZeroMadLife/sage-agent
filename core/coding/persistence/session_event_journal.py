@@ -1093,9 +1093,8 @@ class SessionEventJournal:
         for row in reversed(rows):
             event = _event_from_row(row, self.session_id)
             deposit = event.payload.get("mastery_deposit")
-            if (
-                event.payload.get("type") != "thread_goal_evaluated"
-                or not isinstance(deposit, Mapping)
+            if event.payload.get("type") != "thread_goal_evaluated" or not isinstance(
+                deposit, Mapping
             ):
                 continue
             pending.append(

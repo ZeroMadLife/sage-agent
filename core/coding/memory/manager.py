@@ -34,15 +34,31 @@ class MemoryManager:
         if pending:
             proposal = pending[-1]
             self._proposal_id = proposal.proposal_id
-            self._pending_proposal = [MemoryFact(topic=c.topic, content=c.content, source=c.source,
-                                                  source_ref=c.source_ref, created_at=c.created_at, status="proposed")
-                                      for c in proposal.candidates]
+            self._pending_proposal = [
+                MemoryFact(
+                    topic=c.topic,
+                    content=c.content,
+                    source=c.source,
+                    source_ref=c.source_ref,
+                    created_at=c.created_at,
+                    status="proposed",
+                )
+                for c in proposal.candidates
+            ]
 
     def _replay_projections(self) -> None:
         for proposal in self.memory_store.pending_projections():
-            facts = [MemoryFact(topic=c.topic, content=c.content, source=c.source,
-                                source_ref=proposal.proposal_id, created_at=c.created_at, status="proposed")
-                     for c in proposal.candidates]
+            facts = [
+                MemoryFact(
+                    topic=c.topic,
+                    content=c.content,
+                    source=c.source,
+                    source_ref=proposal.proposal_id,
+                    created_at=c.created_at,
+                    status="proposed",
+                )
+                for c in proposal.candidates
+            ]
             self.durable.approve_dream(facts)
             self.memory_store.mark_projection_complete(proposal.proposal_id)
 
@@ -75,7 +91,9 @@ class MemoryManager:
     def list_facts(self, topic: str = "") -> list[MemoryFact]:
         return self.durable.list_facts(topic)
 
-    def propose_dream(self, *, session_id: str = "", run_id: str = "", reflection_id: str = "") -> list[MemoryFact]:
+    def propose_dream(
+        self, *, session_id: str = "", run_id: str = "", reflection_id: str = ""
+    ) -> list[MemoryFact]:
         """Generate dream proposals from daily logs (proposal only, no mutation).
 
         Persists the generated proposals as the pending proposal so they can be
@@ -87,20 +105,35 @@ class MemoryManager:
             self._proposal_id = reflection_id or f"dream_{uuid.uuid4().hex}"
             self._pending_proposal = proposals
             self.create_proposal(
-                [MemoryCandidate(f.content, f.topic, "dream_proposal", f.source_ref, f.created_at) for f in proposals],
-                session_id=session_id, run_id=run_id, reflection_id=self._proposal_id,
+                [
+                    MemoryCandidate(
+                        f.content, f.topic, "dream_proposal", f.source_ref, f.created_at
+                    )
+                    for f in proposals
+                ],
+                session_id=session_id,
+                run_id=run_id,
+                reflection_id=self._proposal_id,
                 proposal_id=self._proposal_id,
             )
         return proposals
 
     def create_proposal(
-        self, candidates: list[MemoryCandidate], *, run_id: str = "", reflection_id: str = "",
-        session_id: str = "", proposal_id: str | None = None,
+        self,
+        candidates: list[MemoryCandidate],
+        *,
+        run_id: str = "",
+        reflection_id: str = "",
+        session_id: str = "",
+        proposal_id: str | None = None,
     ) -> MemoryProposal:
         """Persist a proposal; candidates do not become active facts."""
         return self.memory_store.create_proposal(
-            candidates, run_id=run_id, reflection_id=reflection_id,
-            session_id=session_id, proposal_id=proposal_id,
+            candidates,
+            run_id=run_id,
+            reflection_id=reflection_id,
+            session_id=session_id,
+            proposal_id=proposal_id,
         )
 
     def get_proposal(self, proposal_id: str) -> MemoryProposal | None:
@@ -115,9 +148,17 @@ class MemoryManager:
         # Only project a newly approved proposal. Replaying an approval is a
         # no-op at both SQLite and the Markdown projection layers.
         if proposal.status == "approved" and before is not None and before.status == "pending":
-            facts = [MemoryFact(topic=c.topic, content=c.content, source=c.source,
-                                source_ref=proposal_id, created_at=c.created_at,
-                                status="proposed") for c in proposal.candidates]
+            facts = [
+                MemoryFact(
+                    topic=c.topic,
+                    content=c.content,
+                    source=c.source,
+                    source_ref=proposal_id,
+                    created_at=c.created_at,
+                    status="proposed",
+                )
+                for c in proposal.candidates
+            ]
             self.durable.approve_dream(facts)
             self.memory_store.mark_projection_complete(proposal_id)
             refreshed = self.memory_store.get_proposal(proposal_id)

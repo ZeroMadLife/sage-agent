@@ -180,9 +180,7 @@ def test_run_store_global_store_can_inspect_session_partition(tmp_path: Path) ->
     # Global store sees nothing by default.
     assert global_store.list_runs() == []
     # But can inspect session_a's partition by passing session_id.
-    assert [run["run_id"] for run in global_store.list_runs(session_id="session_a")] == [
-        "run_a1"
-    ]
+    assert [run["run_id"] for run in global_store.list_runs(session_id="session_a")] == ["run_a1"]
     assert global_store.get_run("run_a1", session_id="session_a")["run_id"] == "run_a1"
 
 
@@ -207,15 +205,11 @@ def test_run_status_from_run_finished(tmp_path: Path) -> None:
     store = RunStore(tmp_path, session_id="s1")
     store.start_run("run_ok")
     store.append_trace("run_ok", {"type": "final", "content": "done"})
-    store.append_trace(
-        "run_ok", {"type": "run_finished", "status": "completed", "duration_ms": 42}
-    )
+    store.append_trace("run_ok", {"type": "run_finished", "status": "completed", "duration_ms": 42})
 
     store.start_run("run_err")
     store.append_trace("run_err", {"type": "error", "message": "boom"})
-    store.append_trace(
-        "run_err", {"type": "run_finished", "status": "error", "duration_ms": 5}
-    )
+    store.append_trace("run_err", {"type": "run_finished", "status": "error", "duration_ms": 5})
 
     assert store.run_status("run_ok") == "completed"
     assert store.run_status("run_err") == "error"
@@ -262,7 +256,11 @@ def test_run_audit_projects_tools_approval_duration_and_workspace_diff(tmp_path:
     )
     store.append_trace(
         "run_a",
-        {"type": "approval_granted", "tool": "run_shell", "created_at": "2026-07-14T10:00:02+00:00"},
+        {
+            "type": "approval_granted",
+            "tool": "run_shell",
+            "created_at": "2026-07-14T10:00:02+00:00",
+        },
     )
     store.append_trace(
         "run_a",

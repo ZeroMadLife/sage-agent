@@ -240,8 +240,7 @@ def test_apply_verifies_candidate_then_atomically_switches_live(tmp_path: Path) 
     assert "SAGE_PUBLIC_BUDGET_STATE_PATH=/var/lib/sage-public-agent/budget.json" in candidate_agent
     assert any(value.startswith("type=bind,source=") for value in candidate_agent)
     assert (
-        f"SAGE_PUBLIC_PACKAGE_REGISTRY={AGENT_PACKAGE_REGISTRY_CONTAINER_PATH}"
-        in candidate_agent
+        f"SAGE_PUBLIC_PACKAGE_REGISTRY={AGENT_PACKAGE_REGISTRY_CONTAINER_PATH}" in candidate_agent
     )
     assert any(
         value.endswith(f"target={AGENT_PACKAGE_REGISTRY_CONTAINER_PATH},readonly")

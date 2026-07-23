@@ -90,9 +90,7 @@ async def test_github_oauth_uses_pkce_browser_binding_and_encrypted_token(
     """A successful callback never exposes or persists provider token plaintext."""
     await cloud_repository.create_invite("invite-secret", email="developer@example.com")
     token_requests: list[httpx.Request] = []
-    service, github_client = _oauth_service(
-        cloud_repository, _successful_github(token_requests)
-    )
+    service, github_client = _oauth_service(cloud_repository, _successful_github(token_requests))
     client = TestClient(
         create_app(
             cloud_repository=cloud_repository,
@@ -135,9 +133,11 @@ async def test_github_oauth_uses_pkce_browser_binding_and_encrypted_token(
     token_request = token_requests[0]
     token_form = parse_qs(token_request.content.decode("utf-8"))
     verifier = token_form["code_verifier"][0]
-    expected_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
+    expected_challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
     assert 43 <= len(verifier) <= 128
     assert query["code_challenge"] == [expected_challenge]
 
@@ -152,9 +152,7 @@ async def test_github_callback_rejects_wrong_browser_before_token_exchange(
         outbound.append(request)
         return httpx.Response(500)
 
-    service, github_client = _oauth_service(
-        cloud_repository, httpx.MockTransport(handler)
-    )
+    service, github_client = _oauth_service(cloud_repository, httpx.MockTransport(handler))
     app = create_app(
         cloud_repository=cloud_repository,
         cloud_github_oauth_service=service,
@@ -162,9 +160,7 @@ async def test_github_callback_rejects_wrong_browser_before_token_exchange(
     )
     owner_browser = TestClient(app)
     other_browser = TestClient(app)
-    started = owner_browser.post(
-        "/api/v1/cloud/auth/github/start", json={"return_to": "/#/coding"}
-    )
+    started = owner_browser.post("/api/v1/cloud/auth/github/start", json={"return_to": "/#/coding"})
     state = parse_qs(urlparse(started.json()["authorization_url"]).query)["state"][0]
 
     completed = other_browser.get(
@@ -184,9 +180,7 @@ async def test_github_callback_state_is_single_use(
     """A callback replay cannot exchange a second token or create another session."""
     await cloud_repository.create_invite("replay-invite", email="developer@example.com")
     token_requests: list[httpx.Request] = []
-    service, github_client = _oauth_service(
-        cloud_repository, _successful_github(token_requests)
-    )
+    service, github_client = _oauth_service(cloud_repository, _successful_github(token_requests))
     client = TestClient(
         create_app(
             cloud_repository=cloud_repository,
@@ -228,9 +222,7 @@ def test_github_oauth_start_is_unavailable_without_server_config(
 ) -> None:
     client = TestClient(create_app(cloud_repository=cloud_repository))
 
-    response = client.post(
-        "/api/v1/cloud/auth/github/start", json={"return_to": "/#/coding"}
-    )
+    response = client.post("/api/v1/cloud/auth/github/start", json={"return_to": "/#/coding"})
 
     assert response.status_code == 503
 

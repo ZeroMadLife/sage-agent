@@ -83,9 +83,10 @@ def test_workspace_internal_path_allows_sage_control_artifacts_but_not_escape(
 ) -> None:
     workspace = WorkspaceContext(root=tmp_path)
 
-    assert workspace.internal_path(".coding/plans/test.md") == (
-        tmp_path / ".coding/plans/test.md"
-    ).resolve()
+    assert (
+        workspace.internal_path(".coding/plans/test.md")
+        == (tmp_path / ".coding/plans/test.md").resolve()
+    )
     with pytest.raises(ValueError, match="escapes workspace root"):
         workspace.internal_path("../outside.txt")
 

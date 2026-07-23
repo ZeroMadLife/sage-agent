@@ -32,10 +32,12 @@ from tests.core.coding.scripted_api_client import ScriptedApiClient
 
 class LegacyReadModel(ScriptedApiClient):
     def __init__(self) -> None:
-        super().__init__([
-            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>项目名是 Sage。</final>",
-        ])
+        super().__init__(
+            [
+                '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+                "<final>项目名是 Sage。</final>",
+            ]
+        )
 
 
 class DeerflowReadModel(FakeMessagesListChatModel):
@@ -64,11 +66,13 @@ class DeerflowReadModel(FakeMessagesListChatModel):
 
 class LegacyMissingPathRecoveryModel(ScriptedApiClient):
     def __init__(self) -> None:
-        super().__init__([
-            '<tool>{"name":"read_file","args":{"path":"missing.md"}}</tool>',
-            '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>修正路径后确认项目名是 Sage。</final>",
-        ])
+        super().__init__(
+            [
+                '<tool>{"name":"read_file","args":{"path":"missing.md"}}</tool>',
+                '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
+                "<final>修正路径后确认项目名是 Sage。</final>",
+            ]
+        )
 
 
 class DeerflowMissingPathRecoveryModel(FakeMessagesListChatModel):
@@ -108,18 +112,20 @@ class DeerflowMissingPathRecoveryModel(FakeMessagesListChatModel):
 
 class LegacyFreshReadEditModel(ScriptedApiClient):
     def __init__(self) -> None:
-        super().__init__([
-            (
-                '<tool>{"name":"patch_file","args":{"path":"app.py",'
-                '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
-            ),
-            '<tool>{"name":"read_file","args":{"path":"app.py"}}</tool>',
-            (
-                '<tool>{"name":"patch_file","args":{"path":"app.py",'
-                '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
-            ),
-            "<final>读取确认并获批后，已将 value 更新为 2。</final>",
-        ])
+        super().__init__(
+            [
+                (
+                    '<tool>{"name":"patch_file","args":{"path":"app.py",'
+                    '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
+                ),
+                '<tool>{"name":"read_file","args":{"path":"app.py"}}</tool>',
+                (
+                    '<tool>{"name":"patch_file","args":{"path":"app.py",'
+                    '"old_text":"value = 1","new_text":"value = 2"}}</tool>'
+                ),
+                "<final>读取确认并获批后，已将 value 更新为 2。</final>",
+            ]
+        )
 
 
 class DeerflowFreshReadEditModel(FakeMessagesListChatModel):
@@ -243,9 +249,7 @@ def _run_fresh_read_edit_scenario(
     target.write_text("value = 1\n", encoding="utf-8")
     app = create_app(
         coding_model_factory=(
-            LegacyFreshReadEditModel
-            if profile == "legacy"
-            else DeerflowFreshReadEditModel
+            LegacyFreshReadEditModel if profile == "legacy" else DeerflowFreshReadEditModel
         ),
         coding_workspace_root=workspace,
         coding_storage_root=workspace / ".coding",
@@ -449,15 +453,11 @@ def _run_compaction_scenario(
     workspace.mkdir()
     (workspace / "README.md").write_text("# Sage\n", encoding="utf-8")
     old_turns = 7
-    legacy_responses = [
-        f"<final>历史回答 {index}</final>" for index in range(old_turns)
-    ] + [
+    legacy_responses = [f"<final>历史回答 {index}</final>" for index in range(old_turns)] + [
         '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
         "<final>压缩历史后确认项目名是 Sage。</final>",
     ]
-    v2_responses = [
-        AIMessage(content=f"历史回答 {index}") for index in range(old_turns)
-    ] + [
+    v2_responses = [AIMessage(content=f"历史回答 {index}") for index in range(old_turns)] + [
         _native_tool_call("read_file", {"path": "README.md"}, "call-compact-read"),
         AIMessage(content="压缩历史后确认项目名是 Sage。"),
     ]
@@ -514,8 +514,7 @@ def _final_contains(events: list[dict[str, object]], expected: str) -> bool:
 
 def _event_count(events: list[dict[str, object]], event_type: str) -> int:
     return sum(
-        isinstance(payload := event.get("payload"), dict)
-        and payload.get("type") == event_type
+        isinstance(payload := event.get("payload"), dict) and payload.get("type") == event_type
         for event in events
     )
 
@@ -742,8 +741,7 @@ def test_legacy_and_v2_approval_denial_preserves_the_file(tmp_path: Path) -> Non
                 "legacy",
                 legacy_events,
                 assertions_passed=(
-                    (legacy_workspace / "app.py").read_text(encoding="utf-8")
-                    == "value = 1\n"
+                    (legacy_workspace / "app.py").read_text(encoding="utf-8") == "value = 1\n"
                     and _final_contains(legacy_events, "修改被拒绝")
                 ),
             ),
@@ -752,8 +750,7 @@ def test_legacy_and_v2_approval_denial_preserves_the_file(tmp_path: Path) -> Non
                 "deerflow_v2",
                 v2_events,
                 assertions_passed=(
-                    (v2_workspace / "app.py").read_text(encoding="utf-8")
-                    == "value = 1\n"
+                    (v2_workspace / "app.py").read_text(encoding="utf-8") == "value = 1\n"
                     and _final_contains(v2_events, "修改被拒绝")
                 ),
             ),
@@ -764,7 +761,10 @@ def test_legacy_and_v2_approval_denial_preserves_the_file(tmp_path: Path) -> Non
     assert all(result.passed for result in report.results), report.to_dict()
     assert all(result.tool_calls == 2 for result in report.results)
     assert all(result.tool_errors == 1 for result in report.results)
-    assert [_event_count(events, "approval_required") for events in (legacy_events, v2_events)] == [1, 1]
+    assert [_event_count(events, "approval_required") for events in (legacy_events, v2_events)] == [
+        1,
+        1,
+    ]
     assert report.metrics("legacy").tool_call_success_rate == 0.5
     assert report.metrics("deerflow_v2").tool_call_success_rate == 0.5
 

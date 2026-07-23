@@ -381,9 +381,7 @@ def test_practice_subagent_records_failing_test_without_claiming_mastery(
     runtime = _runtime(tmp_path, model)
     runtime.set_permission_mode("auto")
     result = asyncio.run(
-        CodingSubagentExecutor(runtime).execute(
-            _practice_request(tmp_path, "child_practice_fail")
-        )
+        CodingSubagentExecutor(runtime).execute(_practice_request(tmp_path, "child_practice_fail"))
     )
 
     assert result.status == "succeeded"
@@ -497,9 +495,7 @@ def test_practice_subagent_surfaces_parent_approval_and_continues_in_place(
 
     assert result.status == "succeeded"  # type: ignore[union-attr]
     assert (tmp_path / "approved.txt").read_text(encoding="utf-8") == "approved"
-    approval = next(
-        event for event in progress_events if event.get("phase") == "approval_required"
-    )
+    approval = next(event for event in progress_events if event.get("phase") == "approval_required")
     assert approval["status"] == "waiting"
     assert approval["tool"] == "write_file"
 

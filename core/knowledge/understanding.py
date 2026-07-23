@@ -53,8 +53,7 @@ def understand_source(artifact_id: str, document: ParsedDocument) -> SourceUnder
     eligible = [
         block
         for block in document.blocks
-        if block.kind in {"paragraph", "list", "quote", "table", "code"}
-        and block.text.strip()
+        if block.kind in {"paragraph", "list", "quote", "table", "code"} and block.text.strip()
     ]
     summary_parts: list[str] = []
     summary_length = 0
@@ -81,9 +80,7 @@ def understand_source(artifact_id: str, document: ParsedDocument) -> SourceUnder
         summary = document.title
         if document.blocks:
             first = document.blocks[0]
-            citations.append(
-                UnderstandingCitation(first.block_id, first.page, first.heading_path)
-            )
+            citations.append(UnderstandingCitation(first.block_id, first.page, first.heading_path))
 
     section_blocks: dict[str, list[str]] = {}
     for block in document.blocks:
@@ -244,8 +241,7 @@ def _payload(
         "title": title,
         "summary": summary,
         "sections": [
-            {"title": section.title, "block_ids": list(section.block_ids)}
-            for section in sections
+            {"title": section.title, "block_ids": list(section.block_ids)} for section in sections
         ],
         "topics": list(topics),
         "block_kind_counts": [list(item) for item in block_kind_counts],
@@ -264,18 +260,31 @@ def _payload(
 
 _TOPIC_WORD = re.compile(r"[A-Za-z][A-Za-z0-9_.+#/-]{2,48}|[\u4e00-\u9fff]{2,12}")
 _STOP_TOPICS = {
-    "and", "the", "with", "from", "this", "that", "into", "for", "page",
-    "一个", "可以", "这个", "我们", "以及", "进行", "通过", "使用", "需要", "实现",
+    "and",
+    "the",
+    "with",
+    "from",
+    "this",
+    "that",
+    "into",
+    "for",
+    "page",
+    "一个",
+    "可以",
+    "这个",
+    "我们",
+    "以及",
+    "进行",
+    "通过",
+    "使用",
+    "需要",
+    "实现",
 }
 
 
 def _topics(document: ParsedDocument) -> tuple[str, ...]:
     candidates: list[str] = [document.title]
-    candidates.extend(
-        part
-        for block in document.blocks
-        for part in block.heading_path
-    )
+    candidates.extend(part for block in document.blocks for part in block.heading_path)
     candidates.extend(
         match.group(0)
         for block in document.blocks
@@ -289,9 +298,8 @@ def _topics(document: ParsedDocument) -> tuple[str, ...]:
         and len(normalized) <= 80
     )
     return tuple(
-        value for value, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[
-            :_MAX_TOPICS
-        ]
+        value
+        for value, _ in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:_MAX_TOPICS]
     )
 
 

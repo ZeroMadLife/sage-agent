@@ -107,9 +107,7 @@ class CodingModelManifest:
     ) -> CodingModelDefinition:
         unknown = set(raw) - _MODEL_FIELDS
         if unknown:
-            raise ValueError(
-                f"models[{index}] has unknown fields: {', '.join(sorted(unknown))}"
-            )
+            raise ValueError(f"models[{index}] has unknown fields: {', '.join(sorted(unknown))}")
         model_id = _non_empty_string(raw.get("id"), f"models[{index}].id")
         if model_id in seen:
             raise ValueError(f"duplicate model id: {model_id}")
@@ -126,8 +124,12 @@ class CodingModelManifest:
         window: int | None = None
         reserve: int | None = None
         if has_window:
-            window = _positive_integer(raw["context_window_tokens"], f"models[{index}].context_window_tokens")
-            reserve = _positive_integer(raw["output_reserve_tokens"], f"models[{index}].output_reserve_tokens")
+            window = _positive_integer(
+                raw["context_window_tokens"], f"models[{index}].context_window_tokens"
+            )
+            reserve = _positive_integer(
+                raw["output_reserve_tokens"], f"models[{index}].output_reserve_tokens"
+            )
             policies[model_id] = {
                 "context_window_tokens": window,
                 "output_reserve_tokens": reserve,

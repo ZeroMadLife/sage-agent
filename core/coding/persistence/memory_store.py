@@ -1,4 +1,5 @@
 """Workspace-scoped SQLite storage for durable memory proposals and facts."""
+
 from __future__ import annotations
 
 import errno
@@ -213,8 +214,13 @@ class MemoryStore:
             raise MemoryCorruptionError("memory database changed while opening")
 
     def create_proposal(
-        self, candidates: Iterable[MemoryCandidate], *, session_id: str = "",
-        run_id: str = "", reflection_id: str = "", proposal_id: str | None = None,
+        self,
+        candidates: Iterable[MemoryCandidate],
+        *,
+        session_id: str = "",
+        run_id: str = "",
+        reflection_id: str = "",
+        proposal_id: str | None = None,
     ) -> MemoryProposal:
         values = tuple(c for c in candidates if c.content.strip())
         if not values:
@@ -239,36 +245,75 @@ class MemoryStore:
             if len(payload.encode("utf-8")) > MAX_JSON_BYTES:
                 raise ValueError("proposal payload too large")
             try:
-                db.execute("INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) VALUES (?, ?, ?, 'pending', 'pending', 0, ?, ?, ?, ?, ?, ?)",
-                           (proposal, self._workspace_id(), payload, session_id, run_id, reflection_id, base, now, now))
+                db.execute(
+                    "INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) VALUES (?, ?, ?, 'pending', 'pending', 0, ?, ?, ?, ?, ?, ?)",
+                    (
+                        proposal,
+                        self._workspace_id(),
+                        payload,
+                        session_id,
+                        run_id,
+                        reflection_id,
+                        base,
+                        now,
+                        now,
+                    ),
+                )
             except sqlite3.IntegrityError as exc:
-                existing = db.execute("SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal,)).fetchone()
-                if existing is None or existing["candidates_json"] != payload or any(
-                    existing[key] != value for key, value in {
-                        "session_id": session_id, "run_id": run_id, "reflection_id": reflection_id,
-                    }.items()
+                existing = db.execute(
+                    "SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal,)
+                ).fetchone()
+                if (
+                    existing is None
+                    or existing["candidates_json"] != payload
+                    or any(
+                        existing[key] != value
+                        for key, value in {
+                            "session_id": session_id,
+                            "run_id": run_id,
+                            "reflection_id": reflection_id,
+                        }.items()
+                    )
                 ):
                     raise MemoryConflictError(f"proposal id conflict: {proposal}") from exc
                 db.rollback()
                 return _proposal(existing)
-            self._event(db, "proposal_created", proposal, self._workspace_id(), session_id, run_id, reflection_id,
-                        len(unique), base, 0, now)
+            self._event(
+                db,
+                "proposal_created",
+                proposal,
+                self._workspace_id(),
+                session_id,
+                run_id,
+                reflection_id,
+                len(unique),
+                base,
+                0,
+                now,
+            )
             db.commit()
         return self.get_proposal(proposal)  # type: ignore[return-value]
 
     def get_proposal(self, proposal_id: str) -> MemoryProposal | None:
         with self._connect() as db:
-            row = db.execute("SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal_id,)).fetchone()
+            row = db.execute(
+                "SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
         return _proposal(row) if row else None
 
     def mark_projection_complete(self, proposal_id: str) -> None:
         with self._connect() as db:
-            db.execute("UPDATE memory_proposals SET projection_status='complete', updated_at=? WHERE proposal_id=? AND status='approved'", (_now(), proposal_id))
+            db.execute(
+                "UPDATE memory_proposals SET projection_status='complete', updated_at=? WHERE proposal_id=? AND status='approved'",
+                (_now(), proposal_id),
+            )
             db.commit()
 
     def pending_projections(self) -> list[MemoryProposal]:
         with self._connect() as db:
-            rows = db.execute("SELECT * FROM memory_proposals WHERE status='approved' AND projection_status!='complete'").fetchall()
+            rows = db.execute(
+                "SELECT * FROM memory_proposals WHERE status='approved' AND projection_status!='complete'"
+            ).fetchall()
         return [_proposal(row) for row in rows]
 
     def list_proposals(self, status: str | None = None) -> list[MemoryProposal]:
@@ -292,14 +337,22 @@ class MemoryStore:
         now = _now()
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal_id,)).fetchone()
+            row = db.execute(
+                "SELECT * FROM memory_proposals WHERE proposal_id=?", (proposal_id,)
+            ).fetchone()
             if row is None:
                 raise KeyError(proposal_id)
             current = _proposal(row)
             if current.revision != expected:
-                raise MemoryConflictError(f"proposal revision conflict: expected {expected}, got {current.revision}")
+                raise MemoryConflictError(
+                    f"proposal revision conflict: expected {expected}, got {current.revision}"
+                )
             current_fact_count = int(db.execute("SELECT COUNT(*) FROM memory_facts").fetchone()[0])
-            if status == "approved" and current.status == "pending" and current_fact_count != current.base_revision:
+            if (
+                status == "approved"
+                and current.status == "pending"
+                and current_fact_count != current.base_revision
+            ):
                 raise MemoryConflictError("proposal base revision is stale")
             if current.status != "pending":
                 if current.status == status:
@@ -309,26 +362,57 @@ class MemoryStore:
             new_revision = current.revision + 1
             if status == "approved":
                 for candidate in current.candidates:
-                    db.execute("INSERT OR IGNORE INTO memory_facts VALUES (?, ?, ?, ?, ?, ?, ?)",
-                               (candidate.content_hash, candidate.content, candidate.topic,
-                                candidate.source, candidate.source_ref, candidate.created_at or now, proposal_id))
-            db.execute("UPDATE memory_proposals SET status=?, projection_status=?, revision=?, updated_at=? WHERE proposal_id=?",
-                       (status, "pending" if status == "approved" else "complete", new_revision, now, proposal_id))
-            self._event(db, f"proposal_{status}", proposal_id, current.workspace_id, current.session_id, current.run_id,
-                        current.reflection_id, len(current.candidates), current.base_revision,
-                        new_revision, now)
+                    db.execute(
+                        "INSERT OR IGNORE INTO memory_facts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            candidate.content_hash,
+                            candidate.content,
+                            candidate.topic,
+                            candidate.source,
+                            candidate.source_ref,
+                            candidate.created_at or now,
+                            proposal_id,
+                        ),
+                    )
+            db.execute(
+                "UPDATE memory_proposals SET status=?, projection_status=?, revision=?, updated_at=? WHERE proposal_id=?",
+                (
+                    status,
+                    "pending" if status == "approved" else "complete",
+                    new_revision,
+                    now,
+                    proposal_id,
+                ),
+            )
+            self._event(
+                db,
+                f"proposal_{status}",
+                proposal_id,
+                current.workspace_id,
+                current.session_id,
+                current.run_id,
+                current.reflection_id,
+                len(current.candidates),
+                current.base_revision,
+                new_revision,
+                now,
+            )
             db.commit()
         return self.get_proposal(proposal_id)  # type: ignore[return-value]
 
     def list_facts(self) -> list[MemoryCandidate]:
         with self._connect() as db:
-            rows = db.execute("SELECT f.content, f.topic, f.source, f.source_ref, f.created_at FROM memory_facts f JOIN memory_proposals p ON p.proposal_id=f.proposal_id WHERE p.status='approved' ORDER BY f.rowid").fetchall()
+            rows = db.execute(
+                "SELECT f.content, f.topic, f.source, f.source_ref, f.created_at FROM memory_facts f JOIN memory_proposals p ON p.proposal_id=f.proposal_id WHERE p.status='approved' ORDER BY f.rowid"
+            ).fetchall()
         return [MemoryCandidate(**dict(r)) for r in rows]
 
     def list_events(self, proposal_id: str | None = None) -> list[MemoryEvent]:
         with self._connect() as db:
             if proposal_id:
-                rows = db.execute("SELECT * FROM memory_events WHERE proposal_id=? ORDER BY rowid", (proposal_id,)).fetchall()
+                rows = db.execute(
+                    "SELECT * FROM memory_events WHERE proposal_id=? ORDER BY rowid", (proposal_id,)
+                ).fetchall()
             else:
                 rows = db.execute("SELECT * FROM memory_events ORDER BY rowid").fetchall()
         return [MemoryEvent(**dict(r)) for r in rows]
@@ -337,10 +421,35 @@ class MemoryStore:
         return self.root.name
 
     @staticmethod
-    def _event(db: sqlite3.Connection, event_type: str, proposal_id: str, workspace_id: str, session_id: str,
-               run_id: str, reflection_id: str, count: int, base: int, revision: int, now: str) -> None:
-        db.execute("INSERT INTO memory_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                   (uuid.uuid4().hex, event_type, proposal_id, workspace_id, session_id, run_id, reflection_id, count, base, revision, now))
+    def _event(
+        db: sqlite3.Connection,
+        event_type: str,
+        proposal_id: str,
+        workspace_id: str,
+        session_id: str,
+        run_id: str,
+        reflection_id: str,
+        count: int,
+        base: int,
+        revision: int,
+        now: str,
+    ) -> None:
+        db.execute(
+            "INSERT INTO memory_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                uuid.uuid4().hex,
+                event_type,
+                proposal_id,
+                workspace_id,
+                session_id,
+                run_id,
+                reflection_id,
+                count,
+                base,
+                revision,
+                now,
+            ),
+        )
 
 
 def _proposal(row: sqlite3.Row) -> MemoryProposal:
@@ -440,12 +549,16 @@ def _validate_schema(db: sqlite3.Connection, path: Path) -> None:
         raise MemoryStoreError(f"invalid memory event index at {path}")
 
 
-def _migrate_legacy_v0(db: sqlite3.Connection, objects: list[tuple[str, str, str, str | None]]) -> None:
+def _migrate_legacy_v0(
+    db: sqlite3.Connection, objects: list[tuple[str, str, str, str | None]]
+) -> None:
     """Migrate the previous three-table schema without accepting unknown objects."""
     names = {(kind, name) for kind, name, _, _ in objects}
     allowed = {
-        ("table", "memory_facts"), ("table", "memory_proposals"),
-        ("table", "memory_events"), ("index", "memory_events_proposal_idx"),
+        ("table", "memory_facts"),
+        ("table", "memory_proposals"),
+        ("table", "memory_events"),
+        ("index", "memory_events_proposal_idx"),
         ("index", "sqlite_autoindex_memory_facts_1"),
         ("index", "sqlite_autoindex_memory_proposals_1"),
         ("index", "sqlite_autoindex_memory_events_1"),
@@ -458,7 +571,9 @@ def _migrate_legacy_v0(db: sqlite3.Connection, objects: list[tuple[str, str, str
     db.execute("ALTER TABLE memory_proposals RENAME TO memory_proposals_legacy")
     db.execute("DROP INDEX memory_events_proposal_idx")
     db.execute(_PROPOSALS_SQL)
-    db.execute("INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) SELECT proposal_id, workspace_id, candidates_json, status, 'pending', revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at FROM memory_proposals_legacy")
+    db.execute(
+        "INSERT INTO memory_proposals (proposal_id, workspace_id, candidates_json, status, projection_status, revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at) SELECT proposal_id, workspace_id, candidates_json, status, 'pending', revision, session_id, run_id, reflection_id, base_revision, created_at, updated_at FROM memory_proposals_legacy"
+    )
     db.execute("DROP TABLE memory_proposals_legacy")
     db.execute(_EVENT_INDEX_SQL)
 
@@ -501,9 +616,7 @@ def _reject_untrusted_ancestor_symlinks(root: Path) -> None:
             raise ValueError(f"untrusted symlink in memory root path: {current}")
 
 
-def _open_directory(
-    root: Path, components: tuple[str, ...], *, tighten: bool = True
-) -> int:
+def _open_directory(root: Path, components: tuple[str, ...], *, tighten: bool = True) -> int:
     directory_fd = os.open(root, _DIRECTORY_FLAGS)
     try:
         for component in components:
@@ -598,4 +711,5 @@ def _validate_file(file_fd: int, name: str) -> None:
 
 def _now() -> str:
     from core.coding.context.workspace import now
+
     return now()

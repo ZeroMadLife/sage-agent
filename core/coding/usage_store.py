@@ -72,9 +72,7 @@ def _sample_from_usage_metadata(value: Mapping[object, object]) -> UsageSample |
         input_tokens=_optional_count(value.get("input_tokens")),
         output_tokens=_optional_count(value.get("output_tokens")),
         total_tokens=_optional_count(value.get("total_tokens")),
-        cache_read_tokens=_optional_count(
-            details.get("cache_read", details.get("cached_tokens"))
-        ),
+        cache_read_tokens=_optional_count(details.get("cache_read", details.get("cached_tokens"))),
         cache_creation_tokens=_optional_count(details.get("cache_creation")),
     )
 
@@ -84,9 +82,7 @@ def _sample_from_provider_usage(value: Mapping[object, object]) -> UsageSample |
     prompt_details = prompt_details if isinstance(prompt_details, Mapping) else {}
     return _build_sample(
         input_tokens=_optional_count(value.get("input_tokens", value.get("prompt_tokens"))),
-        output_tokens=_optional_count(
-            value.get("output_tokens", value.get("completion_tokens"))
-        ),
+        output_tokens=_optional_count(value.get("output_tokens", value.get("completion_tokens"))),
         total_tokens=_optional_count(value.get("total_tokens")),
         cache_read_tokens=_optional_count(
             value.get(

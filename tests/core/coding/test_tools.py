@@ -101,13 +101,9 @@ def test_file_tools_hide_and_reject_workspace_credentials(tmp_path: Path) -> Non
     (tmp_path / ".env").write_text("API_KEY=must-not-leak\n", encoding="utf-8")
     (tmp_path / ".env.example").write_text("API_KEY=placeholder\n", encoding="utf-8")
     (tmp_path / ".codex").mkdir()
-    (tmp_path / ".codex" / "config.toml").write_text(
-        "control-marker = true\n", encoding="utf-8"
-    )
+    (tmp_path / ".codex" / "config.toml").write_text("control-marker = true\n", encoding="utf-8")
     (tmp_path / ".sage").mkdir()
-    (tmp_path / ".sage" / "usage.sqlite3").write_text(
-        "usage-marker", encoding="utf-8"
-    )
+    (tmp_path / ".sage" / "usage.sqlite3").write_text("usage-marker", encoding="utf-8")
     (tmp_path / "README.md").write_text("public marker\n", encoding="utf-8")
 
     listing = tools["list_files"].execute({"path": "."})

@@ -32,9 +32,7 @@ class GitController:
     def root_status(self) -> RootStatus:
         branch = self._run("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
         head_sha = self._run("rev-parse", "HEAD").stdout.strip()
-        payload = self._run(
-            "status", "--porcelain=v1", "-z", "--untracked-files=all"
-        ).stdout
+        payload = self._run("status", "--porcelain=v1", "-z", "--untracked-files=all").stdout
         dirty_paths = _porcelain_paths(payload)
         return RootStatus(
             branch=branch,
@@ -95,9 +93,7 @@ class GitController:
         else:
             comparison = f"{remote_sha}...{status.head_sha}"
         payload = self._run("diff", "--name-only", "-z", comparison, "--").stdout
-        paths.update(
-            PurePosixPath(path).as_posix() for path in payload.split("\0") if path
-        )
+        paths.update(PurePosixPath(path).as_posix() for path in payload.split("\0") if path)
         return tuple(sorted(paths))
 
     def create_detached_worktree(self, destination: Path, base_sha: str) -> None:
@@ -215,18 +211,14 @@ class GitController:
             raise LoopBlockedError("BLOCKED_DIFF", "candidate has no allowed paths")
         snapshot = self.diff_snapshot(worktree, base_sha=base_sha)
         if set(snapshot.changed_files) != set(allowed_paths):
-            raise LoopBlockedError(
-                "BLOCKED_DIFF_POLICY", "candidate paths changed before commit"
-            )
+            raise LoopBlockedError("BLOCKED_DIFF_POLICY", "candidate paths changed before commit")
         normalized_message = " ".join(message.split())
         if not normalized_message or len(normalized_message) > 120:
             raise LoopBlockedError("BLOCKED_COMMIT", "candidate commit message is invalid")
 
         self._run_at(worktree, "switch", "-c", branch)
         self._run_at(worktree, "add", "--", *allowed_paths)
-        staged = self._run_at(
-            worktree, "diff", "--cached", "--name-only", "-z", "--"
-        ).stdout
+        staged = self._run_at(worktree, "diff", "--cached", "--name-only", "-z", "--").stdout
         staged_paths = tuple(sorted(path for path in staged.split("\0") if path))
         if set(staged_paths) != set(allowed_paths):
             raise LoopBlockedError("BLOCKED_COMMIT", "staged paths do not match candidate")
@@ -248,9 +240,7 @@ class GitController:
         head_sha = self._run_at(worktree, "rev-parse", "HEAD").stdout.strip()
         if head_sha == base_sha or len(head_sha) != 40:
             raise LoopBlockedError("BLOCKED_COMMIT", "candidate commit SHA is invalid")
-        if self._run_at(
-            worktree, "status", "--porcelain=v1", "--untracked-files=all"
-        ).stdout:
+        if self._run_at(worktree, "status", "--porcelain=v1", "--untracked-files=all").stdout:
             raise LoopBlockedError("BLOCKED_COMMIT", "candidate worktree is dirty after commit")
         return head_sha
 
@@ -284,12 +274,8 @@ class GitController:
             raise LoopBlockedError("BLOCKED_PR_HEAD", "candidate head SHA is invalid")
         actual_head = self._run("rev-parse", f"refs/heads/{branch}").stdout.strip()
         if actual_head != head_sha:
-            raise LoopBlockedError(
-                "BLOCKED_PR_HEAD_DRIFT", "local candidate branch head changed"
-            )
-        root_branch = self._run(
-            "symbolic-ref", "--quiet", "--short", "HEAD"
-        ).stdout.strip()
+            raise LoopBlockedError("BLOCKED_PR_HEAD_DRIFT", "local candidate branch head changed")
+        root_branch = self._run("symbolic-ref", "--quiet", "--short", "HEAD").stdout.strip()
         if root_branch == branch:
             raise LoopBlockedError(
                 "BLOCKED_PR_BRANCH", "candidate branch is checked out in the integration root"
@@ -401,9 +387,7 @@ def _porcelain_paths(payload: str) -> tuple[str, ...]:
 
 
 _SCRIPT_PATTERN = re.compile(rb"<script\b[^>]*>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL)
-_TEMPLATE_PATTERN = re.compile(
-    rb"<template\b[^>]*>(.*?)</template\s*>", re.IGNORECASE | re.DOTALL
-)
+_TEMPLATE_PATTERN = re.compile(rb"<template\b[^>]*>(.*?)</template\s*>", re.IGNORECASE | re.DOTALL)
 _TAG_PATTERN = re.compile(rb"<\s*(/?)\s*([A-Za-z][\w.-]*)([^>]*)>", re.DOTALL)
 _ATTRIBUTE_PATTERN = re.compile(
     rb"([:@#]?[A-Za-z_][\w:.-]*)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+)))?"
@@ -419,7 +403,9 @@ def _vue_script(payload: bytes) -> tuple[bytes, ...]:
 def _vue_behavior_signature(payload: bytes) -> tuple[bytes, ...]:
     signature: list[bytes] = [b"script:" + block for block in _vue_script(payload)]
     for template in _TEMPLATE_PATTERN.findall(payload):
-        signature.extend(b"expr:" + item.strip() for item in _INTERPOLATION_PATTERN.findall(template))
+        signature.extend(
+            b"expr:" + item.strip() for item in _INTERPOLATION_PATTERN.findall(template)
+        )
         for closing, tag, attributes in _TAG_PATTERN.findall(template):
             signature.append(b"tag:" + closing + tag.lower())
             if closing:

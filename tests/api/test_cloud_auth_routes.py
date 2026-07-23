@@ -64,7 +64,11 @@ async def test_development_login_sets_httponly_cookie_and_me_reads_server_sessio
     assert "HttpOnly" in cookie
     assert "SameSite=lax" in cookie
     assert current.status_code == 200
-    assert current.json() == {"user_id": login.json()["user_id"], "email": "dev@example.com", "display_name": "Dev"}
+    assert current.json() == {
+        "user_id": login.json()["user_id"],
+        "email": "dev@example.com",
+        "display_name": "Dev",
+    }
 
 
 async def test_canary_invite_login_sets_a_30_day_secure_device_session(
@@ -129,9 +133,7 @@ async def test_canary_invite_login_rejects_a_fourth_device_without_consuming_inv
         )
     )
     for index in range(1, 5):
-        await cloud_repository.create_invite(
-            f"device-invite-{index}", email="owner@example.com"
-        )
+        await cloud_repository.create_invite(f"device-invite-{index}", email="owner@example.com")
         client.cookies.clear()
         response = client.post(
             "/api/v1/cloud/auth/canary/login",
@@ -163,7 +165,11 @@ async def test_logout_revokes_server_session_and_removes_cookie(
     )
     login = client.post(
         "/api/v1/cloud/auth/dev/login",
-        json={"email": "logout@example.com", "display_name": "Logout", "invite_code": "logout-invite"},
+        json={
+            "email": "logout@example.com",
+            "display_name": "Logout",
+            "invite_code": "logout-invite",
+        },
     )
     retained_token = client.cookies.get("sage_session")
 
@@ -198,7 +204,11 @@ async def test_development_login_cannot_impersonate_an_existing_identity(
     client.cookies.clear()
     impersonation = client.post(
         "/api/v1/cloud/auth/dev/login",
-        json={"email": "dev@example.com", "display_name": "Attacker", "invite_code": "second-invite"},
+        json={
+            "email": "dev@example.com",
+            "display_name": "Attacker",
+            "invite_code": "second-invite",
+        },
     )
 
     assert first_login.status_code == 200
@@ -208,7 +218,9 @@ async def test_development_login_cannot_impersonate_an_existing_identity(
 
 def test_development_login_route_is_hidden_when_disabled(cloud_repository: CloudRepository) -> None:
     """Production cannot accidentally expose a passwordless development login."""
-    client = TestClient(create_app(cloud_repository=cloud_repository, cloud_dev_login_enabled=False))
+    client = TestClient(
+        create_app(cloud_repository=cloud_repository, cloud_dev_login_enabled=False)
+    )
 
     response = client.post(
         "/api/v1/cloud/auth/dev/login",
@@ -250,11 +262,16 @@ async def test_production_session_cookie_is_secure_even_when_override_is_false(
     )
     # Bootstrap a test-only authenticated user without exposing the dev route.
     user = await cloud_repository.get_or_create_identity(
-        provider="github", provider_subject="prod-subject", email="prod@example.com",
-        display_name="Prod", invite_code="production-invite",
+        provider="github",
+        provider_subject="prod-subject",
+        email="prod@example.com",
+        display_name="Prod",
+        invite_code="production-invite",
     )
     token = "production-cookie-token"
-    await cloud_repository.create_session(user.user_id, token, expires_at=datetime.now(UTC) + timedelta(days=1))
+    await cloud_repository.create_session(
+        user.user_id, token, expires_at=datetime.now(UTC) + timedelta(days=1)
+    )
     client = TestClient(app)
     client.cookies.set("sage_session", token)
 

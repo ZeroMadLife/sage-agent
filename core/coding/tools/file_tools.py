@@ -192,9 +192,6 @@ def _walk_search_files(path: Path, workspace: WorkspaceContext) -> list[Path]:
         item
         for item in path.rglob("*")
         if item.is_file()
-        and not any(
-            part in IGNORED_PATH_NAMES
-            for part in item.relative_to(workspace.root).parts
-        )
+        and not any(part in IGNORED_PATH_NAMES for part in item.relative_to(workspace.root).parts)
         and not workspace.is_protected(item)
     ]

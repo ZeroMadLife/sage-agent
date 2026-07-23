@@ -341,9 +341,7 @@ class LoopState:
                     result.confidence,
                 ),
             )
-            if result.verdict != "REPORT" and not (
-                result.verdict == "FIX" and mode == "DRY_RUN"
-            ):
+            if result.verdict != "REPORT" and not (result.verdict == "FIX" and mode == "DRY_RUN"):
                 return None
             finding_id = f"LH-{now[:10].replace('-', '')}-{fingerprint[:6].upper()}"
             connection.execute(
@@ -525,9 +523,7 @@ class LoopState:
         head_sha: str,
         merged_sha: str,
     ) -> None:
-        if len(merged_sha) != 40 or any(
-            char not in "0123456789abcdef" for char in merged_sha
-        ):
+        if len(merged_sha) != 40 or any(char not in "0123456789abcdef" for char in merged_sha):
             raise ValueError("merge SHA must be a full lowercase Git SHA")
         with self._transaction() as connection:
             self._assert_lease_row(connection, lease)
@@ -610,7 +606,9 @@ class LoopState:
                 ).fetchone()[0]
             )
             artifact_bytes = int(
-                connection.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts").fetchone()[0]
+                connection.execute("SELECT COALESCE(SUM(size_bytes), 0) FROM artifacts").fetchone()[
+                    0
+                ]
             )
             open_pull_requests = int(
                 connection.execute(
@@ -799,8 +797,7 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
     }
     for table, columns in migrations.items():
         existing = {
-            str(row["name"])
-            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            str(row["name"]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
         }
         for name, declaration in columns.items():
             if name not in existing:

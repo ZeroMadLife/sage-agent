@@ -133,9 +133,7 @@ class CompactionStore:
                 raise ValueError("previous checkpoint must come from an earlier attempt")
             if not self.verify_checkpoint(session_id, previous):
                 raise ValueError("previous checkpoint is not trusted")
-            previous_anchor = self._checkpoint_anchor(
-                session_id, previous.compaction_id, previous
-            )
+            previous_anchor = self._checkpoint_anchor(session_id, previous.compaction_id, previous)
         return self._transition(
             session_id,
             compaction_id,
@@ -234,7 +232,9 @@ class CompactionStore:
             ).hexdigest()
             if not checkpoint.evidence_hash or checkpoint.summary_hash != expected_summary_hash:
                 return False
-            expected_anchor = self._checkpoint_anchor(session_id, checkpoint.compaction_id, checkpoint)
+            expected_anchor = self._checkpoint_anchor(
+                session_id, checkpoint.compaction_id, checkpoint
+            )
             stored_anchor = artifact.get("checkpoint_anchor")
             if not isinstance(stored_anchor, str) or not hmac.compare_digest(
                 stored_anchor, expected_anchor
@@ -610,8 +610,14 @@ def _deserialize_checkpoint(value: object) -> CompactionCheckpoint:
     if not isinstance(value, dict):
         raise CompactionCorruptionError("checkpoint must be an object")
     expected = {
-        "compaction_id", "transcript_start", "transcript_end", "summary", "summary_hash",
-        "previous_summary_hash", "evidence_hash", "prefix_hash",
+        "compaction_id",
+        "transcript_start",
+        "transcript_end",
+        "summary",
+        "summary_hash",
+        "previous_summary_hash",
+        "evidence_hash",
+        "prefix_hash",
     }
     if set(value) != expected:
         raise CompactionCorruptionError("checkpoint fields are invalid")
@@ -634,8 +640,13 @@ def _deserialize_checkpoint(value: object) -> CompactionCheckpoint:
 
 def _validate_artifact(value: dict[str, Any], session_id: str, compaction_id: str) -> None:
     base = {
-        "schema_version", "session_id", "compaction_id", "status", "metadata",
-        "created_at", "updated_at",
+        "schema_version",
+        "session_id",
+        "compaction_id",
+        "status",
+        "metadata",
+        "created_at",
+        "updated_at",
     }
     if value.get("schema_version") != 1:
         raise CompactionCorruptionError("unsupported compaction artifact schema")
@@ -681,8 +692,16 @@ def _validate_result(value: object, compaction_id: str, *, applied: bool) -> Non
     if not isinstance(value, dict):
         raise CompactionCorruptionError("compaction result must be an object")
     expected = {
-        "applied", "checkpoint", "before_tokens", "after_tokens", "archived_items", "reason",
-        "compaction_id", "trigger", "retryable", "cooldown_until",
+        "applied",
+        "checkpoint",
+        "before_tokens",
+        "after_tokens",
+        "archived_items",
+        "reason",
+        "compaction_id",
+        "trigger",
+        "retryable",
+        "cooldown_until",
     }
     if set(value) != expected or value["applied"] is not applied:
         raise CompactionCorruptionError("compaction result fields are invalid")

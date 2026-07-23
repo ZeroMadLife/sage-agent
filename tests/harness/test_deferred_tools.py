@@ -65,9 +65,7 @@ def _descriptor(
 
 
 def _registry(*extra: CapabilityDescriptor) -> CapabilityRegistry:
-    return CapabilityRegistry(
-        (_descriptor("local:deferred_tool", "deferred_tool"), *extra)
-    )
+    return CapabilityRegistry((_descriptor("local:deferred_tool", "deferred_tool"), *extra))
 
 
 def _catalog() -> DeferredToolCatalog:

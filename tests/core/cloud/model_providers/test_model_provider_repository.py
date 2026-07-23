@@ -60,9 +60,12 @@ async def test_provider_ids_are_owner_scoped_and_key_update_is_optional(
     )
 
     assert await repository.get_provider("user-b", provider.id) is None
-    assert await repository.update_provider(
-        owner_user_id="user-b", provider_id=provider.id, name="Stolen"
-    ) is None
+    assert (
+        await repository.update_provider(
+            owner_user_id="user-b", provider_id=provider.id, name="Stolen"
+        )
+        is None
+    )
 
     updated = await repository.update_provider(
         owner_user_id="user-a",
@@ -73,9 +76,7 @@ async def test_provider_ids_are_owner_scoped_and_key_update_is_optional(
 
     assert updated is not None
     assert updated.name == "Anthropic Production"
-    assert (await repository.runtime_credentials("user-a"))[0].api_key == (
-        "anthropic-original-key"
-    )
+    assert (await repository.runtime_credentials("user-a"))[0].api_key == ("anthropic-original-key")
 
 
 async def test_default_provider_cannot_be_deleted_or_drop_its_default_model(

@@ -69,9 +69,7 @@ def test_container_provider_projects_invalid_workspace_paths_as_tool_errors(
     monkeypatch.setattr(sandbox, "_ensure_started", lambda: None)
     monkeypatch.setattr(sandbox, "_invoke_sync", reject_path)
 
-    result = asyncio.run(
-        sandbox.invoke("read_file", {"path": ".sage/usage.sqlite3"})
-    )
+    result = asyncio.run(sandbox.invoke("read_file", {"path": ".sage/usage.sqlite3"}))
 
     assert result.is_error is True
     assert "protected by workspace policy" in result.content

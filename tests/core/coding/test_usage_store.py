@@ -94,24 +94,30 @@ def test_usage_store_is_idempotent_and_aggregates_by_day_and_model(tmp_path: Pat
     )
     assert sample is not None
 
-    assert store.record(
-        request_id="run-1:1",
-        session_id="session-1",
-        run_id="run-1",
-        provider="openai",
-        model="openai:gpt-test",
-        usage=sample,
-        occurred_at=occurred_at,
-    ) is True
-    assert store.record(
-        request_id="run-1:1",
-        session_id="session-1",
-        run_id="run-1",
-        provider="openai",
-        model="openai:gpt-test",
-        usage=sample,
-        occurred_at=occurred_at,
-    ) is False
+    assert (
+        store.record(
+            request_id="run-1:1",
+            session_id="session-1",
+            run_id="run-1",
+            provider="openai",
+            model="openai:gpt-test",
+            usage=sample,
+            occurred_at=occurred_at,
+        )
+        is True
+    )
+    assert (
+        store.record(
+            request_id="run-1:1",
+            session_id="session-1",
+            run_id="run-1",
+            provider="openai",
+            model="openai:gpt-test",
+            usage=sample,
+            occurred_at=occurred_at,
+        )
+        is False
+    )
 
     summary = store.summary(days=3650, now=datetime(2026, 7, 14, 12, tzinfo=UTC))
 

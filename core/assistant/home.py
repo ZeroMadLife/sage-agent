@@ -150,9 +150,7 @@ class AssistantHomeSummaryService:
             suggested_actions=self._actions(projected_knowledge, sessions, proposals),
         )
 
-    def _sessions(
-        self, identity: HomeIdentity
-    ) -> tuple[HomeSessions, tuple[_VisibleSession, ...]]:
+    def _sessions(self, identity: HomeIdentity) -> tuple[HomeSessions, tuple[_VisibleSession, ...]]:
         try:
             candidates = self._session_store.list_sessions(
                 limit=_SESSION_SCAN_LIMIT, include_archived=False
@@ -212,13 +210,9 @@ class AssistantHomeSummaryService:
         return owner is None
 
     @staticmethod
-    def _projects(
-        projects: Sequence[HomeProject] | None, *, project_error: bool
-    ) -> HomeProjects:
+    def _projects(projects: Sequence[HomeProject] | None, *, project_error: bool) -> HomeProjects:
         if project_error:
-            return HomeProjects(
-                status="error", items=(), total=0, error="项目摘要暂不可用"
-            )
+            return HomeProjects(status="error", items=(), total=0, error="项目摘要暂不可用")
         if projects is None:
             return HomeProjects(status="unavailable", items=(), total=0)
         ordered = tuple(projects[:_RECENT_PROJECT_LIMIT])
@@ -251,12 +245,7 @@ class AssistantHomeSummaryService:
         try:
             for workspace_root, session_ids in sessions_by_workspace.items():
                 workspace_id = workspace_id_from_path(workspace_root)
-                database = (
-                    self._storage_root
-                    / "memory"
-                    / workspace_id
-                    / _MEMORY_DATABASE_NAME
-                )
+                database = self._storage_root / "memory" / workspace_id / _MEMORY_DATABASE_NAME
                 if not database.is_file():
                     continue
                 store = MemoryStore(self._storage_root, workspace_id)

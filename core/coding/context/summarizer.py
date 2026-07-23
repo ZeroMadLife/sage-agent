@@ -107,8 +107,7 @@ class StructuredSummarizer:
             parameters = {}
         kwargs: dict[str, Any] = {}
         if "max_tokens" in parameters or any(
-            parameter.kind == inspect.Parameter.VAR_KEYWORD
-            for parameter in parameters.values()
+            parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
         ):
             kwargs["max_tokens"] = max_tokens
         elif "max_completion_tokens" in parameters:

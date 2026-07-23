@@ -149,11 +149,7 @@ def _child_model() -> ScriptedApiClient:
 
 
 def _payloads(events: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        payload
-        for event in events
-        if isinstance((payload := event.get("payload")), dict)
-    ]
+    return [payload for event in events if isinstance((payload := event.get("payload")), dict)]
 
 
 def _final_contains(events: list[dict[str, object]], expected: str) -> bool:
@@ -172,9 +168,7 @@ def _run_subagent_scenario(
     (workspace / "README.md").write_text("# Sage\n", encoding="utf-8")
     app = create_app(
         coding_model_factory=(
-            LegacyBackgroundSubagentModel
-            if profile == "legacy"
-            else DeerflowAwaitedSubagentModel
+            LegacyBackgroundSubagentModel if profile == "legacy" else DeerflowAwaitedSubagentModel
         ),
         coding_workspace_root=workspace,
         coding_storage_root=workspace / ".coding",
@@ -206,9 +200,7 @@ def _run_subagent_scenario(
             }
 
         completed = next(
-            payload
-            for payload in _payloads(events)
-            if payload.get("type") == "subagent_completed"
+            payload for payload in _payloads(events) if payload.get("type") == "subagent_completed"
         )
         child_run_id = str(completed["child_run_id"])
         child_run = runtime.run_store.get_run(child_run_id)
@@ -313,8 +305,7 @@ def test_v2_awaits_child_result_that_legacy_only_reports_in_background(
     assert "# Sage" in str(legacy_evidence["child_notification"])
     assert legacy_evidence["child_run_persisted"] is False
     assert not any(
-        payload.get("type") == "subagent_completed"
-        for payload in _payloads(legacy_events)
+        payload.get("type") == "subagent_completed" for payload in _payloads(legacy_events)
     )
     assert v2_result.passed is True
     assert v2_evidence["child_run_persisted"] is True
@@ -337,9 +328,7 @@ def test_v2_projects_failed_child_and_parent_recovers_with_final(tmp_path: Path)
         "child_error_code": "child_execution_failed",
     }
     assert _final_contains(events, "子代理失败")
-    assert [payload.get("type") for payload in _payloads(events)].count(
-        "subagent_failed"
-    ) == 1
+    assert [payload.get("type") for payload in _payloads(events)].count("subagent_failed") == 1
     results = _task_results(events)
     assert len(results) == 1
     assert results[0].get("is_error") is True
@@ -366,9 +355,7 @@ def test_v2_projects_child_timeout_and_parent_recovers_with_final(
         "child_error_code": "timeout",
     }
     assert _final_contains(events, "主任务已恢复")
-    assert [payload.get("type") for payload in _payloads(events)].count(
-        "subagent_timed_out"
-    ) == 1
+    assert [payload.get("type") for payload in _payloads(events)].count("subagent_timed_out") == 1
     results = _task_results(events)
     assert len(results) == 1
     assert results[0].get("is_error") is True
@@ -421,7 +408,5 @@ def test_v2_parent_stop_cancels_running_child_without_a_false_final(tmp_path: Pa
     assert events[-1]["status"] == "cancelled"
     assert child_terminal["status"] == "cancelled"
     assert child_terminal["error_code"] == "parent_cancelled"
-    assert [payload.get("type") for payload in _payloads(events)].count(
-        "subagent_cancelled"
-    ) == 1
+    assert [payload.get("type") for payload in _payloads(events)].count("subagent_cancelled") == 1
     assert not any(payload.get("type") == "final" for payload in _payloads(events))

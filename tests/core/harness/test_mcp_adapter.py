@@ -127,9 +127,7 @@ def test_live_transport_reuses_scoped_session_and_reconnects_after_transport_fai
             sessions.append(session)
             return Context(session)
 
-        pool = ScopedMcpSessionPool(
-            session_factory=session_context
-        )
+        pool = ScopedMcpSessionPool(session_factory=session_context)
 
         async def load_tools(session: McpClientSession, server_name: str):
             assert server_name == "scenic"

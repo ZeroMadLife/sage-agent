@@ -199,8 +199,7 @@ async def test_workspace_reminder_does_not_enter_session_replay(tmp_path: Path) 
         ("assistant", "done"),
     ]
     assert all(
-        "Project-only instruction" not in item["content"]
-        for item in runtime.session["history"]
+        "Project-only instruction" not in item["content"] for item in runtime.session["history"]
     )
     assert all(item["message_id"] and item["sequence"] > 0 for item in runtime.session["history"])
 

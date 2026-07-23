@@ -134,7 +134,9 @@ async def test_engine_denies_policy_violation_as_tool_result(tmp_path: Path) -> 
     assert "fresh read_file" in policy_errors[0]["content"]
 
 
-async def test_engine_recovers_missing_required_tool_argument_before_execution(tmp_path: Path) -> None:
+async def test_engine_recovers_missing_required_tool_argument_before_execution(
+    tmp_path: Path,
+) -> None:
     """A malformed tool call receives a bounded model correction, not execution."""
     (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
     engine = _engine(
@@ -142,21 +144,27 @@ async def test_engine_recovers_missing_required_tool_argument_before_execution(t
         [
             '<tool>{"name":"read_file","args":{}}</tool>',
             '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            '<final>README 已读取。</final>',
+            "<final>README 已读取。</final>",
         ],
     )
 
     events = [event async for event in engine.run_turn("读取 README")]
 
     assert [event["type"] for event in events] == [
-        "model_requested", "model_parsed", "retry", "model_requested", "model_parsed",
-        "tool_call", "tool_result", "model_requested", "model_parsed", "final",
+        "model_requested",
+        "model_parsed",
+        "retry",
+        "model_requested",
+        "model_parsed",
+        "tool_call",
+        "tool_result",
+        "model_requested",
+        "model_parsed",
+        "final",
     ]
     assert "read_file" in events[2]["content"]
     assert "path" in events[2]["content"]
-    assert not any(
-        event["type"] == "tool_call" and event.get("args") == {} for event in events
-    )
+    assert not any(event["type"] == "tool_call" and event.get("args") == {} for event in events)
     assert engine.model.prompts[1].count("workspace-relative") == 1
     assert engine.model.prompts[2].count("executed successfully") == 1
 
@@ -208,7 +216,7 @@ async def test_engine_preflights_all_tool_arguments_before_batch_execution(tmp_p
                 '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'
                 '<tool>{"name":"search","args":{}}</tool>'
             ),
-            '<final>停止批量调用。</final>',
+            "<final>停止批量调用。</final>",
         ],
     )
 
@@ -218,7 +226,9 @@ async def test_engine_preflights_all_tool_arguments_before_batch_execution(tmp_p
     assert not any(event["type"] == "tool_call" for event in events)
 
 
-async def test_engine_preflights_workspace_boundaries_before_batch_execution(tmp_path: Path) -> None:
+async def test_engine_preflights_workspace_boundaries_before_batch_execution(
+    tmp_path: Path,
+) -> None:
     """A later escaping path prevents earlier side effects in the same batch."""
     engine = _engine(
         tmp_path,
@@ -227,7 +237,7 @@ async def test_engine_preflights_workspace_boundaries_before_batch_execution(tmp
                 '<tool>{"name":"write_file","args":{"path":"created.txt","content":"x"}}</tool>'
                 '<tool>{"name":"write_file","args":{"path":"../outside.txt","content":"x"}}</tool>'
             ),
-            '<final>已拒绝越界路径。</final>',
+            "<final>已拒绝越界路径。</final>",
         ],
     )
 

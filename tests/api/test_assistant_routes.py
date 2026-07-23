@@ -187,9 +187,7 @@ async def test_cloud_home_uses_cookie_identity_and_owner_scoped_data(
     body = response.json()
     assert body["identity"]["mode"] == "cloud"
     assert body["identity"]["user_id"] == owner_user_id
-    assert [item["session_id"] for item in body["sessions"]["items"]] == [
-        "owner-session"
-    ]
+    assert [item["session_id"] for item in body["sessions"]["items"]] == ["owner-session"]
     assert [item["name"] for item in body["projects"]["items"]] == ["Sage"]
     assert "other-session" not in response.text
     assert "Private" not in response.text

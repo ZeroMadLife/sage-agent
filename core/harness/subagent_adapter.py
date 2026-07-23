@@ -340,14 +340,17 @@ class CodingSubagentExecutor:
                     tool_count=tool_count,
                     evidence_count=len(evidence_refs),
                 )
+
         try:
             child_tools = self._tools(
                 request,
                 query_fingerprints=query_fingerprints,
                 source_fingerprints=source_fingerprints,
             )
+
             def child_should_stop() -> bool:
                 return cancel_event.is_set() or self.runtime.stop_requested
+
             tool_executor = (
                 ToolExecutor(
                     tools=child_tools,
@@ -384,11 +387,7 @@ class CodingSubagentExecutor:
             )
             result = SubagentResult(
                 child_run_id=request.child_run_id,
-                status=(
-                    "succeeded"
-                    if succeeded
-                    else "failed"
-                ),
+                status=("succeeded" if succeeded else "failed"),
                 result=final,
                 result_ref=result_ref,
                 error_code=(

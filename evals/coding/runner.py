@@ -115,9 +115,7 @@ async def _run_turn_with_auto_approval(
                 else None
             )
             if pending is not None and runtime.approval_manager is not None:
-                runtime.approval_manager.resolve(
-                    runtime.session_id, pending["approval_id"], "once"
-                )
+                runtime.approval_manager.resolve(runtime.session_id, pending["approval_id"], "once")
                 return
             await asyncio.sleep(0.02)
         # No approval surfaced within the window; leave the turn to finish/timeout.

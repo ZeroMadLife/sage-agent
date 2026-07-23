@@ -82,13 +82,13 @@ provider = "provider"
         (
             'version = 1\ndefault_model = "m"\n'
             '[[models]]\nid = "m"\nlabel = "M"\nprovider = "p"\n'
-            'context_window_tokens = 100000\n',
+            "context_window_tokens = 100000\n",
             "configure context window and output reserve together",
         ),
         (
             'version = 1\ndefault_model = "m"\n'
             '[[models]]\nid = "m"\nlabel = "M"\nprovider = "p"\n'
-            'context_window_tokens = 100\noutput_reserve_tokens = 100\n',
+            "context_window_tokens = 100\noutput_reserve_tokens = 100\n",
             "output reserve must be less",
         ),
         (

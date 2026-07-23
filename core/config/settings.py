@@ -170,9 +170,7 @@ class Settings(BaseSettings):
     knowledge_mineru_poll_seconds: float = Field(default=1.0, gt=0.0, le=30.0)
     knowledge_qwen_vl_enabled: bool = False
     knowledge_qwen_vl_api_key: str = Field(default="", repr=False)
-    knowledge_qwen_vl_base_url: str = (
-        "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )
+    knowledge_qwen_vl_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     knowledge_qwen_vl_model: str = "qwen3-vl-flash"
     knowledge_qwen_vl_max_pages: int = Field(default=12, ge=1, le=20)
 

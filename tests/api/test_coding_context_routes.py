@@ -110,9 +110,7 @@ def test_manual_compact_rejects_unconfigured_and_active_context(tmp_path: Path) 
     client = TestClient(app)
     configured_id = _session(client)
     app.state.coding_sessions[configured_id].active_run_id = "run-active"
-    response = client.post(
-        f"/api/v1/coding/{configured_id}/context/compact", json={"focus": "x"}
-    )
+    response = client.post(f"/api/v1/coding/{configured_id}/context/compact", json={"focus": "x"})
     assert response.status_code == 409
     assert response.json()["detail"] == "context operation is busy"
 
@@ -128,9 +126,7 @@ def test_manual_compact_rejects_busy_lock_and_oversized_focus(tmp_path: Path) ->
             return True
 
     runtime._context_operation_lock = BusyLock()
-    busy = client.post(
-        f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"}
-    )
+    busy = client.post(f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"})
     assert busy.status_code == 409
     oversized = client.post(
         f"/api/v1/coding/{session_id}/context/compact",
@@ -190,17 +186,13 @@ def test_manual_compact_hides_internal_failure_detail(tmp_path: Path, monkeypatc
         raise RuntimeError("secret-provider-payload")
 
     monkeypatch.setattr(runtime, "manual_compact", fail)
-    response = client.post(
-        f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"}
-    )
+    response = client.post(f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"})
     assert response.status_code == 500
     assert response.json()["detail"] == "context compaction failed"
     assert "secret-provider-payload" not in response.text
 
 
-def test_context_snapshot_marks_old_started_attempt_stale(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_context_snapshot_marks_old_started_attempt_stale(tmp_path: Path, monkeypatch: Any) -> None:
     app = _app(tmp_path)
     client = TestClient(app)
     session_id = _session(client)
@@ -256,15 +248,11 @@ def test_model_catalog_exposes_capabilities_and_enforces_switch_whitelist(
             "reasoning_modes": [],
         },
     ]
-    unknown = client.patch(
-        f"/api/v1/coding/{session_id}/model", json={"model_id": "unknown"}
-    )
+    unknown = client.patch(f"/api/v1/coding/{session_id}/model", json={"model_id": "unknown"})
     assert unknown.status_code == 422
     assert unknown.json()["detail"] == "unknown coding model"
 
-    switched = client.patch(
-        f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"}
-    )
+    switched = client.patch(f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"})
     assert switched.status_code == 200
     snapshot = client.get(f"/api/v1/coding/{session_id}/context").json()
     assert snapshot["model_id"] == "model-b"
@@ -277,9 +265,7 @@ def test_model_switch_rejects_active_run(tmp_path: Path) -> None:
     session_id = _session(client)
     app.state.coding_sessions[session_id].active_run_id = "run-active"
 
-    response = client.patch(
-        f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"}
-    )
+    response = client.patch(f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"})
 
     assert response.status_code == 409
     assert response.json()["detail"] == "context operation is busy"
@@ -289,9 +275,10 @@ def test_models_current_reflects_session_model(tmp_path: Path) -> None:
     app = _app(tmp_path)
     client = TestClient(app)
     session_id = _session(client)
-    assert client.patch(
-        f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"}
-    ).status_code == 200
+    assert (
+        client.patch(f"/api/v1/coding/{session_id}/model", json={"model_id": "model-b"}).status_code
+        == 200
+    )
 
     response = client.get("/api/v1/coding/models")
     assert response.status_code == 200
@@ -342,9 +329,7 @@ def test_create_rejects_workspace_symlink_escape(tmp_path: Path) -> None:
     assert "configured coding workspace" in response.json()["detail"]
 
 
-def test_create_and_resume_reject_models_outside_catalog(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_create_and_resume_reject_models_outside_catalog(tmp_path: Path, monkeypatch: Any) -> None:
     app = _app(tmp_path)
     client = TestClient(app)
     app.state.coding_default_model = "unknown"

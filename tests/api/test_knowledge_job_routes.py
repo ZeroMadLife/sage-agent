@@ -207,8 +207,7 @@ def test_sync_plan_api_previews_incremental_changes_without_server_paths(
         assert delta.json()["modified_count"] == 1
         assert delta.json()["deleted_count"] == 1
         assert {
-            (item["relative_path"], item["change_kind"])
-            for item in delta.json()["changes"]
+            (item["relative_path"], item["change_kind"]) for item in delta.json()["changes"]
         } == {
             ("added.md", "added"),
             ("guide.md", "modified"),

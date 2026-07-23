@@ -40,9 +40,7 @@ _WRITE_OPERATIONS = frozenset({"write_file", "patch_file"})
 _DEFAULT_IMAGE = "python:3.11-slim"
 _CONTAINER_ROOT = "/workspace"
 _DEFAULT_COMMAND_TIMEOUT = 30.0
-_IGNORED_NAMES = frozenset(
-    {*IGNORED_PATH_NAMES, *PROTECTED_PATH_NAMES, ".env", ".env.*"}
-)
+_IGNORED_NAMES = frozenset({*IGNORED_PATH_NAMES, *PROTECTED_PATH_NAMES, ".env", ".env.*"})
 
 
 class ContainerWorkspaceSandbox:
@@ -293,7 +291,9 @@ class ContainerWorkspaceSandbox:
             "image": image,
         }
 
-    def _invoke_sync(self, operation: SandboxOperation, arguments: dict[str, Any]) -> tuple[str, bool]:
+    def _invoke_sync(
+        self, operation: SandboxOperation, arguments: dict[str, Any]
+    ) -> tuple[str, bool]:
         if operation == "list_files":
             path = self._virtual_path(str(arguments.get("path", ".")))
             output = self._docker_capture(
@@ -348,8 +348,7 @@ class ContainerWorkspaceSandbox:
             )
             lines = output.splitlines()
             numbered = "\n".join(
-                f"{number:>4}: {line}"
-                for number, line in enumerate(lines, start=start)
+                f"{number:>4}: {line}" for number, line in enumerate(lines, start=start)
             )
             return clip(f"# {self._relative_path(str(arguments['path']))}\n{numbered}"), False
 
@@ -361,9 +360,7 @@ class ContainerWorkspaceSandbox:
                 for name in sorted(PROTECTED_PATH_NAMES)
                 for item in (f"--exclude={name}", f"--exclude-dir={name}")
             ]
-            excluded_dirs = [
-                f"--exclude-dir={name}" for name in sorted(IGNORED_PATH_NAMES)
-            ]
+            excluded_dirs = [f"--exclude-dir={name}" for name in sorted(IGNORED_PATH_NAMES)]
             output = self._docker_capture(
                 [
                     "exec",
@@ -402,7 +399,10 @@ class ContainerWorkspaceSandbox:
                 ],
                 content.encode(),
             )
-            return f"wrote {self._relative_path(str(arguments['path']))} ({len(content)} chars)", False
+            return (
+                f"wrote {self._relative_path(str(arguments['path']))} ({len(content)} chars)",
+                False,
+            )
 
         if operation == "patch_file":
             payload = json.dumps(
@@ -438,8 +438,7 @@ class ContainerWorkspaceSandbox:
         timeout = float(arguments.get("timeout", _DEFAULT_COMMAND_TIMEOUT))
         env = self._safe_environment()
         timeout_command = (
-            f"timeout --signal=KILL {max(timeout, 1.0):g}s "
-            f"sh -lc {shlex.quote(command)}"
+            f"timeout --signal=KILL {max(timeout, 1.0):g}s " f"sh -lc {shlex.quote(command)}"
         )
         command_args = [
             "exec",
@@ -452,7 +451,11 @@ class ContainerWorkspaceSandbox:
         completed = self._docker_run(command_args, timeout=timeout + 5)
         output = completed.stdout.strip()
         if completed.stderr.strip():
-            output = f"{output}\nstderr:\n{completed.stderr.strip()}" if output else completed.stderr.strip()
+            output = (
+                f"{output}\nstderr:\n{completed.stderr.strip()}"
+                if output
+                else completed.stderr.strip()
+            )
         output = output or "(empty)"
         return clip(f"exit_code: {completed.returncode}\n{output}"), completed.returncode != 0
 

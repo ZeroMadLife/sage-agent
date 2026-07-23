@@ -187,11 +187,7 @@ def test_remember_records_source_ref(tmp_path: Path) -> None:
     mem.remember("use ruff", topic="project-conventions", source_ref="run_abc12345")
 
     topic_path = mem.root / "project-conventions.md"
-    lines = [
-        line
-        for line in topic_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    lines = [line for line in topic_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     assert len(lines) == 1
     data = json.loads(lines[0])
     assert data["content"] == "use ruff"
@@ -210,9 +206,7 @@ def test_remember_records_source_ref(tmp_path: Path) -> None:
     "relative",
     ["project-conventions.md", "MEMORY.md", f"daily/{date.today().isoformat()}.md"],
 )
-def test_durable_memory_rejects_hardlinked_projection_files(
-    tmp_path: Path, relative: str
-) -> None:
+def test_durable_memory_rejects_hardlinked_projection_files(tmp_path: Path, relative: str) -> None:
     storage = tmp_path / "storage"
     workspace = tmp_path / "repo"
     workspace.mkdir()
@@ -224,9 +218,7 @@ def test_durable_memory_rejects_hardlinked_projection_files(
 
     with pytest.raises(OSError):
         if relative.startswith("daily/"):
-            mem._append_daily_log(
-                MemoryFact(content="unsafe", created_at="now")
-            )
+            mem._append_daily_log(MemoryFact(content="unsafe", created_at="now"))
         else:
             mem.remember("unsafe")
 

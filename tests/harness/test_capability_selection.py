@@ -85,9 +85,7 @@ def test_exact_stable_id_selects_one_bound_tool_and_legacy_name_must_be_unique()
     exact = index.select(("mcp:scenic:lookup",))
     ambiguous = index.select(("lookup",))
 
-    assert [item.descriptor.capability_id for item in exact.selected] == [
-        "mcp:scenic:lookup"
-    ]
+    assert [item.descriptor.capability_id for item in exact.selected] == ["mcp:scenic:lookup"]
     assert exact.selected[0].tool_name == "scenic_lookup"
     assert ambiguous.selected == ()
     assert ambiguous.rejected[0].code == "ambiguous"

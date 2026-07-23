@@ -237,19 +237,14 @@ def _contains_network_access(command: str) -> bool:
             "brew",
             "apt",
             "apt-get",
-        } and any(
-            token.casefold() in _PACKAGE_NETWORK_SUBCOMMANDS
-            for token in segment[1:]
-        ):
+        } and any(token.casefold() in _PACKAGE_NETWORK_SUBCOMMANDS for token in segment[1:]):
             return True
         if program == "cargo" and any(
             token.casefold() in {"add", "fetch", "install", "publish", "search", "update"}
             for token in segment[1:]
         ):
             return True
-        if program == "go" and any(
-            token.casefold() in {"get", "install"} for token in segment[1:]
-        ):
+        if program == "go" and any(token.casefold() in {"get", "install"} for token in segment[1:]):
             return True
         if program == "git" and any(
             token.casefold() in {"clone", "fetch", "pull", "push", "ls-remote"}

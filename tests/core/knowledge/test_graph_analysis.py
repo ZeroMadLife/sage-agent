@@ -80,9 +80,7 @@ def test_goal_update_is_git_backed_conflict_checked_and_analysis_is_stable(
     store, vault = _store(tmp_path)
     initial = store.learning_goal()
     assert initial.structured is True
-    updated = store.update_learning_goal(
-        _goal(), expected_goal_revision=initial.goal_revision
-    )
+    updated = store.update_learning_goal(_goal(), expected_goal_revision=initial.goal_revision)
 
     assert updated.title == "成为全栈 AI 应用工程师"
     assert updated.goal_revision != initial.goal_revision
@@ -136,11 +134,11 @@ def test_goal_revision_changes_analysis_without_rebuilding_graph(tmp_path: Path)
     initial_analysis = store.analyze_graph()
     initial_goal = store.learning_goal()
 
-    changed = store.update_learning_goal(
-        _goal(), expected_goal_revision=initial_goal.goal_revision
-    )
+    changed = store.update_learning_goal(_goal(), expected_goal_revision=initial_goal.goal_revision)
     changed_analysis = store.analyze_graph()
 
     assert changed_analysis.snapshot.graph_revision == graph.snapshot.graph_revision
     assert changed_analysis.snapshot.goal_revision == changed.goal_revision
-    assert changed_analysis.snapshot.analysis_revision != initial_analysis.snapshot.analysis_revision
+    assert (
+        changed_analysis.snapshot.analysis_revision != initial_analysis.snapshot.analysis_revision
+    )

@@ -15,8 +15,7 @@ def test_understanding_is_deterministic_bounded_and_cited() -> None:
         source_revision="sha256:understanding",
         media_type="text/markdown",
         payload=(
-            "# Agent Harness\n\n可恢复执行与工具隔离。\n\n"
-            "## Memory\n\n长期记忆和上下文压缩。\n"
+            "# Agent Harness\n\n可恢复执行与工具隔离。\n\n" "## Memory\n\n长期记忆和上下文压缩。\n"
         ).encode(),
     )
     document = MarkdownParser().parse(request)

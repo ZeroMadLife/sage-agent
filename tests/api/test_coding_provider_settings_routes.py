@@ -76,7 +76,7 @@ def test_provider_settings_response_is_non_secret_and_reports_env_status(
     assert data["providers"][0]["api_key_env"] == "OPENAI_API_KEY"
     assert data["providers"][0]["api_key_configured"] is True
     assert "never-return-this-value" not in response.text
-    assert "api_key\"" not in response.text
+    assert 'api_key"' not in response.text
 
 
 def test_provider_settings_update_rebuilds_catalog_and_rejects_secret_fields(
@@ -92,9 +92,7 @@ def test_provider_settings_update_rebuilds_catalog_and_rejects_secret_fields(
     assert response.status_code == 200
     assert app.state.coding_default_model == "openai:gpt-next"
     assert app.state.coding_model_catalog[0]["id"] == "openai:gpt-next"
-    assert client.get("/api/v1/coding/models").json()["models"][0]["id"] == (
-        "openai:gpt-next"
-    )
+    assert client.get("/api/v1/coding/models").json()["models"][0]["id"] == ("openai:gpt-next")
 
     provider = updated["providers"][0]
     assert isinstance(provider, dict)
@@ -104,9 +102,7 @@ def test_provider_settings_update_rebuilds_catalog_and_rejects_secret_fields(
     assert "secret" not in rejected.text
 
 
-def test_deployment_managed_provider_settings_are_read_only(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_deployment_managed_provider_settings_are_read_only(tmp_path: Path, monkeypatch) -> None:
     managed = tmp_path / "managed.json"
     managed.write_text(json.dumps(_settings()), encoding="utf-8")
     workspace = tmp_path / "workspace"

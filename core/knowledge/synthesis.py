@@ -83,9 +83,12 @@ def synthesize_workspace(
     ]
     input_json = json.dumps(input_payload, sort_keys=True, separators=(",", ":"))
     input_hash = "sha256:" + hashlib.sha256(input_json.encode("utf-8")).hexdigest()
-    synthesis_id = "ksyn_" + hashlib.sha256(
-        f"{input_hash}\0{_GENERATOR_ID}\0{_GENERATOR_VERSION}".encode()
-    ).hexdigest()[:32]
+    synthesis_id = (
+        "ksyn_"
+        + hashlib.sha256(
+            f"{input_hash}\0{_GENERATOR_ID}\0{_GENERATOR_VERSION}".encode()
+        ).hexdigest()[:32]
+    )
     rendered = _render_markdown(synthesis_id, input_hash, ordered)
     return WorkspaceSynthesis(
         synthesis_id=synthesis_id,
@@ -191,9 +194,9 @@ def _render_markdown(
         "",
     ]
     for item in sources:
-        citations = ", ".join(
-            f"`{block_id}`" for block_id in item.citation_block_ids
-        ) or "无块级引用"
+        citations = (
+            ", ".join(f"`{block_id}`" for block_id in item.citation_block_ids) or "无块级引用"
+        )
         topics = "、".join(item.topics) or "未提取主题"
         lines.extend(
             [

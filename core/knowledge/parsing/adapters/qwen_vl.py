@@ -71,9 +71,7 @@ class QwenVlAdapter:
         except QwenRasterizationError as exc:
             raise ExternalAdapterError(self.adapter_id, exc.code, retryable=False) from exc
         except Exception as exc:
-            raise ExternalAdapterError(
-                self.adapter_id, "render_failed", retryable=False
-            ) from exc
+            raise ExternalAdapterError(self.adapter_id, "render_failed", retryable=False) from exc
         markdown_pages: list[str] = []
         async with self._client_scope() as client:
             for index, page_bytes in enumerate(pages, start=1):
@@ -99,9 +97,7 @@ class QwenVlAdapter:
                 confidence=0.82,
             )
         except ValueError as exc:
-            raise ExternalAdapterError(
-                self.adapter_id, "invalid_result", retryable=False
-            ) from exc
+            raise ExternalAdapterError(self.adapter_id, "invalid_result", retryable=False) from exc
 
     async def _parse_page(
         self,
@@ -136,9 +132,7 @@ class QwenVlAdapter:
                             },
                             {
                                 "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{encoded}"
-                                },
+                                "image_url": {"url": f"data:image/jpeg;base64,{encoded}"},
                             },
                         ],
                     }

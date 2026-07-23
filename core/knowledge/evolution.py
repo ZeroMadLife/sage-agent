@@ -78,12 +78,18 @@ def build_evidence_learning(
         "topic": normalized_topic,
         "citations": [citation_id for citation_id, _chunk in ordered],
     }
-    input_hash = "sha256:" + hashlib.sha256(
-        json.dumps(input_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    learning_id = "klearn_" + hashlib.sha256(
-        f"{GENERATOR_ID}\0{GENERATOR_VERSION}\0{input_hash}".encode()
-    ).hexdigest()[:32]
+    input_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(input_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    )
+    learning_id = (
+        "klearn_"
+        + hashlib.sha256(f"{GENERATOR_ID}\0{GENERATOR_VERSION}\0{input_hash}".encode()).hexdigest()[
+            :32
+        ]
+    )
     citations = tuple(
         EvidenceLearningCitation(
             citation_id=citation_id,

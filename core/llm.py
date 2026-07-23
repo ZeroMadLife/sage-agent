@@ -79,7 +79,12 @@ def create_llm(
             api_key=api_key,
             base_url=base_url,
             http_async_client=http_async_client,
-            **({**kwargs, **({"reasoning_effort": reasoning_mode} if reasoning_mode != "off" else {})}),
+            **(
+                {
+                    **kwargs,
+                    **({"reasoning_effort": reasoning_mode} if reasoning_mode != "off" else {}),
+                }
+            ),
         )
     if provider_settings is not None:
         provider_definition = provider_settings.provider_for_model(model_spec)

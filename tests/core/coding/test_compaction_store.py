@@ -115,9 +115,15 @@ def test_failed_attempt_rejects_untrusted_previous_checkpoint(tmp_path) -> None:
     store = CompactionStore(tmp_path, checkpoint_anchor_key=_ANCHOR_KEY)
     store.begin("s1", "cmp-next", {"trigger": "auto"})
     failed = CompactionResult(
-        applied=False, projected_history=[], checkpoint=_checkpoint("cmp-missing"),
-        before_tokens=100, after_tokens=100, archived_items=0,
-        reason="summarizer_failed", compaction_id="cmp-next", trigger="auto",
+        applied=False,
+        projected_history=[],
+        checkpoint=_checkpoint("cmp-missing"),
+        before_tokens=100,
+        after_tokens=100,
+        archived_items=0,
+        reason="summarizer_failed",
+        compaction_id="cmp-next",
+        trigger="auto",
     )
     with pytest.raises(ValueError, match="not trusted"):
         store.fail("s1", "cmp-next", failed)
@@ -292,9 +298,11 @@ def test_store_rejects_duplicate_keys_and_non_finite_numbers(tmp_path) -> None:
     path.write_text('{"schema_version":1,"schema_version":1}')
     with pytest.raises(CompactionCorruptionError):
         store.load("s1", "cmp-1")
-    path.write_text('{"schema_version":1,"session_id":"s1","compaction_id":"cmp-1",'
-                    '"status":"started","metadata":{"x":NaN},"created_at":"x",'
-                    '"updated_at":"x"}')
+    path.write_text(
+        '{"schema_version":1,"session_id":"s1","compaction_id":"cmp-1",'
+        '"status":"started","metadata":{"x":NaN},"created_at":"x",'
+        '"updated_at":"x"}'
+    )
     with pytest.raises(CompactionCorruptionError):
         store.load("s1", "cmp-1")
 

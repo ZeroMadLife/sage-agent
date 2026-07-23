@@ -107,8 +107,7 @@ def main(argv: list[str] | None = None) -> int:
             target_branch=config.target_branch,
         )
         root = git.require_integration_root(
-            allow_dirty=state.mode()
-            in {"SHADOW_WRITE", "PR_CANARY", "AUTO_MERGE_TIER_A"}
+            allow_dirty=state.mode() in {"SHADOW_WRITE", "PR_CANARY", "AUTO_MERGE_TIER_A"}
         )
         version = CodexWorker(
             codex_bin=config.codex_bin,

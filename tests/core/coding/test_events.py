@@ -180,38 +180,59 @@ def test_plan_ready_for_review_event_defaults_to_empty_fields() -> None:
 
 def test_context_events_use_the_approved_wire_contract() -> None:
     usage = ContextUsageUpdatedEvent(
-        session_id="s1", run_id="run-1", used_tokens=72_000,
-        model_limit_tokens=200_000, output_reserve_tokens=20_000,
-        effective_limit_tokens=180_000, usage_ratio=0.4, level="normal",
-        estimated=True, compactable=True,
+        session_id="s1",
+        run_id="run-1",
+        used_tokens=72_000,
+        model_limit_tokens=200_000,
+        output_reserve_tokens=20_000,
+        effective_limit_tokens=180_000,
+        usage_ratio=0.4,
+        level="normal",
+        estimated=True,
+        compactable=True,
     )
     started = ContextCompactionStartedEvent(
         session_id="s1", compaction_id="cmp-1", trigger="manual", before_tokens=128_000
     )
     completed = ContextCompactionCompletedEvent(
-        session_id="s1", compaction_id="cmp-1", before_tokens=128_000,
-        after_tokens=42_000, archived_items=86,
+        session_id="s1",
+        compaction_id="cmp-1",
+        before_tokens=128_000,
+        after_tokens=42_000,
+        archived_items=86,
     )
     failed = ContextCompactionFailedEvent(
-        session_id="s1", compaction_id="cmp-1", reason="summary_schema_invalid",
-        preserved_original=True, retryable=True,
+        session_id="s1",
+        compaction_id="cmp-1",
+        reason="summary_schema_invalid",
+        preserved_original=True,
+        retryable=True,
     )
 
     assert event_to_dict(usage)["effective_limit_tokens"] == 180_000
     assert event_to_dict(started)["session_id"] == "s1"
     assert completed.saved_ratio == pytest.approx((128_000 - 42_000) / 128_000)
-    assert ContextCompactionCompletedEvent(
-        session_id="s1", compaction_id="cmp-2", before_tokens=0, after_tokens=0,
-        archived_items=0,
-    ).saved_ratio == 0.0
+    assert (
+        ContextCompactionCompletedEvent(
+            session_id="s1",
+            compaction_id="cmp-2",
+            before_tokens=0,
+            after_tokens=0,
+            archived_items=0,
+        ).saved_ratio
+        == 0.0
+    )
     assert event_to_dict(failed)["preserved_original"] is True
 
 
 def test_context_event_token_counts_reject_negative_values() -> None:
     with pytest.raises(ValueError):
         ContextCompactionCompletedEvent(
-            session_id="s1", compaction_id="cmp-1", before_tokens=-1,
-            after_tokens=0, archived_items=0,
+            session_id="s1",
+            compaction_id="cmp-1",
+            before_tokens=-1,
+            after_tokens=0,
+            archived_items=0,
         )
 
 

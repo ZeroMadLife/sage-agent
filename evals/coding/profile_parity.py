@@ -38,11 +38,7 @@ class ProfileScenarioResult:
 
     @property
     def passed(self) -> bool:
-        return (
-            self.contract_completed
-            and self.assertions_passed
-            and self.policy_compliant
-        )
+        return self.contract_completed and self.assertions_passed and self.policy_compliant
 
     @property
     def tool_success_rate(self) -> float:
@@ -118,23 +114,17 @@ class ProfileParityReport:
     results: list[ProfileScenarioResult] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        keys = [
-            (result.scenario, result.runtime_profile) for result in self.results
-        ]
+        keys = [(result.scenario, result.runtime_profile) for result in self.results]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate scenario/runtime_profile result")
 
     def metrics(self, profile: RuntimeProfile) -> ProfileMetrics:
         selected = [result for result in self.results if result.runtime_profile == profile]
         tool_calls = sum(result.tool_calls for result in selected)
-        paired_tool_events = sum(
-            result.paired_tool_events for result in selected
-        )
+        paired_tool_events = sum(result.paired_tool_events for result in selected)
         tool_errors = sum(result.tool_errors for result in selected)
         first_tokens = [
-            result.first_token_ms
-            for result in selected
-            if result.first_token_ms is not None
+            result.first_token_ms for result in selected if result.first_token_ms is not None
         ]
         return ProfileMetrics(
             runtime_profile=profile,
@@ -142,45 +132,29 @@ class ProfileParityReport:
             task_completion_rate=_rate(sum(result.passed for result in selected), len(selected)),
             streaming_rate=_rate(sum(result.streamed for result in selected), len(selected)),
             tool_call_success_rate=(
-                _rate(max(0, tool_calls - tool_errors), tool_calls)
-                if tool_calls
-                else 1.0
+                _rate(max(0, tool_calls - tool_errors), tool_calls) if tool_calls else 1.0
             ),
-            tool_event_pairing_rate=(
-                _rate(paired_tool_events, tool_calls) if tool_calls else 1.0
-            ),
+            tool_event_pairing_rate=(_rate(paired_tool_events, tool_calls) if tool_calls else 1.0),
             policy_compliance_rate=_rate(
                 sum(result.policy_compliant for result in selected), len(selected)
-            ) if selected else 1.0,
-            p50_first_token_ms=(
-                _percentile(first_tokens, 0.50) if first_tokens else None
-            ),
-            p95_first_token_ms=(
-                _percentile(first_tokens, 0.95) if first_tokens else None
-            ),
-            p50_duration_ms=_percentile(
-                [result.duration_ms for result in selected], 0.50
-            ),
-            p95_duration_ms=_percentile(
-                [result.duration_ms for result in selected], 0.95
-            ),
+            )
+            if selected
+            else 1.0,
+            p50_first_token_ms=(_percentile(first_tokens, 0.50) if first_tokens else None),
+            p95_first_token_ms=(_percentile(first_tokens, 0.95) if first_tokens else None),
+            p50_duration_ms=_percentile([result.duration_ms for result in selected], 0.50),
+            p95_duration_ms=_percentile([result.duration_ms for result in selected], 0.95),
         )
 
     def paired_scenarios(self) -> tuple[str, ...]:
-        legacy = {
-            result.scenario for result in self.results if result.runtime_profile == "legacy"
-        }
+        legacy = {result.scenario for result in self.results if result.runtime_profile == "legacy"}
         deerflow = {
-            result.scenario
-            for result in self.results
-            if result.runtime_profile == "deerflow_v2"
+            result.scenario for result in self.results if result.runtime_profile == "deerflow_v2"
         }
         return tuple(sorted(legacy & deerflow))
 
     def regressions(self) -> tuple[str, ...]:
-        by_key = {
-            (result.scenario, result.runtime_profile): result for result in self.results
-        }
+        by_key = {(result.scenario, result.runtime_profile): result for result in self.results}
         regressions: list[str] = []
         for scenario in self.paired_scenarios():
             legacy = by_key[(scenario, "legacy")]
@@ -197,10 +171,7 @@ class ProfileParityReport:
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "profiles": {
-                profile: self.metrics(profile).to_dict()
-                for profile in RUNTIME_PROFILES
-            },
+            "profiles": {profile: self.metrics(profile).to_dict() for profile in RUNTIME_PROFILES},
             "paired_scenarios": list(self.paired_scenarios()),
             "regressions": list(self.regressions()),
             "results": [result.to_dict() for result in self.results],
@@ -236,11 +207,7 @@ def project_profile_timeline(
     )
     terminal = _timestamp(terminal_event.get("timestamp")) if terminal_event else None
     first_text_event = next(
-        (
-            event
-            for event, payload in projected
-            if payload.get("type") == "text_delta"
-        ),
+        (event for event, payload in projected if payload.get("type") == "text_delta"),
         None,
     )
     first_text = _timestamp(first_text_event.get("timestamp")) if first_text_event else None
@@ -256,8 +223,7 @@ def project_profile_timeline(
         for payload in payloads
     )
     security_violation = any(
-        payload.get("type") == "security_violation"
-        or _has_text(payload.get("security_event_type"))
+        payload.get("type") == "security_violation" or _has_text(payload.get("security_event_type"))
         for payload in payloads
     )
     policy_denied = any(

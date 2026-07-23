@@ -96,8 +96,10 @@ class CodingHarnessStageProjector:
             output.append(self._retrieval_decision("skip"))
             self._retrieval_decided = True
         if self._active_stage is not None:
-            terminal = "completed" if status == "completed" else (
-                "cancelled" if status in {"cancelled", "interrupted"} else "error"
+            terminal = (
+                "completed"
+                if status == "completed"
+                else ("cancelled" if status in {"cancelled", "interrupted"} else "error")
             )
             output.extend(self._settle_active(terminal))
         return tuple(output)
@@ -160,8 +162,12 @@ class CodingHarnessStageProjector:
         stage = "act"
         output: list[RunEvent] = []
         if self._active_stage != stage:
-            output.append(self._start_stage(stage, detail=_tool_detail(tool, _record(event.get("args")))))
-        output.extend(self._settle_active("error" if event.get("is_error") is True else "completed"))
+            output.append(
+                self._start_stage(stage, detail=_tool_detail(tool, _record(event.get("args"))))
+            )
+        output.extend(
+            self._settle_active("error" if event.get("is_error") is True else "completed")
+        )
         if tool == "knowledge_search":
             output.append(self._retrieval_completed(event))
             self._retrieval_started_at = None
@@ -199,11 +205,7 @@ class CodingHarnessStageProjector:
             stage,
             status=status,
             detail=detail,
-            operation_ref=(
-                {"kind": "coding_run", "id": self.run_id}
-                if stage == "act"
-                else None
-            ),
+            operation_ref=({"kind": "coding_run", "id": self.run_id} if stage == "act" else None),
         )
 
     def _stage(
@@ -256,7 +258,9 @@ class CodingHarnessStageProjector:
     def _retrieval_completed(self, event: Mapping[str, Any]) -> RunEvent:
         result = _retrieval_metrics(str(event.get("content", "")))
         started_at = self._retrieval_started_at
-        duration_ms = 0 if started_at is None else max(0, round((self._clock() - started_at) * 1000))
+        duration_ms = (
+            0 if started_at is None else max(0, round((self._clock() - started_at) * 1000))
+        )
         payload = {
             "type": "retrieval_completed",
             "definition_id": CODING_HARNESS_DEFINITION_ID,

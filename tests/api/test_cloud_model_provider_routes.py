@@ -72,9 +72,7 @@ async def _client_for_user(
             cloud_app_env="development",
             coding_workspace_root=coding_workspace_root,
             coding_storage_root=(
-                coding_workspace_root / ".coding"
-                if coding_workspace_root is not None
-                else None
+                coding_workspace_root / ".coding" if coding_workspace_root is not None else None
             ),
         )
     )
@@ -138,23 +136,21 @@ async def test_create_list_update_and_default_never_return_api_key(harness: Harn
     assert "sk-owner-secret" not in created.text
     assert listed.json()["default_model"] == f"account:{provider_id}:model-a"
     assert updated.json()["name"] == "OpenAI Production"
-    assert (await harness.providers.runtime_credentials(
-        (await harness.cloud.authenticated_user(client.cookies.get("sage_session"))).user_id
-    ))[0].api_key == "sk-owner-secret"
+    assert (
+        await harness.providers.runtime_credentials(
+            (await harness.cloud.authenticated_user(client.cookies.get("sage_session"))).user_id
+        )
+    )[0].api_key == "sk-owner-secret"
 
 
 async def test_provider_test_and_discovery_return_bounded_public_results(
     harness: Harness,
 ) -> None:
     client = await _client_for_user(harness, "probe-invite", "probe@example.com")
-    provider_id = client.post(
-        "/api/v1/cloud/model-providers", json=_create_payload()
-    ).json()["id"]
+    provider_id = client.post("/api/v1/cloud/model-providers", json=_create_payload()).json()["id"]
 
     tested = client.post(f"/api/v1/cloud/model-providers/{provider_id}/test")
-    discovered = client.post(
-        f"/api/v1/cloud/model-providers/{provider_id}/discover-models"
-    )
+    discovered = client.post(f"/api/v1/cloud/model-providers/{provider_id}/discover-models")
 
     assert tested.status_code == 200
     assert tested.json()["status"] == "connected"
@@ -165,19 +161,16 @@ async def test_provider_test_and_discovery_return_bounded_public_results(
 async def test_cross_user_provider_ids_return_404(harness: Harness) -> None:
     owner = await _client_for_user(harness, "owner-two", "owner-two@example.com")
     other = await _client_for_user(harness, "other-two", "other-two@example.com")
-    provider_id = owner.post(
-        "/api/v1/cloud/model-providers", json=_create_payload()
-    ).json()["id"]
+    provider_id = owner.post("/api/v1/cloud/model-providers", json=_create_payload()).json()["id"]
 
-    assert other.patch(
-        f"/api/v1/cloud/model-providers/{provider_id}", json={"name": "Stolen"}
-    ).status_code == 404
-    assert other.post(
-        f"/api/v1/cloud/model-providers/{provider_id}/test"
-    ).status_code == 404
-    assert other.delete(
-        f"/api/v1/cloud/model-providers/{provider_id}"
-    ).status_code == 404
+    assert (
+        other.patch(
+            f"/api/v1/cloud/model-providers/{provider_id}", json={"name": "Stolen"}
+        ).status_code
+        == 404
+    )
+    assert other.post(f"/api/v1/cloud/model-providers/{provider_id}/test").status_code == 404
+    assert other.delete(f"/api/v1/cloud/model-providers/{provider_id}").status_code == 404
 
 
 async def test_provider_routes_reject_ssrf_and_default_deletion(harness: Harness) -> None:
@@ -186,9 +179,7 @@ async def test_provider_routes_reject_ssrf_and_default_deletion(harness: Harness
     payload["base_url"] = "http://169.254.169.254/latest"
 
     rejected = client.post("/api/v1/cloud/model-providers", json=payload)
-    provider_id = client.post(
-        "/api/v1/cloud/model-providers", json=_create_payload()
-    ).json()["id"]
+    provider_id = client.post("/api/v1/cloud/model-providers", json=_create_payload()).json()["id"]
     deletion = client.delete(f"/api/v1/cloud/model-providers/{provider_id}")
 
     assert rejected.status_code == 422
@@ -198,9 +189,7 @@ async def test_provider_routes_reject_ssrf_and_default_deletion(harness: Harness
 async def test_invalid_provider_key_is_not_reflected_by_validation_errors(
     harness: Harness,
 ) -> None:
-    client = await _client_for_user(
-        harness, "key-validation-invite", "key-validation@example.com"
-    )
+    client = await _client_for_user(harness, "key-validation-invite", "key-validation@example.com")
     payload = _create_payload()
     submitted_key = "sensitive-" + ("x" * 10_001)
     payload["api_key"] = submitted_key
@@ -215,9 +204,7 @@ async def test_invalid_provider_key_is_not_reflected_by_validation_errors(
 async def test_duplicate_provider_names_return_a_bounded_validation_error(
     harness: Harness,
 ) -> None:
-    client = await _client_for_user(
-        harness, "duplicate-name-invite", "duplicate-name@example.com"
-    )
+    client = await _client_for_user(harness, "duplicate-name-invite", "duplicate-name@example.com")
     first = client.post("/api/v1/cloud/model-providers", json=_create_payload())
     duplicate = client.post("/api/v1/cloud/model-providers", json=_create_payload())
 
@@ -252,9 +239,7 @@ async def test_account_default_model_bootstraps_coding_and_survives_resume(
     catalog = client.get("/api/v1/coding/models")
     session = client.post("/api/v1/coding/session", json={})
     session_id = session.json()["session_id"]
-    reasoning = client.patch(
-        f"/api/v1/coding/{session_id}/reasoning", json={"mode": "high"}
-    )
+    reasoning = client.patch(f"/api/v1/coding/{session_id}/reasoning", json={"mode": "high"})
 
     assert catalog.status_code == 200
     assert catalog.json()["current"] == runtime_model_id
@@ -286,9 +271,7 @@ async def test_account_model_sessions_are_hidden_from_other_users(
     created = owner.post("/api/v1/coding/session", json={})
     session_id = created.json()["session_id"]
 
-    await harness.cloud.create_invite(
-        "session-other-invite", email="session-other@example.com"
-    )
+    await harness.cloud.create_invite("session-other-invite", email="session-other@example.com")
     other = TestClient(owner.app)
     login = other.post(
         "/api/v1/cloud/auth/dev/login",
@@ -302,20 +285,13 @@ async def test_account_model_sessions_are_hidden_from_other_users(
     assert login.status_code == 200
     assert owner.get(f"/api/v1/coding/{session_id}/files").status_code == 200
     assert other.get(f"/api/v1/coding/{session_id}/files").status_code == 404
-    assert other.get(
-        f"/api/v1/coding/session/{session_id}/timeline"
-    ).status_code == 404
-    assert other.get(
-        "/api/v1/coding/models", params={"session_id": session_id}
-    ).status_code == 404
-    assert not other.get("/api/v1/coding/models").json()["current"].startswith(
-        "account:"
-    )
-    assert other.post(
-        f"/api/v1/coding/session/{session_id}/resume"
-    ).status_code == 404
-    with pytest.raises(WebSocketDenialResponse) as denied, other.websocket_connect(
-        f"/api/v1/coding/{session_id}/stream"
+    assert other.get(f"/api/v1/coding/session/{session_id}/timeline").status_code == 404
+    assert other.get("/api/v1/coding/models", params={"session_id": session_id}).status_code == 404
+    assert not other.get("/api/v1/coding/models").json()["current"].startswith("account:")
+    assert other.post(f"/api/v1/coding/session/{session_id}/resume").status_code == 404
+    with (
+        pytest.raises(WebSocketDenialResponse) as denied,
+        other.websocket_connect(f"/api/v1/coding/{session_id}/stream"),
     ):
         pass
     assert denied.value.status_code == 404
@@ -324,12 +300,8 @@ async def test_account_model_sessions_are_hidden_from_other_users(
 async def test_anonymous_coding_catalog_does_not_expose_account_models(
     harness: Harness,
 ) -> None:
-    owner = await _client_for_user(
-        harness, "catalog-owner-invite", "catalog-owner@example.com"
-    )
-    provider_id = owner.post(
-        "/api/v1/cloud/model-providers", json=_create_payload()
-    ).json()["id"]
+    owner = await _client_for_user(harness, "catalog-owner-invite", "catalog-owner@example.com")
+    provider_id = owner.post("/api/v1/cloud/model-providers", json=_create_payload()).json()["id"]
     anonymous = TestClient(
         create_app(
             cloud_repository=harness.cloud,
@@ -344,17 +316,14 @@ async def test_anonymous_coding_catalog_does_not_expose_account_models(
 
     assert response.status_code == 200
     assert all(
-        model["id"] != f"account:{provider_id}:model-a"
-        for model in response.json()["models"]
+        model["id"] != f"account:{provider_id}:model-a" for model in response.json()["models"]
     )
 
 
 async def test_coding_catalog_does_not_decrypt_provider_keys(
     harness: Harness,
 ) -> None:
-    client = await _client_for_user(
-        harness, "catalog-key-invite", "catalog-key@example.com"
-    )
+    client = await _client_for_user(harness, "catalog-key-invite", "catalog-key@example.com")
     client.post("/api/v1/cloud/model-providers", json=_create_payload())
 
     with patch.object(

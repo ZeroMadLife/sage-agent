@@ -245,9 +245,6 @@ def test_manager_does_not_swallow_external_cancellation() -> None:
 def test_manager_does_not_reclassify_an_inner_timeout_as_run_budget() -> None:
     async def run() -> None:
         with pytest.raises(TimeoutError, match="provider timeout"):
-            _ = [
-                item
-                async for item in HarnessRunManager(InnerTimeoutGraph()).stream(_request())
-            ]
+            _ = [item async for item in HarnessRunManager(InnerTimeoutGraph()).stream(_request())]
 
     asyncio.run(run())

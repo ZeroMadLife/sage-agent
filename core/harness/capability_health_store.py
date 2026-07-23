@@ -67,12 +67,8 @@ class CapabilityHealthStore:
         if event.payload.get("type") != "capability_invocation_completed":
             return False
         event_id = _bounded_id(event.event_id, "event_id", limit=512)
-        capability_id = _bounded_id(
-            event.payload.get("capability_id"), "capability_id", limit=256
-        )
-        catalog_revision = _bounded_id(
-            event.payload.get("catalog_revision"), "catalog_revision"
-        )
+        capability_id = _bounded_id(event.payload.get("capability_id"), "capability_id", limit=256)
+        catalog_revision = _bounded_id(event.payload.get("catalog_revision"), "catalog_revision")
         status = str(event.payload.get("status", ""))
         if status not in {"success", "failure"}:
             raise ValueError("capability status must be success or failure")
@@ -82,9 +78,7 @@ class CapabilityHealthStore:
         failure_category: str | None = None
         if status == "failure":
             candidate = str(event.payload.get("failure_category", ""))
-            failure_category = (
-                candidate if candidate in _FAILURE_CATEGORIES else "execution_error"
-            )
+            failure_category = candidate if candidate in _FAILURE_CATEGORIES else "execution_error"
         event_time = occurred_at or _parse_event_timestamp(event.timestamp) or datetime.now(UTC)
         timestamp = event_time.astimezone(UTC).isoformat()
         self._ensure_ready()
@@ -147,10 +141,7 @@ class CapabilityHealthStore:
         grouped: dict[str, list[sqlite3.Row]] = {}
         for row in rows:
             grouped.setdefault(str(row["capability_id"]), []).append(row)
-        return {
-            capability_id: _summarize_rows(values)
-            for capability_id, values in grouped.items()
-        }
+        return {capability_id: _summarize_rows(values) for capability_id, values in grouped.items()}
 
     def _validate_path(self) -> None:
         if self.path.is_symlink():
@@ -185,9 +176,7 @@ def _summarize_rows(rows: list[sqlite3.Row]) -> dict[str, Any]:
     failures = [row for row in rows if row["status"] == "failure"]
     durations = sorted(int(row["duration_ms"]) for row in rows)
     failure_categories = Counter(
-        str(row["failure_category"])
-        for row in failures
-        if row["failure_category"] is not None
+        str(row["failure_category"]) for row in failures if row["failure_category"] is not None
     )
     return {
         "invocation_count": len(rows),

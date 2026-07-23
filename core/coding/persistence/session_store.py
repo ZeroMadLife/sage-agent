@@ -51,7 +51,9 @@ class CodingSessionStore:
             raise ValueError("session file must contain a JSON object")
         return cast(dict[str, Any], data)
 
-    def list_sessions(self, limit: int = 30, *, include_archived: bool = False) -> list[dict[str, Any]]:
+    def list_sessions(
+        self, limit: int = 30, *, include_archived: bool = False
+    ) -> list[dict[str, Any]]:
         """Return session summaries ordered by most recently updated.
 
         Empty sessions (no history entries) are filtered out so the workbench
@@ -71,7 +73,8 @@ class CodingSessionStore:
                     # disappear; the session can be repaired or migrated explicitly.
                     continue
         summaries = [
-            s for s in summaries
+            s
+            for s in summaries
             if s["message_count"] > 0 and (include_archived or not s["archived"])
         ]
         summaries.sort(key=lambda item: item["updated_at"], reverse=True)
@@ -174,7 +177,9 @@ def _session_title(history: Any, workspace_root: str) -> str:
 
 
 def _is_internal_user_prompt(content: str) -> bool:
-    return content.startswith((
-        "你正在使用 Sage 的",
-        "这是用户已显式启用的受限自动跟进。",
-    ))
+    return content.startswith(
+        (
+            "你正在使用 Sage 的",
+            "这是用户已显式启用的受限自动跟进。",
+        )
+    )

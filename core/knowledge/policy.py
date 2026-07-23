@@ -78,18 +78,14 @@ def evaluate_knowledge_policy(value: KnowledgePolicyInput) -> KnowledgePolicyOut
             or not value.target_path.startswith("wiki/learnings/")
             or not value.target_path.endswith(".md")
         ):
-            return KnowledgePolicyOutcome(
-                "blocked", "block", ("invalid_learning_target",)
-            )
+            return KnowledgePolicyOutcome("blocked", "block", ("invalid_learning_target",))
         if (
             not value.evidence_verified
             or value.generator_id != "sage.evidence-learning"
             or value.evidence_count < 1
             or value.evidence_count > 8
         ):
-            return KnowledgePolicyOutcome(
-                "blocked", "block", ("unverified_learning_evidence",)
-            )
+            return KnowledgePolicyOutcome("blocked", "block", ("unverified_learning_evidence",))
         return KnowledgePolicyOutcome(
             "low",
             "auto_apply",

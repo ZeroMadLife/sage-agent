@@ -194,9 +194,7 @@ def test_v2_discovers_promotes_and_sanitizes_live_mcp_tool(tmp_path: Path) -> No
         assert archived.status_code == 200
 
     payloads = [event["payload"] for event in events]
-    catalog = next(
-        payload for payload in payloads if payload.get("type") == "mcp_catalog_updated"
-    )
+    catalog = next(payload for payload in payloads if payload.get("type") == "mcp_catalog_updated")
     assert catalog["servers"] == [
         {
             "name": "scenic",
@@ -266,9 +264,7 @@ def test_v2_executes_real_scenic_stdio_mcp_server(tmp_path: Path) -> None:
         assert archived.status_code == 200
 
     payloads = [event["payload"] for event in events]
-    catalog = next(
-        payload for payload in payloads if payload.get("type") == "mcp_catalog_updated"
-    )
+    catalog = next(payload for payload in payloads if payload.get("type") == "mcp_catalog_updated")
     scenic = next(server for server in catalog["servers"] if server["name"] == "scenic")
     assert scenic["status"] == "connected"
     assert "scenic_search_scenic_spots" in scenic["tool_names"]

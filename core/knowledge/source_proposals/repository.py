@@ -221,10 +221,7 @@ class KnowledgeSourceProposalRepository:
                 raise KnowledgeSourceProposalConflictError("source proposal is not applying")
             if proposal.job_id not in {None, job_id}:
                 raise KnowledgeSourceProposalConflictError("source proposal job changed")
-            if (
-                proposal.job_id == job_id
-                and proposal.target_relative_path == target_relative_path
-            ):
+            if proposal.job_id == job_id and proposal.target_relative_path == target_relative_path:
                 return _proposal_view(proposal)
             proposal.job_id = job_id
             proposal.target_relative_path = target_relative_path

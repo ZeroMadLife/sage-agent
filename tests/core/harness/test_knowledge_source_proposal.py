@@ -65,8 +65,7 @@ def test_save_web_source_is_deferred_and_returns_only_review_receipt(tmp_path: P
         tool.ainvoke(
             {
                 "artifact_ref": (
-                    "sage://coding/proposal-thread/runs/proposal-run/"
-                    "tool-results/call-fetch.txt"
+                    "sage://coding/proposal-thread/runs/proposal-run/" "tool-results/call-fetch.txt"
                 ),
                 "reason": "Keep the official source",
                 "evidence_refs": ["wcite_123"],

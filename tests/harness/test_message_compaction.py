@@ -26,9 +26,7 @@ def test_compaction_moves_cutoff_before_ai_tool_pair() -> None:
         AIMessage(
             content="",
             id="ai-tool",
-            tool_calls=[
-                {"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}
-            ],
+            tool_calls=[{"name": "read_file", "args": {"path": "README.md"}, "id": "call-1"}],
         ),
         ToolMessage(content="content", tool_call_id="call-1", id="tool-1"),
         AIMessage(content="done", id="ai-done"),
@@ -55,9 +53,7 @@ def test_compaction_preserves_unresolved_tool_call_before_recent_tail() -> None:
         AIMessage(
             content="",
             id="ai-pending",
-            tool_calls=[
-                {"name": "write_file", "args": {"path": "a.txt"}, "id": "call-pending"}
-            ],
+            tool_calls=[{"name": "write_file", "args": {"path": "a.txt"}, "id": "call-pending"}],
         ),
         HumanMessage(content="later", id="h-later"),
         AIMessage(content="later answer", id="ai-later"),

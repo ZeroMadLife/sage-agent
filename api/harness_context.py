@@ -79,7 +79,9 @@ def _validate_coding_context(
         try:
             path = runtime.workspace.path(context.selection.id)
         except ValueError as exc:
-            raise SurfaceContextValidationError("coding selection is outside the workspace") from exc
+            raise SurfaceContextValidationError(
+                "coding selection is outside the workspace"
+            ) from exc
         if not path.is_file():
             raise SurfaceContextValidationError("coding selection does not exist")
         relative_path = runtime.workspace.relative(path)
@@ -143,9 +145,7 @@ async def _validate_knowledge_context(
         except (KeyError, KnowledgeGraphError) as exc:
             raise SurfaceContextValidationError("knowledge graph selection is stale") from exc
         expected_revision = (
-            graph_node.page_revision
-            or graph_node.source_revision
-            or graph_snapshot.graph_revision
+            graph_node.page_revision or graph_node.source_revision or graph_snapshot.graph_revision
         )
         if context.selection.revision != expected_revision:
             raise SurfaceContextValidationError("knowledge graph selection revision is stale")
@@ -191,8 +191,7 @@ def _canonical_knowledge_resource(
         if page is None:
             raise SurfaceContextValidationError("knowledge page does not exist")
         if graph_node is not None and (
-            graph_node.page_id != page.page_id
-            or graph_node.page_revision != page.current_revision
+            graph_node.page_id != page.page_id or graph_node.page_revision != page.current_revision
         ):
             raise SurfaceContextValidationError("knowledge resource and selection do not match")
         return HarnessResourceContext(

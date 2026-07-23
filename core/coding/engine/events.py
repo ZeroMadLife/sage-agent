@@ -219,7 +219,9 @@ class ContextCompactionCompletedEvent(RunEventBase):
         del context
         ratio = 0.0
         if self.before_tokens > 0:
-            ratio = min(1.0, max(0.0, (self.before_tokens - self.after_tokens) / self.before_tokens))
+            ratio = min(
+                1.0, max(0.0, (self.before_tokens - self.after_tokens) / self.before_tokens)
+            )
         object.__setattr__(self, "saved_ratio", ratio)
 
 

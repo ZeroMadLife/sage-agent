@@ -217,11 +217,7 @@ def build_configured_mcp_manager(
         for name, spec in sorted(config.items())
     )
     transport = LangChainMcpTransport(
-        {
-            name: spec
-            for name, spec in config.items()
-            if configured.get(name, False)
-        },
+        {name: spec for name, spec in config.items() if configured.get(name, False)},
         revision=revision,
         client_factory=client_factory,
     )

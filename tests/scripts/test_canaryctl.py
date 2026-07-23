@@ -196,28 +196,77 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
 
     def runner(command, input_text, timeout):
         calls.append((list(command), input_text, timeout))
-        if (
-            command[:2] == ["/usr/bin/false", "api"]
-            and f"commits/{NEXT_SHA}" in command[2]
-        ):
-            return type("Result", (), {"returncode": 0, "stdout": json.dumps({"check_runs": [
-                {"name": "python", "status": "completed", "conclusion": "success"},
-                {"name": "backend-quality", "status": "completed", "conclusion": "success"},
-                {"name": "frontend-quality", "status": "completed", "conclusion": "success"},
-                {"name": "public-release", "status": "completed", "conclusion": "success"},
-            ]}), "stderr": ""})()
+        if command[:2] == ["/usr/bin/false", "api"] and f"commits/{NEXT_SHA}" in command[2]:
+            return type(
+                "Result",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": json.dumps(
+                        {
+                            "check_runs": [
+                                {"name": "python", "status": "completed", "conclusion": "success"},
+                                {
+                                    "name": "backend-quality",
+                                    "status": "completed",
+                                    "conclusion": "success",
+                                },
+                                {
+                                    "name": "frontend-quality",
+                                    "status": "completed",
+                                    "conclusion": "success",
+                                },
+                                {
+                                    "name": "public-release",
+                                    "status": "completed",
+                                    "conclusion": "success",
+                                },
+                            ]
+                        }
+                    ),
+                    "stderr": "",
+                },
+            )()
         if command and command[0] == "/usr/bin/true" and command[1] == "-C":
-            return type("Result", (), {"returncode": 0, "stdout": f"{NEXT_SHA}\trefs/heads/dev/sage-v7\n", "stderr": ""})()
+            return type(
+                "Result",
+                (),
+                {"returncode": 0, "stdout": f"{NEXT_SHA}\trefs/heads/dev/sage-v7\n", "stderr": ""},
+            )()
         if command and command[0] == "/usr/bin/env":
             script = input_text or ""
             if "rev-parse HEAD" in script and "checkout" not in script:
                 return type("Result", (), {"returncode": 0, "stdout": f"{SHA}\n", "stderr": ""})()
             if "deployctl.py" in script and " status" in script:
-                return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n', "stderr": ""})()
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 0,
+                        "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n',
+                        "stderr": "",
+                    },
+                )()
             if "sage-public-releasectl" in script and '"action":"status"' in script:
-                return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n', "stderr": ""})()
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 0,
+                        "stdout": f'{{"status":"healthy","current":"{SHA}"}}\n',
+                        "stderr": "",
+                    },
+                )()
             if "sage-public-releasectl" in script and '"action":"apply"' in script:
-                return type("Result", (), {"returncode": 0, "stdout": f'{{"status":"deployed","tag":"{NEXT_SHA}","previous":"{SHA}"}}\n', "stderr": ""})()
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "returncode": 0,
+                        "stdout": f'{{"status":"deployed","tag":"{NEXT_SHA}","previous":"{SHA}"}}\n',
+                        "stderr": "",
+                    },
+                )()
             return type("Result", (), {"returncode": 0, "stdout": "{}\n", "stderr": ""})()
         if command and command[0] == "/bin/echo":
             return type(
@@ -252,10 +301,7 @@ def test_deploy_requires_ci_and_updates_private_state(tmp_path: Path) -> None:
     assert "ServerAliveInterval=30" in deploy_command
     assert "ServerAliveCountMax=20" in deploy_command
     assert deploy_timeout == 7200
-    assert all(
-        "APP_SECRET_KEY" not in (input_text or "")
-        for _, input_text, _ in calls
-    )
+    assert all("APP_SECRET_KEY" not in (input_text or "") for _, input_text, _ in calls)
 
 
 def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
@@ -271,7 +317,9 @@ def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
         if command and command[0] == "/usr/bin/false":
             return type("Result", (), {"returncode": 1, "stdout": "", "stderr": ""})()
         if command and command[0] == "/usr/bin/env":
-            return type("Result", (), {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""})()
+            return type(
+                "Result", (), {"returncode": 0, "stdout": '{"status":"healthy"}', "stderr": ""}
+            )()
         if command and command[0] == "/usr/bin/printf":
             notifications.append(input_text or "")
             return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
@@ -280,9 +328,7 @@ def test_check_notifies_only_on_health_transition(tmp_path: Path) -> None:
     def probe(_url: str) -> bool:
         return healthy
 
-    controller = CanaryController(
-        config, runner=runner, http_probe=probe, public_http_probe=probe
-    )
+    controller = CanaryController(config, runner=runner, http_probe=probe, public_http_probe=probe)
     assert controller.check()["healthy"] is True
     healthy = False
     assert controller.check()["healthy"] is False
@@ -456,9 +502,7 @@ def test_public_https_probe_falls_back_to_openssl_http_request(tmp_path: Path) -
         "sagecompanion.top",
     ]
     assert openssl_call[1] == (
-        "GET /path?q=1 HTTP/1.1\r\n"
-        "Host: sagecompanion.top\r\n"
-        "Connection: close\r\n\r\n"
+        "GET /path?q=1 HTTP/1.1\r\n" "Host: sagecompanion.top\r\n" "Connection: close\r\n\r\n"
     )
     assert openssl_call[2] == 20
 
@@ -545,9 +589,7 @@ def test_up_to_date_sync_refreshes_audit_state(tmp_path: Path) -> None:
             script = input_text or ""
             if "rev-parse HEAD" in script and "checkout" not in script:
                 stdout = f"{NEXT_SHA}\n"
-            elif (
-                "deployctl.py" in script and " status" in script
-            ) or (
+            elif ("deployctl.py" in script and " status" in script) or (
                 "sage-public-releasectl" in script and '"action":"status"' in script
             ):
                 stdout = json.dumps({"status": "healthy", "current": NEXT_SHA})

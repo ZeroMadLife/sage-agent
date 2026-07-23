@@ -113,8 +113,8 @@ def test_git_controller_captures_visual_diff_and_discards_managed_worktree(tmp_p
     view = root / "frontend/src/views/ExampleView.vue"
     view.parent.mkdir(parents=True)
     view.write_text(
-        "<template><main class=\"old\">Text</main></template>\n"
-        "<script setup lang=\"ts\">const count = 1</script>\n",
+        '<template><main class="old">Text</main></template>\n'
+        '<script setup lang="ts">const count = 1</script>\n',
         encoding="utf-8",
     )
     _git(root, "add", ".")
@@ -126,8 +126,8 @@ def test_git_controller_captures_visual_diff_and_discards_managed_worktree(tmp_p
     git.create_detached_worktree(worktree, base_sha)
     candidate = worktree / "frontend/src/views/ExampleView.vue"
     candidate.write_text(
-        "<template><main class=\"fixed\">Text</main></template>\n"
-        "<script setup lang=\"ts\">const count = 1</script>\n",
+        '<template><main class="fixed">Text</main></template>\n'
+        '<script setup lang="ts">const count = 1</script>\n',
         encoding="utf-8",
     )
 
@@ -146,7 +146,7 @@ def test_git_controller_marks_vue_script_changes_as_behavior(tmp_path) -> None:
     view.parent.mkdir(parents=True)
     view.write_text(
         "<template><main>Text</main></template>\n"
-        "<script setup lang=\"ts\">const count = 1</script>\n",
+        '<script setup lang="ts">const count = 1</script>\n',
         encoding="utf-8",
     )
     _git(root, "add", ".")
@@ -159,7 +159,7 @@ def test_git_controller_marks_vue_script_changes_as_behavior(tmp_path) -> None:
     candidate = worktree / "frontend/src/views/ExampleView.vue"
     candidate.write_text(
         "<template><main>Text</main></template>\n"
-        "<script setup lang=\"ts\">const count = 2</script>\n",
+        '<script setup lang="ts">const count = 2</script>\n',
         encoding="utf-8",
     )
 
@@ -174,8 +174,8 @@ def test_git_controller_marks_vue_directive_changes_as_behavior(tmp_path) -> Non
     view = root / "frontend/src/views/ExampleView.vue"
     view.parent.mkdir(parents=True)
     view.write_text(
-        "<template><main v-if=\"ready\" class=\"old\">Text</main></template>\n"
-        "<script setup lang=\"ts\">const ready = true</script>\n",
+        '<template><main v-if="ready" class="old">Text</main></template>\n'
+        '<script setup lang="ts">const ready = true</script>\n',
         encoding="utf-8",
     )
     _git(root, "add", ".")
@@ -187,8 +187,8 @@ def test_git_controller_marks_vue_directive_changes_as_behavior(tmp_path) -> Non
     git.create_detached_worktree(worktree, base_sha)
     candidate = worktree / "frontend/src/views/ExampleView.vue"
     candidate.write_text(
-        "<template><main v-if=\"visible\" class=\"old\">Text</main></template>\n"
-        "<script setup lang=\"ts\">const ready = true</script>\n",
+        '<template><main v-if="visible" class="old">Text</main></template>\n'
+        '<script setup lang="ts">const ready = true</script>\n',
         encoding="utf-8",
     )
 
@@ -202,7 +202,7 @@ def test_git_controller_commits_exact_candidate_and_pushes_without_force(tmp_pat
     root = _repository(tmp_path)
     view = root / "frontend/src/views/ExampleView.vue"
     view.parent.mkdir(parents=True)
-    view.write_text("<template><main class=\"old\">文本</main></template>\n", encoding="utf-8")
+    view.write_text('<template><main class="old">文本</main></template>\n', encoding="utf-8")
     _git(root, "add", ".")
     _git(root, "commit", "-m", "add view")
     _git(root, "push", "origin", "dev/sage-v7")
@@ -212,7 +212,7 @@ def test_git_controller_commits_exact_candidate_and_pushes_without_force(tmp_pat
     git.create_detached_worktree(worktree, base_sha)
     relative = "frontend/src/views/ExampleView.vue"
     (worktree / relative).write_text(
-        "<template><main class=\"fixed\">文本</main></template>\n", encoding="utf-8"
+        '<template><main class="fixed">文本</main></template>\n', encoding="utf-8"
     )
     branch = "codex/loop-frontend-abcdef123456"
 

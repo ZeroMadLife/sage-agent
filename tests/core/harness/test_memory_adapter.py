@@ -278,9 +278,7 @@ def test_memory_receipt_accounts_for_rendered_metadata_and_chinese(tmp_path: Pat
     result = asyncio.run(run())
 
     assert len(result.references) == 1
-    assert result.used_tokens_by_source["semantic_memory"] > len(
-        result.references[0].summary
-    ) // 4
+    assert result.used_tokens_by_source["semantic_memory"] > len(result.references[0].summary) // 4
     assert result.used_tokens_by_source["semantic_memory"] <= 1_000
     rendered = _render_durable_context(
         build_deerflow_durable_context(

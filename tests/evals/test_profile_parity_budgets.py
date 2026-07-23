@@ -83,11 +83,7 @@ class DeerflowTokenCapModel(FakeMessagesListChatModel):
 
 
 def _payloads(events: list[dict[str, object]]) -> list[dict[str, object]]:
-    return [
-        payload
-        for event in events
-        if isinstance((payload := event.get("payload")), dict)
-    ]
+    return [payload for event in events if isinstance((payload := event.get("payload")), dict)]
 
 
 def _run_loop_scenario(
@@ -98,9 +94,7 @@ def _run_loop_scenario(
     workspace.mkdir()
     (workspace / "README.md").write_text("# Sage\n", encoding="utf-8")
     app = create_app(
-        coding_model_factory=(
-            LegacyLoopModel if profile == "legacy" else DeerflowBudgetLoopModel
-        ),
+        coding_model_factory=(LegacyLoopModel if profile == "legacy" else DeerflowBudgetLoopModel),
         coding_workspace_root=workspace,
         coding_storage_root=workspace / ".coding",
         coding_deerflow_v2_enabled=True,
@@ -132,12 +126,8 @@ def test_legacy_and_v2_stop_tool_loops_with_a_visible_bounded_result(
     for profile in ("legacy", "deerflow_v2"):
         events = _run_loop_scenario(tmp_path, profile)
         payloads = _payloads(events)
-        tool_calls = [
-            payload for payload in payloads if payload.get("type") == "tool_call"
-        ]
-        tool_results = [
-            payload for payload in payloads if payload.get("type") == "tool_result"
-        ]
+        tool_calls = [payload for payload in payloads if payload.get("type") == "tool_call"]
+        tool_results = [payload for payload in payloads if payload.get("type") == "tool_result"]
         assert len(tool_calls) == len(tool_results)
         assert len(tool_calls) <= 3
         assert events[-1]["kind"] == "terminal"
@@ -145,9 +135,7 @@ def test_legacy_and_v2_stop_tool_loops_with_a_visible_bounded_result(
 
         if profile == "deerflow_v2":
             budget_events = [
-                payload
-                for payload in payloads
-                if payload.get("type") == "run_budget_exhausted"
+                payload for payload in payloads if payload.get("type") == "run_budget_exhausted"
             ]
             assert len(budget_events) == 1
             assert budget_events[0]["stop_reason"] == "tool_call_capped"
@@ -205,15 +193,8 @@ def test_v2_does_not_execute_a_tool_from_the_token_exhausting_response(
                     break
 
     payloads = _payloads(events)
-    assert not any(
-        payload.get("type") in {"tool_call", "tool_result"}
-        for payload in payloads
-    )
-    budget = next(
-        payload
-        for payload in payloads
-        if payload.get("type") == "run_budget_exhausted"
-    )
+    assert not any(payload.get("type") in {"tool_call", "tool_result"} for payload in payloads)
+    budget = next(payload for payload in payloads if payload.get("type") == "run_budget_exhausted")
     assert budget["stop_reason"] == "token_capped"
     assert budget["used"] == 10
     assert budget["limit"] == 10

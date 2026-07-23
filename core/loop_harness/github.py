@@ -50,9 +50,7 @@ class GitHubAdapter:
             raise LoopBlockedError(
                 "BLOCKED_GITHUB_AUTH", "GitHub CLI authentication is unavailable"
             )
-        repository = self._run(
-            "repo", "view", self.repository, "--json", "nameWithOwner"
-        )
+        repository = self._run("repo", "view", self.repository, "--json", "nameWithOwner")
         if repository.returncode != 0:
             raise LoopBlockedError(
                 "BLOCKED_GITHUB_AUTH", "private GitHub repository access is unavailable"
@@ -141,13 +139,9 @@ class GitHubAdapter:
         metadata = self._pr_metadata(receipt.number)
         self._require_merge_candidate(metadata, receipt=receipt, base_sha=base_sha)
         if bool(metadata.get("isDraft")):
-            ready = self._run(
-                "pr", "ready", str(receipt.number), "--repo", self.repository
-            )
+            ready = self._run("pr", "ready", str(receipt.number), "--repo", self.repository)
             if ready.returncode != 0:
-                raise LoopBlockedError(
-                    "BLOCKED_GITHUB_PR", "GitHub PR could not be marked ready"
-                )
+                raise LoopBlockedError("BLOCKED_GITHUB_PR", "GitHub PR could not be marked ready")
 
         metadata = self._wait_for_successful_checks(
             receipt=receipt,
@@ -166,14 +160,10 @@ class GitHubAdapter:
             receipt.head_sha,
         )
         if merge.returncode != 0:
-            raise LoopBlockedError(
-                "BLOCKED_GITHUB_MERGE", "GitHub rejected the Tier A merge"
-            )
+            raise LoopBlockedError("BLOCKED_GITHUB_MERGE", "GitHub rejected the Tier A merge")
         merged = self._pr_metadata(receipt.number)
         if str(merged.get("state")) != "MERGED":
-            raise LoopBlockedError(
-                "BLOCKED_GITHUB_MERGE", "GitHub did not report the PR as merged"
-            )
+            raise LoopBlockedError("BLOCKED_GITHUB_MERGE", "GitHub did not report the PR as merged")
         merge_commit = merged.get("mergeCommit")
         if not isinstance(merge_commit, dict):
             raise LoopBlockedError(
@@ -201,9 +191,7 @@ class GitHubAdapter:
             if status == "success":
                 return metadata
             if status == "failure":
-                raise LoopBlockedError(
-                    "BLOCKED_GITHUB_CHECKS", "GitHub checks did not all pass"
-                )
+                raise LoopBlockedError("BLOCKED_GITHUB_CHECKS", "GitHub checks did not all pass")
             if time.monotonic() >= deadline:
                 raise LoopBlockedError(
                     "BLOCKED_GITHUB_CHECKS_TIMEOUT", "GitHub checks did not finish in time"
@@ -299,9 +287,7 @@ class GitHubAdapter:
             raise LoopBlockedError("BLOCKED_GITHUB_OUTPUT", "GitHub PR URL is invalid")
         return receipt
 
-    def _run(
-        self, *args: str, input_text: str | None = None
-    ) -> subprocess.CompletedProcess[str]:
+    def _run(self, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
         try:
             return subprocess.run(
                 [str(self.gh_bin), *args],
@@ -327,9 +313,7 @@ def _json_list(result: subprocess.CompletedProcess[str], code: str) -> list[obje
     return payload
 
 
-def _json_object(
-    result: subprocess.CompletedProcess[str], code: str
-) -> dict[str, object]:
+def _json_object(result: subprocess.CompletedProcess[str], code: str) -> dict[str, object]:
     if result.returncode != 0:
         raise LoopBlockedError(code, "GitHub CLI request failed")
     try:
@@ -375,8 +359,7 @@ def _body(
     head_sha: str,
 ) -> str:
     evidence = (
-        "\n".join(f"- {_safe_markdown(item)}" for item in candidate.evidence)
-        or "- 无额外证据"
+        "\n".join(f"- {_safe_markdown(item)}" for item in candidate.evidence) or "- 无额外证据"
     )
     files = "\n".join(f"- `{path}`" for path in candidate.changed_files)
     steps = "\n".join(

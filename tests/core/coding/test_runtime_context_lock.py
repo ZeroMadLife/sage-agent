@@ -37,8 +37,6 @@ async def test_run_turn_rejects_when_manual_context_operation_holds_lock(tmp_pat
     assert len(events) == 1
     assert events[0]["type"] == "error"
     assert events[0]["run_id"] == ""
-    assert events[0]["message"] == (
-        "A context operation is already in progress for this session"
-    )
+    assert events[0]["message"] == ("A context operation is already in progress for this session")
     assert runtime.active_run_id is None
     assert runtime.run_store.list_runs() == []

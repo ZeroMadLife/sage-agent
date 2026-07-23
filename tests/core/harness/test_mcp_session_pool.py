@@ -52,12 +52,8 @@ def test_pool_reuses_one_session_and_exits_on_the_owner_task() -> None:
         pool = ScopedMcpSessionPool(session_factory=factory)
         scope = McpScope("owner", "workspace", "thread")
         first, second = await asyncio.gather(
-            pool.get_session(
-                revision="r1", server_name="docs", scope=scope, connection={}
-            ),
-            pool.get_session(
-                revision="r1", server_name="docs", scope=scope, connection={}
-            ),
+            pool.get_session(revision="r1", server_name="docs", scope=scope, connection={}),
+            pool.get_session(revision="r1", server_name="docs", scope=scope, connection={}),
         )
         await pool.aclose()
         return factory, first, second
@@ -162,8 +158,7 @@ def test_concurrent_initialization_enforces_lru_capacity_after_sessions_are_read
         )
         stats = pool.stats()
         presence = [
-            pool.has_session(revision="r1", server_name="docs", scope=scope)
-            for scope in scopes
+            pool.has_session(revision="r1", server_name="docs", scope=scope) for scope in scopes
         ]
         await pool.aclose()
         return factory, (stats, presence)

@@ -78,9 +78,7 @@ async def assert_provider_destination_allowed(
     app_env: str,
     resolver: _Resolver = socket.getaddrinfo,
 ) -> str:
-    destination = await resolve_provider_destination(
-        value, app_env=app_env, resolver=resolver
-    )
+    destination = await resolve_provider_destination(value, app_env=app_env, resolver=resolver)
     return destination.base_url
 
 
@@ -99,15 +97,7 @@ async def _resolve_addresses(
         )
     except OSError as exc:
         raise ProviderProbeError("Provider host could not be resolved") from exc
-    return tuple(
-        sorted(
-            {
-                str(item[4][0]).split("%", 1)[0]
-                for item in addresses
-                if len(item) > 4
-            }
-        )
-    )
+    return tuple(sorted({str(item[4][0]).split("%", 1)[0] for item in addresses if len(item) > 4}))
 
 
 class ProviderPinnedTransport(httpx.AsyncBaseTransport):
@@ -175,9 +165,7 @@ class ProviderProbe:
     async def test(self, credential: RuntimeProviderCredential) -> None:
         await self.discover(credential, limit=1)
 
-    async def pin(
-        self, credential: RuntimeProviderCredential
-    ) -> RuntimeProviderCredential:
+    async def pin(self, credential: RuntimeProviderCredential) -> RuntimeProviderCredential:
         destination = await resolve_provider_destination(
             credential.base_url,
             app_env=self._app_env,

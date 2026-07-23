@@ -93,6 +93,8 @@ def _bind_checkpoint_to_evidence(
         summary_hash=summary_hash,
         prefix_hash=CompactManager._prefix_hash([]),
     )
+
+
 class LifecycleController:
     def __init__(self, *, applied: bool) -> None:
         self.lifecycle_sink: Any = None
@@ -346,12 +348,8 @@ def test_resume_restores_only_authenticated_completed_checkpoint(tmp_path: Path)
         archived_items=2,
         compaction_id="compact-resume",
     )
-    original.compaction_store.begin(
-        "s-resume-context", "compact-resume", {"trigger": "auto"}
-    )
-    original.compaction_store.complete(
-        "s-resume-context", "compact-resume", result
-    )
+    original.compaction_store.begin("s-resume-context", "compact-resume", {"trigger": "auto"})
+    original.compaction_store.complete("s-resume-context", "compact-resume", result)
     original._save_session()
 
     resumed = CodingRuntime.resume(
@@ -381,9 +379,7 @@ def test_resume_restores_only_authenticated_completed_checkpoint(tmp_path: Path)
     assert no_key._active_projection == no_key.session["history"]
 
     with sqlite3.connect(original.transcript_store.path) as connection:
-        connection.execute(
-            "UPDATE transcript SET content = ? WHERE sequence = 1", ("tampered",)
-        )
+        connection.execute("UPDATE transcript SET content = ? WHERE sequence = 1", ("tampered",))
     replaced = CodingRuntime.resume(
         session_id="s-resume-context",
         model=RecordingModel([]),
@@ -576,9 +572,7 @@ async def test_manual_compact_mutex_rejects_loser_and_failure_closes_attempt(
         workspace_root=workspace,
         model=RecordingModel([]),
         storage_root=tmp_path / ".coding",
-        context_policy=ContextPolicy(
-            context_window_tokens=100_000, output_reserve_tokens=10_000
-        ),
+        context_policy=ContextPolicy(context_window_tokens=100_000, output_reserve_tokens=10_000),
         checkpoint_anchor_key=b"m" * 32,
     )
     entered = asyncio.Event()

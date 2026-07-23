@@ -400,9 +400,7 @@ async def test_cancel_during_context_preparation_persists_terminal_run(
         workspace_root=tmp_path,
         model=FakeModel(["<final>unused</final>"]),
         storage_root=tmp_path / ".coding",
-        context_policy=ContextPolicy(
-            context_window_tokens=100_000, output_reserve_tokens=10_000
-        ),
+        context_policy=ContextPolicy(context_window_tokens=100_000, output_reserve_tokens=10_000),
     )
 
     async def block_context(*args: object, **kwargs: object) -> object:

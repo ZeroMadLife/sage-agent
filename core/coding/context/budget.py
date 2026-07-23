@@ -54,9 +54,7 @@ class ContextPolicy:
             self.emergency_ratio,
         )
         in_range = all(0.0 <= threshold <= 1.0 for threshold in thresholds)
-        strictly_increasing = all(
-            lower < upper for lower, upper in pairwise(thresholds)
-        )
+        strictly_increasing = all(lower < upper for lower, upper in pairwise(thresholds))
         if not in_range or not strictly_increasing:
             raise ValueError("thresholds must be strictly increasing within 0..1")
 

@@ -207,9 +207,7 @@ def test_unconfigured_public_agent_fails_closed() -> None:
 def test_public_api_follows_publish_and_revoke_without_process_restart(tmp_path: Path) -> None:
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(Path("data/public/sage-public-v1.json"), actor="root")
-    client = TestClient(
-        create_public_agent_app(package_registry_root=tmp_path, model=StubModel())
-    )
+    client = TestClient(create_public_agent_app(package_registry_root=tmp_path, model=StubModel()))
 
     before = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})
     assert before.json()["receipt"]["package_revision"] == "2026-07-22.1"
@@ -248,9 +246,7 @@ def test_public_api_reports_degraded_when_active_registry_is_invalid(tmp_path: P
     registry.bootstrap(Path("data/public/sage-public-v1.json"), actor="root")
     active = tmp_path / "packages/sage-public/2026-07-22.1.json"
     active.write_text("{}", encoding="utf-8")
-    client = TestClient(
-        create_public_agent_app(package_registry_root=tmp_path, model=StubModel())
-    )
+    client = TestClient(create_public_agent_app(package_registry_root=tmp_path, model=StubModel()))
 
     health = client.get("/healthz")
     response = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})

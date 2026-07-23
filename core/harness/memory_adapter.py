@@ -368,9 +368,10 @@ def _mark_conflicts(items: Sequence[_RankedReference]) -> list[_RankedReference]
             members.add(current)
             pending.extend(adjacency.get(current, ()))
         visited.update(members)
-        group_id = "conflict_" + hashlib.sha256(
-            "\0".join(sorted(members)).encode("utf-8")
-        ).hexdigest()[:16]
+        group_id = (
+            "conflict_"
+            + hashlib.sha256("\0".join(sorted(members)).encode("utf-8")).hexdigest()[:16]
+        )
         for memory_id in members:
             membership[memory_id] = group_id
 
@@ -481,8 +482,7 @@ def _select_bounded_references(
         source: omitted_by_source[source]
         + globally_omitted[source]
         + sum(
-            len(unit.references)
-            for unit in selected_by_source[source][processed_units[source] :]
+            len(unit.references) for unit in selected_by_source[source][processed_units[source] :]
         )
         for source in budgets
     }

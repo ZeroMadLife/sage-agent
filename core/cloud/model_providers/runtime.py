@@ -36,9 +36,7 @@ class AccountModelFactory:
             if budget is None:
                 raise ValueError("unsupported reasoning mode")
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-        kwargs["http_async_client"] = create_provider_http_client(
-            credential.destination
-        )
+        kwargs["http_async_client"] = create_provider_http_client(credential.destination)
         return create_llm(
             f"account:{model_id}",
             api_key=credential.api_key,
@@ -68,6 +66,12 @@ class CompositeModelFactory:
 def parse_account_model_id(value: str) -> tuple[str, str]:
     prefix, separator, remainder = value.partition(":")
     provider_id, nested_separator, model_id = remainder.partition(":")
-    if prefix != "account" or not separator or not nested_separator or not provider_id or not model_id:
+    if (
+        prefix != "account"
+        or not separator
+        or not nested_separator
+        or not provider_id
+        or not model_id
+    ):
         raise ValueError("invalid account model id")
     return provider_id, model_id

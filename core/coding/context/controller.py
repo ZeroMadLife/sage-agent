@@ -117,12 +117,12 @@ class ContextController:
         if usage.level in {"compact", "high", "emergency"}:
             compaction_id = f"compact-{uuid4().hex}"
             started = ContextCompactionStartedEvent(
-                    session_id=self.session_id,
-                    run_id=run_id,
-                    compaction_id=compaction_id,
-                    trigger="auto",
-                    before_tokens=usage.used_tokens,
-                )
+                session_id=self.session_id,
+                run_id=run_id,
+                compaction_id=compaction_id,
+                trigger="auto",
+                before_tokens=usage.used_tokens,
+            )
             events.append(started)
             await self._deliver_lifecycle(started, None)
             result = await self.compactor.compact(
@@ -137,23 +137,23 @@ class ContextController:
             if result.applied:
                 projected, usage = self._project_and_count(result.projected_history, user_message)
                 terminal: RunEventBase = ContextCompactionCompletedEvent(
-                        session_id=self.session_id,
-                        run_id=run_id,
-                        compaction_id=compaction_id,
-                        before_tokens=result.before_tokens,
-                        after_tokens=result.after_tokens,
-                        archived_items=result.archived_items,
-                    )
+                    session_id=self.session_id,
+                    run_id=run_id,
+                    compaction_id=compaction_id,
+                    before_tokens=result.before_tokens,
+                    after_tokens=result.after_tokens,
+                    archived_items=result.archived_items,
+                )
             else:
                 projected, usage = self._project_and_count(original, user_message)
                 terminal = ContextCompactionFailedEvent(
-                        session_id=self.session_id,
-                        run_id=run_id,
-                        compaction_id=compaction_id,
-                        reason=result.reason or "compaction_failed",
-                        preserved_original=True,
-                        retryable=result.retryable,
-                    )
+                    session_id=self.session_id,
+                    run_id=run_id,
+                    compaction_id=compaction_id,
+                    reason=result.reason or "compaction_failed",
+                    preserved_original=True,
+                    retryable=result.retryable,
+                )
             events.append(terminal)
             await self._deliver_lifecycle(terminal, result)
         self.last_usage = usage
@@ -259,7 +259,8 @@ class ContextController:
         if current_message_id is None:
             return copied
         matches = [
-            index for index, item in enumerate(copied)
+            index
+            for index, item in enumerate(copied)
             if item.get("message_id") == current_message_id
         ]
         if len(matches) > 1:

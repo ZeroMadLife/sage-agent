@@ -12,6 +12,7 @@ from api.services.chat_runner import run_agent_chat
 
 logger = logging.getLogger(__name__)
 
+
 async def _reject_legacy_chat_in_production(connection: HTTPConnection) -> None:
     app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
     if app_env == "production":

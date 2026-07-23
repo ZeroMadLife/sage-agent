@@ -207,9 +207,10 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
     assert "可追溯的旧解析产物" in understanding.summary
     with sqlite3.connect(database) as connection:
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
-        assert connection.execute(
-            "SELECT COUNT(*) FROM knowledge_source_understandings"
-        ).fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT COUNT(*) FROM knowledge_source_understandings").fetchone()[0]
+            == 1
+        )
 
 
 def test_pending_migration_reparses_and_auto_applies_legacy_markdown(tmp_path: Path) -> None:
@@ -300,7 +301,9 @@ def test_projection_indexes_current_revision_and_keeps_old_revision_replayable(
     first_revision = store.index_summary()
     first_hit = store.search("压缩恢复锚点")[0]
     source.write_text("# Context\n\n新版采用动态上下文窗口。\n", encoding="utf-8")
-    second = store.evaluate_and_apply_policy(store.ingest("sage-learning", "context.md").proposal_id)
+    second = store.evaluate_and_apply_policy(
+        store.ingest("sage-learning", "context.md").proposal_id
+    )
 
     current_hits = store.search("动态上下文窗口")
     stale_default_hits = store.search("旧版保留压缩恢复锚点")
@@ -315,7 +318,9 @@ def test_projection_indexes_current_revision_and_keeps_old_revision_replayable(
     assert first_hit.citation_id.startswith("kcite_")
     assert current_hits[0].chunk.source_revision == second.source_revision
     assert current_hits[0].chunk.active is True
-    assert all(hit.chunk.page_revision != first_hit.chunk.page_revision for hit in stale_default_hits)
+    assert all(
+        hit.chunk.page_revision != first_hit.chunk.page_revision for hit in stale_default_hits
+    )
     assert old_hits[0].chunk.page_revision == first_hit.chunk.page_revision
     assert old_hits[0].chunk.active is False
     summary = store.index_summary()
@@ -389,9 +394,7 @@ def test_evidence_learning_auto_applies_is_idempotent_and_rejects_stale_citation
     assert str(vault) not in page
 
     derived_citation = next(
-        hit
-        for hit in store.search("上下文恢复策略")
-        if hit.chunk.source_kind == "agent_learning"
+        hit for hit in store.search("上下文恢复策略") if hit.chunk.source_kind == "agent_learning"
     )
     with pytest.raises(KnowledgeEvidenceError, match="original source material"):
         store.propose_evidence_learning("递归学习", (derived_citation.citation_id,))
@@ -531,9 +534,7 @@ def test_approve_updates_git_wiki_and_reject_is_terminal(tmp_path: Path) -> None
 
 def test_low_risk_local_ingest_auto_applies_once_and_persists_policy(tmp_path: Path) -> None:
     store, vault, repository = _store(tmp_path)
-    (vault / "learning.md").write_text(
-        "# Learning\n\n确定性来源自动沉淀。\n", encoding="utf-8"
-    )
+    (vault / "learning.md").write_text("# Learning\n\n确定性来源自动沉淀。\n", encoding="utf-8")
     proposal = store.ingest("sage-learning", "learning.md")
 
     first = store.evaluate_and_apply_policy(proposal.proposal_id)
@@ -548,9 +549,7 @@ def test_low_risk_local_ingest_auto_applies_once_and_persists_policy(tmp_path: P
     assert decision.risk_level == "low"
     assert decision.action == "auto_apply"
     assert decision.applied_page_revision == store.list_pages()[0].current_revision
-    assert "确定性来源自动沉淀" in (repository / first.target_path).read_text(
-        encoding="utf-8"
-    )
+    assert "确定性来源自动沉淀" in (repository / first.target_path).read_text(encoding="utf-8")
     assert len(store.list_pages()[0].revisions) == 1
     assert [event.event_type for event in store.list_events(first.proposal_id)].count(
         "policy_evaluated"
@@ -578,9 +577,7 @@ def test_undo_first_auto_apply_adds_retraction_revision_and_is_single_use(
     store.evaluate_and_apply_policy(original.proposal_id)
     applied_revision = store.list_pages()[0].current_revision
 
-    undone = store.undo_auto_apply(
-        original.proposal_id, expected_page_revision=applied_revision
-    )
+    undone = store.undo_auto_apply(original.proposal_id, expected_page_revision=applied_revision)
     page = store.list_pages()[0]
     decision = store.get_policy_decision(original.proposal_id)
 
@@ -588,9 +585,7 @@ def test_undo_first_auto_apply_adds_retraction_revision_and_is_single_use(
     assert undone.status == "approved"
     assert len(page.revisions) == 2
     assert page.revisions[-1].change_kind == "retraction"
-    assert "此自动沉淀已由用户撤销" in (repository / page.path).read_text(
-        encoding="utf-8"
-    )
+    assert "此自动沉淀已由用户撤销" in (repository / page.path).read_text(encoding="utf-8")
     assert decision is not None
     assert decision.undo_proposal_id == undone.proposal_id
     assert decision.undo_page_revision == page.current_revision
@@ -622,12 +617,8 @@ def test_workspace_synthesis_uses_only_approved_sources_and_is_reviewable(
     tmp_path: Path,
 ) -> None:
     store, vault, repository = _store(tmp_path)
-    (vault / "approved.md").write_text(
-        "# Approved\n\n已批准来源证据。\n", encoding="utf-8"
-    )
-    (vault / "pending.md").write_text(
-        "# Pending\n\n不能进入总览。\n", encoding="utf-8"
-    )
+    (vault / "approved.md").write_text("# Approved\n\n已批准来源证据。\n", encoding="utf-8")
+    (vault / "pending.md").write_text("# Pending\n\n不能进入总览。\n", encoding="utf-8")
     approved = store.ingest("sage-learning", "approved.md")
     store.approve(approved.proposal_id, 0)
     pending = store.ingest("sage-learning", "pending.md")

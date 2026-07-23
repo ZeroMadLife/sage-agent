@@ -35,7 +35,8 @@ def _app(tmp_path: Path):
     [("cancelled", "cancelled"), ("interrupted", "interrupted"), ("retryable", "interrupted")],
 )
 def test_run_finished_timeline_status_preserves_valid_terminal_status(
-    status: str, expected: str,
+    status: str,
+    expected: str,
 ) -> None:
     assert _timeline_status("run_finished", {"status": status}) == expected
 
@@ -54,12 +55,8 @@ def test_timeline_empty_page_and_query_validation(tmp_path: Path) -> None:
     with TestClient(app) as client:
         session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
         response = client.get(f"/api/v1/coding/session/{session_id}/timeline")
-        invalid_after = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?after=-1"
-        )
-        invalid_limit = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?limit=501"
-        )
+        invalid_after = client.get(f"/api/v1/coding/session/{session_id}/timeline?after=-1")
+        invalid_limit = client.get(f"/api/v1/coding/session/{session_id}/timeline?limit=501")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -92,9 +89,7 @@ def test_timeline_paginates_envelopes_and_reports_active_run(tmp_path: Path) -> 
             lease_owner_id=coordinator.owner_id,
             fencing_token=begin.fencing_token,
         )
-        first = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?after=0&limit=1"
-        )
+        first = client.get(f"/api/v1/coding/session/{session_id}/timeline?after=0&limit=1")
         coordinator.journal.append_terminal_and_release(
             run_id="run-active",
             status="cancelled",
@@ -155,9 +150,7 @@ def test_timeline_rejects_mixed_forward_and_backward_cursors(tmp_path: Path) -> 
     app = _app(tmp_path)
     with TestClient(app) as client:
         session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-        response = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?after=2&before=3"
-        )
+        response = client.get(f"/api/v1/coding/session/{session_id}/timeline?after=2&before=3")
 
     assert response.status_code == 422
 
@@ -167,35 +160,26 @@ def test_websocket_streams_envelopes_and_rest_replays_same_event_ids(tmp_path: P
     app = _app(tmp_path)
     with TestClient(app) as client:
         session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
-        with client.websocket_connect(
-            f"/api/v1/coding/{session_id}/stream?after=0"
-        ) as websocket:
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream?after=0") as websocket:
             websocket.send_json({"content": "read"})
             streamed = _receive_until_terminal(websocket)
-        replayed = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?limit=100"
-        ).json()["items"]
+        replayed = client.get(f"/api/v1/coding/session/{session_id}/timeline?limit=100").json()[
+            "items"
+        ]
 
-    assert [item["event_id"] for item in streamed] == [
-        item["event_id"] for item in replayed
-    ]
-    assert [item["sequence"] for item in streamed] == list(
-        range(1, len(streamed) + 1)
-    )
+    assert [item["event_id"] for item in streamed] == [item["event_id"] for item in replayed]
+    assert [item["sequence"] for item in streamed] == list(range(1, len(streamed) + 1))
     assert sum(item["kind"] == "terminal" for item in streamed) == 1
     assert streamed[-1]["payload"] == {"event": "run_completed"}
     assert any(item["kind"] == "user" for item in streamed)
-    runtime_events = [
-        item for item in streamed if item["payload"].get("type") == "run_finished"
-    ]
+    runtime_events = [item for item in streamed if item["payload"].get("type") == "run_finished"]
     assert len(runtime_events) == 1
     assert runtime_events[0]["kind"] == "run"
     stage_events = [
         item
         for item in streamed
         if item["kind"] == "harness"
-        and item["payload"].get("type")
-        in {"stage_started", "stage_completed", "transition_taken"}
+        and item["payload"].get("type") in {"stage_started", "stage_completed", "transition_taken"}
     ]
     assert stage_events
     assert {item["payload"].get("stage_id") for item in stage_events} >= {
@@ -206,9 +190,7 @@ def test_websocket_streams_envelopes_and_rest_replays_same_event_ids(tmp_path: P
         "reply",
     }
     retrieval_decisions = [
-        item
-        for item in streamed
-        if item["payload"].get("type") == "retrieval_decision"
+        item for item in streamed if item["payload"].get("type") == "retrieval_decision"
     ]
     assert [item["payload"]["decision"] for item in retrieval_decisions] == ["skip"]
 
@@ -291,9 +273,7 @@ def test_websocket_after_cursor_replays_only_missing_events(tmp_path: Path) -> N
         ) as websocket:
             missing = [websocket.receive_json() for _ in range(len(first_run) - 3)]
 
-    assert [item["sequence"] for item in missing] == [
-        item["sequence"] for item in first_run[3:]
-    ]
+    assert [item["sequence"] for item in missing] == [item["sequence"] for item in first_run[3:]]
 
 
 def test_disconnect_does_not_cancel_approval_blocked_run_and_rest_can_resume(
@@ -307,9 +287,9 @@ def test_disconnect_does_not_cancel_approval_blocked_run_and_rest_can_resume(
         coding_storage_root=tmp_path / ".coding",
     )
     with TestClient(app) as client:
-        session_id = client.post(
-            "/api/v1/coding/session", json={"approval_policy": "ask"}
-        ).json()["session_id"]
+        session_id = client.post("/api/v1/coding/session", json={"approval_policy": "ask"}).json()[
+            "session_id"
+        ]
         cursor = 0
         approval_id = ""
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
@@ -320,9 +300,7 @@ def test_disconnect_does_not_cancel_approval_blocked_run_and_rest_can_resume(
                 if event["payload"].get("type") == "approval_required":
                     approval_id = event["payload"]["approval_id"]
 
-        active = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline"
-        ).json()["active_run"]
+        active = client.get(f"/api/v1/coding/session/{session_id}/timeline").json()["active_run"]
         assert active is not None
         blocked_events = client.get(
             f"/api/v1/coding/session/{session_id}/timeline?limit=100"
@@ -375,9 +353,7 @@ def test_two_subscribers_receive_same_events_without_duplicates(tmp_path: Path) 
             thread.join(timeout=5)
 
     assert all(not thread.is_alive() for thread in threads)
-    assert [item["event_id"] for item in received[0]] == [
-        item["event_id"] for item in received[1]
-    ]
+    assert [item["event_id"] for item in received[0]] == [item["event_id"] for item in received[1]]
     assert len({item["event_id"] for item in received[0]}) == len(received[0])
 
 
@@ -390,9 +366,9 @@ def test_second_input_while_active_is_persisted_as_rejected_run(tmp_path: Path) 
         coding_storage_root=tmp_path / ".coding",
     )
     with TestClient(app) as client:
-        session_id = client.post(
-            "/api/v1/coding/session", json={"approval_policy": "ask"}
-        ).json()["session_id"]
+        session_id = client.post("/api/v1/coding/session", json={"approval_policy": "ask"}).json()[
+            "session_id"
+        ]
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as first:
             first.send_json({"content": "write"})
             approval_id = ""
@@ -417,16 +393,15 @@ def test_second_input_while_active_is_persisted_as_rejected_run(tmp_path: Path) 
             while first.receive_json()["kind"] != "terminal":
                 pass
 
-        replay = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline?limit=100"
-        ).json()["items"]
+        replay = client.get(f"/api/v1/coding/session/{session_id}/timeline?limit=100").json()[
+            "items"
+        ]
 
     rejected_run_id = rejected[-1]["run_id"]
     assert rejected_run_id != original_run_id
     assert rejected[-1]["status"] == "error"
     assert any(
-        item["run_id"] == rejected_run_id
-        and item["payload"].get("content") == "second input"
+        item["run_id"] == rejected_run_id and item["payload"].get("content") == "second input"
         for item in replay
     )
 
@@ -440,9 +415,7 @@ def test_sessions_are_isolated(tmp_path: Path) -> None:
         with client.websocket_connect(f"/api/v1/coding/{session_a}/stream") as websocket:
             websocket.send_json({"content": "only-a"})
             _receive_until_terminal(websocket)
-        timeline_b = client.get(
-            f"/api/v1/coding/session/{session_b}/timeline"
-        ).json()["items"]
+        timeline_b = client.get(f"/api/v1/coding/session/{session_b}/timeline").json()["items"]
 
     assert timeline_b == []
 
@@ -456,9 +429,9 @@ def test_stop_cancels_only_matching_coordinator_run(tmp_path: Path) -> None:
         coding_storage_root=tmp_path / ".coding",
     )
     with TestClient(app) as client:
-        session_id = client.post(
-            "/api/v1/coding/session", json={"approval_policy": "ask"}
-        ).json()["session_id"]
+        session_id = client.post("/api/v1/coding/session", json={"approval_policy": "ask"}).json()[
+            "session_id"
+        ]
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
             websocket.send_json({"content": "write"})
             run_id = ""
@@ -466,14 +439,10 @@ def test_stop_cancels_only_matching_coordinator_run(tmp_path: Path) -> None:
                 event = websocket.receive_json()
                 if event["payload"].get("type") == "approval_required":
                     run_id = event["run_id"]
-            stale = client.post(
-                f"/api/v1/coding/{session_id}/run/stop", json={"run_id": "old-run"}
-            )
+            stale = client.post(f"/api/v1/coding/{session_id}/run/stop", json={"run_id": "old-run"})
             assert stale.json() == {"ok": False}
             assert app.state.coding_run_registry.get(session_id).active_run_id == run_id
-            matching = client.post(
-                f"/api/v1/coding/{session_id}/run/stop", json={"run_id": run_id}
-            )
+            matching = client.post(f"/api/v1/coding/{session_id}/run/stop", json={"run_id": run_id})
             assert matching.json() == {"ok": True}
             terminal = websocket.receive_json()
             while terminal["kind"] != "terminal":
@@ -494,9 +463,7 @@ def test_compact_and_model_switch_reject_persistent_active_lease(tmp_path: Path)
         begin = coordinator.journal.begin_run(
             "run-busy", owner_id=coordinator.owner_id, owner_pid=coordinator.owner_pid
         )
-        compact = client.post(
-            f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"}
-        )
+        compact = client.post(f"/api/v1/coding/{session_id}/context/compact", json={"focus": "x"})
         switch = client.patch(
             f"/api/v1/coding/{session_id}/model",
             json={"model_id": "model-b"},
@@ -533,12 +500,8 @@ def test_new_app_marks_abandoned_run_interrupted_once_without_resuming(
 
     restarted = _app(tmp_path)
     with TestClient(restarted) as client:
-        first = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline"
-        ).json()
-        second = client.get(
-            f"/api/v1/coding/session/{session_id}/timeline"
-        ).json()
+        first = client.get(f"/api/v1/coding/session/{session_id}/timeline").json()
+        second = client.get(f"/api/v1/coding/session/{session_id}/timeline").json()
 
     terminal = [item for item in first["items"] if item["kind"] == "terminal"]
     assert len(terminal) == 1
@@ -561,9 +524,9 @@ def test_app_shutdown_cancels_blocked_run_once_and_releases_lease(tmp_path: Path
         coding_storage_root=tmp_path / ".coding",
     )
     with TestClient(app) as client:
-        session_id = client.post(
-            "/api/v1/coding/session", json={"approval_policy": "ask"}
-        ).json()["session_id"]
+        session_id = client.post("/api/v1/coding/session", json={"approval_policy": "ask"}).json()[
+            "session_id"
+        ]
         with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
             websocket.send_json({"content": "write"})
             while websocket.receive_json()["payload"].get("type") != "approval_required":
@@ -595,9 +558,7 @@ def test_websocket_malicious_session_id_closes_with_policy_violation(
     with (
         TestClient(app) as client,
         pytest.raises(WebSocketDisconnect) as raised,
-        client.websocket_connect(
-            "/api/v1/coding/%2E%2E%3Aescape/stream"
-        ) as websocket,
+        client.websocket_connect("/api/v1/coding/%2E%2E%3Aescape/stream") as websocket,
     ):
         websocket.receive_json()
 

@@ -182,11 +182,7 @@ class WorkspaceDiffTracker:
             if len(changes) >= MAX_DIFF_FILES:
                 break
 
-        truncated = (
-            self._before_truncated
-            or after_truncated
-            or total_changed > MAX_DIFF_FILES
-        )
+        truncated = self._before_truncated or after_truncated or total_changed > MAX_DIFF_FILES
         try:
             return WorkspaceDiff(
                 run_id=run_id,
@@ -238,9 +234,7 @@ class WorkspaceDiffTracker:
                     capture=stat.st_size <= MAX_FILE_SIZE,
                 )
                 snap.hash = digest
-                snap.is_text = (
-                    self._is_text(content_bytes) and stat.st_size <= MAX_FILE_SIZE
-                )
+                snap.is_text = self._is_text(content_bytes) and stat.st_size <= MAX_FILE_SIZE
                 if snap.is_text and stat.st_size <= STORE_CONTENT_LIMIT:
                     snap.content = content_bytes.decode("utf-8", errors="replace")
             except (OSError, PermissionError):
@@ -272,11 +266,7 @@ class WorkspaceDiffTracker:
             return None
         if completed.returncode != 0:
             return None
-        paths = {
-            os.fsdecode(raw)
-            for raw in completed.stdout.split(b"\0")
-            if raw
-        }
+        paths = {os.fsdecode(raw) for raw in completed.stdout.split(b"\0") if raw}
         return sorted(
             path
             for path in paths

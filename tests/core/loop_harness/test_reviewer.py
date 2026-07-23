@@ -63,9 +63,7 @@ def test_ccconnect_reviewer_uses_unique_synthetic_session_and_parses_json(tmp_pa
     assert result.verdict == "PASS"
     args = reviewer.calls[0]
     assert args[args.index("--to") + 1] == "sage-loop-review"
-    assert args[args.index("--session-key") + 1] == (
-        "relay:loop-loop-test-review:loop-review"
-    )
+    assert args[args.index("--session-key") + 1] == ("relay:loop-loop-test-review:loop-review")
     message = args[args.index("--message") + 1]
     assert "shadow.patch" in message
     assert "diff --git" not in message

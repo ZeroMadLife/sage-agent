@@ -121,9 +121,7 @@ class GitHubOAuthService:
             browser_binding=browser_binding,
         )
 
-    async def complete(
-        self, *, code: str, state: str, browser_binding: str
-    ) -> OAuthCompletion:
+    async def complete(self, *, code: str, state: str, browser_binding: str) -> OAuthCompletion:
         """Consume state, exchange the code, and bind the GitHub identity."""
         if not code or not browser_binding or not self._state_signer.verify(state):
             raise InvalidOAuthTransaction

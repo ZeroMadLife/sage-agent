@@ -53,9 +53,7 @@ async def _get_or_insert_user(
 ) -> tuple[CloudUserRecord, bool]:
     """Resolve one email account, tolerating concurrent first-device registration."""
     existing = await session.scalar(
-        select(CloudUserRecord)
-        .where(CloudUserRecord.email == email)
-        .with_for_update()
+        select(CloudUserRecord).where(CloudUserRecord.email == email).with_for_update()
     )
     if existing is not None:
         return existing, False
@@ -72,9 +70,7 @@ async def _get_or_insert_user(
         return created, True
     except IntegrityError:
         race_winner = await session.scalar(
-            select(CloudUserRecord)
-            .where(CloudUserRecord.email == email)
-            .with_for_update()
+            select(CloudUserRecord).where(CloudUserRecord.email == email).with_for_update()
         )
         if race_winner is None:
             raise
@@ -167,7 +163,9 @@ class CloudRepository:
                 raise PermissionError("invite is invalid or already consumed")
             session.add(
                 AuthIdentityRecord(
-                    id=str(uuid4()), user_id=user.id, provider=provider,
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    provider=provider,
                     provider_subject=provider_subject,
                 )
             )
@@ -189,9 +187,7 @@ class CloudRepository:
         token_hash = _digest(token)
         async with self._session_factory() as session:
             user = await session.scalar(
-                select(CloudUserRecord)
-                .where(CloudUserRecord.id == user_id)
-                .with_for_update()
+                select(CloudUserRecord).where(CloudUserRecord.id == user_id).with_for_update()
             )
             if user is None or user.disabled_at is not None:
                 raise PermissionError("cloud user is unavailable")
@@ -321,12 +317,19 @@ class CloudRepository:
                     CloudLoginSessionRecord.token_hash == _digest(token)
                 )
             )
-            if record is None or record.revoked_at is not None or _is_expired(record.expires_at, now):
+            if (
+                record is None
+                or record.revoked_at is not None
+                or _is_expired(record.expires_at, now)
+            ):
                 return None
             user = await session.get(CloudUserRecord, record.user_id)
             if user is None or user.disabled_at is not None:
                 return None
-            if record.last_seen_at is None or (now - _as_utc(record.last_seen_at)).total_seconds() >= 900:
+            if (
+                record.last_seen_at is None
+                or (now - _as_utc(record.last_seen_at)).total_seconds() >= 900
+            ):
                 record.last_seen_at = now
                 await session.commit()
             return _to_user(user)
@@ -451,8 +454,7 @@ class CloudRepository:
                 select(CloudOAuthTransactionRecord).where(
                     CloudOAuthTransactionRecord.provider == provider,
                     CloudOAuthTransactionRecord.state_hash == _digest(state),
-                    CloudOAuthTransactionRecord.browser_binding_hash
-                    == _digest(browser_binding),
+                    CloudOAuthTransactionRecord.browser_binding_hash == _digest(browser_binding),
                 )
             )
             if record is None:
@@ -511,9 +513,7 @@ class CloudRepository:
         """Test-only invariant probe for encrypted provider credentials."""
         async with self._session_factory() as session:
             values = (
-                await session.scalars(
-                    select(CloudProviderCredentialRecord.encrypted_access_token)
-                )
+                await session.scalars(select(CloudProviderCredentialRecord.encrypted_access_token))
             ).all()
             return token in values
 
@@ -535,7 +535,9 @@ class CloudRepository:
             raise ValueError("unknown workspace provider")
         async with self._session_factory() as session:
             record = CloudWorkspaceRecord(
-                id=str(uuid4()), project_id=project_id, provider=provider,
+                id=str(uuid4()),
+                project_id=project_id,
+                provider=provider,
                 lifecycle_state="provisioning",
             )
             session.add(record)
@@ -592,7 +594,9 @@ def _to_user(record: CloudUserRecord) -> CloudUser:
 
 def _to_login_session(record: CloudLoginSessionRecord) -> CloudLoginSession:
     return CloudLoginSession(
-        session_id=record.id, user_id=record.user_id, token_hash=record.token_hash,
+        session_id=record.id,
+        user_id=record.user_id,
+        token_hash=record.token_hash,
         device_name=record.device_name,
         expires_at=record.expires_at,
         last_seen_at=record.last_seen_at,
@@ -614,6 +618,8 @@ def _to_project(record: CloudProjectRecord) -> CloudProject:
 
 def _to_workspace(record: CloudWorkspaceRecord) -> CloudWorkspace:
     return CloudWorkspace(
-        workspace_id=record.id, project_id=record.project_id, provider=record.provider,
+        workspace_id=record.id,
+        project_id=record.project_id,
+        provider=record.provider,
         lifecycle_state=record.lifecycle_state,
     )

@@ -92,9 +92,7 @@ def _knowledge_app(tmp_path: Path):
 
 
 @pytest.fixture
-async def cloud_repositories() -> AsyncIterator[
-    tuple[CloudRepository, ModelProviderRepository]
-]:
+async def cloud_repositories() -> AsyncIterator[tuple[CloudRepository, ModelProviderRepository]]:
     engine = create_engine("sqlite+aiosqlite:///:memory:")
     factory = create_session_factory(engine)
     await init_db(engine)
@@ -134,9 +132,9 @@ def test_coding_context_is_canonicalized_frozen_and_replayable(tmp_path: Path) -
         ) as websocket:
             websocket.send_json({"content": "解释文件", "surface_context": context})
             streamed = _receive_until_terminal(websocket)
-        replayed = client.get(
-            f"/api/v1/coding/session/{created['session_id']}/timeline"
-        ).json()["items"]
+        replayed = client.get(f"/api/v1/coding/session/{created['session_id']}/timeline").json()[
+            "items"
+        ]
 
     started = next(item for item in streamed if item["payload"].get("event") == "run_started")
     assert started["payload"]["surface_context"] == {
@@ -154,9 +152,7 @@ def test_coding_context_is_canonicalized_frozen_and_replayable(tmp_path: Path) -
         },
         "operation_refs": [],
     }
-    assert next(
-        item for item in replayed if item["event_id"] == started["event_id"]
-    ) == started
+    assert next(item for item in replayed if item["event_id"] == started["event_id"]) == started
     assert len(FinalModel.prompts) == 1
     assert '"label":"coding"' in FinalModel.prompts[0]
     assert '"label":"README.md"' in FinalModel.prompts[0]
@@ -344,18 +340,33 @@ async def test_coding_stream_rejects_a_session_from_another_owner(
     }
     owner = TestClient(create_app(**app_kwargs))
     other = TestClient(create_app(**app_kwargs))
-    assert owner.post(
-        "/api/v1/cloud/auth/dev/login",
-        json={"email": "owner@example.com", "display_name": "Owner", "invite_code": "owner-invite"},
-    ).status_code == 200
-    assert other.post(
-        "/api/v1/cloud/auth/dev/login",
-        json={"email": "other@example.com", "display_name": "Other", "invite_code": "other-invite"},
-    ).status_code == 200
+    assert (
+        owner.post(
+            "/api/v1/cloud/auth/dev/login",
+            json={
+                "email": "owner@example.com",
+                "display_name": "Owner",
+                "invite_code": "owner-invite",
+            },
+        ).status_code
+        == 200
+    )
+    assert (
+        other.post(
+            "/api/v1/cloud/auth/dev/login",
+            json={
+                "email": "other@example.com",
+                "display_name": "Other",
+                "invite_code": "other-invite",
+            },
+        ).status_code
+        == 200
+    )
     session = owner.post("/api/v1/coding/session", json={}).json()
 
-    with pytest.raises(WebSocketDenialResponse) as denied, other.websocket_connect(
-        f"/api/v1/coding/{session['session_id']}/stream"
+    with (
+        pytest.raises(WebSocketDenialResponse) as denied,
+        other.websocket_connect(f"/api/v1/coding/{session['session_id']}/stream"),
     ):
         pass
 

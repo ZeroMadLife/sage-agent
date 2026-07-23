@@ -358,9 +358,7 @@ def _replace_output_path(command: list[str], output_path: Path) -> list[str]:
             "BLOCKED_WORKER_OUTPUT", "Worker output path is not configured"
         ) from exc
     if index >= len(command):
-        raise LoopBlockedError(
-            "BLOCKED_WORKER_OUTPUT", "Worker output path is not configured"
-        )
+        raise LoopBlockedError("BLOCKED_WORKER_OUTPUT", "Worker output path is not configured")
     retry_command = list(command)
     retry_command[index] = str(output_path)
     return retry_command

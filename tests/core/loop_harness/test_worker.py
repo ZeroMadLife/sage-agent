@@ -30,7 +30,7 @@ def _fake_codex(tmp_path, payload: object, *, fail_once: bool = False):
         marker = tmp_path / "codex-failed-once"
         script += (
             f"marker={json.dumps(str(marker))}\n"
-            "if [ ! -e \"$marker\" ]; then : > \"$marker\"; printf '%s' '{' > \"$out\"; exit 0; fi\n"
+            'if [ ! -e "$marker" ]; then : > "$marker"; printf \'%s\' \'{\' > "$out"; exit 0; fi\n'
         )
     script += f"printf '%s' {encoded} > \"$out\"\n"
     executable.write_text(script, encoding="utf-8")
@@ -204,9 +204,7 @@ def test_scanner_accepts_frontend_candidate(tmp_path) -> None:
     (controller / "docs/loop-harness").mkdir(parents=True)
     (controller / "core/loop_harness").mkdir(parents=True)
     (controller / "docs/loop-harness/PROMPT.md").write_text("rules", encoding="utf-8")
-    (controller / "core/loop_harness/worker_result.schema.json").write_text(
-        "{}", encoding="utf-8"
-    )
+    (controller / "core/loop_harness/worker_result.schema.json").write_text("{}", encoding="utf-8")
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     worker = CodexWorker(
@@ -239,9 +237,7 @@ def test_fixer_uses_workspace_write_and_parses_separate_schema(tmp_path) -> None
     (controller / "docs/loop-harness").mkdir(parents=True)
     (controller / "core/loop_harness").mkdir(parents=True)
     (controller / "docs/loop-harness/PROMPT.md").write_text("rules", encoding="utf-8")
-    (controller / "core/loop_harness/fixer_result.schema.json").write_text(
-        "{}", encoding="utf-8"
-    )
+    (controller / "core/loop_harness/fixer_result.schema.json").write_text("{}", encoding="utf-8")
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     fixer = CodexFixer(

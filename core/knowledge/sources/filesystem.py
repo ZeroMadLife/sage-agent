@@ -208,11 +208,7 @@ def _relative_source_path(value: str) -> PurePosixPath:
     if "\\" in value:
         raise KnowledgeScanError("invalid relative source path")
     path = PurePosixPath(value)
-    if (
-        path.is_absolute()
-        or ".." in path.parts
-        or path.suffix.lower() not in _MEDIA_TYPES
-    ):
+    if path.is_absolute() or ".." in path.parts or path.suffix.lower() not in _MEDIA_TYPES:
         raise KnowledgeScanError("invalid relative source path")
     return path
 
@@ -256,7 +252,5 @@ def _decode_cursor(cursor: str | None, checkpoint: str) -> int:
     if len(parts) != 3 or parts[0] != "v1" or not parts[2].isdigit():
         raise KnowledgeScanError("invalid knowledge source scan cursor")
     if f"sha256:{parts[1]}" != checkpoint:
-        raise KnowledgeSourceCheckpointConflictError(
-            "knowledge source changed during paged scan"
-        )
+        raise KnowledgeSourceCheckpointConflictError("knowledge source changed during paged scan")
     return int(parts[2])

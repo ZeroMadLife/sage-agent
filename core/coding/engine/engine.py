@@ -94,10 +94,7 @@ class Engine:
         append_user: bool = True,
         current_message_id: str | None = None,
         append_history: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-        before_model_request: Callable[
-            [list[dict[str, Any]]], PreparedContextLike
-        ]
-        | None = None,
+        before_model_request: Callable[[list[dict[str, Any]]], PreparedContextLike] | None = None,
         model_usage_sink: Callable[[int, UsageSample], None] | None = None,
     ) -> None:
         self.model = model
@@ -447,24 +444,16 @@ class Engine:
             history.pop(indexes[0])
         return history
 
-    def _history_for_prompt(
-        self, projected_history: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _history_for_prompt(self, projected_history: list[dict[str, Any]]) -> list[dict[str, Any]]:
         history = deepcopy(projected_history)
         if self.current_message_id is None:
             return history
         current = [
-            item
-            for item in self.history
-            if item.get("message_id") == self.current_message_id
+            item for item in self.history if item.get("message_id") == self.current_message_id
         ]
         if len(current) != 1:
             raise ValueError("current_message_id must identify exactly one history item")
-        history = [
-            item
-            for item in history
-            if item.get("message_id") != self.current_message_id
-        ]
+        history = [item for item in history if item.get("message_id") != self.current_message_id]
         current_item = deepcopy(current[0])
         current_sequence = current_item.get("sequence")
         insert_at = len(history)

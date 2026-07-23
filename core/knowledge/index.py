@@ -121,9 +121,7 @@ class LocalKnowledgeIndex:
         for row in rows:
             self.sync_revision_safely(connection, str(row["revision_id"]))
 
-    def sync_revision_safely(
-        self, connection: sqlite3.Connection, revision_id: str
-    ) -> bool:
+    def sync_revision_safely(self, connection: sqlite3.Connection, revision_id: str) -> bool:
         """Keep a failed derived projection from leaving partial chunks behind."""
 
         connection.execute("SAVEPOINT knowledge_index_revision")
@@ -231,9 +229,7 @@ class LocalKnowledgeIndex:
         )
         return len(chunks)
 
-    def mark_error(
-        self, connection: sqlite3.Connection, revision_id: str, message: str
-    ) -> None:
+    def mark_error(self, connection: sqlite3.Connection, revision_id: str, message: str) -> None:
         connection.execute(
             """
             INSERT INTO knowledge_index_revisions (
@@ -256,9 +252,7 @@ class LocalKnowledgeIndex:
             ).fetchone()[0]
         )
         active_chunk_count = int(
-            connection.execute(
-                "SELECT COUNT(*) FROM knowledge_chunks WHERE active=1"
-            ).fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM knowledge_chunks WHERE active=1").fetchone()[0]
         )
         total_chunk_count = int(
             connection.execute("SELECT COUNT(*) FROM knowledge_chunks").fetchone()[0]
@@ -315,9 +309,7 @@ class LocalKnowledgeIndex:
             """,
             (fts_query(normalized), *filter_params, candidate_limit),
         ).fetchall()
-        sparse = [
-            (str(row["chunk_id"]), -float(row["score"])) for row in sparse_rows
-        ]
+        sparse = [(str(row["chunk_id"]), -float(row["score"])) for row in sparse_rows]
         query_vector = self.embedding_provider.embed(normalized)
         dense_rows = connection.execute(
             f"""
@@ -493,9 +485,7 @@ class LocalKnowledgeIndex:
             clauses.append("chunk.source_id IN (" + ",".join("?" for _ in source_ids) + ")")
             params.extend(source_ids)
         if page_revisions:
-            clauses.append(
-                "chunk.page_revision IN (" + ",".join("?" for _ in page_revisions) + ")"
-            )
+            clauses.append("chunk.page_revision IN (" + ",".join("?" for _ in page_revisions) + ")")
             params.extend(page_revisions)
         else:
             clauses.append("chunk.active=1")

@@ -199,10 +199,7 @@ class TranscriptStore:
 
     def append_many(self, items: Sequence[TranscriptItem]) -> list[int]:
         """Insert a legacy batch atomically and return stable sequences."""
-        prepared = [
-            (item, _stored_values(item, _canonical_args_json(item.args)))
-            for item in items
-        ]
+        prepared = [(item, _stored_values(item, _canonical_args_json(item.args))) for item in items]
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -215,7 +212,12 @@ class TranscriptStore:
                         ).fetchone()
                         if existing is not None:
                             existing_item = _row_to_item(existing, self.path)
-                            if _stored_values(existing_item, _canonical_args_json(existing_item.args)) != values:
+                            if (
+                                _stored_values(
+                                    existing_item, _canonical_args_json(existing_item.args)
+                                )
+                                != values
+                            ):
                                 raise TranscriptConflictError(
                                     f"conflicting transcript message_id {item.message_id!r} at {self.path}"
                                 )
@@ -453,9 +455,7 @@ def _canonical_args_json(args: Mapping[str, Any]) -> str:
     )
     size = len(encoded.encode("utf-8"))
     if size > MAX_ARGS_BYTES:
-        raise ValueError(
-            f"transcript args exceed {MAX_ARGS_BYTES} bytes (encoded size {size})"
-        )
+        raise ValueError(f"transcript args exceed {MAX_ARGS_BYTES} bytes (encoded size {size})")
     return encoded
 
 
@@ -493,9 +493,7 @@ def _freeze_json_value(value: Any) -> Any:
     if isinstance(value, FrozenMapping | FrozenSequence):
         return value
     if isinstance(value, Mapping):
-        return FrozenMapping(
-            {key: _freeze_json_value(child) for key, child in value.items()}
-        )
+        return FrozenMapping({key: _freeze_json_value(child) for key, child in value.items()})
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return FrozenSequence(tuple(_freeze_json_value(child) for child in value))
     return value

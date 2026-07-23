@@ -20,18 +20,14 @@ class SecretCipher:
 
     def encrypt(self, plaintext: str, *, purpose: str) -> str:
         nonce = secrets.token_bytes(12)
-        ciphertext = self._cipher.encrypt(
-            nonce, plaintext.encode("utf-8"), purpose.encode("utf-8")
-        )
+        ciphertext = self._cipher.encrypt(nonce, plaintext.encode("utf-8"), purpose.encode("utf-8"))
         return _encode(nonce + ciphertext)
 
     def decrypt(self, encoded: str, *, purpose: str) -> str:
         payload = _decode(encoded)
         if len(payload) < 13:
             raise ValueError("encrypted payload is malformed")
-        plaintext = self._cipher.decrypt(
-            payload[:12], payload[12:], purpose.encode("utf-8")
-        )
+        plaintext = self._cipher.decrypt(payload[:12], payload[12:], purpose.encode("utf-8"))
         return plaintext.decode("utf-8")
 
 

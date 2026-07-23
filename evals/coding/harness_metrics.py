@@ -43,10 +43,11 @@ def summarize_retrieval_telemetry(
 
     retrieve_count = sum(item.get("decision") == "retrieve" for item in decisions)
     skip_count = sum(item.get("decision") == "skip" for item in decisions)
-    evidence_hit_count = sum(_non_negative_int(item.get("citation_count")) > 0 for item in completions)
+    evidence_hit_count = sum(
+        _non_negative_int(item.get("citation_count")) > 0 for item in completions
+    )
     error_count = sum(
-        str(item.get("status", "")) in {"error", "invalid_result"}
-        for item in completions
+        str(item.get("status", "")) in {"error", "invalid_result"} for item in completions
     )
     citation_count = sum(_non_negative_int(item.get("citation_count")) for item in completions)
     used_tokens = sum(_non_negative_int(item.get("used_tokens")) for item in completions)

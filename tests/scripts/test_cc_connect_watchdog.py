@@ -57,9 +57,7 @@ def _config() -> WatchdogConfig:
 
 def test_healthy_check_is_silent_and_does_not_restart(tmp_path) -> None:
     runner = FakeRunner(healthy=True)
-    watcher = Watchdog(
-        _config(), tmp_path, runner=runner, socket_probe=lambda _: True
-    )
+    watcher = Watchdog(_config(), tmp_path, runner=runner, socket_probe=lambda _: True)
 
     assert watcher.run_once() is True
     assert runner.restart_count == 0
@@ -71,9 +69,7 @@ def test_healthy_check_is_silent_and_does_not_restart(tmp_path) -> None:
 
 def test_unhealthy_gateway_restarts_and_notifies_once(tmp_path) -> None:
     runner = FakeRunner(healthy=False)
-    watcher = Watchdog(
-        _config(), tmp_path, runner=runner, socket_probe=lambda _: runner.healthy
-    )
+    watcher = Watchdog(_config(), tmp_path, runner=runner, socket_probe=lambda _: runner.healthy)
 
     assert watcher.run_once() is True
     assert runner.restart_count == 1
@@ -90,9 +86,7 @@ def test_failed_recovery_notification_is_retried(tmp_path) -> None:
     runner = FakeRunner(healthy=False)
     send_attempts = 0
 
-    def flaky_runner(
-        command: Sequence[str], input_text: str | None, timeout: int
-    ) -> CommandResult:
+    def flaky_runner(command: Sequence[str], input_text: str | None, timeout: int) -> CommandResult:
         nonlocal send_attempts
         if tuple(command)[1:3] == ("send", "--stdin"):
             send_attempts += 1
@@ -173,9 +167,7 @@ def test_missing_expected_cron_marks_health_unhealthy(tmp_path) -> None:
     assert "需人工处理的异常" in runner.notifications[0]
 
 
-def test_install_keeps_session_out_of_launcher_and_plist(
-    tmp_path, monkeypatch
-) -> None:
+def test_install_keeps_session_out_of_launcher_and_plist(tmp_path, monkeypatch) -> None:
     cc_connect = tmp_path / "cc-connect"
     cc_connect.write_text("#!/bin/sh\n", encoding="utf-8")
     cc_connect.chmod(0o700)

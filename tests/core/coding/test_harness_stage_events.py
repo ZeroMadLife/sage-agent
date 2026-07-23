@@ -19,7 +19,11 @@ def test_projects_a_direct_reply_into_explicit_durable_stages() -> None:
     events.extend(projector.finish("completed"))
 
     payloads = _payloads(events)
-    assert [(item["type"], item.get("stage_id")) for item in payloads if item["type"].startswith("stage_")] == [
+    assert [
+        (item["type"], item.get("stage_id"))
+        for item in payloads
+        if item["type"].startswith("stage_")
+    ] == [
         ("stage_started", "receive"),
         ("stage_completed", "receive"),
         ("stage_started", "context"),
@@ -47,26 +51,36 @@ def test_projects_a_direct_reply_into_explicit_durable_stages() -> None:
 def test_records_revision_bound_retrieval_metrics_and_react_loop() -> None:
     times = iter([20.0, 20.125])
     projector = CodingHarnessStageProjector("run-retrieve", clock=lambda: next(times))
-    result = json.dumps({
-        "status": "evidence_found",
-        "used_tokens": 420,
-        "token_budget": 1200,
-        "citations": [{"citation_id": "kcite_1"}, {"citation_id": "kcite_2"}],
-    })
+    result = json.dumps(
+        {
+            "status": "evidence_found",
+            "used_tokens": 420,
+            "token_budget": 1200,
+            "citations": [{"citation_id": "kcite_1"}, {"citation_id": "kcite_2"}],
+        }
+    )
 
     events = [*projector.start()]
     events.extend(projector.before({"type": "model_requested"}))
-    events.extend(projector.before({
-        "type": "tool_call",
-        "tool": "knowledge_search",
-        "args": {"query": "Harness", "token_budget": 1200},
-    }))
-    events.extend(projector.after({
-        "type": "tool_result",
-        "tool": "knowledge_search",
-        "content": result,
-        "is_error": False,
-    }))
+    events.extend(
+        projector.before(
+            {
+                "type": "tool_call",
+                "tool": "knowledge_search",
+                "args": {"query": "Harness", "token_budget": 1200},
+            }
+        )
+    )
+    events.extend(
+        projector.after(
+            {
+                "type": "tool_result",
+                "tool": "knowledge_search",
+                "content": result,
+                "is_error": False,
+            }
+        )
+    )
 
     payloads = _payloads(events)
     decision = next(item for item in payloads if item["type"] == "retrieval_decision")
@@ -95,23 +109,30 @@ def test_approval_blocks_the_tool_stage_without_creating_a_second_visit() -> Non
 
     events = [*projector.start()]
     events.extend(projector.before({"type": "model_requested"}))
-    events.extend(projector.before({
-        "type": "approval_required",
-        "tool": "run_shell",
-        "args": {"command": "pwd"},
-    }))
+    events.extend(
+        projector.before(
+            {
+                "type": "approval_required",
+                "tool": "run_shell",
+                "args": {"command": "pwd"},
+            }
+        )
+    )
     events.extend(projector.before({"type": "approval_granted", "tool": "run_shell"}))
-    events.extend(projector.before({
-        "type": "tool_call",
-        "tool": "run_shell",
-        "args": {"command": "pwd"},
-    }))
+    events.extend(
+        projector.before(
+            {
+                "type": "tool_call",
+                "tool": "run_shell",
+                "args": {"command": "pwd"},
+            }
+        )
+    )
 
     tool_starts = [
         event
         for event in events
-        if event.payload.get("type") == "stage_started"
-        and event.payload.get("stage_id") == "act"
+        if event.payload.get("type") == "stage_started" and event.payload.get("stage_id") == "act"
     ]
     assert [event.status for event in tool_starts] == ["blocked", "running", "running"]
     assert all(event.payload["detail"] == "run_shell · pwd" for event in tool_starts)
@@ -128,9 +149,7 @@ def test_memory_proposal_transitions_from_the_current_stage() -> None:
     events = [*projector.start()]
     events.extend(projector.before({"type": "model_requested"}))
     events.extend(
-        projector.before(
-            {"type": "tool_call", "tool": "remember", "args": {"fact": "Use SQLite"}}
-        )
+        projector.before({"type": "tool_call", "tool": "remember", "args": {"fact": "Use SQLite"}})
     )
     events.extend(
         projector.after(
@@ -145,9 +164,7 @@ def test_memory_proposal_transitions_from_the_current_stage() -> None:
     events.extend(projector.after({"type": "memory_proposal_ready"}))
 
     transitions = [
-        event.payload
-        for event in events
-        if event.payload.get("type") == "transition_taken"
+        event.payload for event in events if event.payload.get("type") == "transition_taken"
     ]
     assert transitions[-1]["from_stage_id"] == "plan"
     assert transitions[-1]["to_stage_id"] == "memory"
@@ -155,16 +172,18 @@ def test_memory_proposal_transitions_from_the_current_stage() -> None:
 
 def test_redacts_secrets_from_tool_stage_details() -> None:
     projector = CodingHarnessStageProjector("run-secret")
-    events = projector.before({
-        "type": "tool_call",
-        "tool": "run_shell",
-        "args": {
-            "command": (
-                "OPENAI_API_KEY=plain-secret "
-                "curl -H 'Authorization: Bearer bearer-secret' example.test"
-            )
-        },
-    })
+    events = projector.before(
+        {
+            "type": "tool_call",
+            "tool": "run_shell",
+            "args": {
+                "command": (
+                    "OPENAI_API_KEY=plain-secret "
+                    "curl -H 'Authorization: Bearer bearer-secret' example.test"
+                )
+            },
+        }
+    )
 
     detail = events[-1].payload["detail"]
     assert "plain-secret" not in detail

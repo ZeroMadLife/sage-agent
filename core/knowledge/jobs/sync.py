@@ -61,7 +61,11 @@ def build_sync_changes(
         )
 
     for path, (previous_revision, previous_status) in sorted(previous_manifest.items()):
-        if previous_status != "present" or path in current or (prefix and not path.startswith(prefix)):
+        if (
+            previous_status != "present"
+            or path in current
+            or (prefix and not path.startswith(prefix))
+        ):
             continue
         changes.append(
             KnowledgeSyncChange(

@@ -85,9 +85,7 @@ class ModelProviderRepository:
                 selected = _model_record_by_model_id(model_records, default_model_id)
                 if selected is None:
                     raise ValueError("default model is not configured under this Provider")
-                preference = await session.get(
-                    CloudModelPreferenceRecord, owner_user_id
-                )
+                preference = await session.get(CloudModelPreferenceRecord, owner_user_id)
                 if preference is None:
                     session.add(
                         CloudModelPreferenceRecord(
@@ -117,9 +115,7 @@ class ModelProviderRepository:
             ).all()
             return [await _provider_with_models(session, record) for record in records]
 
-    async def get_provider(
-        self, owner_user_id: str, provider_id: str
-    ) -> CloudModelProvider | None:
+    async def get_provider(self, owner_user_id: str, provider_id: str) -> CloudModelProvider | None:
         async with self._session_factory() as session:
             record = await _owned_provider_record(session, owner_user_id, provider_id)
             return await _provider_with_models(session, record) if record is not None else None
@@ -173,9 +169,7 @@ class ModelProviderRepository:
                 )
                 existing_models = (
                     await session.scalars(
-                        select(CloudModelRecord).where(
-                            CloudModelRecord.provider_id == provider_id
-                        )
+                        select(CloudModelRecord).where(CloudModelRecord.provider_id == provider_id)
                     )
                 ).all()
                 existing_by_model_id = {item.model_id: item for item in existing_models}
@@ -189,24 +183,18 @@ class ModelProviderRepository:
                 for model_id, value in requested.items():
                     existing = existing_by_model_id.get(model_id)
                     if existing is None:
-                        session.add(
-                            _new_model_record(provider_id, value)
-                        )
+                        session.add(_new_model_record(provider_id, value))
                         continue
                     existing.display_name = value.display_name.strip() or model_id
                     existing.context_window_tokens = value.context_window_tokens
                     existing.output_reserve_tokens = value.output_reserve_tokens
                     existing.reasoning_supported = value.reasoning_supported
                 removed_ids = [
-                    item.id
-                    for item in existing_models
-                    if item.model_id not in requested
+                    item.id for item in existing_models if item.model_id not in requested
                 ]
                 if removed_ids:
                     await session.execute(
-                        delete(CloudModelRecord).where(
-                            CloudModelRecord.id.in_(removed_ids)
-                        )
+                        delete(CloudModelRecord).where(CloudModelRecord.id.in_(removed_ids))
                     )
             if connection_changed:
                 record.status = "untested"
@@ -219,9 +207,7 @@ class ModelProviderRepository:
             model_records = list(
                 (
                     await session.scalars(
-                        select(CloudModelRecord).where(
-                            CloudModelRecord.provider_id == provider_id
-                        )
+                        select(CloudModelRecord).where(CloudModelRecord.provider_id == provider_id)
                     )
                 ).all()
             )
@@ -281,9 +267,7 @@ class ModelProviderRepository:
             preference = await session.get(CloudModelPreferenceRecord, owner_user_id)
             if preference is None:
                 return None
-            provider = await _owned_provider_record(
-                session, owner_user_id, preference.provider_id
-            )
+            provider = await _owned_provider_record(session, owner_user_id, preference.provider_id)
             model = await session.get(CloudModelRecord, preference.model_record_id)
             if provider is None or model is None or model.provider_id != provider.id:
                 return None
@@ -344,7 +328,7 @@ async def _owned_provider_record(
                 CloudModelProviderRecord.id == provider_id,
                 CloudModelProviderRecord.owner_user_id == owner_user_id,
             )
-        )
+        ),
     )
 
 
@@ -368,8 +352,7 @@ async def _ensure_provider_name_available(
 def _bounded_integrity_error(exc: IntegrityError) -> ValueError:
     constraint_name = getattr(getattr(exc.orig, "diag", None), "constraint_name", "")
     if constraint_name == "cloud_model_provider_owner_name_key" or (
-        "cloud_model_providers.owner_user_id, cloud_model_providers.name"
-        in str(exc.orig)
+        "cloud_model_providers.owner_user_id, cloud_model_providers.name" in str(exc.orig)
     ):
         return ValueError("Provider name already exists")
     return ValueError("Provider configuration conflicts with an existing record")
@@ -388,12 +371,9 @@ async def _provider_with_models(
     return _to_provider(record, models)
 
 
-def _new_model_records(
-    provider_id: str, models: Sequence[ModelInput]
-) -> list[CloudModelRecord]:
+def _new_model_records(provider_id: str, models: Sequence[ModelInput]) -> list[CloudModelRecord]:
     return [
-        _new_model_record(provider_id, value)
-        for value in _validated_model_inputs(models).values()
+        _new_model_record(provider_id, value) for value in _validated_model_inputs(models).values()
     ]
 
 
@@ -409,10 +389,7 @@ def _validated_model_inputs(
         if model_id in seen:
             raise ValueError("model ids must be unique within a Provider")
         seen.add(model_id)
-        if (
-            value.context_window_tokens is None
-            and value.output_reserve_tokens is not None
-        ):
+        if value.context_window_tokens is None and value.output_reserve_tokens is not None:
             raise ValueError("output reserve requires a context window")
         if (
             value.context_window_tokens is not None

@@ -45,9 +45,10 @@ def test_cloud_base_url_rejects_private_and_credential_destinations(url: str) ->
 
 
 def test_development_only_allows_loopback_http() -> None:
-    assert validate_provider_base_url(
-        "http://localhost:11434/v1", app_env="development"
-    ) == "http://localhost:11434/v1"
+    assert (
+        validate_provider_base_url("http://localhost:11434/v1", app_env="development")
+        == "http://localhost:11434/v1"
+    )
     with pytest.raises(ValueError, match="HTTPS"):
         validate_provider_base_url("http://provider.example/v1", app_env="development")
 

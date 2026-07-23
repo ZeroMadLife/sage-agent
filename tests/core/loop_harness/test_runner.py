@@ -198,9 +198,7 @@ class FakeGitHub:
             head_sha,
         )
 
-    def merge_tier_a(
-        self, *, receipt: PullRequestReceipt, base_sha: str, tier: str
-    ) -> str:
+    def merge_tier_a(self, *, receipt: PullRequestReceipt, base_sha: str, tier: str) -> str:
         assert receipt.number == 12
         assert receipt.head_sha == "b" * 40
         assert base_sha == "a" * 40
@@ -418,9 +416,7 @@ def test_runner_shadow_does_not_start_fixer_for_dirty_overlap(tmp_path, monkeypa
     assert fixer.calls == 0
 
 
-def test_runner_shadow_invalidates_fixer_result_when_paused_mid_run(
-    tmp_path, monkeypatch
-) -> None:
+def test_runner_shadow_invalidates_fixer_result_when_paused_mid_run(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("core.loop_harness.runner._SCAN_SCOPES", (("frontend/src",),))
     config = _config(tmp_path)
     state = LoopState(config.database_path)
@@ -456,9 +452,7 @@ def test_runner_shadow_invalidates_fixer_result_when_paused_mid_run(
     assert state.is_enabled() is False
 
 
-def test_runner_pr_canary_binds_draft_and_review_to_exact_head(
-    tmp_path, monkeypatch
-) -> None:
+def test_runner_pr_canary_binds_draft_and_review_to_exact_head(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("core.loop_harness.runner._SCAN_SCOPES", (("frontend/src",),))
     config = _config(tmp_path)
     state = LoopState(config.database_path)
@@ -485,9 +479,7 @@ def test_runner_pr_canary_binds_draft_and_review_to_exact_head(
         state,
         git=git,
         worker=FakeWorker(scanner_result),
-        fixer=FakeFixer(
-            FixerResult("已修复知识库空状态间距", (candidate_path,), (), ())
-        ),
+        fixer=FakeFixer(FixerResult("已修复知识库空状态间距", (candidate_path,), (), ())),
         validator=FakeValidator(),
         artifact_store=FakeArtifactStore(config.reports_root),
         github=github,
@@ -503,9 +495,7 @@ def test_runner_pr_canary_binds_draft_and_review_to_exact_head(
     assert state.status()["open_pull_requests"] == 1
 
 
-def test_runner_auto_merges_only_tier_a_after_independent_review(
-    tmp_path, monkeypatch
-) -> None:
+def test_runner_auto_merges_only_tier_a_after_independent_review(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("core.loop_harness.runner._SCAN_SCOPES", (("frontend/src",),))
     config = _config(tmp_path)
     state = LoopState(config.database_path)

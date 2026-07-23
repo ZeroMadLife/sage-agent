@@ -84,7 +84,13 @@ def _response_input(messages: Sequence[object]) -> ResponseInputParam:
             content = str(message.get("content", ""))
         else:
             role = str(getattr(message, "type", getattr(message, "role", "user")))
-            role = "assistant" if role in {"ai", "assistant"} else "system" if role == "system" else "user"
+            role = (
+                "assistant"
+                if role in {"ai", "assistant"}
+                else "system"
+                if role == "system"
+                else "user"
+            )
             content = str(getattr(message, "content", ""))
         normalized_role: Literal["user", "assistant", "system", "developer"] = (
             cast(Literal["user", "assistant", "system", "developer"], role)

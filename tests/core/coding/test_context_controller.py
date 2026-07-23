@@ -97,11 +97,7 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
     assert compactor.calls[0]["session_id"] == "s1"
     assert compactor.calls[0]["previous_checkpoint"] is None
     assert compactor.calls[0]["transcript_range"] == (4, 4)
-    ids = {
-        event.compaction_id
-        for event in prepared.events
-        if hasattr(event, "compaction_id")
-    }
+    ids = {event.compaction_id for event in prepared.events if hasattr(event, "compaction_id")}
     assert ids == {compactor.calls[0]["compaction_id"]}
     assert [event.type for event in prepared.events] == [
         "context_compaction_started",
@@ -109,7 +105,8 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
         "context_usage_updated",
     ]
     assert [event.type for event in sink.events] == [
-        "context_compaction_started", "context_compaction_completed"
+        "context_compaction_started",
+        "context_compaction_completed",
     ]
     assert prepared.events[1].saved_ratio == pytest.approx((180 - 40) / 180)
     assert renderer.calls[-1][1] == "current"
@@ -119,8 +116,11 @@ async def test_turn_start_compacts_before_model_and_recounts_with_same_attempt_i
 async def test_compaction_failure_preserves_bounded_projection_and_emergency_stops() -> None:
     history = [
         {
-            "role": "tool", "name": "read_file", "args": {"path": "same.py"},
-            "content": "x" * 20_000, "artifact_ref": f"artifact-{index}",
+            "role": "tool",
+            "name": "read_file",
+            "args": {"path": "same.py"},
+            "content": "x" * 20_000,
+            "artifact_ref": f"artifact-{index}",
         }
         for index in range(5)
     ]
@@ -166,15 +166,17 @@ async def test_started_sink_runs_before_compactor_and_terminal_sink_after_result
 
     compactor = OrderedCompactor(_result(history))
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=compactor,
-        renderer=RecordingRenderer(), lifecycle_sink=sink,
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=compactor,
+        renderer=RecordingRenderer(),
+        lifecycle_sink=sink,
     )
 
     await controller.on_turn_start(history, "current", "run-1")
-    assert order == [
-        "context_compaction_started", "compactor", "context_compaction_completed"
-    ]
+    assert order == ["context_compaction_started", "compactor", "context_compaction_completed"]
 
 
 async def test_started_sink_failure_is_fail_closed_before_compactor() -> None:
@@ -186,8 +188,12 @@ async def test_started_sink_failure_is_fail_closed_before_compactor() -> None:
         raise OSError("database secret")
 
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=compactor, renderer=RecordingRenderer(),
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=compactor,
+        renderer=RecordingRenderer(),
         lifecycle_sink=broken_sink,
     )
 
@@ -210,8 +216,12 @@ async def test_terminal_sink_failure_surfaces_after_compaction() -> None:
             raise OSError("database unavailable")
 
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=compactor, renderer=RecordingRenderer(),
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=compactor,
+        renderer=RecordingRenderer(),
         lifecycle_sink=broken_terminal_sink,
     )
 
@@ -243,8 +253,11 @@ def test_before_model_request_projects_twice_but_never_semantically_compacts() -
 
 def test_configured_controller_is_compactable_at_normal_pressure() -> None:
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=RecordingCompactor(_result([])),
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=RecordingCompactor(_result([])),
         renderer=RecordingRenderer(),
     )
     prepared = controller.before_model_request([], user_message="hi", run_id="run-1")
@@ -264,8 +277,11 @@ async def test_context_manager_renders_current_request_exactly_once_and_not_in_h
 
     history = [{"role": "user", "content": "prior request", "message_id": "m-old"}]
     controller = ContextController(
-        session_id="s1", policy=ContextPolicy(200_000, 20_000), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=RecordingCompactor(_result(history)),
+        session_id="s1",
+        policy=ContextPolicy(200_000, 20_000),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=RecordingCompactor(_result(history)),
         renderer=render,
     )
 
@@ -280,8 +296,11 @@ async def test_current_message_id_is_removed_from_controller_history() -> None:
     current = {"role": "user", "content": "current", "message_id": "m-current"}
     history = [{"role": "user", "content": "older", "message_id": "m-old"}, current]
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=RecordingCompactor(_result(history)),
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=RecordingCompactor(_result(history)),
         renderer=RecordingRenderer(),
     )
     prepared = await controller.on_turn_start(
@@ -292,13 +311,18 @@ async def test_current_message_id_is_removed_from_controller_history() -> None:
 
 def test_before_model_request_applies_same_current_message_identity_filter() -> None:
     controller = ContextController(
-        session_id="s1", policy=_policy(), counter=LengthCounter(),
-        projector=ContextProjector(), compactor=RecordingCompactor(_result([])),
+        session_id="s1",
+        policy=_policy(),
+        counter=LengthCounter(),
+        projector=ContextProjector(),
+        compactor=RecordingCompactor(_result([])),
         renderer=RecordingRenderer(),
     )
     prepared = controller.before_model_request(
         [{"role": "user", "content": "current", "message_id": "m-current"}],
-        user_message="current", run_id="run-1", current_message_id="m-current",
+        user_message="current",
+        run_id="run-1",
+        current_message_id="m-current",
     )
     assert prepared.projected_history == []
 
@@ -371,7 +395,9 @@ def test_model_registry_resolves_explicit_mapping_and_model_attributes() -> None
     "payload",
     ["[]", '{"m":0}', '{"m":{"context_window_tokens":10,"output_reserve_tokens":10}}'],
 )
-def test_model_registry_rejects_invalid_environment(monkeypatch: pytest.MonkeyPatch, payload: str) -> None:
+def test_model_registry_rejects_invalid_environment(
+    monkeypatch: pytest.MonkeyPatch, payload: str
+) -> None:
     monkeypatch.setenv("SAGE_MODEL_CONTEXT_WINDOWS", payload)
     with pytest.raises(ValueError):
         ModelCapabilityRegistry.from_env()
@@ -390,7 +416,7 @@ def test_model_registry_loads_integer_environment_value(monkeypatch: pytest.Monk
     [
         '{"model-a":200000,"model-a":300000}',
         '{"model-a":99999999999999999999}',
-        "{" + ",".join(f'\"m{i}\":200000' for i in range(257)) + "}",
+        "{" + ",".join(f'"m{i}":200000' for i in range(257)) + "}",
         '{"model-a":200000,"padding":"' + ("x" * 70_000) + '"}',
     ],
 )
@@ -440,8 +466,12 @@ async def test_structured_summarizer_uses_canonical_json_and_parses_fence() -> N
 async def test_structured_summarizer_rejects_prose_and_repeated_objects(response: str) -> None:
     with pytest.raises(ValueError, match="JSON object"):
         await StructuredSummarizer(CompleteModel(response)).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=1,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=1,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
 
 
@@ -453,8 +483,12 @@ async def test_structured_summarizer_times_out_without_leaking_model_error() -> 
 
     with pytest.raises(TimeoutError, match="timed out"):
         await StructuredSummarizer(SlowModel(), timeout_seconds=0.01).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=1,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=1,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
 
 
@@ -470,11 +504,13 @@ async def test_structured_summarizer_timeout_is_a_hard_deadline() -> None:
     loop = asyncio.get_running_loop()
     started = loop.time()
     with pytest.raises(TimeoutError, match="timed out"):
-        await StructuredSummarizer(
-            CancellationResistantModel(), timeout_seconds=0.01
-        ).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=1,
-            source_transcript_range=(0, 0), repair_feedback=None,
+        await StructuredSummarizer(CancellationResistantModel(), timeout_seconds=0.01).summarize(
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=1,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
     assert loop.time() - started < 0.2
 
@@ -486,8 +522,12 @@ async def test_structured_summarizer_propagates_cancellation() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await StructuredSummarizer(CancelModel()).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=1,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=1,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
 
 
@@ -495,8 +535,12 @@ async def test_structured_summarizer_rejects_duplicate_json_keys() -> None:
     model = CompleteModel('{"goal":"first","goal":"second"}')
     with pytest.raises(ValueError, match="duplicate"):
         await StructuredSummarizer(model).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=100,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=100,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
 
 
@@ -505,8 +549,11 @@ async def test_structured_summarizer_rejects_oversized_archived_input_before_mod
     with pytest.raises(ValueError, match="archived"):
         await StructuredSummarizer(model).summarize(
             archived_history=[{"role": "tool", "content": "x" * 1_100_000}],
-            previous_summary=None, focus="", max_tokens=100,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            previous_summary=None,
+            focus="",
+            max_tokens=100,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
     assert model.prompts == []
 
@@ -515,8 +562,12 @@ async def test_structured_summarizer_rejects_oversized_raw_output() -> None:
     model = CompleteModel('{"goal":"' + ("x" * 300_000) + '"}')
     with pytest.raises(ValueError, match="output"):
         await StructuredSummarizer(model).summarize(
-            archived_history=[], previous_summary=None, focus="", max_tokens=20_000,
-            source_transcript_range=(0, 0), repair_feedback=None,
+            archived_history=[],
+            previous_summary=None,
+            focus="",
+            max_tokens=20_000,
+            source_transcript_range=(0, 0),
+            repair_feedback=None,
         )
 
 
@@ -531,8 +582,12 @@ async def test_structured_summarizer_supports_max_completion_tokens_provider() -
 
     model = CompletionTokensModel()
     result = await StructuredSummarizer(model).summarize(
-        archived_history=[], previous_summary=None, focus="", max_tokens=123,
-        source_transcript_range=(0, 0), repair_feedback=None,
+        archived_history=[],
+        previous_summary=None,
+        focus="",
+        max_tokens=123,
+        source_transcript_range=(0, 0),
+        repair_feedback=None,
     )
     assert result == _summary_payload()
     assert model.received == 123
@@ -542,8 +597,11 @@ async def test_structured_summarizer_caps_combined_request_input() -> None:
     model = CompleteModel("{}")
     with pytest.raises(ValueError, match="request"):
         await StructuredSummarizer(model).summarize(
-            archived_history=[], previous_summary=None,
-            focus="f" * 1_100_000, max_tokens=100,
-            source_transcript_range=(0, 0), repair_feedback="r" * 1_100_000,
+            archived_history=[],
+            previous_summary=None,
+            focus="f" * 1_100_000,
+            max_tokens=100,
+            source_transcript_range=(0, 0),
+            repair_feedback="r" * 1_100_000,
         )
     assert model.prompts == []

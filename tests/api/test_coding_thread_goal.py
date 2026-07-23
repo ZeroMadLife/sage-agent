@@ -526,9 +526,7 @@ async def test_mastery_outbox_commits_receipt_and_does_not_replay(tmp_path: Path
             coding_run_registry=SimpleNamespace(
                 get=lambda session_id: SimpleNamespace(journal=journal)
             ),
-            coding_sessions={
-                "session-mastery": SimpleNamespace(owner_user_id="owner-a")
-            },
+            coding_sessions={"session-mastery": SimpleNamespace(owner_user_id="owner-a")},
         )
     )
 

@@ -20,7 +20,9 @@ def test_proposal_restart_and_no_mutation_before_approval(tmp_path: Path) -> Non
     ws = tmp_path / "repo"
     ws.mkdir()
     manager = MemoryManager(tmp_path / "storage", ws)
-    proposal = manager.create_proposal([MemoryCandidate("use ruff")], run_id="run-1", reflection_id="r-1")
+    proposal = manager.create_proposal(
+        [MemoryCandidate("use ruff")], run_id="run-1", reflection_id="r-1"
+    )
     assert manager.memory_store.list_facts() == []
     reopened = MemoryManager(tmp_path / "storage", ws)
     assert reopened.get_proposal(proposal.proposal_id) == proposal
@@ -67,13 +69,17 @@ def test_manager_approval_replay_does_not_duplicate_markdown_projection(tmp_path
     assert len(manager.durable.list_facts()) == first
 
 
-def test_projection_failure_is_replayed_after_restart(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_projection_failure_is_replayed_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     workspace = tmp_path / "repo"
     workspace.mkdir()
     manager = MemoryManager(tmp_path / "storage", workspace)
     proposal = manager.create_proposal([MemoryCandidate("recover")], proposal_id="recover")
     original = manager.durable.approve_dream
-    monkeypatch.setattr(manager.durable, "approve_dream", lambda facts: (_ for _ in ()).throw(OSError("disk")))
+    monkeypatch.setattr(
+        manager.durable, "approve_dream", lambda facts: (_ for _ in ()).throw(OSError("disk"))
+    )
     with pytest.raises(OSError):
         manager.approve(proposal.proposal_id, 0)
     reopened = MemoryManager(tmp_path / "storage", workspace)
@@ -117,15 +123,17 @@ def test_legacy_v0_proposal_schema_migrates(tmp_path: Path) -> None:
     CREATE INDEX memory_events_proposal_idx ON memory_events(proposal_id, created_at);
     PRAGMA user_version=0;
     """)
-    candidates = json.dumps([
-        {
-            "content": "legacy fact",
-            "topic": "project-conventions",
-            "source": "dream_proposal",
-            "source_ref": "run-1",
-            "created_at": "2026-07-12T00:00:00+00:00",
-        }
-    ])
+    candidates = json.dumps(
+        [
+            {
+                "content": "legacy fact",
+                "topic": "project-conventions",
+                "source": "dream_proposal",
+                "source_ref": "run-1",
+                "created_at": "2026-07-12T00:00:00+00:00",
+            }
+        ]
+    )
     db.execute(
         "INSERT INTO memory_proposals VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
@@ -148,10 +156,13 @@ def test_legacy_v0_proposal_schema_migrates(tmp_path: Path) -> None:
     assert store.path.exists()
     with sqlite3.connect(store.path) as check:
         assert check.execute("PRAGMA user_version").fetchone()[0] == 1
-        assert check.execute(
-            "SELECT projection_status FROM memory_proposals WHERE proposal_id=?",
-            ("legacy-approved",),
-        ).fetchone()[0] == "pending"
+        assert (
+            check.execute(
+                "SELECT projection_status FROM memory_proposals WHERE proposal_id=?",
+                ("legacy-approved",),
+            ).fetchone()[0]
+            == "pending"
+        )
 
 
 def test_legacy_migration_rolls_back_and_can_retry(
@@ -263,7 +274,7 @@ def test_store_rejects_unsupported_schema_versions(tmp_path: Path, version: int)
     [
         '[{"content":"one","content":"two"}]',
         '[{"content":NaN}]',
-        '{}',
+        "{}",
         '[{"content":4}]',
         '[{"content":"ok","unknown":"field"}]',
     ],

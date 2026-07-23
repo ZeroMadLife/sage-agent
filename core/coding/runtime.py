@@ -136,13 +136,13 @@ class CodingRuntime:
                 "todos": {"next_id": 1, "items": []},
             }
         )
-        self.sandbox_provider = str(
-            self.session.get("sandbox_provider", sandbox_provider)
-        ).strip() or "local_workspace"
+        self.sandbox_provider = (
+            str(self.session.get("sandbox_provider", sandbox_provider)).strip() or "local_workspace"
+        )
         self.session["sandbox_provider"] = self.sandbox_provider
-        self.sandbox_image = str(
-            self.session.get("sandbox_image", sandbox_image)
-        ).strip() or "python:3.11-slim"
+        self.sandbox_image = (
+            str(self.session.get("sandbox_image", sandbox_image)).strip() or "python:3.11-slim"
+        )
         self.session["sandbox_image"] = self.sandbox_image
         self.session["id"] = session_id
         self.session["workspace_root"] = str(self.workspace.root)
@@ -217,9 +217,7 @@ class CodingRuntime:
         )
         self.context_controller = context_controller
         if self.context_controller is None and self.context_policy is not None:
-            self.context_controller = self._build_context_controller(
-                model, self.context_policy
-            )
+            self.context_controller = self._build_context_controller(model, self.context_policy)
         elif self.context_controller is not None:
             self.context_controller.lifecycle_sink = self._context_lifecycle_sink
         self._restore_context_state()
@@ -290,8 +288,7 @@ class CodingRuntime:
             for item in sorted(
                 target.iterdir(), key=lambda item: (item.is_file(), item.name.lower())
             )
-            if item.name not in IGNORED_PATH_NAMES
-            and not self.workspace.is_protected(item)
+            if item.name not in IGNORED_PATH_NAMES and not self.workspace.is_protected(item)
         ]
         return [{"name": item.name, "is_dir": item.is_dir()} for item in entries[:200]]
 
@@ -385,9 +382,7 @@ class CodingRuntime:
         if policy is None:
             policy = self.model_capabilities.resolve(replacement)
         controller = (
-            self._build_context_controller(replacement, policy)
-            if policy is not None
-            else None
+            self._build_context_controller(replacement, policy) if policy is not None else None
         )
         self.model = replacement
         self.model_factory = model_factory
@@ -467,8 +462,7 @@ class CodingRuntime:
             "usage_ratio": usage.usage_ratio,
             "level": usage.level,
             "estimated": usage.estimated,
-            "compactable": self.active_run_id is None
-            and not self._context_operation_lock.locked(),
+            "compactable": self.active_run_id is None and not self._context_operation_lock.locked(),
         }
 
     def set_permission_mode(self, mode: PermissionMode) -> None:
@@ -538,9 +532,7 @@ class CodingRuntime:
         content = target.read_text(encoding="utf-8", errors="replace")
         return content[:2000]
 
-    def _render_context_for_count(
-        self, history: list[dict[str, Any]], user_message: str
-    ) -> str:
+    def _render_context_for_count(self, history: list[dict[str, Any]], user_message: str) -> str:
         prompt, _ = self.context_manager.build(
             user_message=user_message,
             history=history,
@@ -552,9 +544,7 @@ class CodingRuntime:
         )
         return prompt
 
-    def _build_context_controller(
-        self, model: Any, policy: ContextPolicy
-    ) -> ContextController:
+    def _build_context_controller(self, model: Any, policy: ContextPolicy) -> ContextController:
         counter = TokenCounter(model)
         compactor = CompactManager(
             summarizer=StructuredSummarizer(model),
@@ -584,13 +574,14 @@ class CodingRuntime:
         for index, item in enumerate(legacy):
             enriched = deepcopy(item)
             if not enriched.get("message_id"):
-                identity = json.dumps(
-                    item, ensure_ascii=False, sort_keys=True, default=str
+                identity = json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+                enriched["message_id"] = (
+                    "legacy_"
+                    + uuid.uuid5(
+                        uuid.NAMESPACE_URL,
+                        f"sage:{self.session_id}:{index}:{identity}",
+                    ).hex
                 )
-                enriched["message_id"] = "legacy_" + uuid.uuid5(
-                    uuid.NAMESPACE_URL,
-                    f"sage:{self.session_id}:{index}:{identity}",
-                ).hex
             enriched.setdefault("run_id", "")
             enriched.setdefault("turn_id", "")
             enriched.setdefault("created_at", now())
@@ -598,9 +589,7 @@ class CodingRuntime:
         if batch:
             self.transcript_store.append_many(batch)
         persisted = self.transcript_store.read_all()
-        self.session["history"] = [
-            self._transcript_item_to_history(item) for item in persisted
-        ]
+        self.session["history"] = [self._transcript_item_to_history(item) for item in persisted]
 
     def _restore_context_state(self) -> None:
         canonical = deepcopy(self.session["history"])
@@ -614,9 +603,7 @@ class CodingRuntime:
             state["checkpoint_id"] = ""
             return
         checkpoint = self.compaction_store.load_latest_checkpoint(self.session_id)
-        if checkpoint is None or not self._checkpoint_matches_transcript(
-            checkpoint, canonical
-        ):
+        if checkpoint is None or not self._checkpoint_matches_transcript(checkpoint, canonical):
             state["resume_status"] = "canonical_fallback"
             state["active_projection"] = deepcopy(canonical)
             state["checkpoint_id"] = ""
@@ -645,7 +632,10 @@ class CodingRuntime:
         canonical: list[dict[str, Any]],
     ) -> bool:
         try:
-            if checkpoint.transcript_start < 1 or checkpoint.transcript_end < checkpoint.transcript_start:
+            if (
+                checkpoint.transcript_start < 1
+                or checkpoint.transcript_end < checkpoint.transcript_start
+            ):
                 return False
             sequences = [item.get("sequence") for item in canonical]
             if not sequences:
@@ -666,9 +656,7 @@ class CodingRuntime:
                 range(checkpoint.transcript_start, checkpoint.transcript_end + 1)
             ):
                 return False
-            evidence_history = [
-                self._transcript_item_to_history(item) for item in evidence
-            ]
+            evidence_history = [self._transcript_item_to_history(item) for item in evidence]
             if CompactManager._evidence_hash(evidence_history) != checkpoint.evidence_hash:
                 return False
             prefix: list[dict[str, Any]] = []
@@ -940,7 +928,9 @@ class CodingRuntime:
                 self.session_id,
                 event.compaction_id,
                 result,
-                evidence={"transcript_range": list(result.checkpoint.summary.source_transcript_range)},
+                evidence={
+                    "transcript_range": list(result.checkpoint.summary.source_transcript_range)
+                },
             )
         elif isinstance(event, ContextCompactionFailedEvent):
             if result is None:
@@ -1108,9 +1098,7 @@ class CodingRuntime:
             self.session_event_bus.emit("error", error_event)
         terminals: list[dict[str, Any]] = []
         with suppress(Exception):
-            terminals = self._persist_run_terminal(
-                run_id, run_start_time, forced_status="error"
-            )
+            terminals = self._persist_run_terminal(run_id, run_start_time, forced_status="error")
         return [error_event, *terminals]
 
     async def run_turn(
@@ -1206,9 +1194,7 @@ class CodingRuntime:
             )
         except asyncio.CancelledError:
             with suppress(Exception):
-                self._persist_run_terminal(
-                    run_id, run_start_time, forced_status="cancelled"
-                )
+                self._persist_run_terminal(run_id, run_start_time, forced_status="cancelled")
             self.active_run_id = None
             self.stop_requested = False
             self._context_operation_lock.release()

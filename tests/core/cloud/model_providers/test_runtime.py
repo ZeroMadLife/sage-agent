@@ -17,7 +17,9 @@ from core.cloud.model_providers import (
 from core.llm_responses import ResponsesAPIChatModel
 
 
-def _credential(mode: str, provider_id: str, *, reasoning: bool = True) -> RuntimeProviderCredential:
+def _credential(
+    mode: str, provider_id: str, *, reasoning: bool = True
+) -> RuntimeProviderCredential:
     model = CloudModel(
         id=f"record-{provider_id}",
         provider_id=provider_id,
@@ -68,9 +70,7 @@ def test_account_factory_routes_three_modes_without_mutating_environment() -> No
 
 
 def test_account_factory_rejects_cross_provider_and_undeclared_reasoning() -> None:
-    factory = AccountModelFactory(
-        [_credential("openai_chat_completions", "chat", reasoning=False)]
-    )
+    factory = AccountModelFactory([_credential("openai_chat_completions", "chat", reasoning=False)])
 
     with pytest.raises(ValueError, match="Provider is unavailable"):
         factory("account:other:model-a")
@@ -87,9 +87,7 @@ async def test_responses_adapter_streams_public_text_and_usage() -> None:
                     SimpleNamespace(
                         type="response.completed",
                         response=SimpleNamespace(
-                            usage=SimpleNamespace(
-                                input_tokens=10, output_tokens=4, total_tokens=14
-                            )
+                            usage=SimpleNamespace(input_tokens=10, output_tokens=4, total_tokens=14)
                         ),
                     ),
                 ]

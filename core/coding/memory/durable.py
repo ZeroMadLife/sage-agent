@@ -186,9 +186,7 @@ class DurableMemory:
                 )
             except json.JSONDecodeError:
                 if line.startswith("- "):
-                    facts.append(
-                        MemoryFact(topic=topic, content=line[2:].strip(), status="active")
-                    )
+                    facts.append(MemoryFact(topic=topic, content=line[2:].strip(), status="active"))
         return facts
 
     def _rebuild_index(self) -> None:
@@ -259,9 +257,7 @@ def _reject_untrusted_ancestor_symlinks(root: Path) -> None:
             raise OSError(f"untrusted symlink in memory root path: {current}")
 
 
-def _open_directory(
-    root: Path, components: tuple[str, ...], *, tighten: bool = True
-) -> int:
+def _open_directory(root: Path, components: tuple[str, ...], *, tighten: bool = True) -> int:
     directory_fd = os.open(root, _DIRECTORY_FLAGS)
     try:
         for component in components:

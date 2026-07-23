@@ -185,9 +185,7 @@ async def complete_github_oauth(
 
 
 @router.get("/api/v1/cloud/me", response_model=CloudCurrentUserResponse)
-async def get_cloud_current_user(
-    request: Request, response: Response
-) -> CloudCurrentUserResponse:
+async def get_cloud_current_user(request: Request, response: Response) -> CloudCurrentUserResponse:
     """Return the user resolved from the HttpOnly server session cookie."""
     user = await _repository(request).authenticated_user(request.cookies.get(_SESSION_COOKIE, ""))
     if user is None:
@@ -206,9 +204,8 @@ async def development_login(
     response: Response,
 ) -> CloudCurrentUserResponse:
     """Create a development-only session after a one-time invite is consumed."""
-    if (
-        getattr(request.app.state, "cloud_app_env", "") != "development"
-        or not bool(getattr(request.app.state, "cloud_dev_login_enabled", False))
+    if getattr(request.app.state, "cloud_app_env", "") != "development" or not bool(
+        getattr(request.app.state, "cloud_dev_login_enabled", False)
     ):
         raise HTTPException(status_code=404, detail="not found")
     response.headers["Cache-Control"] = "no-store"

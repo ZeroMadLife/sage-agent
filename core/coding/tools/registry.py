@@ -26,6 +26,7 @@ class ToolArgumentValidationError(ValueError):
         self.tool_name = tool_name
         self.schema = schema
 
+
 TOOL_MODULES = (
     "core.coding.tools.file_tools",
     "core.coding.tools.shell_tool",

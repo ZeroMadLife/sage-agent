@@ -89,9 +89,7 @@ def test_list_detail_and_status_filter_use_wire_contract(tmp_path: Path) -> None
         ]
     }
 
-    detail = client.get(
-        f"/api/v1/coding/{session_id}/memory/proposals/{proposal.proposal_id}"
-    )
+    detail = client.get(f"/api/v1/coding/{session_id}/memory/proposals/{proposal.proposal_id}")
     assert detail.status_code == 200
     body = detail.json()
     assert body["proposal"] == listed.json()["proposals"][0]
@@ -146,9 +144,12 @@ def test_restart_can_list_and_approve_without_in_memory_pending_state(tmp_path: 
     runtime.memory_manager._pending_proposal = None
     runtime.memory_manager._proposal_id = ""
 
-    assert restarted_client.get(
-        f"/api/v1/coding/{session_id}/memory/proposals"
-    ).json()["proposals"][0]["proposal_id"] == proposal.proposal_id
+    assert (
+        restarted_client.get(f"/api/v1/coding/{session_id}/memory/proposals").json()["proposals"][
+            0
+        ]["proposal_id"]
+        == proposal.proposal_id
+    )
     approved = restarted_client.post(
         f"/api/v1/coding/{session_id}/memory/proposals/{proposal.proposal_id}/approve",
         json={"expected_revision": 0},
@@ -188,19 +189,13 @@ def test_unknown_cross_workspace_and_cross_session_proposals_are_404(tmp_path: P
     proposal = _proposal(app, first)
 
     for scoped_session in (same_workspace_other_session, second):
-        path = (
-            f"/api/v1/coding/{scoped_session}/memory/proposals/{proposal.proposal_id}"
-        )
+        path = f"/api/v1/coding/{scoped_session}/memory/proposals/{proposal.proposal_id}"
         assert client.get(path).status_code == 404
-        assert client.post(
-            f"{path}/approve", json={"expected_revision": 0}
-        ).status_code == 404
+        assert client.post(f"{path}/approve", json={"expected_revision": 0}).status_code == 404
 
     unknown = f"/api/v1/coding/{first}/memory/proposals/not-found"
     assert client.get(unknown).status_code == 404
-    assert client.post(
-        f"{unknown}/reject", json={"expected_revision": 0}
-    ).status_code == 404
+    assert client.post(f"{unknown}/reject", json={"expected_revision": 0}).status_code == 404
 
 
 def test_legacy_routes_require_explicit_id_and_revision_and_use_cas(tmp_path: Path) -> None:

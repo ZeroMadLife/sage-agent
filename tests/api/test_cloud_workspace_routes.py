@@ -75,7 +75,9 @@ async def test_owner_can_create_and_read_metadata_without_allocating_workspace_f
     assert listed.json() == [{"project_id": project_id, "name": "Sage"}]
 
 
-async def test_other_user_receives_404_for_guessed_workspace_id(repository: CloudRepository) -> None:
+async def test_other_user_receives_404_for_guessed_workspace_id(
+    repository: CloudRepository,
+) -> None:
     owner = await _client_for_user(repository, "owner-invite", "owner@example.com")
     other = await _client_for_user(repository, "other-invite", "other@example.com")
     project_id = owner.post("/api/v1/cloud/projects", json={"name": "Private"}).json()["project_id"]
@@ -88,7 +90,9 @@ async def test_other_user_receives_404_for_guessed_workspace_id(repository: Clou
     assert response.status_code == 404
 
 
-async def test_project_list_does_not_leak_another_users_metadata(repository: CloudRepository) -> None:
+async def test_project_list_does_not_leak_another_users_metadata(
+    repository: CloudRepository,
+) -> None:
     owner = await _client_for_user(repository, "owner-list-invite", "owner-list@example.com")
     other = await _client_for_user(repository, "other-list-invite", "other-list@example.com")
     owner.post("/api/v1/cloud/projects", json={"name": "Private"})

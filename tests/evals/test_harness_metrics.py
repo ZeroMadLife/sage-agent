@@ -4,25 +4,29 @@ from evals.coding.harness_metrics import summarize_retrieval_telemetry
 
 
 def test_summarizes_retrieval_gate_latency_tokens_and_evidence_hits() -> None:
-    summary = summarize_retrieval_telemetry([
-        {"payload": {"type": "retrieval_decision", "decision": "retrieve"}},
-        {"payload": {
-            "type": "retrieval_completed",
-            "status": "evidence_found",
-            "citation_count": 3,
-            "used_tokens": 420,
-            "duration_ms": 120,
-        }},
-        {"payload": {"type": "retrieval_decision", "decision": "skip"}},
-        {"payload": {"type": "retrieval_decision", "decision": "retrieve"}},
-        {
-            "type": "retrieval_completed",
-            "status": "invalid_result",
-            "citation_count": -4,
-            "used_tokens": "unknown",
-            "duration_ms": 80,
-        },
-    ])
+    summary = summarize_retrieval_telemetry(
+        [
+            {"payload": {"type": "retrieval_decision", "decision": "retrieve"}},
+            {
+                "payload": {
+                    "type": "retrieval_completed",
+                    "status": "evidence_found",
+                    "citation_count": 3,
+                    "used_tokens": 420,
+                    "duration_ms": 120,
+                }
+            },
+            {"payload": {"type": "retrieval_decision", "decision": "skip"}},
+            {"payload": {"type": "retrieval_decision", "decision": "retrieve"}},
+            {
+                "type": "retrieval_completed",
+                "status": "invalid_result",
+                "citation_count": -4,
+                "used_tokens": "unknown",
+                "duration_ms": 80,
+            },
+        ]
+    )
 
     assert summary.to_dict() == {
         "decision_count": 3,

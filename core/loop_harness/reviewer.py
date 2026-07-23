@@ -75,9 +75,10 @@ class CcConnectReviewer:
     def _validate_artifact(self, directory: Path) -> None:
         if directory.is_symlink() or directory.parent.resolve() != self.reports_root.resolve():
             raise LoopBlockedError("BLOCKED_REVIEWER", "review artifact is outside reports root")
-        if not (directory / "shadow.patch").is_file() or not (
-            directory / "validation.json"
-        ).is_file():
+        if (
+            not (directory / "shadow.patch").is_file()
+            or not (directory / "validation.json").is_file()
+        ):
             raise LoopBlockedError("BLOCKED_REVIEWER", "review evidence is incomplete")
 
     def _run(self, *args: str, timeout: int | None = None) -> subprocess.CompletedProcess[str]:
@@ -113,8 +114,7 @@ def _review_prompt(
         "字段严格为 verdict、summary、findings、tests、visual_evidence、clean_room、"
         "merge_recommendation；verdict 只能是英文枚举 PASS、REQUEST_CHANGES、BLOCK 之一，"
         "findings 必须是字符串数组，其余字段必须是非空字符串。除 verdict 枚举外，"
-        "所有内容使用简体中文。\n"
-        + json.dumps(envelope, ensure_ascii=False, sort_keys=True)
+        "所有内容使用简体中文。\n" + json.dumps(envelope, ensure_ascii=False, sort_keys=True)
     )
 
 

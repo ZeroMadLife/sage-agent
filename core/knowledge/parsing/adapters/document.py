@@ -27,9 +27,7 @@ def external_markdown_document(
         raise ValueError("external parser returned empty Markdown")
     if len(normalized.encode("utf-8")) > _MAX_EXTERNAL_MARKDOWN_BYTES:
         raise ValueError("external parser Markdown exceeds 4 MiB limit")
-    base = MarkdownParser().parse(
-        replace(request, payload=(normalized + "\n").encode("utf-8"))
-    )
+    base = MarkdownParser().parse(replace(request, payload=(normalized + "\n").encode("utf-8")))
     document_id = stable_id(
         "pdoc",
         request.source_id,

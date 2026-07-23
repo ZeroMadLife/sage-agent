@@ -9,9 +9,7 @@ def estimated_tokens(*parts: str) -> int:
     content = "\n".join(parts)
     ascii_characters = sum(character.isascii() for character in content)
     non_ascii_bytes = sum(
-        len(character.encode("utf-8"))
-        for character in content
-        if not character.isascii()
+        len(character.encode("utf-8")) for character in content if not character.isascii()
     )
     return max(1, math.ceil(ascii_characters / 4) + math.ceil(non_ascii_bytes / 2))
 

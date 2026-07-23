@@ -23,8 +23,7 @@ def require_https_url(
     parsed = urlsplit(normalized)
     hostname = (parsed.hostname or "").lower().rstrip(".")
     allowed = any(
-        hostname == suffix.lstrip(".")
-        or (suffix.startswith(".") and hostname.endswith(suffix))
+        hostname == suffix.lstrip(".") or (suffix.startswith(".") and hostname.endswith(suffix))
         for suffix in allowed_suffixes
     )
     if (
@@ -95,16 +94,12 @@ async def download_bounded_text(
             _raise_for_status(response, adapter_id)
             content_length = response.headers.get("content-length")
             if content_length and content_length.isdigit() and int(content_length) > max_bytes:
-                raise ExternalAdapterError(
-                    adapter_id, "oversized_result", retryable=False
-                )
+                raise ExternalAdapterError(adapter_id, "oversized_result", retryable=False)
             content = bytearray()
             async for chunk in response.aiter_bytes():
                 content.extend(chunk)
                 if len(content) > max_bytes:
-                    raise ExternalAdapterError(
-                        adapter_id, "oversized_result", retryable=False
-                    )
+                    raise ExternalAdapterError(adapter_id, "oversized_result", retryable=False)
     except (httpx.TimeoutException, httpx.NetworkError) as exc:
         raise ExternalAdapterError(adapter_id, "network_error", retryable=True) from exc
     try:

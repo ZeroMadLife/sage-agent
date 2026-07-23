@@ -62,10 +62,7 @@ def evaluate_release_gate(evidence: ReleaseGateEvidence) -> ReleaseGateDecision:
     legacy_metrics = report.metrics("legacy")
     v2_metrics = report.metrics("deerflow_v2")
     blockers: list[str] = []
-    by_key = {
-        (result.scenario, result.runtime_profile): result
-        for result in report.results
-    }
+    by_key = {(result.scenario, result.runtime_profile): result for result in report.results}
 
     if not evidence.required_scenarios:
         blockers.append("required_scenarios_empty")
@@ -77,9 +74,7 @@ def evaluate_release_gate(evidence: ReleaseGateEvidence) -> ReleaseGateDecision:
             elif not result.passed:
                 blockers.append(f"scenario_failed:{profile}:{scenario}")
 
-    blockers.extend(
-        f"scenario_regression:{scenario}" for scenario in report.regressions()
-    )
+    blockers.extend(f"scenario_regression:{scenario}" for scenario in report.regressions())
     if v2_metrics.task_completion_rate < legacy_metrics.task_completion_rate:
         blockers.append("deerflow_v2_task_completion_below_legacy")
     if v2_metrics.tool_call_success_rate < legacy_metrics.tool_call_success_rate:
@@ -115,14 +110,10 @@ def evaluate_release_gate(evidence: ReleaseGateEvidence) -> ReleaseGateDecision:
         "browser_refresh_failed": evidence.browser_refresh_passed,
         "browser_approval_resume_failed": evidence.browser_approval_resume_passed,
         "container_sandbox_smoke_failed": evidence.container_sandbox_passed,
-        "server_container_sandbox_not_configured": (
-            evidence.server_container_sandbox_configured
-        ),
+        "server_container_sandbox_not_configured": (evidence.server_container_sandbox_configured),
         "session_profile_rollback_unavailable": evidence.rollback_available,
     }
-    blockers.extend(
-        blocker for blocker, passed in external_checks.items() if not passed
-    )
+    blockers.extend(blocker for blocker, passed in external_checks.items() if not passed)
     unique_blockers = tuple(dict.fromkeys(blockers))
     return ReleaseGateDecision(
         ready=not unique_blockers,
@@ -142,12 +133,7 @@ def _append_latency_blocker(
     deerflow_v2: float | None,
     max_ratio: float,
 ) -> None:
-    if (
-        legacy is None
-        or deerflow_v2 is None
-        or legacy <= 0
-        or deerflow_v2 <= 0
-    ):
+    if legacy is None or deerflow_v2 is None or legacy <= 0 or deerflow_v2 <= 0:
         blockers.append(f"p95_{name}_missing")
         return
     if deerflow_v2 > legacy * max_ratio:

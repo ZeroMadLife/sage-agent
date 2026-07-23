@@ -32,11 +32,7 @@ async def test_qwen_vl_rasterizes_each_page_without_exposing_key_in_result() -> 
         page = len(requests)
         return httpx.Response(
             200,
-            json={
-                "choices": [
-                    {"message": {"content": f"# Page {page}\n\nRecognized {page}."}}
-                ]
-            },
+            json={"choices": [{"message": {"content": f"# Page {page}\n\nRecognized {page}."}}]},
         )
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -65,9 +61,7 @@ async def test_qwen_vl_rasterizes_each_page_without_exposing_key_in_result() -> 
 
 
 async def test_qwen_vl_rate_limit_is_retryable() -> None:
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _: httpx.Response(429))
-    )
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(429)))
     adapter = QwenVlAdapter(
         QwenVlConfig(api_key="test-key"),
         client=client,
