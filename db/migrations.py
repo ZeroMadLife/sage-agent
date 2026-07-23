@@ -36,6 +36,16 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
         await connection.execute(
             text(
                 "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260723_public_publication_candidates', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260723_public_publication_candidates'"
+                ")"
+            )
+        )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
                 "SELECT '20260713_v7_github_oauth', CURRENT_TIMESTAMP "
                 "WHERE NOT EXISTS ("
                 "SELECT 1 FROM schema_migrations "
@@ -120,14 +130,11 @@ async def _upgrade_canary_invite_device_columns(connection: AsyncConnection) -> 
 
     user_columns = await connection.run_sync(
         lambda sync_connection: {
-            str(column["name"])
-            for column in inspect(sync_connection).get_columns("cloud_users")
+            str(column["name"]) for column in inspect(sync_connection).get_columns("cloud_users")
         }
     )
     if "disabled_at" not in user_columns:
-        await connection.execute(
-            text("ALTER TABLE cloud_users ADD COLUMN disabled_at TIMESTAMP")
-        )
+        await connection.execute(text("ALTER TABLE cloud_users ADD COLUMN disabled_at TIMESTAMP"))
 
     session_columns = await connection.run_sync(
         lambda sync_connection: {

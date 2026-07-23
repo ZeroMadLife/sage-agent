@@ -19,6 +19,8 @@ _FORBIDDEN_DISCLOSURES = (
     ),
     re.compile(r"(?:sk-|ghp_|github_pat_)[a-z0-9_-]{12,}", re.IGNORECASE),
 )
+_PACKAGE_KEYS = frozenset({"package_id", "revision", "documents"})
+_DOCUMENT_KEYS = frozenset({"id", "title", "url", "revision", "content", "content_sha256"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,8 +44,15 @@ class PublicPackage:
     def load(cls, path: str | Path) -> PublicPackage:
         source = Path(path)
         payload = json.loads(source.read_text(encoding="utf-8"))
+        return cls.from_payload(payload)
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> PublicPackage:
+        """Validate one in-memory package with the same rules as file loading."""
         if not isinstance(payload, dict):
             raise ValueError("public package must be a JSON object")
+        if set(payload) != _PACKAGE_KEYS:
+            raise ValueError("public package contains unknown or missing fields")
         canonical_payload = _canonical_json(payload)
         if any(pattern.search(canonical_payload) for pattern in _FORBIDDEN_DISCLOSURES):
             raise ValueError("public package contains a forbidden disclosure")
@@ -97,6 +106,8 @@ def _document_items(payload: dict[str, Any]) -> list[Any]:
 def _load_document(value: Any) -> PublicDocument:
     if not isinstance(value, dict):
         raise ValueError("public package document must be an object")
+    if set(value) != _DOCUMENT_KEYS:
+        raise ValueError("public package document contains unknown or missing fields")
     content = _required_text(value, "content")
     actual_digest = hashlib.sha256(content.encode()).hexdigest()
     expected_digest = _required_text(value, "content_sha256").lower()

@@ -88,8 +88,11 @@ def test_controller_stages_payload_without_accepting_an_arbitrary_source_path(
 ) -> None:
     payload = json.loads(Path("data/public/sage-public-v1.json").read_text(encoding="utf-8"))
     registry = PublishedPackageRegistry(tmp_path)
+    request = parse_request(
+        io.StringIO(json.dumps({"action": "stage", "package": payload}, ensure_ascii=False))
+    )
 
-    result = execute(registry, {"action": "stage", "package": payload}, actor="sage-deploy")
+    result = execute(registry, request, actor="sage-deploy")
 
     assert result["status"] == "staged"
     assert result["active_revision"] is None

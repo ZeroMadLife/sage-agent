@@ -11,6 +11,12 @@ from public_agent.corpus import PublicPackage
 PACKAGE = Path("data/public/sage-public-v1.json")
 
 
+def test_in_memory_payload_uses_the_same_validation_contract() -> None:
+    payload = json.loads(PACKAGE.read_text(encoding="utf-8"))
+
+    assert PublicPackage.from_payload(payload) == PublicPackage.load(PACKAGE)
+
+
 def test_public_package_verifies_digests_and_retrieves_bounded_sources() -> None:
     package = PublicPackage.load(PACKAGE)
 
@@ -51,7 +57,19 @@ def test_public_package_rejects_secret_in_an_unknown_json_field(tmp_path: Path) 
     modified = tmp_path / "unknown-field.json"
     modified.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="forbidden disclosure"):
+    with pytest.raises(ValueError, match="unknown or missing fields"):
+        PublicPackage.load(modified)
+
+
+def test_public_package_rejects_unknown_metadata_even_when_it_is_not_secret(
+    tmp_path: Path,
+) -> None:
+    payload = json.loads(PACKAGE.read_text(encoding="utf-8"))
+    payload["owner_email"] = "public@example.com"
+    modified = tmp_path / "unknown-metadata.json"
+    modified.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unknown or missing fields"):
         PublicPackage.load(modified)
 
 

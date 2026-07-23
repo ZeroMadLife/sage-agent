@@ -84,3 +84,12 @@ multiagent_project.agent.final.footnote.docx
 .ustht/
 .playwright-cli/
 .zcode/
+node_modules/
+
+# 本地 Codex / cc-connect 状态与阶段输出
+.cc-connect/
+.codex/
+.local/
+.release-*-worktree/
+/output/
+/tmp/
