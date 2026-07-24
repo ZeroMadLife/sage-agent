@@ -96,4 +96,4 @@ def test_controller_stages_payload_without_accepting_an_arbitrary_source_path(
 
     assert result["status"] == "staged"
     assert result["active_revision"] is None
-    assert (tmp_path / "packages/sage-public/2026-07-24.2.json").is_file()
+    assert (tmp_path / "packages/sage-public/2026-07-24.3.json").is_file()

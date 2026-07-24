@@ -33,7 +33,7 @@ describe('public Agent client', () => {
       'event: answer_delta\ndata: {"delta":"Sage 使用 Vue 3、"}\n\n',
       'event: answer_delta\ndata: {"delta":"FastAPI 和 PostgreSQL。[E1]"}\n\n',
       'event: sources\ndata: {"citations":[{"citation_id":"E1","document_id":"sage-architecture","title":"Sage 技术架构","url":"https://github.com/ZeroMadLife/sage-agent#架构","revision":"2026-07-24","excerpt":"公开架构证据"}]}\n\n',
-      'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_123","package_revision":"2026-07-24.2","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
+      'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_123","package_revision":"2026-07-24.3","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
     ].join('')
     const chunks = [payload.slice(0, 43), payload.slice(43, 177), payload.slice(177)]
     const fetcher = vi.fn(async () => new Response(new ReadableStream({
@@ -55,7 +55,7 @@ describe('public Agent client', () => {
       .toBe('Sage 使用 Vue 3、FastAPI 和 PostgreSQL。[E1]')
     expect(result.mode).toBe('live')
     expect(result.sources[0]).toMatchObject({ id: 'sage-architecture', revision: '2026-07-24' })
-    expect(result.receipt?.packageRevision).toBe('2026-07-24.2')
+    expect(result.receipt?.packageRevision).toBe('2026-07-24.3')
     expect(fetcher).toHaveBeenCalledWith('/api/public/v1/ask', expect.objectContaining({
       headers: expect.objectContaining({ Accept: 'text/event-stream' }),
     }))
@@ -80,6 +80,17 @@ describe('public Agent client', () => {
 
     expect(result.mode).toBe('fallback')
     expect(result.notice).toBe('公开问答连接失败')
+    expect(result.receipt).toBeUndefined()
+  })
+
+  it('keeps the public identity and PublishedPackage boundary in the local fallback', async () => {
+    const fetcher = vi.fn(async () => { throw new TypeError('network failed') })
+
+    const result = await answerPublicProfileQuestion('你是谁？', { fetcher })
+
+    expect(result.answer).toContain('受限公开资料助手')
+    expect(result.answer).toContain('PublishedPackage')
+    expect(result.answer).toContain('不连接私人 Session')
     expect(result.receipt).toBeUndefined()
   })
 })

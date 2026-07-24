@@ -1,6 +1,6 @@
 {
   "package_id": "sage-public",
-  "revision": "2026-07-24.2",
+  "revision": "2026-07-24.3",
   "documents": [
     {
       "id": "sage-identity",
@@ -15,16 +15,16 @@
       "title": "Sage Personal AI Learning Companion",
       "url": "https://github.com/ZeroMadLife/sage-agent#sage",
       "revision": "2026-07-24",
-      "content": "请介绍一下这个项目。为什么要做 Sage？这个项目有什么用、有哪些亮点、现在做到什么程度？Sage 是本地优先的 Personal AI Learning Companion，把目标、对话、个人知识、真实实践和可验证证据组织在同一条可恢复工作流中。它与普通聊天机器人不同：回答不是终点，Knowledge 管理来源与引用，Coding 作为 Practice Engine 验证理解，Harness 保存可恢复运行事实。",
-      "content_sha256": "5a0ba4d09f9ac84e3b5de9961dadf94df21e15edb6bc18def9b448243a61a997"
+      "content": "请介绍一下这个项目。为什么要做 Sage？这个项目有什么用、有哪些亮点、现在做到什么程度？Sage 是本地优先的 Personal AI Learning Companion，把目标、对话、个人知识、真实实践和可验证证据组织在同一条可恢复工作流中。它与普通聊天机器人不同：回答不是终点，Knowledge 管理来源与引用，Coding 作为 Practice Engine 验证理解，Harness 保存可恢复运行事实。当前已上线受控 Public Agent、真实产品画廊和自动 Canary 发布，公开入口不连接私人 Harness。",
+      "content_sha256": "620a88162fdd636b4ca71a9bf7eb267d91cd9cf03e39481211d34f46097f85d2"
     },
     {
       "id": "sage-architecture",
       "title": "Sage 技术栈与系统架构",
       "url": "https://github.com/ZeroMadLife/sage-agent#架构",
       "revision": "2026-07-24",
-      "content": "项目使用了什么技术栈？整体架构是怎么设计的？前端采用 Vue 3、TypeScript、Pinia 与 Vite；后端采用 Python、FastAPI 和 LangGraph 相关运行时；状态与检索使用 PostgreSQL、pgvector 和 Redis；REST、WebSocket 与事件流连接界面和 Harness。部署使用 Docker Compose 与不可变镜像，首台服务器不引入 Kubernetes。",
-      "content_sha256": "fe12932d2e96a2154da0377c7878bf8844decc29e44481346c8f75de9ff74023"
+      "content": "项目使用了什么技术栈？整体架构是怎么设计的？前端采用 Vue 3、TypeScript、Pinia 与 Vite；后端采用 Python、FastAPI、LangChain 与 LangGraph；PostgreSQL 和 Redis 承担运行状态与任务基础设施。Knowledge 当前默认检索是 SQLite FTS5、deterministic hashing 与 RRF 的本地 baseline，pgvector 是可替换方向，不把它误写成已上线的生产语义检索。REST、WebSocket 与 SSE 连接界面、Harness 和受控 Public Agent；部署使用 rootless Docker Compose、不可变镜像和 Canary 控制器，首台服务器不引入 Kubernetes。",
+      "content_sha256": "408e03d4becce6a501c84bf21cd6dd690096c48728211d5ff32383fec0d36610"
     },
     {
       "id": "sage-contribution",
@@ -79,24 +79,24 @@
       "title": "当前状态与下一阶段边界",
       "url": "https://github.com/ZeroMadLife/sage-agent#当前边界",
       "revision": "2026-07-24",
-      "content": "后续还准备做什么？已上线的是受控公开 Agent、独立资料包、引用回执和公网隔离。后续计划包括完善 HR 首页、README、简历与联系方式，改进新用户首次进入和配置流程，并继续验证生产 Sandbox、租户级 Knowledge 隔离和正式 HTTPS 域名。以上属于下一阶段边界，不等同于已经交付。",
-      "content_sha256": "c823fceebba987d04fa70473676c8e0f30a6a8ab88fac4a50614074c988e8520"
+      "content": "后续还准备做什么？受控 Public Agent、独立资料包、引用回执、公网隔离、HR 首页、README 和真实产品画廊已经上线。下一阶段会补充经本人审核的简历与联系方式，改进新用户首次进入、数据库与 Provider 配置流程，并继续验证生产 Sandbox、租户级 Knowledge 隔离和正式 HTTPS 域名。以上属于下一阶段边界，不等同于已经交付。",
+      "content_sha256": "c1e50c093b16d97268caba97d2869f03737443f368bbe8a7b213fc27ff9220be"
     },
     {
       "id": "harness-2",
       "title": "Chat Harness 2.0",
       "url": "https://github.com/ZeroMadLife/sage-agent#核心能力",
-      "revision": "2026-07-22",
-      "content": "Harness 2.0 统一 planning、tool、approval、reply、checkpoint 和 durable timeline。运行恢复从持久事件重建，不使用前端动画伪造状态。工具调用、审批和结果保留可审计 receipt。",
-      "content_sha256": "753c214dd44152f589c5754096498a90db8c43dbd923e67053c9ea3562d1a906"
+      "revision": "2026-07-24",
+      "content": "Harness 2.0 统一 context、planning、model、tool、approval、reply、checkpoint 和 durable timeline。运行恢复从持久事件重建，不使用前端动画伪造状态；工具调用、审批和结果保留可审计 receipt，并在真实 Timeline 界面按阶段投影。",
+      "content_sha256": "cb526bb295a84377fa1c782580e6757fba8ec7da29134304714f53723f2ca9a5"
     },
     {
       "id": "knowledge-surface",
       "title": "Knowledge Surface 与受控沉淀",
       "url": "https://github.com/ZeroMadLife/sage-agent#knowledge从来源到可引用知识",
-      "revision": "2026-07-22",
-      "content": "Knowledge 将已批准来源整理成 Wiki、检索索引和知识图谱。检索结果保留 citation、source revision 与 token budget。模型不能静默写入长期知识；Wiki、Memory 和来源沉淀都要经过 proposal 或 approval。",
-      "content_sha256": "2c108d515440f874b3f98037329121129c84a3f38d1b793086e0877ecb71ac6a"
+      "revision": "2026-07-24",
+      "content": "Knowledge 将已批准来源整理成 Wiki、检索索引和知识图谱。当前默认检索是 SQLite FTS5、deterministic hashing 与 RRF 的本地 baseline；结果保留 citation、source revision 与 token budget。模型不能静默写入长期知识，图谱也只是可重建投影；Wiki、Memory 和来源沉淀都要经过 proposal 或 approval。",
+      "content_sha256": "4f50bb599d7f60982b63c8576686eee02429abcbda54121dedcd933b7294a0a8"
     },
     {
       "id": "mastery-evidence",

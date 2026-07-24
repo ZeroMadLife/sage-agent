@@ -40,6 +40,20 @@ it('leads with the public product identity, three truthful engineering proofs, a
   wrapper.unmount()
 })
 
+it('presents the current public release instead of the July 20 static-corpus phase', () => {
+  const wrapper = mountPublicProfile()
+
+  expect(wrapper.text()).toContain('受控 Public Agent 上线')
+  expect(wrapper.text()).toContain('公网已验证')
+  expect(wrapper.text()).toContain('PublishedPackage')
+  expect(wrapper.text()).toContain('07.24')
+  expect(wrapper.text()).not.toContain('只回答内置资料')
+  expect(wrapper.text()).not.toContain('当前分支已覆盖')
+  expect(wrapper.text()).not.toContain('H2.7C')
+
+  wrapper.unmount()
+})
+
 it('labels Ask Sage as a bounded public Agent with transparent fallback', async () => {
   const wrapper = mountPublicProfile()
 
@@ -90,7 +104,7 @@ it('sends with Enter while Shift+Enter keeps editing the question', async () => 
       citation_id: 'E1', document_id: 'sage-overview', title: 'Sage 项目概览',
       url: 'https://github.com/ZeroMadLife/sage-agent', revision: '2026-07-24', excerpt: '公开摘要',
     }],
-    receipt: { request_id: 'pub_enter', package_revision: '2026-07-24.2', package_digest: 'abc' },
+    receipt: { request_id: 'pub_enter', package_revision: '2026-07-24.3', package_digest: 'abc' },
   }), { headers: { 'Content-Type': 'application/json' } }))
   vi.stubGlobal('fetch', fetcher)
   const wrapper = mountPublicProfile()
@@ -138,13 +152,13 @@ it('renders real stream stages and answer deltas before the receipt completes', 
 
   streamController?.enqueue(encoder.encode([
     'event: sources\ndata: {"citations":[{"citation_id":"E1","document_id":"sage-architecture","title":"Sage 技术栈与系统架构","url":"https://github.com/ZeroMadLife/sage-agent#架构","revision":"2026-07-24","excerpt":"公开架构证据"}]}\n\n',
-    'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_stream","package_revision":"2026-07-24.2","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
+    'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_stream","package_revision":"2026-07-24.3","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
   ].join('')))
   streamController?.close()
   await flushPromises()
 
   expect(wrapper.text()).toContain('E1 · Sage 技术栈与系统架构')
-  expect(wrapper.text()).toContain('资料包 2026-07-24.2 · pub_stream')
+  expect(wrapper.text()).toContain('资料包 2026-07-24.3 · pub_stream')
   expect(textarea.attributes('disabled')).toBeUndefined()
   wrapper.unmount()
 })
