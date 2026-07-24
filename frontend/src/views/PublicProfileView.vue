@@ -6,6 +6,8 @@ import {
   BookOpenText,
   Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   CircleDot,
   ExternalLink,
   FileCheck2,
@@ -28,6 +30,30 @@ import {
 
 const harnessWorkbenchImage = '/sage-harness-workbench.webp'
 
+const productScreens = [
+  {
+    id: 'assistant',
+    src: '/product/assistant.webp',
+    label: 'Assistant',
+    detail: '从目标进入统一工作台',
+    alt: 'Sage Assistant 主页面真实界面，不含私人数据',
+  },
+  {
+    id: 'knowledge',
+    src: '/product/knowledge.webp',
+    label: 'Knowledge',
+    detail: '来源、社区与知识图谱',
+    alt: 'Sage Knowledge 知识图谱真实界面，不含私人数据',
+  },
+  {
+    id: 'harness',
+    src: '/product/harness.webp',
+    label: 'Harness Timeline',
+    detail: '输入、模型、工具、审批与回答',
+    alt: 'Sage Harness Timeline 真实执行界面，不含私人数据',
+  },
+] as const
+
 type AgentMessage = {
   role: 'visitor' | 'sage'
   text: string
@@ -46,6 +72,8 @@ const activeWork = ref<string | null>(null)
 const isAnswering = ref(false)
 const motionReady = ref(false)
 const scrollProgress = ref(0)
+const activeProductIndex = ref(0)
+const productGalleryPaused = ref(false)
 
 const workItems = [
   {
@@ -239,9 +267,36 @@ function openSource(source: PublicAgentSource) {
   selectSection(source.target)
 }
 
+function productSlideClass(index: number) {
+  const offset = (index - activeProductIndex.value + productScreens.length) % productScreens.length
+  if (offset === 0) return 'is-active'
+  if (offset === 1) return 'is-next'
+  if (offset === productScreens.length - 1) return 'is-previous'
+  return 'is-hidden'
+}
+
+function selectProduct(index: number) {
+  activeProductIndex.value = index
+}
+
+function advanceProduct(offset: number) {
+  activeProductIndex.value = (
+    activeProductIndex.value + offset + productScreens.length
+  ) % productScreens.length
+}
+
 let sectionObserver: IntersectionObserver | null = null
 let revealObserver: IntersectionObserver | null = null
 let scrollFrame: number | null = null
+let productRotationTimer: number | null = null
+
+function startProductRotation() {
+  if (typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  productRotationTimer = window.setInterval(() => {
+    if (!productGalleryPaused.value) advanceProduct(1)
+  }, 6000)
+}
 
 function updateScrollProgress() {
   if (scrollFrame !== null) return
@@ -287,6 +342,7 @@ onMounted(() => {
   }
 
   window.requestAnimationFrame(() => { motionReady.value = true })
+  startProductRotation()
 })
 
 onBeforeUnmount(() => {
@@ -295,6 +351,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('scroll', updateScrollProgress)
   window.removeEventListener('resize', updateScrollProgress)
   if (scrollFrame !== null) window.cancelAnimationFrame(scrollFrame)
+  if (productRotationTimer !== null) window.clearInterval(productRotationTimer)
 })
 </script>
 
@@ -358,11 +415,58 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <figure class="hero-product">
-            <img :src="harnessWorkbenchImage" alt="Sage Harness 真实执行阶段工作台，不含私人数据" fetchpriority="high" />
-            <figcaption>
-              <span><strong>Sage Harness</strong><small>真实 Timeline 执行阶段</small></span>
-              <span>run snapshot · no private data</span>
+          <figure
+            class="hero-product"
+            aria-label="Sage 真实产品界面"
+            aria-roledescription="轮播图"
+            @mouseenter="productGalleryPaused = true"
+            @mouseleave="productGalleryPaused = false"
+            @focusin="productGalleryPaused = true"
+            @focusout="productGalleryPaused = false"
+          >
+            <div class="hero-product__stage">
+              <div
+                v-for="(screen, index) in productScreens"
+                :key="screen.id"
+                class="hero-product__slide"
+                :class="productSlideClass(index)"
+                :data-product-slide="screen.id"
+                :aria-label="index === activeProductIndex ? `${screen.label} 当前界面` : undefined"
+                :aria-hidden="index !== activeProductIndex"
+              >
+                <img
+                  :src="screen.src"
+                  :alt="screen.alt"
+                  :fetchpriority="index === 0 ? 'high' : 'auto'"
+                />
+              </div>
+              <div class="hero-product__controls">
+                <button type="button" aria-label="上一张产品界面" title="上一张" @click="advanceProduct(-1)">
+                  <ChevronLeft :size="16" />
+                </button>
+                <button type="button" aria-label="下一张产品界面" title="下一张" @click="advanceProduct(1)">
+                  <ChevronRight :size="16" />
+                </button>
+              </div>
+            </div>
+            <figcaption class="hero-product__rail">
+              <span
+                class="hero-product__cursor"
+                aria-hidden="true"
+                :style="{ transform: `translateX(${activeProductIndex * 100}%)` }"
+              ></span>
+              <button
+                v-for="(screen, index) in productScreens"
+                :key="screen.id"
+                type="button"
+                :class="{ active: index === activeProductIndex }"
+                :data-product-picker="screen.id"
+                :aria-pressed="index === activeProductIndex"
+                @click="selectProduct(index)"
+              >
+                <span class="hero-product__thumb"><img :src="screen.src" alt="" /></span>
+                <span><strong>{{ screen.label }}</strong><small>{{ screen.detail }}</small></span>
+              </button>
             </figcaption>
           </figure>
         </div>
@@ -809,35 +913,111 @@ onBeforeUnmount(() => {
   margin: 0;
   animation: public-product-reveal .82s .18s cubic-bezier(.2, .72, .2, 1) both;
 }
-.hero-product img {
+.hero-product__stage {
+  position: relative;
+  z-index: 0;
+  aspect-ratio: 16 / 9;
+  perspective: 1100px;
+  isolation: isolate;
+}
+.hero-product__slide {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--public-line-strong);
+  border-radius: 5px 5px 0 0;
+  background: #fff;
+  box-shadow: 0 18px 42px rgb(38 68 48 / 9%);
+  transform-origin: center bottom;
+  transition: opacity .42s ease, transform .56s cubic-bezier(.2, .72, .2, 1), filter .42s ease;
+}
+.hero-product__slide.is-active { z-index: 3; opacity: 1; transform: translateZ(24px) scale(.94); }
+.hero-product__slide.is-previous { z-index: 1; opacity: .72; filter: saturate(.72); transform: translateX(-30px) rotateY(4deg) rotateZ(-1.7deg) scale(.89); }
+.hero-product__slide.is-next { z-index: 2; opacity: .82; filter: saturate(.82); transform: translateX(30px) rotateY(-4deg) rotateZ(1.7deg) scale(.89); }
+.hero-product__slide.is-hidden { z-index: 0; opacity: 0; transform: scale(.86); pointer-events: none; }
+.hero-product__slide > img {
   display: block;
   width: 100%;
-  aspect-ratio: 16 / 9;
-  border: 1px solid var(--public-line-strong);
-  border-radius: 4px 4px 0 0;
+  height: 100%;
   object-fit: cover;
-  box-shadow: 0 18px 42px rgb(38 68 48 / 9%);
 }
-.hero-product figcaption {
+.hero-product__controls {
+  position: absolute;
+  z-index: 5;
+  top: 18px;
+  right: 28px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  min-height: 52px;
-  padding: 9px 12px;
+  gap: 7px;
+}
+.hero-product__controls button {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 55%);
+  border-radius: 4px;
+  color: #fff;
+  background: rgb(18 23 20 / 68%);
+  box-shadow: 0 5px 16px rgb(10 18 12 / 18%);
+  backdrop-filter: blur(8px);
+}
+.hero-product__controls button:hover { background: rgb(18 23 20 / 88%); }
+.hero-product__rail {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 60px;
   border: 1px solid var(--public-line-strong);
   border-top: 0;
   border-radius: 0 0 4px 4px;
-  color: var(--public-faint);
   background: #fff;
-  font-family: var(--public-font-mono);
-  font-size: 10px;
 }
-.hero-product figcaption > span:first-child { display: grid; gap: 1px; }
-.hero-product figcaption strong { color: #344039; font-family: var(--public-font-body); font-size: 12px; }
-.hero-product figcaption small { color: var(--public-faint); font-family: var(--public-font-body); font-size: 10px; }
+.hero-product__cursor {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  left: 0;
+  width: 33.3333%;
+  height: 2px;
+  background: var(--public-green);
+  transition: transform .42s cubic-bezier(.2, .72, .2, 1);
+}
+.hero-product__rail > button {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 0;
+  border-right: 1px solid var(--public-line);
+  color: var(--public-faint);
+  background: transparent;
+  text-align: left;
+  transition: color .2s ease, background .2s ease;
+}
+.hero-product__rail > button:last-child { border-right: 0; }
+.hero-product__rail > button:hover,
+.hero-product__rail > button.active { color: #344039; background: #f8faf8; }
+.hero-product__thumb {
+  display: block;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--public-line);
+  border-radius: 2px;
+  background: var(--public-band);
+}
+.hero-product__thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.hero-product__rail > button > span:last-child { display: grid; min-width: 0; gap: 2px; }
+.hero-product__rail strong,
+.hero-product__rail small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hero-product__rail strong { font-family: var(--public-font-body); font-size: 11px; }
+.hero-product__rail small { font-family: var(--public-font-body); font-size: 9px; }
 
 .public-section { scroll-margin-top: 68px; padding: 104px 0; border-bottom: 1px solid var(--public-line); }
+.project-section { padding-top: 80px; }
 .section-heading {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr) 290px;
@@ -1093,7 +1273,7 @@ onBeforeUnmount(() => {
   .public-brand strong { font-size: 12px; }
   .public-brand small { font-size: 9px; }
   .ask-sage { min-height: 34px; padding: 0 9px; font-size: 10px; }
-  .hero-inner { gap: 20px; padding: 28px 0 20px; }
+  .hero-inner { gap: 14px; padding: 24px 0 10px; }
   .hero-kicker { margin-bottom: 10px; font-size: 9px; }
   .hero-copy h1 { max-width: 350px; font-size: 40px; line-height: 1.06; }
   .hero-positioning { margin-top: 11px; font-size: 19px; }
@@ -1101,13 +1281,23 @@ onBeforeUnmount(() => {
   .hero-actions { gap: 16px; margin-top: 15px; }
   .primary-action { min-height: 37px; padding: 0 11px; font-size: 11px; }
   .hero-evidence { margin-top: 20px; }
-  .hero-evidence__row { grid-template-columns: 31px minmax(0, 1fr) auto; gap: 8px; min-height: 62px; padding: 7px 0; }
+  .hero-evidence__row { grid-template-columns: 31px minmax(0, 1fr) auto; gap: 8px; min-height: 56px; padding: 5px 0; }
   .hero-evidence__row > span:first-child { font-size: 15px; }
   .hero-evidence__row strong { font-size: 13px; }
   .hero-evidence__row strong em { display: block; margin: 2px 0 0; font-size: 10px; }
   .hero-evidence__row small { display: -webkit-box; overflow: hidden; font-size: 11px; line-height: 1.5; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-  .hero-product img { aspect-ratio: 16 / 5.5; border-radius: 4px; object-position: center top; }
-  .hero-product figcaption { display: none; }
+  .hero-product__stage { aspect-ratio: 16 / 5.1; }
+  .hero-product__slide.is-active { transform: scale(.96); }
+  .hero-product__slide.is-previous { transform: translateX(-12px) rotateZ(-1deg) scale(.92); }
+  .hero-product__slide.is-next { transform: translateX(12px) rotateZ(1deg) scale(.92); }
+  .hero-product__slide > img { object-position: center top; }
+  .hero-product__controls { top: 11px; right: 17px; }
+  .hero-product__controls button { width: 29px; height: 29px; }
+  .hero-product__rail { min-height: 38px; }
+  .hero-product__rail > button { display: grid; grid-template-columns: minmax(0, 1fr); padding: 5px 3px; text-align: center; }
+  .hero-product__thumb { display: none; }
+  .hero-product__rail small { display: none; }
+  .hero-product__rail strong { font-size: 9px; }
   .public-section { padding: 62px 0; }
   .project-section { padding-top: 16px; }
   .section-heading { display: grid; grid-template-columns: 1fr; gap: 9px; margin-bottom: 34px; }
@@ -1158,6 +1348,9 @@ onBeforeUnmount(() => {
   .is-motion-ready [data-reveal] { opacity: 1; transform: none; transition: none; }
   .reading-progress,
   .hero-evidence__row,
+  .hero-product__slide,
+  .hero-product__cursor,
+  .hero-product__rail > button,
   .evidence-expand-enter-active,
   .evidence-expand-leave-active,
   .agent-drawer-enter-active,
@@ -1166,5 +1359,8 @@ onBeforeUnmount(() => {
   .agent-drawer-leave-active .public-agent { transition: none; }
   .hero-evidence__row > svg,
   .row-arrow { transition: none; }
+  .hero-product__slide.is-active { transform: none; }
+  .hero-product__slide.is-previous,
+  .hero-product__slide.is-next { opacity: 0; transform: none; }
 }
 </style>

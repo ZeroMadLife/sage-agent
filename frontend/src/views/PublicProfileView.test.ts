@@ -11,7 +11,7 @@ function mountPublicProfile() {
   return mount(PublicProfileView, { global: { plugins: [router] } })
 }
 
-it('leads with the public product identity and three truthful engineering proofs', () => {
+it('leads with the public product identity, three truthful engineering proofs, and real product screens', async () => {
   const wrapper = mountPublicProfile()
 
   expect(wrapper.get('h1').text()).toContain('ZeroMadLife / Sage')
@@ -22,9 +22,20 @@ it('leads with the public product identity and three truthful engineering proofs
   expect(wrapper.text()).toContain('Mastery Evidence')
   expect(wrapper.text()).not.toContain('掌握率')
   expect(wrapper.text()).not.toContain('%')
-  expect(wrapper.get('.hero-product img').attributes('src')).toBe('/sage-harness-workbench.webp')
-  expect(wrapper.get('.hero-product img').attributes('alt')).toContain('不含私人数据')
-  expect(wrapper.get('.hero-product figcaption').text()).toContain('真实 Timeline 执行阶段')
+  expect(wrapper.findAll('[data-product-slide]')).toHaveLength(3)
+  expect(wrapper.findAll('[data-product-picker]')).toHaveLength(3)
+  expect(wrapper.get('[data-product-slide="assistant"]').classes()).toContain('is-active')
+  expect(wrapper.get('[data-product-slide="assistant"] img').attributes('src')).toBe('/product/assistant.webp')
+  expect(wrapper.findAll('.hero-product__slide img').every((image) => image.attributes('alt')?.includes('不含私人数据'))).toBe(true)
+
+  await wrapper.get('[data-product-picker="knowledge"]').trigger('click')
+  expect(wrapper.get('[data-product-slide="knowledge"]').classes()).toContain('is-active')
+  expect(wrapper.get('[data-product-picker="knowledge"]').attributes('aria-pressed')).toBe('true')
+  expect(wrapper.get('.hero-product').text()).toContain('Knowledge')
+
+  await wrapper.get('[aria-label="下一张产品界面"]').trigger('click')
+  expect(wrapper.get('[data-product-slide="harness"]').classes()).toContain('is-active')
+  expect(wrapper.get('.hero-product').text()).toContain('Timeline')
 
   wrapper.unmount()
 })

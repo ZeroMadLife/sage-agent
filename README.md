@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="frontend/src/assets/sage-thinking-fallback.png" width="104" alt="Sage" />
-</p>
-
 <h1 align="center">Sage</h1>
 
 <p align="center">
@@ -17,7 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-![Sage Harness workbench](frontend/public/sage-harness-workbench.webp)
+![Sage Harness Engineering 核心框架](release/v7-beta/learning/assets/01-overall-architecture.png)
 
 Sage 是一个本地优先的个人 AI 学习与实践工作台。它把对话、代码仓库、
 Markdown/Obsidian 知识、模型 Provider、Skills 和 MCP 工具组织进同一套 Chat Harness，
@@ -51,12 +47,12 @@ flowchart LR
 
 ## 产品界面
 
-### 今天：从目标开始
+### 主对话：从目标开始
 
 ![Sage Assistant home](docs/assets/readme/screenshots/assistant-desktop.webp)
 
-`/#/assistant` 汇总近期会话、本地工作区与知识状态。新任务从这里进入统一 Harness，
-而不是在不同功能页面重复创建互不相通的会话运行时。
+`/#/assistant` 从目标、研究或练习进入统一 Harness。新任务不会在不同功能页面重复创建
+互不相通的会话运行时，Knowledge 与 Practice 也会回到同一条可恢复执行链。
 
 ### Knowledge：从来源到可引用知识
 
@@ -99,21 +95,16 @@ Harness 2.0 是新会话的默认 runtime profile。开发机默认使用 `local
 
 ## 架构
 
-```mermaid
-flowchart TB
-    subgraph CONTROL[控制面]
-        UI[Vue 3 + Pinia] -->|REST + WebSocket| API[FastAPI] --> RUNTIME[CodingRuntime / HarnessRuntimeAdapter]
-        RUNTIME --> ENGINE[Engine / LangGraph create_agent] --> TOOLS[ToolExecutor / Middleware]
-    end
-    subgraph STATE[状态面]
-        SESSION[Session] --> MEMORY[Memory] --> KNOWLEDGE[KnowledgeStore] --> CHECKPOINT[Checkpoint] --> SUBAGENT[Subagent] --> TODO[Todo]
-    end
-    subgraph EVIDENCE[证据面]
-        TIMELINE[Timeline SQLite] --> RUNSTORE[RunStore trace] --> DIFF[Diff artifact] --> EVAL[Benchmark / Metrics]
-    end
-    RUNTIME --> SESSION
-    TOOLS --> TIMELINE
-```
+Sage Harness 把运行边界分成六个可追踪部分：上下文管理、运行编排、工具治理、状态与记忆、
+知识与引用、证据与恢复。一次请求从输入进入受控执行链，经过取数、产出和反馈，再把经过验证的
+结果写回下一轮目标，而不是让模型直接改写长期事实。
+
+- **控制面**：Vue 3 → FastAPI → Runtime → Engine / LangGraph → ToolExecutor / Middleware。
+- **状态面**：Session、Memory、Knowledge、Checkpoint、Subagent 与 Todo 各自保存自己的事实。
+- **证据面**：Timeline、RunStore、Diff、Artifact 与 Evaluation 让运行可重放、可审计、可回归。
+
+完整图解、请求调用链和模块阅读顺序见
+[总体架构：Sage 是本地优先的学习工作台，不是聊天壳](release/v7-beta/learning/01-overall-architecture.md)。
 
 通用 Harness 作为独立 Python package 维护在 `packages/sage_harness/`。产品层负责将用户、
 Workspace、Knowledge、Sandbox 与前端事件协议适配到稳定端口，避免通用运行时反向依赖
