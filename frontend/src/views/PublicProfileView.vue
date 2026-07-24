@@ -989,7 +989,7 @@ onBeforeUnmount(() => {
 .agent-body { min-height: 0; overflow-y: auto; padding: 20px 18px; }
 .agent-message { display: grid; justify-items: start; margin-bottom: 18px; }
 .agent-message > span { margin-bottom: 5px; color: var(--public-faint); font-size: 9px; font-weight: 650; }
-.agent-message p { max-width: 88%; margin: 0; padding: 10px 12px; border: 1px solid var(--public-line); border-radius: 4px; color: #405047; background: var(--public-band); font-size: 12px; line-height: 1.65; }
+.agent-message p { max-width: 88%; margin: 0; padding: 10px 12px; border: 1px solid var(--public-line); border-radius: 4px; color: #405047; background: var(--public-band); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
 .agent-message.visitor { justify-items: end; }
 .agent-message.visitor > span { text-align: right; }
 .agent-message.visitor p { border-color: var(--public-green); color: #fff; background: var(--public-green); }
