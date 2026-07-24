@@ -1,190 +1,237 @@
-# 13 - 模块速查表
+# 模块速查表：先找责任边界，再找源码入口
 
-> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
+Sage 的源码导航可以先压成一句话：不要从目录名猜实现，而要从用户现象找到事实源、运行边界和对应测试。
 
-> 遇到问题先按"现象"找模块，再打开入口符号和对应测试。不要从 `__init__.py` 顺序翻文件。
+> Last verified against: `dev/sage-v7@236e07c` (2026-07-23)
 
-## 后端 Harness
+![Sage 模块地图](assets/13-module-map.png)
 
-| 问题/组件 | 源码 | 第一入口 | 主要测试 |
-| --- | --- | --- | --- |
-| Runtime 组装（legacy） | `core/coding/runtime.py` | `CodingRuntime.__init__` | `test_runtime_run_lifecycle.py` |
-| Run 生命周期 | `core/coding/runtime.py` | `CodingRuntime.run_turn` | `test_runtime_run_lifecycle.py` |
-| Runtime 适配（v2） | `core/harness/runtime_adapter.py` | `SageHarnessRuntimeAdapter` | `test_harness_runtime_adapter.py` |
-| Agent 工厂（v2） | `packages/sage_harness/sage_harness/agents/factory.py` | `create_sage_agent` | `test_agent_factory.py` |
-| Agent 循环（legacy） | `core/coding/engine/engine.py` | `Engine.run_turn` | `test_engine.py`、`test_agent_loop.py` |
-| 模型输出解析 | `core/coding/engine/model_output.py` | `parse` | `test_model_output.py` |
-| Typed events | `core/coding/engine/events.py` | `RunEventBase` | `test_events.py` |
-| Middleware 链（v2） | `packages/sage_harness/sage_harness/middleware/registry.py` | 默认 8 个 middleware | `test_middleware_order.py` |
-| Prompt 构建 | `core/coding/context/manager.py` | `ContextManager.build` | `test_context_compact.py` |
-| Token 压力分级 | `core/coding/context/budget.py` | `ContextPolicy` | `test_context_budget.py` |
-| 不可变投影 | `core/coding/context/projection.py` | `ContextProjector` | `test_context_projection.py` |
-| 结构化压缩 | `core/coding/context/compact.py` | `CompactManager` | `test_context_compactor.py` |
-| Workspace 路径 | `core/coding/context/workspace.py` | `WorkspaceContext.path` | `test_workspace.py` |
-| Run Diff | `core/coding/context/workspace_diff.py` | `WorkspaceDiffTracker` | `test_workspace_diff.py` |
-| Tool 抽象 | `core/coding/tools/base.py` | `RegisteredTool` | `test_tools.py` |
-| Tool registry | `core/coding/tools/registry.py` | `build_tool_registry` | `test_tools.py` |
-| 参数 schema | `core/coding/tools/schemas.py` | 各 `*Args` | `test_tools.py` |
-| 文件工具 | `core/coding/tools/file_tools.py` | `read_file/patch_file` | `test_tools.py` |
-| Shell 工具 | `core/coding/tools/shell_tool.py` | `run_shell` | `test_tools.py` |
-| Memory 工具 | `core/coding/tools/memory_tools.py` | `remember/dream` | `test_memory.py` |
-| Knowledge 工具 | `core/coding/tools/knowledge_tools.py` | `knowledge_search/learn` | `test_knowledge.py` |
-| Agent 工具 | `core/coding/tools/agent_tools.py` | `agent/send_message/task_stop` | `test_tools.py` |
-| Travel 工具 | `core/coding/tools/travel_tools.py` | `generate_itinerary` | `test_tools.py` |
-| Tool 执行管线 | `core/coding/tool_executor/executor.py` | `ToolExecutor.execute` | `test_tool_executor.py` |
-| 权限模式 | `core/coding/tool_executor/permissions.py` | `PermissionChecker.check` | `test_permissions.py` |
-| 使用策略 | `core/coding/tool_executor/policy.py` | `ToolPolicyChecker.check` | `test_tool_executor.py` |
-| 审批与危险命令 | `core/coding/tool_executor/approval.py` | `ApprovalManager` | `test_approval.py` |
-| Skill 解析 | `core/coding/skills/skill.py` | `discover_skills` | `test_skills.py` |
-| Slash resolve | `core/coding/skills/registry.py` | `SkillRegistry.resolve` | `test_skills.py` |
-| Working memory | `core/coding/memory/working.py` | `WorkingMemory.from_session` | `test_memory.py` |
-| Durable memory（旧） | `core/coding/memory/durable.py` | `DurableMemory` | `test_memory.py` |
-| Memory 组合 | `core/coding/memory/manager.py` | `MemoryManager` | `test_memory.py` |
-| Memory store（新 SQLite） | `core/coding/persistence/memory_store.py` | `MemoryStore` | `test_memory_store.py` |
-| Session 保存 | `core/coding/persistence/session_store.py` | `CodingSessionStore` | `test_session_store.py` |
-| Run trace/timeline | `core/coding/persistence/run_store.py` | `RunStore` | `test_run_store.py` |
-| Session events | `core/coding/persistence/session_events.py` | `SessionEventBus.emit` | runtime persistence test |
-| Transcript（SQLite） | `core/coding/persistence/transcript_store.py` | `TranscriptStore` | `test_transcript_store.py` |
-| Tool result archive | `core/coding/persistence/tool_result_store.py` | `ToolResultStore` | `test_tool_result_store.py` |
-| Todo | `core/coding/persistence/todo_ledger.py` | `TodoLedger` | todo runtime test |
-| Compaction store | `core/coding/persistence/compaction_store.py` | `CompactionStore` | `test_compaction_store.py` |
-| Plan mode | `core/coding/plan_mode.py` | `PlanModeManager` | `test_plan_review.py` |
-| Plan approval | `core/coding/plan_review.py` | `PlanReviewManager` | `test_plan_review.py` |
-| Worker 管理（legacy） | `core/coding/multiagent/manager.py` | `WorkerManager` | `test_worker_runtime.py` |
-| Worker runtime | `core/coding/multiagent/runtime.py` | `run_worker_task` | `test_worker_runtime.py` |
-| Run coordinator | `core/coding/run_coordinator.py` | `RunCoordinator` | `test_run_coordinator.py` |
-| Knowledge store | `core/knowledge/store.py` | `KnowledgeStore` | `test_store.py` |
-| Knowledge retrieval | `core/knowledge/retrieval.py` | `retrieve` | `test_retrieval.py` |
-| Knowledge proposals | `core/knowledge/source_proposals/` | `KnowledgeSourceProposal` | `source_proposals/test_service.py` |
-| Evidence bundle | `core/harness/evidence_bundle.py` | `CodingEvidenceBundlePort` | `test_evidence_bundle.py` |
-| 子代理 adapter | `core/harness/subagent_adapter.py` | `build_subagent_capability` | `test_subagent_adapter.py` |
-| Container sandbox | `core/harness/container_sandbox.py` | `ContainerSandbox` | `test_sandbox_contract.py` |
-| Local sandbox | `core/harness/local_sandbox.py` | `LocalWorkspaceSandbox` | `test_sandbox_contract.py` |
-| MCP adapter | `core/harness/mcp_adapter.py` | `McpAdapter` | `test_mcp_adapter.py` |
-| Event adapter | `core/harness/event_adapter.py` | `HarnessEventAdapter` | `test_harness_runtime_adapter.py` |
-| Memory adapter | `core/harness/memory_adapter.py` | `MemoryAdapter` | `test_memory_adapter.py` |
-| Knowledge adapter | `core/harness/knowledge_adapter.py` | `KnowledgeAdapter` | `test_knowledge_adapter.py` |
-| Cloud auth | `core/cloud/auth/repository.py` | `CloudAuthRepository` | `auth/test_repository.py` |
-| GitHub OAuth | `core/cloud/github/oauth.py` | `GitHubOAuth` | `test_cloud_github_oauth_routes.py` |
-| Secret cipher | `core/cloud/security.py` | `CloudSecretCipher` | `test_cloud_model_provider_routes.py` |
+一条最实用的导航路径是：
 
-## API
+```text
+用户现象
+  -> API 或前端入口
+  -> Runtime / Harness 边界
+  -> Tool / State / Knowledge 责任模块
+  -> canonical store
+  -> contract test / integration test
+```
 
-| 现象 | 源码入口 |
-| --- | --- |
-| 创建/恢复 session | `api/coding.py::create_coding_session/resume_coding_session` |
-| WebSocket 流 | `api/coding.py::coding_stream` |
-| Timeline REST | `api/coding.py::get_coding_timeline` |
-| Timeline WS | `api/coding.py::coding_stream`（支持 `after` 参数） |
-| 文件和 Git | `list_coding_files/read_coding_file/coding_git_status` |
-| Tool approval | `coding_pending_approval/coding_approval_respond` |
-| Stop | `stop_coding_run` |
-| Plan approval | `approve_plan/reject_plan` |
-| Memory proposal | `approve_memory_proposal/reject_memory_proposal` |
-| Runs/Diff | `list_coding_runs/get_coding_run/get_coding_run_diff` |
-| Model/mode | `switch_coding_model/switch_permission_mode` |
-| Skills/MCP | `list_coding_skills/get_coding_skill/list_coding_mcp_servers` |
-| Context | `get_coding_context/compact_coding_context` |
-| Cloud auth | `api/cloud_auth.py::github_oauth_start/callback/logout` |
-| Cloud workspace | `api/cloud_workspaces.py` |
-| Knowledge | `api/knowledge.py` |
+源码文件会变化，这条责任链不应该随重构失效。
 
-API 测试主入口：`tests/api/test_coding_routes.py`。
+## 先判断问题属于哪一层
 
-## 前端
-
-| 组件 | 源码 | 职责 |
+| 现象 | 第一责任边界 | 第一入口 |
 | --- | --- | --- |
-| Assistant 首页 | `frontend/src/views/AssistantHomeView.vue` | today + composer + 摘要 |
-| Coding 页面 | `frontend/src/views/CodingView.vue` | 三栏编排、drawer、滚动 |
-| Knowledge 视图 | `frontend/src/views/KnowledgeView.vue` | 知识库管理 |
-| Store | `frontend/src/stores/coding.ts` | 状态、REST、stream orchestration |
-| Timeline store | `frontend/src/stores/codingTimeline.ts` | 事件投影成 TimelineTurn |
-| Event reducer | `frontend/src/stores/codingEvents.ts` | event -> state/effect |
-| WebSocket | `frontend/src/stores/codingStream.ts` | 连接、代际、防竞态 |
-| API client | `frontend/src/api/coding.ts` | REST URL 和类型化请求 |
-| Event/API types | `frontend/src/types/api.ts` | 前端契约 |
-| 路由 | `frontend/src/router/index.ts` | URL 深链接 |
-| 偏好 | `frontend/src/composables/useWorkbenchPreferences.ts` | localStorage 持久化 |
-| 侧栏 | `components/coding/sidebar/CodingSidebar.vue` | sessions/skills/memory/runs/MCP |
-| 输入框 | `components/coding/composer/CodingComposer.vue` | send/stop/skill/mode |
-| Tool activity | `components/coding/chat/CodingToolActivity.vue` | 工具状态与输出 |
-| Approval | `components/coding/chat/CodingApprovalCard.vue` | 工具审批 |
-| Plan review | `components/coding/chat/CodingPlanApproval.vue` | plan 审批 |
-| Inspector | `components/coding/inspector/CodingInspector.vue` | 文件/变更/运行/记忆四 tab |
-| Diff | `components/coding/files/CodingDiffDrawer.vue` | run diff |
-| File tree | `components/coding/files/CodingFileTree.vue` | workspace 浏览 |
-| Git badge | `components/coding/files/CodingGitBadge.vue` | branch/dirty count |
-| Memory panel | `components/coding/memory/CodingMemoryPanel.vue` | memory 事实与 proposal |
+| 消息发不出去、会话建不起来 | API 与 owner/session 校验 | `api/coding.py` |
+| run 没启动、没结束或停不下来 | Runtime 生命周期 | `core/coding/runtime.py::CodingRuntime.run_turn` |
+| v2 行为和 legacy 不一致 | runtime profile 适配 | `core/harness/runtime_adapter.py::SageHarnessRuntimeAdapter` |
+| 工具没执行或被拒绝 | ToolExecutor | `core/coding/tool_executor/executor.py::ToolExecutor.execute` |
+| 文件读写范围异常 | Workspace / Sandbox | `core/coding/context/workspace.py::WorkspaceContext.path` |
+| 刷新后消息或状态丢失 | Timeline / Transcript | `core/coding/persistence/` |
+| Memory、Knowledge 或摘要混在一起 | 状态事实边界 | 对应 store 与 projection |
+| UI 显示与 timeline 不一致 | 前端 projection | `frontend/src/harness/timelineProjection.ts` |
+| 检索没有 citation | Knowledge retrieval | `core/knowledge/retrieval.py` |
+| 说不清改动是否回归 | Tests / Evals | `tests/` 与 `evals/` |
 
-## sage_harness 包
+这张表不是完整索引，而是第一跳。第一跳选错，后面的阅读通常都会绕远。
 
-| 模块 | 源码 | 职责 |
+## 六个模块区不是六个文件夹
+
+Sage 可以按责任压成六区：
+
+```text
+产品入口：Vue / FastAPI / WebSocket
+运行编排：Runtime / Engine / create_agent / Middleware
+工具边界：Registry / Executor / Permission / Approval / Sandbox
+状态持久：Session / Transcript / Timeline / Checkpoint / Run / Artifact
+知识学习：Memory / Knowledge / Retrieval / Proposal / Learning Evidence
+测试证据：Contract / API / Integration / Eval / Deployment Gate
+```
+
+同一目录可能跨多个区，同一区也可能分布在应用层和通用 package。阅读时要跟责任走，不要跟文件夹走。
+
+## 产品入口只负责接入，不负责重新实现 Runtime
+
+`api/coding.py` 是主入口，但它不应该成为第二个 Agent Engine。这里负责 owner/session 访问控制、session 生命周期、WebSocket、timeline、approval、stop、runtime profile 和应用依赖接线。
+
+如果一个 bug 表现为 HTTP 状态错误、session 404、WebSocket 参数不兼容，先看 API。若 API 已经正确调用 Runtime，就应继续向下追，不要在路由里补业务循环。
+
+## Runtime 和 Engine 解决不同问题
+
+`CodingRuntime` 是 session 的运行现场。它装配模型、workspace、context、stores、tools、permission、approval、run lease 和事件出口，并负责在异常路径上收口。
+
+legacy 的 `Engine` 负责 turn 级循环：请求模型、解析输出、执行工具、继续或终止。它不应该决定 workspace 属于谁，也不应该自行创建持久化根目录。
+
+v2 通过 `SageHarnessRuntimeAdapter` 把 Sage 的 session、timeline、stores 与通用 `sage_harness` package 接起来。`create_sage_agent` 只接受显式参数，不读取 Sage 全局状态。
+
+因此双轨导航要先问：这个 session 的 `runtime_profile` 是什么？
+
+| Profile | 编排入口 | 工具协议 |
 | --- | --- | --- |
-| Ports | `packages/sage_harness/sage_harness/ports.py` | 25+ Protocol/value object |
-| State | `packages/sage_harness/sage_harness/state.py` | SageThreadState + reducer |
-| Config | `packages/sage_harness/sage_harness/config.py` | HarnessConfig + HarnessRunContext |
-| Agent factory | `packages/sage_harness/sage_harness/agents/factory.py` | create_sage_agent |
-| Runtime manager | `packages/sage_harness/sage_harness/runtime/manager.py` | HarnessRunManager |
-| Middleware registry | `packages/sage_harness/sage_harness/middleware/registry.py` | MiddlewareRegistry |
-| Builtin middleware | `packages/sage_harness/sage_harness/middleware/builtin.py` | 默认 registry 所用实现 |
-| Durable context | `packages/sage_harness/sage_harness/middleware/durable_context.py` | DurableContextMiddleware |
-| Capability registry | `packages/sage_harness/sage_harness/capabilities/registry.py` | CapabilityRegistry |
-| Deferred tools | `packages/sage_harness/sage_harness/deferred_tools.py` | 按需暴露工具 |
-| Sandbox base | `packages/sage_harness/sage_harness/sandbox/base.py` | SandboxPort Protocol |
-| MCP manager | `packages/sage_harness/sage_harness/mcp/manager.py` | McpManager |
-| Subagent contracts | `packages/sage_harness/sage_harness/subagents/contracts.py` | AgentProfile |
-| Subagent tool | `packages/sage_harness/sage_harness/subagents/tool.py` | task 工具 |
-| Subagent middleware | `packages/sage_harness/sage_harness/subagents/middleware.py` | SubagentLifecycleMiddleware |
-| Capabilities | `packages/sage_harness/sage_harness/capabilities/` | capability registry |
+| legacy | `CodingRuntime` + `Engine` | XML 解析与应用 ToolExecutor |
+| `deerflow_v2` | `SageHarnessRuntimeAdapter` + `create_sage_agent` | 原生 tool calling + middleware |
 
-## Benchmark
+历史 session 不静默迁移。看到行为差异时，先确认 profile，再比较共享契约。
 
-| 文件 | 职责 |
+## `sage_harness` package 和 Sage 应用层不能倒置
+
+`packages/sage_harness/sage_harness/` 提供可复用的运行骨架。阅读顺序是 `agents/factory.py`、`config.py`、`state.py`、`middleware/`、`capabilities/`、`deferred_tools.py`、`sandbox/`、`subagents/` 和 `mcp/`。
+
+应用层 `core/harness/` 负责 adapter：把 Knowledge、Memory、Sandbox、MCP、Subagent、事件和 usage 接到这些 ports。
+
+正确依赖方向是应用依赖通用 package。通用 package 不能反向导入 `api/`、Sage 数据库或前端事件模型。
+
+## ToolExecutor 是动作问题的第一站
+
+工具问题不要先从具体工具函数开始。先看执行管线有没有接受这次调用：
+
+```text
+tool name
+  -> args validation
+  -> permission
+  -> policy / fresh-read
+  -> dangerous command / approval
+  -> sandbox or tool implementation
+  -> bounded result / artifact / event
+```
+
+对应模块是：
+
+| 问题 | 模块 |
 | --- | --- |
-| `evals/coding/scenarios.py` | 十个场景定义 |
-| `evals/coding/runner.py` | 构造 Runtime、运行场景、写报告 |
-| `evals/coding/assertions.py` | 文件、事件、policy、memory 断言 |
-| `evals/coding/metrics.py` | 聚合指标 |
-| `evals/coding/report.py` | HTML 报告 |
-| `tests/evals/test_benchmark.py` | Benchmark 自身的回归测试 |
-| `evals/knowledge_golden_queries.json` | Knowledge 检索 golden queries |
+| 工具是否注册 | `core/coding/tools/registry.py` |
+| 参数是否合法 | `core/coding/tools/schemas.py` |
+| 是否允许调用 | `tool_executor/permissions.py` |
+| 调用是否满足前置条件 | `tool_executor/policy.py` |
+| 是否需要人工确认 | `tool_executor/approval.py` |
+| 怎样执行和留证 | `tool_executor/executor.py` |
+| 文件路径是否越界 | `context/workspace.py` |
+| 执行环境是什么 | `core/harness/sandbox_factory.py` |
 
-## 常见问题快速定位
+只有管线放行以后，才需要进入 `file_tools.py`、`shell_tool.py` 或其他具体工具。
 
-| 症状 | 先看 |
+## 状态问题先找 canonical store
+
+Sage 没有一个万能数据库。不同事实有不同 store：
+
+| 事实 | Canonical store | 主要消费者 |
+| --- | --- | --- |
+| 会话元数据与 runtime profile | `CodingSessionStore` | API / Runtime |
+| 完整 transcript | `TranscriptStore` | Context / Resume / Export |
+| 用户可见事件序列 | `SessionEventJournal` | Timeline / Reconnect / UI |
+| graph 执行状态 | LangGraph checkpointer | v2 resume / interrupt |
+| run 诊断与 diff | `RunStore` | Inspector / Review |
+| 大工具输出 | `ToolResultStore` / Artifact port | Context / UI |
+| 压缩结果 | `CompactionStore` | Context projection |
+| 长期记忆 | `MemoryStore` | Recall / Proposal / Dream |
+
+看到“刷新后丢了”时，先问丢的是哪一种事实。WebSocket 收到过不等于 journal 已写入；timeline 可重放也不等于 transcript 已经完整；checkpointer 有状态也不等于用户可见终态已经落盘。
+
+## Knowledge 是独立平台，不是 Memory 的大表
+
+`core/knowledge/` 处理来源、解析、proposal、revision、检索、citation、图谱和学习证据。
+
+常见入口是 `KnowledgeStore.ingest`、`KnowledgeStore.approve`、`retrieval.py`、`KnowledgeStore.citation`、`core/knowledge/jobs/`、`core/knowledge/parsing/`、`graph.py` 和 `core/learning/`。
+
+Memory 保存用户确认过的稳定事实和偏好；Knowledge 保存有来源、有 revision、可引用的知识。Context summary 只服务当前任务连续性。三者不能互换。
+
+## 前端问题先区分事实、投影和展示
+
+前端主链可以这样读：
+
+```text
+REST / WebSocket event
+  -> harness session controller
+  -> timeline projection
+  -> surface adapter
+  -> Chat / Canvas / Details components
+```
+
+| 层 | 第一入口 |
 | --- | --- |
-| 页面一直 thinking | `run_finished` 是否到 reducer |
-| 工具没有执行 | ToolResult 的 permission/policy 字段 |
-| 写文件被拒 | fresh read、permission mode、write scope |
-| Diff 为空 | snapshot 时机和 ignored rules |
-| Resume 后工具消失 | timeline 投影 + `loadSessionMessages` 映射 |
-| Memory 没召回 | workspace ID、MEMORY.md、context budget |
-| Stop 无效 | active run ID、Engine/Executor stop checkpoint |
-| Worker 停不下来 | `WorkerManager.stop` 与 Engine should_stop 未绑定 |
-| 旧 session 事件污染新页面 | `CodingStream.generation` |
-| 切换会话丢工具调用 | timeline.sqlite3 + codingTimeline.ts 投影 |
-| 审批丢失 | durable interrupt 未实现，重启会丢 pending |
-| prompt injection | InputSanitizationMiddleware / RemoteContentSanitizationMiddleware |
-| 路径逃逸 | WorkspaceContext.path + O_NOFOLLOW |
-| 多用户看到别人数据 | Project/Workspace ownership + opaque ID |
+| 会话连接与恢复 | `frontend/src/harness/useHarnessSession.ts` |
+| timeline 投影 | `frontend/src/harness/timelineProjection.ts` |
+| surface 契约 | `frontend/src/harness/surfaces/` |
+| 共享 Harness UI | `frontend/src/components/harness/` |
+| Coding 画布 | `frontend/src/views/CodingView.vue` |
+| Knowledge 画布 | `frontend/src/views/KnowledgeView.vue` |
+| Assistant 首页 | `frontend/src/views/AssistantHomeView.vue` |
+| 类型契约 | `frontend/src/types/api.ts` |
 
-## 不要混淆的几套系统
+UI 组件不应重新推断 run 是否完成。它应消费 projection 结果。否则刷新、实时流和历史重放会得到三套不同状态。
 
-| 系统 | 回答的问题 | 当前阶段 | 源码 |
-| --- | --- | --- | --- |
-| Durable Memory | 用户明确要求 Sage 长期记住什么 | V7 SQLite revisioned | `core/coding/memory/` |
-| Knowledge 检索 | 当前问题应该检索哪些知识片段 | SQLite FTS5 + hashing baseline + RRF | `core/knowledge/` |
-| Context Summary | 当前任务怎么接着干 | V7 结构化 compaction | `core/coding/context/compact.py` |
-| AST 知识图谱 | 类、函数、文件之间如何结构化连接 | 设计方向，未交付 | - |
-| Learning State | 用户对某个知识点掌握到什么程度 | V7 Practice profile 候选 | `core/knowledge/understanding.py` |
+## 为什么不是生成一份全仓文件清单
 
-Memory 不是 RAG，RAG 也不是知识图谱，Context Summary 不是 Memory。它们生命周期、信任等级、写入语义都不同。
+文件清单看起来完整，但维护成本高，而且容易把目录结构误当架构。
 
-## 版本边界速查
+Sage 更需要的是稳定导航规则：
 
-| 版本 | 目标 | 必须完成 | 明确不做 |
-| --- | --- | --- | --- |
-| V7 Beta | 本地使用与受控私测 | onboarding / 受控来源导入 / 生产 Sandbox 门禁 | 无条件公网开放 |
-| 公网候选版 | 受邀用户云 workspace | auth / tenant scope / sandbox / quota / recovery | 读取用户未授权的本地改动 |
-| 后续设计 | 本地/云混合代码智能 | Local Companion / Code RAG / AST graph | 将 LLM 推断边冒充 AST 事实 |
+- 入口层不复制运行逻辑；
+- Runtime 不替代 canonical store；
+- 通用 package 不反向依赖产品层；
+- Tool implementation 不绕过 ToolExecutor；
+- projection 不成为新的事实源；
+- tests 对准公共契约，不绑定私有调用顺序。
+
+只要这些规则稳定，文件移动以后仍能重新找到正确入口。
+
+## 和 Claude Code / CodeBuddy 的对标
+
+| 维度 | Sage | 对标系统 |
+| --- | --- | --- |
+| 导航主线 | API、Runtime、Tool、State、Knowledge、Evidence | Claude Code 模块更多，产品控制面与 bridge 更成熟 |
+| 通用运行时 | 独立 `sage_harness` package + Sage adapters | Claude Code 有更完整的 SDK、工具和远程运行生态 |
+| 研发约束 | 责任边界、测试入口和文档一起维护 | CodeBuddy 强调代码即配置、统一环境和 SDD |
+| 状态事实 | 多 store 分权 | 成熟系统同样区分 transcript、task、telemetry 和 UI state |
+| 学习可读性 | 模块边界可直接作为学习地图 | 商业系统覆盖更广，但内部实现不一定同等可读 |
+
+Sage 不需要追求“文件和 Claude Code 一一对应”。真正值得对齐的是边界是否可发现、可替换、可测试。
+
+## 最危险的不是找不到文件，而是改错事实源
+
+- 在 WebSocket handler 里修复本应由 journal 保证的顺序；
+- 在 Vue 组件里推断本应由 projection 决定的终态；
+- 在具体工具里绕过 permission、policy 或 approval；
+- 把 checkpoint 当成 transcript，恢复后缺少用户可见记录；
+- 把 Memory 当成 Knowledge，写入没有 citation 的长期事实；
+- 在 `sage_harness` package 中导入 Sage 应用数据库；
+- 只修改实现文件，没有更新对应 contract test。
+
+这些问题短期都可能“修好页面”，长期会让双轨运行时和恢复语义继续分叉。
+
+## 设计文档级补充：模块地图要能指导改动
+
+判断入口是否正确，可以问四个问题：
+
+1. 这个模块拥有事实，还是只消费投影？
+2. 这个模块决定策略，还是只执行已决定的动作？
+3. 这个模块属于通用 harness，还是 Sage 产品适配？
+4. 哪个测试能从公共边界证明改动有效？
+
+### 常见改动路线
+
+| 想改什么 | 阅读顺序 |
+| --- | --- |
+| 新增工具 | schema -> registry -> executor -> permission/policy -> tests |
+| 新增远程能力 | capability -> MCP/Web adapter -> remote marker -> middleware -> tests |
+| 修改 run 终态 | Runtime -> journal -> adapter -> projection -> UI tests |
+| 修改恢复 | transcript/checkpoint/journal -> Runtime -> API -> frontend replay |
+| 修改 Knowledge 写入 | proposal -> policy -> approve -> projection -> retrieval benchmark |
+| 修改 Context | source stores -> budget -> projection -> compaction -> cache tests |
+| 修改 Sandbox | port -> provider -> deployment policy -> contract -> server smoke |
+
+### 最小验收清单
+
+| 验收点 | 证据 |
+| --- | --- |
+| 能从现象找到唯一第一责任边界 | 本章导航表与实际 import/call path 一致 |
+| 双轨入口没有混淆 | legacy 与 v2 测试分别覆盖，共享契约有 parity test |
+| canonical store 清楚 | 文档没有把 UI、WebSocket 或 projection 写成事实源 |
+| package 依赖方向正确 | `tests/harness/test_package_boundary.py` |
+| ToolExecutor 不被绕过 | tool executor、permission、policy tests |
+| 前端重放一致 | timeline projection 与 session tests |
+| Knowledge 写入受控 | proposal、approve、revision tests |
+| 发布结论有证据 | contract、build、benchmark 或 deployment smoke |
+
+面试里可以这样收束：Sage 的模块地图不是一张目录树，而是一张责任图。用户现象先落到 API、Runtime、Tool、State、Knowledge 或 Evidence，再找到 canonical store 和公共测试。这样重构可以移动文件，但不能悄悄移动事实边界。

@@ -1,336 +1,232 @@
-# 11 - 持久 Timeline 与断线重连
+# 持久 Timeline 与断线重连：连接断开不能带走任务事实
 
-> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
+> Last verified against: `codex/release-v7-rewrite@0d56d91` (2026-07-23)
 
-> 本章目标：能讲清 SessionEventJournal 的 schema 设计、RunCoordinator 的服务端持有 run 机制、无缝重放算法（先重放后订阅无竞态）、fencing token 防幽灵写入、以及为什么"WebSocket 断开 ≠ 取消 run"。
+WebSocket 只是事件传输通道，run、审批和工具证据必须由服务端持有并先写入持久 Timeline。
 
-## V6 的根本问题
+![断线不等于任务消失](assets/11-timeline-reconnect.png)
 
-V6 时期"切换会话回来工具调用消失"是根本性体验问题。根因是 run 事件有三个问题：
+## 先分清三个生命周期
 
-1. **推一次就没了**：事件推给 WebSocket 前端，前端收到就丢了。没有持久化的事件源。
-2. **lease 只是内存字符串**：`active_run_id` 是内存对象，WebSocket 断线就丢，进程重启就丢。
-3. **切换会话只看到 role+content**：`loadSessionMessages()` 只映射 role 和 content，丢工具调用元数据。
+| 对象 | 生命周期 | 断线后的行为 |
+| --- | --- | --- |
+| WebSocket subscription | 一次连接 | 结束，可重新建立 |
+| Run task | 服务端运行 | 继续执行，除非显式取消或进程退出 |
+| SessionEventJournal | Session 持久事实 | 保留，可按 cursor 重放 |
 
-V6.9 的 SessionEventJournal + RunCoordinator 彻底解决了这些问题。
+把三者绑在一起，用户切换页面就等于取消任务；把它们拆开，UI 只是事实的一个观察者。
 
-## SessionEventJournal：事件事实源
+## 第一层：Journal 是 Timeline 事实源
 
-### SQLite schema
+`SessionEventJournal` 使用 SQLite 保存完整 typed event。
 
-```sql
-CREATE TABLE session_events (
-    sequence INTEGER PRIMARY KEY AUTOINCREMENT,  -- 全局递增，重连的 cursor
-    event_id TEXT NOT NULL UNIQUE,                -- 事件唯一 ID，幂等去重
-    session_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    kind TEXT NOT NULL,                           -- user/assistant/model/tool/approval/...
-    status TEXT NOT NULL,                         -- pending/running/done/completed/cancelled/...
-    timestamp TEXT NOT NULL,
-    payload_json TEXT NOT NULL                     -- 完整事件内容
-);
+每条事件至少有 `sequence`、`event_id`、session、run、kind、status、timestamp 与 payload。
 
-CREATE UNIQUE INDEX session_events_terminal_idx ON session_events(run_id)
-WHERE kind = 'terminal';                          -- 一个 run 只有一个终态
+三个数据库约束承担核心可靠性：
 
-CREATE TABLE active_run_lease (
-    lease_key INTEGER PRIMARY KEY CHECK (lease_key = 1),  -- 单例锁
-    run_id TEXT NOT NULL UNIQUE,
-    owner_id TEXT NOT NULL,                                -- 进程实例 ID
-    owner_pid INTEGER NOT NULL,
-    owner_process_start TEXT NOT NULL,
-    fencing_token INTEGER NOT NULL,                        -- 防幽灵写入
-    acquired_at TEXT NOT NULL
-);
+- `sequence` 单调递增，作为 replay cursor；
+- `event_id` 唯一，重复投递保持幂等；
+- 每个 run 的 terminal 唯一，不能既 completed 又 cancelled。
+
+Journal 还保存 active run lease、fencing token、pending approval、Thread Goal 与后续回执。
+
+这些都不是 WebSocket 内存状态。
+
+## 第二层：RunCoordinator 独立持有执行
+
+`RunCoordinator.start_run` 先取得数据库 lease，再创建消费 event stream 的 asyncio task。
+
+Subscriber 可以有零个、一个或多个，不影响 active task 所有权。
+
+显式 `cancel(run_id)` 才会取消匹配任务，并持久化 terminal。
+
+取消 subscriber 只从集合移除队列，不取消 run。
+
+这条边界保证切换 session、浏览器休眠或短暂网络故障不会改变任务语义。
+
+## Persist-then-push 是不可反转的顺序
+
+```mermaid
+sequenceDiagram
+    participant R as Runtime
+    participant J as Journal
+    participant C as Coordinator
+    participant W as WebSocket
+
+    R->>C: RunEvent
+    C->>J: append + commit
+    J-->>C: SessionEvent(sequence)
+    C-->>W: broadcast persisted event
+    Note over W: push failure only makes client lag
+    W->>C: reconnect after=cursor
+    C->>J: replay missing events
 ```
 
-### 三个关键约束
+如果先 push 后 persist，客户端可能看见一个数据库中不存在的工具结果。
 
-**① `sequence` 全局递增**：所有事件按顺序编号。重连时 `WHERE sequence > last_seen` 增量拉取。
+刷新后事件消失，用户会看到历史倒退。
 
-**② `event_id` UNIQUE**：重复写入被 `ON CONFLICT DO NOTHING` 拒绝。网络重发同一条消息不会产生重复记录。这是幂等的基础。
+先持久化则把网络失败降级为客户端暂时落后，重连仍能补齐。
 
-**③ `active_run_lease` 单例行**：`lease_key = 1` 的 CHECK 约束保证一个 session 只有一个活跃 run。带 `owner_id` + `owner_pid` + `owner_process_start` + `fencing_token`。
+## 无缝重放要同时解决漏与重
 
-### terminal 唯一索引
+`subscribe(after)` 不是简单“查数据库再监听队列”。
 
-```sql
-CREATE UNIQUE INDEX session_events_terminal_idx ON session_events(run_id)
-WHERE kind = 'terminal';
-```
+Coordinator 在 `publish_lock` 内读取 high-water sequence 并注册 subscriber。
 
-这个部分唯一索引保证**一个 run 只有一个终态事件**。如果尝试给同一个 run 写两个 terminal，第二个会被拒绝。这防止了"run 已经 completed 又被写成 cancelled"的矛盾。
+然后按页重放 `(after, high_water]`，最后切到 live queue。
 
-## RunCoordinator：服务端持有 run
+Live event 若 `sequence <= cursor` 就去重。
 
-### 核心设计：WebSocket 断开 ≠ 取消
+若 sequence 跳跃或 queue 溢出，Coordinator 从 Journal 补读到目标 sequence。
 
-V6 的 run 绑定 WebSocket：WebSocket 断了 run 就没了。V6.9 的 RunCoordinator 把 run 解耦：
+空闲轮询也会检查最新 sequence，确保没有广播的已提交事件仍可被发现。
 
-```python
-class RunCoordinator:
-    _active_run_id: str | None
-    _active_task: asyncio.Task | None
-    _active_fencing_token: int | None     # 防幽灵写入
-    _subscribers: set[asyncio.Queue]      # 多 WebSocket 可同时订阅
-```
+因此 correctness 来自 Journal + cursor，queue 只是低延迟通知。
 
-**run 由服务端持有，不绑 WebSocket**。用户切换会话只改变前端订阅目标，不取消旧 session 的执行。多个 WebSocket 可以同时订阅同一个 session（比如用户在两个标签页打开同一个 session）。
+## Lease 与 fencing 阻止幽灵写入
 
-### 核心方法
+每次开始或恢复 run 都取得 owner-bound lease 和递增 fencing token。
 
-```python
-async def start_run(run_id, event_stream) -> asyncio.Task
-    # 开始消费事件流作为 session 的活跃 run
+后续 append 必须匹配 owner 与 token。
 
-async def cancel(run_id) -> bool
-    # 取消运行（不影响 subscribers）
+假设旧 task 在取消后迟到返回工具结果，新 owner 已经恢复 session。
 
-async def subscribe(after=0) -> AsyncIterator[SessionEvent]
-    # 重放历史 + 实时推送（无竞态窗口）
+没有 fencing，旧 task 仍可能污染新状态；有 fencing，过期 writer 会被拒绝。
 
-async def recover_interrupted_runs() -> tuple[str, ...]
-    # 进程重启后恢复中断的 run
-```
+Terminal append 与 lease release 在同一数据库事务中完成。
 
-### fencing token 防幽灵写入
+这样终态可见时，run 所有权也同步结束，不留下可争抢的中间窗口。
 
-每次 `begin_run` 生成递增的 fencing_token。后续所有 `append` 都带这个 token：
+## 进程重启有两种恢复语义
 
-```python
-async def _persist(self, *, run_id, event, fencing_token):
-    if event.kind == "terminal":
-        stored = await asyncio.to_thread(
-            self.journal.append_terminal_and_release,
-            run_id=run_id,
-            status=event.status,
-            payload=event.payload,
-            lease_owner_id=self.owner_id,
-            fencing_token=fencing_token,  # 必须匹配
-        )
-```
+普通未完成 run 在进程重启后不会假装继续执行。
 
-**为什么需要**：假设 run A 被取消，但取消前 A 已经发起了一个工具调用，工具结果还在飞。如果没有 fencing token，这个迟到的工具结果会写入已取消的 run，导致状态矛盾。有了 fencing token，取消后 token 不匹配，迟到的写入被拒绝。
+`recover_interrupted_runs` 释放废弃 lease，并追加 retryable `interrupted` terminal。
 
-## 无缝重放算法（核心创新）
+这是诚实失败：用户可重试，但系统不伪造已经恢复的工具栈。
 
-这是 V6.9 最精妙的设计。问题是：重连时怎么既不漏事件也不重复？
+带 durable pending approval 的 graph run 是例外。
 
-### 朴素方案的竞态
+Journal 能恢复审批 payload，应用重新构造 runtime，并通过 `start_existing_run` 从 checkpoint 继续。
 
-```python
-# 朴素方案 1：先重放再订阅
-events = journal.replay(after=last_seen)  # 读历史
-for event in events:
-    yield event
-# ← 竞态窗口：这里新事件可能已经写入但还没注册 subscriber
-subscribe(queue)  # 开始订阅
-async for event in queue:
-    yield event
-```
+Terminal run 不会再暴露 stale recoverable approval。
 
-竞态：在 `replay` 返回和 `subscribe` 注册之间，可能有新事件写入 journal 但没进 queue，漏掉了。
+这修正了旧文档“服务器重启一定丢 pending approval”的过时结论，但恢复仍依赖可用 checkpoint。
 
-```python
-# 朴素方案 2：先订阅再重放
-subscribe(queue)
-events = journal.replay(after=last_seen)
-for event in events:
-    yield event
-async for event in queue:
-    yield event
-```
+## Timeline API 同时支持前进与历史浏览
 
-竞态：queue 里可能有 `replay` 已经返回的事件，重复了。
+前进重放使用 `after` cursor，适合重连追新事件。
 
-### RunCoordinator 的方案
+历史浏览使用 `before` 或 `tail`，适合长 session 的首屏和向上翻页。
 
-```python
-async def subscribe(self, *, after: int = 0):
-    queue = asyncio.Queue(maxsize=256)
+三种 pagination mode 互斥，limit 上限为 500。
 
-    # 1. 在 publish_lock 内注册 subscriber + 读 high_water
-    async with self._publish_lock:
-        high_water = await asyncio.to_thread(self.journal.latest_sequence)
-        self._subscribers.add(queue)
+响应同时返回 next、older 与 latest cursor，前端不需要用数组长度猜位置。
 
-    try:
-        # 2. 重放 after 之后到 high_water 的历史
-        cursor = after
-        while cursor < high_water:
-            page = await asyncio.to_thread(
-                self.journal.replay, after=cursor, limit=500
-            )
-            items = tuple(item for item in page.items if item.sequence <= high_water)
-            if not items:
-                break
-            for event in items:
-                cursor = event.sequence
-                yield event
+Messages API 只是 user/assistant 投影，完整工具与审批 UI 必须使用 Timeline API。
 
-        # 3. 切换到实时订阅
-        while True:
-            live_event = await asyncio.wait_for(
-                queue.get(), timeout=self._poll_interval_seconds
-            )
-            if live_event.sequence <= cursor:
-                continue  # 去重（重放已经 yield 过的）
-            # 检查是否有 gap（queue 里跳过了某些 sequence）
-            target = live_event.sequence
-            if target > cursor + 1:
-                # 有 gap，从 journal 补读
-                while cursor < target:
-                    page = await asyncio.to_thread(
-                        self.journal.replay, after=cursor, limit=500
-                    )
-                    for repaired in page.items:
-                        cursor = repaired.sequence
-                        yield repaired
-            cursor = live_event.sequence
-            yield live_event
-    finally:
-        self._subscribers.discard(queue)
-```
+## Event idempotency 不等于业务幂等
 
-**关键**：
-1. **publish_lock 原子性**：注册 subscriber 和读 high_water 在同一个锁内。这保证不会有事件在"注册之后、读 high_water 之前"写入 journal 但没进 queue。
-2. **重放到 high_water**：只重放到注册时刻的 high_water，不重放之后的（之后的走 queue）。
-3. **queue 去重**：queue 里可能有 `sequence <= cursor` 的事件（重放已经 yield 过的），跳过。
-4. **gap 检测**：如果 queue 里跳过了某些 sequence（比如 high_water 之后又写了 3 条但 queue 只收到第 3 条），从 journal 补读。
+相同 `event_id` 重写不会产生第二条记录。
 
-这个算法保证**不漏事件也不重复**。
+但若调用方为同一业务动作生成两个不同 id，数据库仍会把它们当作两件事。
 
-## persist-then-push 契约
+关键事件因此使用可推导 ID，例如 run terminal、workspace diff、goal follow-up。
 
-每个事件必须按这个顺序：
+业务幂等必须由稳定 identity 与唯一约束共同保证，不能只依赖客户端不重试。
 
-```python
-async def _persist_and_broadcast(self, event):
-    # 1. 先写 SQLite（持久化）
-    stored = await asyncio.to_thread(self.journal.append, ...)
-    # 2. 再 broadcast 到 subscribers
-    self._broadcast(stored)
-    # 3. 再推 WebSocket（由调用方做）
-```
+## 为什么不是最小 WebSocket 消息缓存
 
-**为什么这个顺序**：如果先推 WebSocket 再持久化，推成功但持久化失败时，前端看到了事件但服务器没记录。断线重连时重放不到这个事件，前端会出现"事件消失"的幻觉。
+最小实现把事件保存在前端数组，断线后重新请求聊天消息。
 
-persist-then-push 保证：**推失败只让客户端暂时落后，不丢事件**。客户端重连时从 `last_sequence` 重放，一定能看到所有已持久化的事件。
+它恢复不了工具、审批、usage、子 Agent 与 terminal 的精确顺序。
 
-## recover_interrupted_runs
+| 维度 | Sage | 对标系统 |
+| --- | --- | --- |
+| Run ownership | 服务端 task 与 DB lease，不依赖连接 | Claude Code 以进程/终端为主；CodeBuddy 的后台任务模型依产品形态而变 |
+| Replay | 单调 cursor + persist-then-push + gap repair | 对标产品会恢复历史，底层游标与竞态算法通常不公开 |
+| 幂等 | event id、terminal unique、稳定业务 id | 对标系统内部事件约束不可从 UI 推断 |
+| 旧写防护 | owner lease + fencing token | 分布式系统常用 lease/fencing，对标实现细节不公开 |
+| 审批恢复 | Durable approval + graph checkpoint 可恢复 | 对标产品是否跨重启恢复审批需按版本验证 |
+| 当前差距 | 普通中断 run 不续跑；长 Timeline 性能仍需压测；多进程部署门禁需持续验证 | 成熟后台任务平台在跨进程调度与运维上更完整 |
 
-进程重启后，上一个进程的 lease 还在数据库里。这个方法处理：
+可靠性比较应以断线、进程崩溃和重复投递测试为准，而不是“页面看起来还在”。
 
-```python
-async def recover_interrupted_runs(self):
-    recovered = []
+## 系统级失败模式
 
-    # 1. 恢复 lease（上一个进程的 lease 标记为 interrupted）
-    async with self._publish_lock:
-        lease_event = await asyncio.to_thread(
-            self.journal.recover_run_lease,
-            recovery_owner_id=self.owner_id,
-        )
-        if lease_event is not None:
-            self._broadcast(lease_event)
-            recovered.append(lease_event.run_id)
+### 1. WebSocket disconnect 自动取消 run
 
-    # 2. 把所有未完成的 run 标记为 interrupted
-    run_ids = await asyncio.to_thread(self.journal.unfinished_run_ids)
-    for run_id in run_ids:
-        event = RunEvent(
-            kind="terminal",
-            status="interrupted",  # retryable
-            payload={"event": "run_interrupted", "retryable": True},
-        )
-        await self._persist(run_id=run_id, event=event)
-        recovered.append(run_id)
+最危险的不是用户要重试，而是网络抖动悄悄改变了任务业务语义。
 
-    return tuple(recovered)
-```
+### 2. Push 先于 persist
 
-**关键**：
-- **不尝试恢复执行**。中断的 run 不继续跑，只标记 `interrupted`。
-- **不伪造自动恢复成功**。用户看到"run 已中断，可重试"，不是"run 已恢复"。
-- `interrupted` 是 `retryable=True`，用户可以手动重新发起。
+最危险的不是少一条日志，而是客户端看见过的事实在刷新后从历史中消失。
 
-## 为什么 V6 切换会话丢工具调用
+### 3. 重放与订阅之间有竞态窗口
 
-V6 的 `loadSessionMessages()` 只映射 role + content：
+最危险的不是重复渲染，而是某个 tool result 永远既不在 replay 也不在 live queue。
 
-```typescript
-// V6 的前端代码
-async function loadSessionMessages(targetSessionId) {
-    const res = await fetchCodingSessionMessages(targetSessionId)
-    return res.messages.map((message) => ({
-        role: message.role,        // 只取 role
-        content: message.content,  // 只取 content
-    }))
-}
-```
+### 4. Terminal 可以写入两次
 
-后端 `session_store.messages()` 也只返回 user/assistant 角色，过滤掉 tool 消息。所以切换会话回来只看到纯文本对话，工具调用过程全部消失。
+最危险的不是状态闪烁，而是 completed 与 cancelled 同时成为规范事实。
 
-V6.9 的修复：
-- 后端 timeline API 返回完整事件（含 tool 事件）
-- 前端 `codingTimeline.ts` 把事件投影成 `TimelineTurn`（含 tools/approvals/model events）
-- `CodingMessageTurn` 统一渲染 user/assistant/tool/approval
+### 5. 旧 owner 没有 fencing token
 
-## 事件有三个受众
+最危险的不是迟到事件，而是已取消 task 在新 run 开始后继续写入同一 session。
 
-一个 RunEvent 会被写到三个地方：
+### 6. Pending approval 与 checkpoint 分离
 
-| 受众 | 存储 | 用途 | 字段 |
-| --- | --- | --- | --- |
-| 机器调试 | `trace.jsonl` | 开发/benchmark | 完整字段 + 调试元数据 |
-| 用户审计 | `timeline.sqlite3` | replay/刷新 | 完整事件 JSON |
-| 实时 UI | WebSocket | 前端增量更新 | 同 timeline |
+最危险的不是审批卡片丢失，而是恢复时对另一个 tool call 应用了旧决定。
 
-**`text_delta` 只推 WebSocket 不写 trace**（避免 trace 膨胀）。其他事件三个受众都写。
+### 7. 前端只用 messages API 重建界面
 
-## 外部参考的使用边界
+最危险的不是工具折叠状态丢失，而是用户看不到审批、错误和实际执行证据。
 
-CLI、桌面与 Web 产品面对的连接生命周期不同，不能用 UI 观察推断外部系统是否存在
-持久化或 fencing。Sage 采用 durable timeline 是自身 Web 运行模型的要求；可靠性应由
-重放竞态、重复 terminal、进程恢复和 lease ownership 测试证明。
+## 设计文档补充：持久 Timeline 契约
+
+### 目标
+
+- Run 与连接生命周期解耦；
+- 所有可见非流式事实先持久化再广播；
+- 重放与实时切换不漏、不重，可修复 gap；
+- Run terminal 唯一，过期 owner 无法写入；
+- 可恢复审批与 graph checkpoint 保持同一 run identity。
+
+### 非目标
+
+- 不承诺普通进程中断后自动续跑；
+- 不用 subscriber queue 作为事实源；
+- 不让 messages 投影代替完整 Timeline；
+- 不把 event-id 幂等夸大为所有外部副作用幂等。
+
+### 验收清单
+
+- [ ] 重启后 sequence 与 event id 保持稳定；
+- [ ] 重复 event id 不产生重复行；
+- [ ] 同一 run 只能有一个 terminal；
+- [ ] subscribe 能覆盖 replay/live 交界事件；
+- [ ] queue gap 可从 Journal 补读；
+- [ ] 旧 fencing token 写入被拒绝；
+- [ ] WebSocket 关闭不取消 active run；
+- [ ] Terminal 后 stale approval 不可恢复。
 
 ## 第一入口
 
-按顺序打开：
+按这个顺序读源码：
 
-1. `core/coding/persistence/session_event_journal.py::SessionEventJournal` - 事件 journal
-2. `core/coding/run_coordinator.py::RunCoordinator` - 运行协调器
-3. `core/coding/run_coordinator.py::RunCoordinator.subscribe` - 无缝重放
-4. `core/coding/run_coordinator.py::RunCoordinator.recover_interrupted_runs` - 重启恢复
-5. `api/coding_runs.py::CodingRunRegistry` - 应用级注册表
-6. `frontend/src/stores/codingTimeline.ts` - 前端 timeline 投影
-7. `frontend/src/router/index.ts` - URL 深链接与 session route
+1. `core/coding/persistence/session_event_journal.py::SessionEventJournal`：事件与 lease 事实；
+2. `core/coding/run_coordinator.py::RunCoordinator.start_run`：服务端持有 run；
+3. `core/coding/run_coordinator.py::RunCoordinator.subscribe`：replay/live 桥接；
+4. `core/coding/run_coordinator.py::RunCoordinator._persist`：persist-then-push；
+5. `core/coding/run_coordinator.py::RunCoordinator.recover_interrupted_runs`：重启收口；
+6. `api/coding.py::coding_timeline`：分页 API；
+7. `api/coding.py::coding_timeline_websocket`：cursor 订阅入口。
 
-## 测试证据
+验证证据集中在 session event journal、run coordinator、runtime lifecycle、timeline routes 与 coding route 重连测试。
 
-- `tests/core/coding/test_session_event_journal.py` - journal schema + 幂等
-- `tests/core/coding/test_run_coordinator.py` - coordinator + fencing token
-- `tests/core/coding/test_runtime_run_lifecycle.py` - run 生命周期
-- `tests/api/test_coding_timeline_routes.py` - timeline REST API
-- `frontend/src/stores/codingTimeline.test.ts` - 前端投影
+## 面试里可以这样收束
 
-## 当前边界
+Sage 把 WebSocket 降级为观察通道，把 Journal 作为 Timeline 事实源，把 run 所有权交给服务端 Coordinator。事件先持久化再广播，重连用 high-water、cursor 和 gap repair 衔接历史与实时；lease 与 fencing 拒绝过期写入，普通崩溃诚实标记 interrupted，而 durable approval 可依 checkpoint 恢复。
 
-> [!warning] 持久 Timeline 有几个已知边界
-> - 审批的 LangGraph durable interrupt 未实现（同进程 ApprovalManager 兜底，服务器重启丢 pending approval）
-> - 长会话（1000+ 事件）的 timeline 全量加载性能未优化（当前分页 500/次）
-> - fencing token 在单进程内递增，多进程部署需要数据库序列
-> - `recover_interrupted_runs` 只标记 interrupted，不尝试恢复执行（设计如此）
-> - 旧 session（V6 之前）没有 timeline.sqlite3，需要兼容回退到 trace.jsonl
-
-## 自测
-
-1. V6 切换会话丢工具调用的根因是什么？V6.9 怎么解决的？
-2. SessionEventJournal 的三个关键约束（sequence/event_id/lease）各自解决什么问题？
-3. 无缝重放算法怎么保证不漏事件也不重复？publish_lock 的作用？
-4. fencing token 防什么攻击？如果不带 token 会怎样？
-5. persist-then-push 契约为什么必须先持久化再推送？
-6. `recover_interrupted_runs` 为什么不尝试恢复执行，只标记 interrupted？
-7. 为什么 terminal 事件要有唯一索引？
-
-下一章：[安全审计与防注入](12-security-audit.md)
+下一章：[安全审计与防注入：不可信内容必须被当成数据](12-security-audit.md)
