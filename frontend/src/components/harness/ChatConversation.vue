@@ -152,6 +152,7 @@ function pendingToolForRun(runId: string) {
       <CodingRunTrace
         v-if="shouldShowRunTrace(turn.run_id, turn.tools.length, turn.approvals.length)"
         :run-id="turn.run_id"
+        :turn="turn"
         :tools="turn.tools"
         :audit="auditForRun(turn.run_id)"
         :active="isActiveTurn(turn.run_id)"

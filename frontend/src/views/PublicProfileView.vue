@@ -19,13 +19,14 @@ import {
   Target,
   X,
 } from 'lucide-vue-next'
-import knowledgeWorkbenchImage from '../assets/public/sage-knowledge-workbench.jpg'
 import {
   answerPublicProfileQuestion,
   type PublicAgentReceipt,
   type PublicAgentSource,
   type PublicAgentStreamEvent,
 } from '../harness/publicAgent'
+
+const harnessWorkbenchImage = '/sage-harness-workbench.webp'
 
 type AgentMessage = {
   role: 'visitor' | 'sage'
@@ -358,10 +359,10 @@ onBeforeUnmount(() => {
           </div>
 
           <figure class="hero-product">
-            <img :src="knowledgeWorkbenchImage" alt="Sage Knowledge 真实工作台截面" fetchpriority="high" />
+            <img :src="harnessWorkbenchImage" alt="Sage Harness 真实执行阶段工作台，不含私人数据" fetchpriority="high" />
             <figcaption>
-              <span><strong>Sage Knowledge</strong><small>当前公开产品截面</small></span>
-              <span>source snapshot · no private data</span>
+              <span><strong>Sage Harness</strong><small>真实 Timeline 执行阶段</small></span>
+              <span>run snapshot · no private data</span>
             </figcaption>
           </figure>
         </div>
@@ -394,11 +395,11 @@ onBeforeUnmount(() => {
             <figure class="product-preview">
               <div class="preview-bar">
                 <span><i></i><i></i><i></i></span>
-                <strong>Sage Knowledge / graph view</strong>
-                <small>真实界面 · 公开演示数据</small>
+                <strong>Sage Harness / run timeline</strong>
+                <small>真实界面 · 受控运行证据</small>
               </div>
-              <img :src="knowledgeWorkbenchImage" alt="Sage Knowledge 图谱工作台的真实界面" loading="lazy" />
-              <figcaption><span>Knowledge graph</span><span>goal-aware · revision bound</span></figcaption>
+              <img :src="harnessWorkbenchImage" alt="Sage Harness 执行阶段与回答时间线的真实界面" loading="lazy" />
+              <figcaption><span>Run timeline</span><span>context · model · tools · approval · answer</span></figcaption>
             </figure>
           </div>
 

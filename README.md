@@ -17,7 +17,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-![Sage knowledge growth workbench](docs/assets/readme/sage-knowledge-growth-cover.webp)
+![Sage Harness workbench](frontend/public/sage-harness-workbench.webp)
 
 Sage 是一个本地优先的个人 AI 学习与实践工作台。它把对话、代码仓库、
 Markdown/Obsidian 知识、模型 Provider、Skills 和 MCP 工具组织进同一套 Chat Harness，
@@ -27,8 +27,9 @@ Coding 没有被包装成另一个聊天框，而是 Sage 的 **Practice Engine*
 修改代码、运行测试并验证理解。Knowledge 保存来源、提案、检索与引用；所有可能改变
 代码、长期知识或外部系统的操作都保留证据和控制点。
 
-> **项目状态**：Sage 正在快速开发，当前适合本机使用、架构研究与受控私测。
-> 正式公网发布仍需完成生产 Sandbox、租户级 Knowledge 隔离和部署门禁。
+> **项目状态**：公开工程主页与受限 Ask Sage 已部署到
+> [http://121.40.185.188/](http://121.40.185.188/)。备案完成前暂用普通 HTTP；私人 Harness
+> 仍只在本机或受控环境运行，不通过公开站点暴露 Workspace、Knowledge 或 Memory。
 
 ## 从一个问题到长期成长
 
@@ -66,7 +67,7 @@ flowchart LR
 
 ### Practice：用真实执行验证理解
 
-![Sage Practice workspace](docs/assets/readme/screenshots/practice-desktop.webp)
+![Sage Practice workspace with durable execution stages](frontend/public/sage-harness-workbench.webp)
 
 `/#/coding/session/:id` 统一呈现 plan、reasoning、tool、approval、reply 与 terminal；
 支持工作区工具、Diff、测试、checkpoint、上下文压缩和可恢复 timeline。
@@ -75,7 +76,8 @@ flowchart LR
 并提供不携带私有应用路由的独立静态构建。Public Agent 只读取已激活的不可变公开资料包，
 返回 citation 与 package receipt；它使用独立凭据、独立容器和同源单路由，服务异常时会透明
 回退到本页公开资料。资料包支持候选、原子发布、撤回和上一健康 revision 回退；它不是私人
-Harness 的匿名入口，稳定 HTTPS 地址将在正式部署后补充到这里。
+Harness 的匿名入口。当前公开入口是 [http://121.40.185.188/](http://121.40.185.188/)；
+`sagecompanion.top` 完成阿里云 ICP 备案后再切换域名与 HTTPS。
 
 私有发布工作室通过独立的公开候选 API 提交完整资料包：候选正文不可变，人工批准使用
 revision guard，只有批准后的候选才能导出确定性 stage artifact。Web API 不直接持有服务器

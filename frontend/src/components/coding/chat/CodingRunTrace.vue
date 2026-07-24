@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import {
   Bot,
+  BrainCircuit,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -10,24 +11,38 @@ import {
   FileText,
   FilePenLine,
   FolderSearch,
+  Layers3,
+  MessageSquareText,
   PauseCircle,
   Search,
   ShieldAlert,
+  ShieldCheck,
   Terminal,
   Wrench,
   XCircle,
 } from 'lucide-vue-next'
 import type { CodingRunAuditStep, CodingRunAuditSummary } from '../../../types/api'
-import type { TimelineTool } from '../../../stores/codingTimeline'
+import type { TimelineDetail, TimelineTurn, TimelineTool } from '../../../stores/codingTimeline'
+
+type RunStageStatus = 'pending' | 'running' | 'waiting' | 'completed' | 'failed' | 'skipped' | 'unrecorded'
+
+type RunStageCard = {
+  id: 'context' | 'model' | 'tools' | 'approval' | 'answer'
+  label: string
+  detail: string
+  status: RunStageStatus
+}
 
 const props = withDefaults(defineProps<{
   runId: string
   tools: TimelineTool[]
+  turn?: TimelineTurn
   audit?: CodingRunAuditSummary
   active?: boolean
   pendingTool?: string
 }>(), {
   audit: undefined,
+  turn: undefined,
   active: false,
   pendingTool: '',
 })
@@ -84,6 +99,127 @@ const headline = computed(() => {
 
 const durationLabel = computed(() => formatDuration(props.audit?.duration_ms ?? 0))
 const changedFiles = computed(() => props.audit?.changed_files ?? [])
+const runStages = computed<RunStageCard[]>(() => {
+  const turn = props.turn
+  if (!turn) return []
+  const terminalFailed = Boolean(turn.terminal && failedTimelineStatus(turn.terminal.status))
+  const modelRequests = turn.model.filter((event) => event.type === 'model_requested').length
+  const auditSteps = props.audit?.steps ?? []
+  const hasPersistedExecution = Boolean(
+    turn.assistant || turn.terminal || turn.tools.length || auditSteps.length || props.audit?.tool_count || props.audit?.status,
+  )
+  const toolNames = [...new Set(
+    turn.tools.length ? turn.tools.map((tool) => tool.tool) : auditSteps.map((step) => step.tool),
+  )]
+  const toolCount = turn.tools.length || auditSteps.length
+  const approvalCount = turn.approvals.length || props.audit?.approval_count || 0
+  const contextStatus = turn.context.length
+    ? detailStatus(turn.context)
+    : turn.model.length || turn.tools.length || turn.terminal
+      ? 'completed'
+      : props.active ? 'running' : 'pending'
+  const answerStatus: RunStageStatus = turn.assistant?.streaming
+    ? 'running'
+    : terminalFailed
+      ? 'failed'
+      : turn.assistant && turn.terminal
+        ? 'completed'
+        : props.active ? 'pending' : turn.terminal ? 'unrecorded' : 'pending'
+
+  return [
+    {
+      id: 'context',
+      label: '输入与上下文',
+      detail: turn.context.length ? `${turn.context.length} 条上下文事件` : '本轮输入已接收',
+      status: contextStatus,
+    },
+    {
+      id: 'model',
+      label: '模型决策',
+      detail: modelRequests ? `${modelRequests} 轮模型请求` : hasPersistedExecution ? 'Timeline 未记录模型事件' : '本轮未触发',
+      status: turn.model.length ? detailStatus(turn.model) : hasPersistedExecution ? 'unrecorded' : 'skipped',
+    },
+    {
+      id: 'tools',
+      label: '工具执行',
+      detail: toolCount
+        ? `${toolCount} 项 · ${toolNames.slice(0, 2).join('、')}${toolNames.length > 2 ? '…' : ''}`
+        : '本轮未调用',
+      status: turn.tools.length
+        ? toolStatus(turn.tools)
+        : auditSteps.length ? auditToolStatus(auditSteps) : 'skipped',
+    },
+    {
+      id: 'approval',
+      label: '人工确认',
+      detail: approvalCount ? `${approvalCount} 次审批事件` : '本轮未触发',
+      status: turn.approvals.length
+        ? approvalStatus(turn.approvals.map((item) => item.status))
+        : props.pendingTool ? 'waiting' : approvalCount ? 'completed' : 'skipped',
+    },
+    {
+      id: 'answer',
+      label: '回答完成',
+      detail: turn.assistant?.streaming
+        ? '正在流式输出'
+        : turn.assistant
+          ? '回答已写入 timeline'
+          : turn.terminal ? 'Timeline 未记录回答事件' : '等待回答',
+      status: answerStatus,
+    },
+  ]
+})
+
+function detailStatus(events: TimelineDetail[]): RunStageStatus {
+  const status = events.at(-1)?.status
+  if (status === 'blocked') return 'waiting'
+  if (status === 'pending' || status === 'queued' || status === 'running' || status === 'retryable') return 'running'
+  if (status && failedTimelineStatus(status)) return 'failed'
+  return 'completed'
+}
+
+function toolStatus(tools: TimelineTool[]): RunStageStatus {
+  if (tools.some((tool) => tool.status === 'blocked')) return 'waiting'
+  if (tools.some((tool) => ['pending', 'queued', 'running', 'retryable'].includes(tool.status))) return 'running'
+  if (tools.some((tool) => tool.is_error || failedTimelineStatus(tool.status))) return 'failed'
+  return 'completed'
+}
+
+function auditToolStatus(auditSteps: CodingRunAuditStep[]): RunStageStatus {
+  if (auditSteps.some((step) => step.status === 'waiting' || step.status === 'approval-blocked')) return 'waiting'
+  if (auditSteps.some((step) => step.status === 'running')) return 'running'
+  if (auditSteps.some((step) => step.status === 'error' || step.status === 'policy-blocked')) return 'failed'
+  return 'completed'
+}
+
+function approvalStatus(statuses: TimelineTurn['approvals'][number]['status'][]): RunStageStatus {
+  if (statuses.some((status) => status === 'blocked')) return 'waiting'
+  if (statuses.some((status) => ['pending', 'queued', 'running', 'retryable'].includes(status))) return 'running'
+  if (statuses.some(failedTimelineStatus)) return 'failed'
+  return 'completed'
+}
+
+function failedTimelineStatus(status: string) {
+  return status === 'error' || status === 'cancelled' || status === 'interrupted'
+}
+
+function stageIcon(stage: RunStageCard) {
+  if (stage.id === 'context') return Layers3
+  if (stage.id === 'model') return BrainCircuit
+  if (stage.id === 'approval') return ShieldCheck
+  if (stage.id === 'answer') return MessageSquareText
+  return Wrench
+}
+
+function runStageStatusLabel(status: RunStageStatus) {
+  if (status === 'running') return '进行中'
+  if (status === 'waiting') return '等待确认'
+  if (status === 'completed') return '已完成'
+  if (status === 'failed') return '失败'
+  if (status === 'skipped') return '未触发'
+  if (status === 'unrecorded') return '未记录'
+  return '等待中'
+}
 
 function fallbackStep(tool: TimelineTool): CodingRunAuditStep {
   const args = safeArguments(tool.tool, tool.args)
@@ -353,13 +489,26 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
 <template>
   <details class="run-trace" :data-run-id="runId">
     <summary>
-      <span class="trace-icon" :class="{ active }">
-        <Wrench :size="14" />
+      <span class="trace-summary-row">
+        <span class="trace-icon" :class="{ active }">
+          <Wrench :size="14" />
+        </span>
+        <span class="trace-headline" :title="headline">{{ headline }}</span>
+        <span v-if="durationLabel" class="trace-duration"><Clock3 :size="12" />{{ durationLabel }}</span>
+        <span v-if="changedFiles.length" class="trace-files"><FilePenLine :size="12" />{{ changedFiles.length }}</span>
+        <ChevronDown class="trace-chevron" :size="15" />
       </span>
-      <span class="trace-headline" :title="headline">{{ headline }}</span>
-      <span v-if="durationLabel" class="trace-duration"><Clock3 :size="12" />{{ durationLabel }}</span>
-      <span v-if="changedFiles.length" class="trace-files"><FilePenLine :size="12" />{{ changedFiles.length }}</span>
-      <ChevronDown class="trace-chevron" :size="15" />
+      <span v-if="runStages.length" class="run-stage-flow" aria-label="本轮执行阶段">
+        <span v-for="(stage, index) in runStages" :key="stage.id" class="run-stage-card" :class="stage.status" :data-stage="stage.id">
+          <span class="run-stage-card__top">
+            <span class="run-stage-index">{{ String(index + 1).padStart(2, '0') }}</span>
+            <component :is="stageIcon(stage)" :size="14" />
+            <span class="run-stage-status">{{ runStageStatusLabel(stage.status) }}</span>
+          </span>
+          <strong>{{ stage.label }}</strong>
+          <small :title="stage.detail">{{ stage.detail }}</small>
+        </span>
+      </span>
     </summary>
 
     <div class="trace-content">
@@ -409,15 +558,30 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
 
 <style scoped>
 .run-trace { width:100%; margin:0 0 14px; border:1px solid var(--sage-border); border-radius:var(--sage-radius); background:var(--sage-surface); }
-.run-trace summary { display:grid; grid-template-columns:24px minmax(0,1fr) auto auto 18px; align-items:center; gap:8px; min-height:40px; padding:0 10px; color:var(--sage-text-secondary); cursor:pointer; list-style:none; font-size:var(--sage-font-xs); }
+.run-trace summary { display:grid; gap:8px; min-height:40px; padding:8px 10px 10px; color:var(--sage-text-secondary); cursor:pointer; list-style:none; font-size:var(--sage-font-xs); }
 .run-trace summary::-webkit-details-marker { display:none; }
 .run-trace summary:hover { background:var(--sage-surface-muted); }
+.trace-summary-row { display:grid; grid-template-columns:24px minmax(0,1fr) auto auto 18px; align-items:center; gap:8px; min-height:24px; }
 .trace-icon { display:grid; place-items:center; width:22px; height:22px; border-radius:var(--sage-radius-sm); color:var(--sage-text-muted); background:var(--sage-surface-muted); }
 .trace-icon.active { color:var(--sage-warning); }
 .trace-headline { min-width:0; overflow:hidden; color:var(--sage-text-secondary); font-weight:650; text-overflow:ellipsis; white-space:nowrap; }
 .trace-duration,.trace-files { display:inline-flex; align-items:center; gap:4px; color:var(--sage-text-muted); font-family:var(--sage-font-mono); font-size:var(--sage-font-xs); white-space:nowrap; }
 .trace-chevron { color:var(--sage-text-muted); transition:transform .16s ease; }
 .run-trace[open] .trace-chevron { transform:rotate(180deg); }
+.run-stage-flow { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:6px; min-width:0; }
+.run-stage-card { display:grid; grid-template-rows:auto auto minmax(28px,auto); gap:4px; min-width:0; min-height:76px; padding:8px; border:1px solid var(--sage-border); border-radius:var(--sage-radius-sm); background:var(--sage-surface-raised); }
+.run-stage-card__top { display:grid; grid-template-columns:auto 14px minmax(0,1fr); align-items:center; gap:5px; color:var(--sage-text-muted); }
+.run-stage-index { font-family:var(--sage-font-mono); font-size:10px; }
+.run-stage-status { overflow:hidden; text-align:right; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+.run-stage-card strong { overflow:hidden; color:var(--sage-text-secondary); font-size:12px; text-overflow:ellipsis; white-space:nowrap; }
+.run-stage-card small { display:-webkit-box; overflow:hidden; color:var(--sage-text-muted); font-size:10px; line-height:1.4; -webkit-box-orient:vertical; -webkit-line-clamp:2; }
+.run-stage-card.completed { border-color:color-mix(in srgb,var(--sage-success) 34%,var(--sage-border)); background:color-mix(in srgb,var(--sage-success-bg) 42%,var(--sage-surface-raised)); }
+.run-stage-card.completed .run-stage-card__top { color:var(--sage-success); }
+.run-stage-card.running,.run-stage-card.waiting { border-color:color-mix(in srgb,var(--sage-warning) 45%,var(--sage-border)); background:color-mix(in srgb,var(--sage-warning-bg) 48%,var(--sage-surface-raised)); }
+.run-stage-card.running .run-stage-card__top,.run-stage-card.waiting .run-stage-card__top { color:var(--sage-warning); }
+.run-stage-card.failed { border-color:color-mix(in srgb,var(--sage-danger) 42%,var(--sage-border)); background:color-mix(in srgb,var(--sage-danger-bg) 45%,var(--sage-surface-raised)); }
+.run-stage-card.failed .run-stage-card__top { color:var(--sage-danger); }
+.run-stage-card.skipped,.run-stage-card.unrecorded,.run-stage-card.pending { background:var(--sage-surface-muted); }
 .trace-content { border-top:1px solid var(--sage-border); }
 .trace-steps { display:grid; gap:0; margin:0; padding:0; list-style:none; }
 .trace-step { min-width:0; padding:9px 12px 10px; border-bottom:1px solid var(--sage-border); }
@@ -444,6 +608,7 @@ function toggleStep(step: CodingRunAuditStep, index: number) {
 .changed-files { display:flex; flex-wrap:wrap; gap:5px 10px; padding:9px 12px; border-top:1px solid var(--sage-border); color:var(--sage-text-muted); font-size:var(--sage-font-xs); }
 .changed-files strong { color:var(--sage-text-secondary); }
 .changed-files span { font-family:var(--sage-font-mono); overflow-wrap:anywhere; }
-@media (max-width:640px) { .run-trace summary { grid-template-columns:24px minmax(0,1fr) auto 18px; }.trace-files { display:none; }.step-header { grid-template-columns:16px auto minmax(0,1fr) auto; }.step-header time { display:none; } }
+@media (max-width:760px) { .run-stage-flow { grid-template-columns:repeat(2,minmax(0,1fr)); }.run-stage-card:last-child { grid-column:1 / -1; }.trace-files { display:none; } }
+@media (max-width:640px) { .trace-summary-row { grid-template-columns:24px minmax(0,1fr) auto 18px; }.trace-duration { display:none; }.step-header { grid-template-columns:16px auto minmax(0,1fr) auto; }.step-header time { display:none; } }
 @media (prefers-reduced-motion:reduce) { .trace-chevron { transition:none; } }
 </style>

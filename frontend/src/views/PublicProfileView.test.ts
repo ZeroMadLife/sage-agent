@@ -22,6 +22,9 @@ it('leads with the public product identity and three truthful engineering proofs
   expect(wrapper.text()).toContain('Mastery Evidence')
   expect(wrapper.text()).not.toContain('掌握率')
   expect(wrapper.text()).not.toContain('%')
+  expect(wrapper.get('.hero-product img').attributes('src')).toBe('/sage-harness-workbench.webp')
+  expect(wrapper.get('.hero-product img').attributes('alt')).toContain('不含私人数据')
+  expect(wrapper.get('.hero-product figcaption').text()).toContain('真实 Timeline 执行阶段')
 
   wrapper.unmount()
 })

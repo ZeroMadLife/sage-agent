@@ -1,6 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import type { CodingRunAuditSummary } from '../../../types/api'
+import type { TimelineTurn } from '../../../stores/codingTimeline'
 import CodingRunTrace from './CodingRunTrace.vue'
 
 const audit: CodingRunAuditSummary = {
@@ -40,6 +41,83 @@ const audit: CodingRunAuditSummary = {
 }
 
 describe('CodingRunTrace', () => {
+  it('projects durable timeline facts into explicit execution stage cards', () => {
+    const turn: TimelineTurn = {
+      id: 'turn:run-stage',
+      run_id: 'run-stage',
+      user: { content: '检查 README 并运行测试', event_id: 'evt-user', timestamp: '2026-07-24T08:00:00Z' },
+      assistant: { content: '检查完成。', event_id: 'evt-answer', timestamp: '2026-07-24T08:00:04Z' },
+      context: [{ id: 'evt-context', type: 'context_snapshot', status: 'completed', timestamp: '2026-07-24T08:00:01Z', payload: {} }],
+      model: [{ id: 'evt-model', type: 'model_requested', status: 'completed', timestamp: '2026-07-24T08:00:02Z', payload: {} }],
+      tools: [{ id: 'evt-tool', tool: 'run_shell', args: { command: 'npm test' }, status: 'completed', result: 'exit_code: 0', is_error: false }],
+      approvals: [],
+      memory: [],
+      agents: [],
+      system: [],
+      terminal: { event_id: 'evt-terminal', session_id: 'session-a', run_id: 'run-stage', sequence: 6, timestamp: '2026-07-24T08:00:04Z', kind: 'terminal', status: 'completed', payload: { type: 'final' } },
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: { runId: 'run-stage', tools: turn.tools, turn, audit: { ...audit, approval_count: 0 } },
+    })
+
+    expect(wrapper.findAll('.run-stage-card')).toHaveLength(5)
+    expect(wrapper.get('[data-stage="context"]').text()).toContain('输入与上下文')
+    expect(wrapper.get('[data-stage="model"]').text()).toContain('1 轮模型请求')
+    expect(wrapper.get('[data-stage="tools"]').text()).toContain('run_shell')
+    expect(wrapper.get('[data-stage="approval"]').text()).toContain('未触发')
+    expect(wrapper.get('[data-stage="answer"]').text()).toContain('回答已写入 timeline')
+  })
+
+  it('uses the persisted audit summary when a legacy timeline omitted tool events', () => {
+    const turn: TimelineTurn = {
+      id: 'turn:legacy-audit',
+      run_id: 'legacy-audit',
+      user: { content: '运行测试', event_id: 'evt-user', timestamp: '2026-07-24T08:00:00Z' },
+      assistant: { content: '测试通过。', event_id: 'evt-answer', timestamp: '2026-07-24T08:00:03Z' },
+      context: [],
+      model: [],
+      tools: [],
+      approvals: [],
+      memory: [],
+      agents: [],
+      system: [],
+      terminal: { event_id: 'evt-terminal', session_id: 'session-a', run_id: 'legacy-audit', sequence: 3, timestamp: '2026-07-24T08:00:03Z', kind: 'terminal', status: 'completed', payload: { type: 'final' } },
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: { runId: 'legacy-audit', tools: [], turn, audit },
+    })
+
+    expect(wrapper.get('[data-stage="tools"]').text()).toContain('2 项 · read_file、run_shell')
+    expect(wrapper.get('[data-stage="tools"]').classes()).toContain('completed')
+    expect(wrapper.get('[data-stage="approval"]').text()).toContain('1 次审批事件')
+    expect(wrapper.get('[data-stage="model"]').text()).toContain('未记录')
+    expect(wrapper.get('[data-stage="model"]').text()).toContain('Timeline 未记录模型事件')
+  })
+
+  it('does not call missing model or answer events completed when the terminal record exists', () => {
+    const turn: TimelineTurn = {
+      id: 'turn:terminal-only',
+      run_id: 'terminal-only',
+      user: { content: '检查状态', event_id: 'evt-user', timestamp: '2026-07-24T08:00:00Z' },
+      assistant: null,
+      context: [],
+      model: [],
+      tools: [],
+      approvals: [],
+      memory: [],
+      agents: [],
+      system: [],
+      terminal: { event_id: 'evt-terminal', session_id: 'session-a', run_id: 'terminal-only', sequence: 2, timestamp: '2026-07-24T08:00:01Z', kind: 'terminal', status: 'completed', payload: { type: 'final' } },
+    }
+    const wrapper = mount(CodingRunTrace, {
+      props: { runId: 'terminal-only', tools: [], turn },
+    })
+
+    expect(wrapper.get('[data-stage="model"]').text()).toContain('未记录')
+    expect(wrapper.get('[data-stage="answer"]').text()).toContain('未记录')
+    expect(wrapper.get('[data-stage="answer"]').classes()).toContain('unrecorded')
+  })
+
   it('summarizes concrete actions and expands bounded shell output on demand', async () => {
     const wrapper = mount(CodingRunTrace, {
       props: { runId: 'run-a', tools: [], audit },
