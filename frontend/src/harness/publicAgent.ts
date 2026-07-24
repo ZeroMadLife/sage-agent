@@ -21,6 +21,13 @@ export type PublicAgentResponse = {
   notice?: string
 }
 
+export type PublicAgentStreamEvent =
+  | { type: 'stage'; stage: string; label: string }
+  | { type: 'answer_delta'; delta: string }
+  | { type: 'sources'; sources: PublicAgentSource[] }
+  | { type: 'completed'; status: PublicApiResponse['status']; receipt: PublicAgentReceipt }
+  | { type: 'error'; message: string }
+
 type PublicAnswerEntry = {
   keywords: string[]
   answer: string
@@ -77,7 +84,11 @@ const entries: PublicAnswerEntry[] = [
 
 export async function answerPublicProfileQuestion(
   question: string,
-  options: { fetcher?: typeof fetch; timeoutMs?: number } = {},
+  options: {
+    fetcher?: typeof fetch
+    timeoutMs?: number
+    onEvent?: (event: PublicAgentStreamEvent) => void
+  } = {},
 ): Promise<PublicAgentResponse> {
   const fetcher = options.fetcher ?? fetch
   const controller = new AbortController()
@@ -85,7 +96,7 @@ export async function answerPublicProfileQuestion(
   try {
     const response = await fetcher('/api/public/v1/ask', {
       method: 'POST',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
       body: JSON.stringify({ question }),
       cache: 'no-store',
       credentials: 'omit',
@@ -98,6 +109,9 @@ export async function answerPublicProfileQuestion(
         : '公开问答服务暂时不可用'
       return fallbackAnswer(question, reason)
     }
+    if (response.headers.get('Content-Type')?.toLocaleLowerCase().includes('text/event-stream')) {
+      return await consumePublicAgentStream(response, options.onEvent)
+    }
     const body = await response.json() as PublicApiResponse
     if (!body.receipt?.package_revision || !Array.isArray(body.citations)) {
       return fallbackAnswer(question, '公开问答返回了无法验证的资料回执')
@@ -105,26 +119,122 @@ export async function answerPublicProfileQuestion(
     return {
       mode: 'live',
       answer: body.answer,
-      sources: body.citations.map((citation) => ({
-        id: citation.document_id,
-        label: `${citation.citation_id} · ${citation.title}`,
-        detail: citation.excerpt,
-        url: citation.url,
-        revision: citation.revision,
-      })),
-      receipt: {
-        requestId: body.receipt.request_id,
-        packageRevision: body.receipt.package_revision,
-        packageDigest: body.receipt.package_digest,
-      },
+      sources: body.citations.map(toPublicSource),
+      receipt: toPublicReceipt(body.receipt),
     }
   } catch (error) {
-    const notice = error instanceof DOMException && error.name === 'AbortError'
-      ? '公开问答响应超时'
-      : '公开问答连接失败'
+    const notice = error instanceof PublicAgentStreamError
+      ? error.message
+      : error instanceof DOMException && error.name === 'AbortError'
+        ? '公开问答响应超时'
+        : '公开问答连接失败'
     return fallbackAnswer(question, notice)
   } finally {
     window.clearTimeout(timeout)
+  }
+}
+
+class PublicAgentStreamError extends Error {}
+
+async function consumePublicAgentStream(
+  response: Response,
+  onEvent?: (event: PublicAgentStreamEvent) => void,
+): Promise<PublicAgentResponse> {
+  if (!response.body) throw new PublicAgentStreamError('公开问答流不可用')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let answer = ''
+  let sources: PublicAgentSource[] = []
+  let completed: { status: PublicApiResponse['status']; receipt: PublicAgentReceipt } | undefined
+  let streamFinished = false
+
+  const consumeBlock = (block: string) => {
+    const lines = block.split('\n')
+    const eventName = lines.find((line) => line.startsWith('event:'))?.slice(6).trim()
+    const data = lines
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n')
+    if (!eventName || !data) return
+    const payload = JSON.parse(data) as Record<string, unknown>
+    if (eventName === 'stage') {
+      const event: PublicAgentStreamEvent = {
+        type: 'stage',
+        stage: String(payload.stage || ''),
+        label: String(payload.label || ''),
+      }
+      onEvent?.(event)
+      return
+    }
+    if (eventName === 'answer_delta') {
+      const delta = String(payload.delta || '')
+      answer += delta
+      onEvent?.({ type: 'answer_delta', delta })
+      return
+    }
+    if (eventName === 'sources') {
+      const citations = Array.isArray(payload.citations) ? payload.citations : []
+      sources = citations.map((citation) => toPublicSource(citation as PublicApiResponse['citations'][number]))
+      onEvent?.({ type: 'sources', sources })
+      return
+    }
+    if (eventName === 'completed') {
+      const receipt = toPublicReceipt(payload.receipt as PublicApiResponse['receipt'])
+      completed = { status: payload.status as PublicApiResponse['status'], receipt }
+      onEvent?.({ type: 'completed', status: completed.status, receipt })
+      return
+    }
+    if (eventName === 'error') {
+      const message = String(payload.message || '公开问答服务暂时不可用')
+      onEvent?.({ type: 'error', message })
+      throw new PublicAgentStreamError(message)
+    }
+  }
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      buffer = buffer.replaceAll('\r\n', '\n')
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary >= 0) {
+        consumeBlock(buffer.slice(0, boundary))
+        buffer = buffer.slice(boundary + 2)
+        boundary = buffer.indexOf('\n\n')
+      }
+      if (done) {
+        streamFinished = true
+        break
+      }
+    }
+    if (buffer.trim()) consumeBlock(buffer.trim())
+    if (!completed) throw new PublicAgentStreamError('公开问答流未返回可验证回执')
+    return { mode: 'live', answer, sources, receipt: completed.receipt }
+  } finally {
+    if (!streamFinished) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+}
+
+function toPublicSource(citation: PublicApiResponse['citations'][number]): PublicAgentSource {
+  return {
+    id: citation.document_id,
+    label: `${citation.citation_id} · ${citation.title}`,
+    detail: citation.excerpt,
+    url: citation.url,
+    revision: citation.revision,
+  }
+}
+
+function toPublicReceipt(receipt: PublicApiResponse['receipt']): PublicAgentReceipt {
+  if (!receipt?.request_id || !receipt.package_revision || !receipt.package_digest) {
+    throw new PublicAgentStreamError('公开问答返回了无法验证的资料回执')
+  }
+  return {
+    requestId: receipt.request_id,
+    packageRevision: receipt.package_revision,
+    packageDigest: receipt.package_digest,
   }
 }
 

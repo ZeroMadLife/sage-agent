@@ -23,8 +23,9 @@ def test_public_package_verifies_digests_and_retrieves_bounded_sources() -> None
     results = package.retrieve("Harness 如何审批恢复 durable timeline？", limit=2)
 
     assert package.package_id == "sage-public"
-    assert package.revision == "2026-07-24.1"
-    assert [item.document_id for item in results] == ["harness-2"]
+    assert package.revision == "2026-07-24.2"
+    assert results[0].document_id == "harness-2"
+    assert all(item.document_id in {"harness-2", "sage-challenges"} for item in results)
     assert results[0].url.startswith("https://")
     assert len(results[0].content) <= 420
 
@@ -35,6 +36,31 @@ def test_public_package_retrieves_the_bounded_identity_document() -> None:
     results = package.retrieve("你是谁？")
 
     assert [item.document_id for item in results] == ["sage-identity"]
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "请介绍一下这个项目",
+        "为什么要做 Sage？",
+        "它和普通聊天机器人有什么区别？",
+        "这个项目有哪些工程亮点？",
+        "项目使用了什么技术栈？",
+        "整体架构是怎么设计的？",
+        "你在这个项目中做了什么？",
+        "作者是什么背景，求职方向是什么？",
+        "开发过程中最难的地方是什么？",
+        "如何保证公开 Agent 不泄露私人数据？",
+        "项目怎么做测试和质量保障？",
+        "你们怎么部署、备份和回滚？",
+        "这个项目现在做到什么程度了？",
+        "后续还准备做什么？",
+    ],
+)
+def test_public_package_covers_common_hr_questions(question: str) -> None:
+    package = PublicPackage.load(PACKAGE)
+
+    assert package.retrieve(question), question
 
 
 def test_public_package_rejects_modified_content(tmp_path: Path) -> None:

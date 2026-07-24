@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from public_agent.budget import DailyTokenBudget, PublicBudgetExceeded
 from public_agent.client_identity import (
@@ -20,7 +22,7 @@ from public_agent.limiter import SlidingWindowRateLimiter
 from public_agent.model import OpenAIPublicAnswerModel, PublicAnswerModel
 from public_agent.registry import PublishedPackageError, PublishedPackageProvider
 from public_agent.schemas import PublicAskRequest, PublicAskResponse, PublicHealthResponse
-from public_agent.service import PublicAgentService
+from public_agent.service import PublicAgentResult, PublicAgentService
 
 DEFAULT_PACKAGE = Path(__file__).resolve().parent.parent / "data" / "public" / "sage-public-v1.json"
 
@@ -136,6 +138,18 @@ def create_public_agent_app(
                     "X-RateLimit-Remaining": str(decision.remaining),
                 },
             )
+        if "text/event-stream" in request.headers.get("accept", "").casefold():
+            return StreamingResponse(
+                _stream_answer(service, payload.question, package),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Accel-Buffering": "no",
+                    "X-RateLimit-Limit": str(rate_limiter.requests),
+                    "X-RateLimit-Remaining": str(decision.remaining),
+                    "X-Public-Package-Revision": package.revision,
+                },
+            )
         try:
             result = await service.answer(payload.question, package=package)
         except PublicBudgetExceeded as exc:
@@ -156,6 +170,55 @@ def create_public_agent_app(
         return PublicAskResponse.model_validate(body)
 
     return app
+
+
+async def _stream_answer(
+    service: PublicAgentService,
+    question: str,
+    package: PublicPackage,
+) -> AsyncIterator[str]:
+    yield _sse("stage", {"stage": "retrieving", "label": "检索公开资料"})
+    try:
+        result = await service.answer(question, package=package)
+    except PublicBudgetExceeded:
+        yield _sse(
+            "error",
+            {"message": "公开问答当前已达使用上限，请稍后重试", "retry_after": 3600},
+        )
+        return
+    except Exception:
+        yield _sse("error", {"message": "公开问答服务暂时不可用"})
+        return
+
+    yield _sse("stage", {"stage": "grounding", "label": "核对回答依据"})
+    for delta in _answer_deltas(result.answer):
+        yield _sse("answer_delta", {"delta": delta})
+        await asyncio.sleep(0)
+    yield _sse(
+        "sources",
+        {"citations": [asdict(citation) for citation in result.citations]},
+    )
+    yield _sse("completed", _completed_payload(result))
+
+
+def _answer_deltas(answer: str, *, chunk_chars: int = 24) -> tuple[str, ...]:
+    return tuple(answer[index : index + chunk_chars] for index in range(0, len(answer), chunk_chars))
+
+
+def _completed_payload(result: PublicAgentResult) -> dict[str, object]:
+    return {
+        "status": result.status,
+        "receipt": asdict(result.receipt),
+        "usage": {
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+        },
+    }
+
+
+def _sse(event: str, data: dict[str, object]) -> str:
+    payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {payload}\n\n"
 
 
 def _model_from_env() -> PublicAnswerModel | None:

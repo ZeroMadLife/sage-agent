@@ -18,12 +18,15 @@ from public_agent.registry import PublishedPackageRegistry
 
 
 class StubModel:
+    def __init__(self, answer: str = "公开回答 [E1]") -> None:
+        self.answer_text = answer
+
     async def answer(
         self,
         question: str,
         evidence: Sequence[PublicDocument],
     ) -> PublicModelAnswer:
-        return PublicModelAnswer("公开回答 [E1]", input_tokens=50, output_tokens=8)
+        return PublicModelAnswer(self.answer_text, input_tokens=50, output_tokens=8)
 
 
 def _app(*, requests: int = 12):
@@ -42,11 +45,13 @@ def test_public_api_returns_no_store_citations_and_package_receipt() -> None:
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
-    assert response.headers["x-public-package-revision"] == "2026-07-24.1"
+    assert response.headers["x-public-package-revision"] == "2026-07-24.2"
     body = response.json()
     assert body["status"] == "answered"
     assert body["citations"][0]["document_id"] == "harness-2"
-    assert body["receipt"]["evidence_ids"] == ["harness-2"]
+    assert body["receipt"]["evidence_ids"] == [
+        citation["document_id"] for citation in body["citations"]
+    ]
     assert body["usage"] == {"input_tokens": 50, "output_tokens": 8}
     assert all(term not in response.text for term in ("/Users/", "workspace_root", "api_key"))
 
@@ -62,6 +67,52 @@ def test_public_api_answers_the_minimum_identity_question_from_published_evidenc
     assert body["status"] == "answered"
     assert body["citations"][0]["document_id"] == "sage-identity"
     assert body["receipt"]["evidence_ids"] == ["sage-identity"]
+
+
+def test_public_api_streams_grounded_answer_stages_and_receipt() -> None:
+    client = TestClient(_app())
+
+    with client.stream(
+        "POST",
+        "/api/public/v1/ask",
+        json={"question": "项目使用了什么技术栈？"},
+        headers={"Accept": "text/event-stream"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert "event: stage" in body
+    assert '"stage":"retrieving"' in body
+    assert '"stage":"grounding"' in body
+    assert "event: answer_delta" in body
+    assert "event: sources" in body
+    assert '"document_id":"sage-architecture"' in body
+    assert "event: completed" in body
+    assert '"package_revision":"2026-07-24.2"' in body
+    assert all(term not in body for term in ("/Users/", "workspace_root", "api_key"))
+
+
+def test_public_api_stream_never_emits_a_rejected_model_leak() -> None:
+    app = create_public_agent_app(
+        package_path=Path("data/public/sage-public-v1.json"),
+        model=StubModel("见 /Users/owner/private.md"),
+    )
+
+    with TestClient(app).stream(
+        "POST",
+        "/api/public/v1/ask",
+        json={"question": "Sage 是什么？"},
+        headers={"Accept": "text/event-stream"},
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert "/Users/" not in body
+    assert '"status":"refused"' in body
+    assert '"citations":[]' in body
 
 
 def test_public_api_explicitly_refuses_chinese_private_session_and_memory_request() -> None:
@@ -97,7 +148,7 @@ def test_public_api_limits_by_socket_client_without_trusting_forwarded_header() 
     assert first.status_code == 200
     assert limited.status_code == 429
     assert limited.headers["cache-control"] == "no-store"
-    assert limited.headers["x-public-package-revision"] == "2026-07-24.1"
+    assert limited.headers["x-public-package-revision"] == "2026-07-24.2"
     assert limited.headers["retry-after"] == "60"
     assert limited.json() == {"detail": "public Agent rate limit exceeded"}
 
@@ -199,7 +250,7 @@ def test_public_health_reports_package_and_configuration_state() -> None:
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["status"] == "ready"
-    assert response.json()["package_revision"] == "2026-07-24.1"
+    assert response.json()["package_revision"] == "2026-07-24.2"
 
 
 def test_unconfigured_public_agent_fails_closed() -> None:
@@ -213,7 +264,7 @@ def test_unconfigured_public_agent_fails_closed() -> None:
     response = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})
     assert response.status_code == 503
     assert response.headers["cache-control"] == "no-store"
-    assert response.headers["x-public-package-revision"] == "2026-07-24.1"
+    assert response.headers["x-public-package-revision"] == "2026-07-24.2"
     assert response.json() == {"detail": "public Agent is not configured"}
 
 
@@ -223,41 +274,41 @@ def test_public_api_follows_publish_and_revoke_without_process_restart(tmp_path:
     client = TestClient(create_public_agent_app(package_registry_root=tmp_path, model=StubModel()))
 
     before = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})
-    assert before.json()["receipt"]["package_revision"] == "2026-07-24.1"
+    assert before.json()["receipt"]["package_revision"] == "2026-07-24.2"
 
     payload = json.loads(Path("data/public/sage-public-v1.json").read_text(encoding="utf-8"))
-    payload["revision"] = "2026-07-24.2"
+    payload["revision"] = "2026-07-24.3"
     content = payload["documents"][0]["content"] + " P3 发布验证"
     payload["documents"][0]["content"] = content
     payload["documents"][0]["content_sha256"] = hashlib.sha256(content.encode()).hexdigest()
     registry.stage_payload(payload, actor="sage-deploy")
     registry.activate(
         "sage-public",
-        "2026-07-24.2",
-        expected_active_revision="2026-07-24.1",
+        "2026-07-24.3",
+        expected_active_revision="2026-07-24.2",
         actor="sage-deploy",
     )
 
     published = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})
-    assert published.headers["x-public-package-revision"] == "2026-07-24.2"
-    assert published.json()["receipt"]["package_revision"] == "2026-07-24.2"
+    assert published.headers["x-public-package-revision"] == "2026-07-24.3"
+    assert published.json()["receipt"]["package_revision"] == "2026-07-24.3"
 
     registry.revoke(
         "sage-public",
-        "2026-07-24.2",
-        expected_active_revision="2026-07-24.2",
+        "2026-07-24.3",
+        expected_active_revision="2026-07-24.3",
         actor="sage-deploy",
         reason="E2E 回退",
     )
     rolled_back = client.post("/api/public/v1/ask", json={"question": "Sage 是什么？"})
-    assert rolled_back.headers["x-public-package-revision"] == "2026-07-24.1"
-    assert rolled_back.json()["receipt"]["package_revision"] == "2026-07-24.1"
+    assert rolled_back.headers["x-public-package-revision"] == "2026-07-24.2"
+    assert rolled_back.json()["receipt"]["package_revision"] == "2026-07-24.2"
 
 
 def test_public_api_reports_degraded_when_active_registry_is_invalid(tmp_path: Path) -> None:
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(Path("data/public/sage-public-v1.json"), actor="root")
-    active = tmp_path / "packages/sage-public/2026-07-24.1.json"
+    active = tmp_path / "packages/sage-public/2026-07-24.2.json"
     active.write_text("{}", encoding="utf-8")
     client = TestClient(create_public_agent_app(package_registry_root=tmp_path, model=StubModel()))
 

@@ -67,3 +67,70 @@ it('shows a visible public-corpus fallback when the Agent cannot be reached', as
   expect(wrapper.text()).not.toContain('资料包 2026-07-22.1')
   wrapper.unmount()
 })
+
+it('sends with Enter while Shift+Enter keeps editing the question', async () => {
+  const fetcher = vi.fn(async () => new Response(JSON.stringify({
+    status: 'answered',
+    answer: '公开回答 [E1]',
+    citations: [{
+      citation_id: 'E1', document_id: 'sage-overview', title: 'Sage 项目概览',
+      url: 'https://github.com/ZeroMadLife/sage-agent', revision: '2026-07-24', excerpt: '公开摘要',
+    }],
+    receipt: { request_id: 'pub_enter', package_revision: '2026-07-24.2', package_digest: 'abc' },
+  }), { headers: { 'Content-Type': 'application/json' } }))
+  vi.stubGlobal('fetch', fetcher)
+  const wrapper = mountPublicProfile()
+
+  await wrapper.get('.ask-sage').trigger('click')
+  const textarea = wrapper.get<HTMLTextAreaElement>('.agent-form textarea')
+  await textarea.setValue('请介绍一下这个项目')
+  await textarea.trigger('keydown', { key: 'Enter', shiftKey: true })
+  expect(fetcher).not.toHaveBeenCalled()
+
+  await textarea.trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(wrapper.text()).toContain('请介绍一下这个项目')
+  expect(wrapper.text()).toContain('公开回答 [E1]')
+  wrapper.unmount()
+})
+
+it('renders real stream stages and answer deltas before the receipt completes', async () => {
+  const encoder = new TextEncoder()
+  let streamController: ReadableStreamDefaultController<Uint8Array> | undefined
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({
+    start(controller) { streamController = controller },
+  }), { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } })))
+  const wrapper = mountPublicProfile()
+
+  await wrapper.get('.ask-sage').trigger('click')
+  const textarea = wrapper.get<HTMLTextAreaElement>('.agent-form textarea')
+  await textarea.setValue('项目使用了什么技术栈？')
+  await textarea.trigger('keydown', { key: 'Enter' })
+  await flushPromises()
+
+  streamController?.enqueue(encoder.encode(
+    'event: stage\ndata: {"stage":"retrieving","label":"检索公开资料"}\n\n',
+  ))
+  await flushPromises()
+  expect(wrapper.text()).toContain('检索公开资料')
+
+  streamController?.enqueue(encoder.encode(
+    'event: answer_delta\ndata: {"delta":"前端使用 Vue 3，"}\n\n',
+  ))
+  await flushPromises()
+  expect(wrapper.text()).toContain('前端使用 Vue 3，')
+
+  streamController?.enqueue(encoder.encode([
+    'event: sources\ndata: {"citations":[{"citation_id":"E1","document_id":"sage-architecture","title":"Sage 技术栈与系统架构","url":"https://github.com/ZeroMadLife/sage-agent#架构","revision":"2026-07-24","excerpt":"公开架构证据"}]}\n\n',
+    'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_stream","package_revision":"2026-07-24.2","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
+  ].join('')))
+  streamController?.close()
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('E1 · Sage 技术栈与系统架构')
+  expect(wrapper.text()).toContain('资料包 2026-07-24.2 · pub_stream')
+  expect(textarea.attributes('disabled')).toBeUndefined()
+  wrapper.unmount()
+})

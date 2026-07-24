@@ -37,7 +37,9 @@ async def test_answer_returns_versioned_citation_receipt() -> None:
     assert result.citations[0].citation_id == "E1"
     assert result.receipt.package_revision == package.revision
     assert result.receipt.package_digest == package.digest
-    assert result.receipt.evidence_ids == ("harness-2",)
+    assert result.receipt.evidence_ids == tuple(
+        citation.document_id for citation in result.citations
+    )
     assert result.input_tokens == 100
     assert len(model.calls) == 1
 

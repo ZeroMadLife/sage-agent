@@ -1,6 +1,6 @@
 {
   "package_id": "sage-public",
-  "revision": "2026-07-24.1",
+  "revision": "2026-07-24.2",
   "documents": [
     {
       "id": "sage-identity",
@@ -14,9 +14,73 @@
       "id": "sage-overview",
       "title": "Sage Personal AI Learning Companion",
       "url": "https://github.com/ZeroMadLife/sage-agent#sage",
-      "revision": "2026-07-22",
-      "content": "Sage 是一个本地优先的 Personal AI Learning Companion。它把目标、对话、个人知识、实践和可验证证据组织在同一条可恢复工作流中。Coding 是 Practice Engine；Knowledge 保存来源、revision、citation 与待批准沉淀。",
-      "content_sha256": "75df46429e03ecfee4214ab8b13057100937f79f123e797d5a4d4126e885127e"
+      "revision": "2026-07-24",
+      "content": "请介绍一下这个项目。为什么要做 Sage？这个项目有什么用、有哪些亮点、现在做到什么程度？Sage 是本地优先的 Personal AI Learning Companion，把目标、对话、个人知识、真实实践和可验证证据组织在同一条可恢复工作流中。它与普通聊天机器人不同：回答不是终点，Knowledge 管理来源与引用，Coding 作为 Practice Engine 验证理解，Harness 保存可恢复运行事实。",
+      "content_sha256": "5a0ba4d09f9ac84e3b5de9961dadf94df21e15edb6bc18def9b448243a61a997"
+    },
+    {
+      "id": "sage-architecture",
+      "title": "Sage 技术栈与系统架构",
+      "url": "https://github.com/ZeroMadLife/sage-agent#架构",
+      "revision": "2026-07-24",
+      "content": "项目使用了什么技术栈？整体架构是怎么设计的？前端采用 Vue 3、TypeScript、Pinia 与 Vite；后端采用 Python、FastAPI 和 LangGraph 相关运行时；状态与检索使用 PostgreSQL、pgvector 和 Redis；REST、WebSocket 与事件流连接界面和 Harness。部署使用 Docker Compose 与不可变镜像，首台服务器不引入 Kubernetes。",
+      "content_sha256": "fe12932d2e96a2154da0377c7878bf8844decc29e44481346c8f75de9ff74023"
+    },
+    {
+      "id": "sage-contribution",
+      "title": "ZeroMadLife 的项目职责与交付证据",
+      "url": "https://github.com/ZeroMadLife/sage-agent/commits/dev/sage-v7/",
+      "revision": "2026-07-24",
+      "content": "你在这个项目中做了什么？ZeroMadLife 持续开发和维护 Sage，公开仓库展示的工程实践覆盖产品设计、Vue 前端、FastAPI 后端、Chat Harness、Knowledge 检索与图谱、测试门禁、容器化和 Canary 发布。公开资料只能证明仓库中已合并、测试和部署的工作，不把路线图或模型生成内容算作个人交付。",
+      "content_sha256": "bd3e668d1424766c9f1f41a418667333a3c2c1983d6d258779cf2e851ba5f9c3"
+    },
+    {
+      "id": "author-profile",
+      "title": "ZeroMadLife 公开背景",
+      "url": "https://github.com/ZeroMadLife",
+      "revision": "2026-07-24",
+      "content": "作者是什么背景，求职方向是什么？ZeroMadLife 的公开 GitHub 资料显示：福大计算机技术研究生在读，关注 Agent 原生开发与 Java 开发；Sage 是其持续推进的个人 AI 学习和全栈工程项目。当前资料包没有公开真实姓名、联系方式或完整简历，公开助手不会猜测，后续需由本人审核后发布。",
+      "content_sha256": "f96bbab8abe562d49b04e3dbc68e5490cd4ea52e71cc0db922fc82fc0950f32f"
+    },
+    {
+      "id": "sage-challenges",
+      "title": "Sage 核心工程难点与取舍",
+      "url": "https://github.com/ZeroMadLife/sage-agent#核心能力",
+      "revision": "2026-07-24",
+      "content": "开发过程中最难的地方是什么，遇到过哪些挑战？Sage 的核心难点包括：让断线、审批和工具副作用从 durable timeline 与 checkpoint 恢复；让 Knowledge、citation 和 revision 成为可追溯事实而不是模型记忆；把公开 HR Agent 与私人 Session、Memory、工作区和凭据彻底隔离；同时用测试、预算、限流和回滚维持可运营性。",
+      "content_sha256": "d2f3be1cc67ff4e147bcc0e131c2301580da8d2cc167e57b3d923561269f489e"
+    },
+    {
+      "id": "public-security",
+      "title": "公开 Agent 安全与隐私边界",
+      "url": "https://github.com/ZeroMadLife/sage-agent/blob/dev/sage-v7/docs/product/prd/public-profile.md",
+      "revision": "2026-07-24",
+      "content": "如何保证公开 Agent 不泄露私人数据？公开 Agent 使用独立静态前端、独立容器、独立模型凭据和不可变 PublishedPackage，只开放同源 /api/public/v1/ask。资料包发布前校验字段、内容摘要和敏感信息；回答带 citation、revision 与 receipt。私人 API 在公网返回 404，私人 Session、Memory、Knowledge、工作区、Shell、Web 和私有 MCP 不接入该服务。",
+      "content_sha256": "63105c7b3efd9be88f5643636fe7645e48a84ae95e9b72710cb6fa92c3b7f463"
+    },
+    {
+      "id": "sage-quality",
+      "title": "测试与质量保障",
+      "url": "https://github.com/ZeroMadLife/sage-agent#验证",
+      "revision": "2026-07-24",
+      "content": "项目怎么做测试和质量保障？后端使用 pytest，前端使用 Vitest，并结合 Ruff、mypy、vue-tsc、生产构建、Docker 镜像构建和 git diff 检查。GitHub Actions 重复执行质量门禁；发布前还要做容器内导入、真实 provider、公开引用、越权拒绝、私有 API 404、桌面与移动端浏览器验证。设计或计划不会被写成已交付事实。",
+      "content_sha256": "d1d61e0f33f06e541c5775d314115deff3f58a89b034628309f02d55fddd5ac5"
+    },
+    {
+      "id": "sage-delivery",
+      "title": "CI/CD、备份与回滚",
+      "url": "https://github.com/ZeroMadLife/sage-agent/blob/dev/sage-v7/docs/runbooks/10-Sage本地CI-CD与Canary可用性.md",
+      "revision": "2026-07-24",
+      "content": "你们怎么部署、备份和回滚？Sage 通过 GitHub Actions、Canary 控制器和单台 ECS 上的 rootless Docker Compose 发布。部署只接受完整 commit SHA，先 preflight，再备份 PostgreSQL、执行幂等 migration、构建不可变镜像并健康检查；失败保留旧服务，成功后记录 current 与 previous。公开资料包独立支持 stage、原子激活、撤回和上一健康 revision 回退。",
+      "content_sha256": "b34ebb3fc0020b536029256432391d29dd3dd2084eea0a9bc8f5c56fc5729813"
+    },
+    {
+      "id": "sage-roadmap",
+      "title": "当前状态与下一阶段边界",
+      "url": "https://github.com/ZeroMadLife/sage-agent#当前边界",
+      "revision": "2026-07-24",
+      "content": "后续还准备做什么？已上线的是受控公开 Agent、独立资料包、引用回执和公网隔离。后续计划包括完善 HR 首页、README、简历与联系方式，改进新用户首次进入和配置流程，并继续验证生产 Sandbox、租户级 Knowledge 隔离和正式 HTTPS 域名。以上属于下一阶段边界，不等同于已经交付。",
+      "content_sha256": "c823fceebba987d04fa70473676c8e0f30a6a8ab88fac4a50614074c988e8520"
     },
     {
       "id": "harness-2",

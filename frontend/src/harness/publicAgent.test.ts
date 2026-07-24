@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { answerPublicProfileQuestion } from './publicAgent'
+import { answerPublicProfileQuestion, type PublicAgentStreamEvent } from './publicAgent'
 
 afterEach(() => vi.useRealTimers())
 
@@ -22,6 +22,42 @@ describe('public Agent client', () => {
     expect(result.sources[0]).toMatchObject({ id: 'harness-2', revision: 'r2' })
     expect(fetcher).toHaveBeenCalledWith('/api/public/v1/ask', expect.objectContaining({
       method: 'POST', credentials: 'omit', cache: 'no-store',
+    }))
+  })
+
+  it('consumes SSE events split across transport chunks', async () => {
+    const encoder = new TextEncoder()
+    const payload = [
+      'event: stage\ndata: {"stage":"retrieving","label":"检索公开资料"}\n\n',
+      'event: stage\ndata: {"stage":"grounding","label":"核对回答依据"}\n\n',
+      'event: answer_delta\ndata: {"delta":"Sage 使用 Vue 3、"}\n\n',
+      'event: answer_delta\ndata: {"delta":"FastAPI 和 PostgreSQL。[E1]"}\n\n',
+      'event: sources\ndata: {"citations":[{"citation_id":"E1","document_id":"sage-architecture","title":"Sage 技术架构","url":"https://github.com/ZeroMadLife/sage-agent#架构","revision":"2026-07-24","excerpt":"公开架构证据"}]}\n\n',
+      'event: completed\ndata: {"status":"answered","receipt":{"request_id":"pub_123","package_revision":"2026-07-24.2","package_digest":"abc"},"usage":{"input_tokens":50,"output_tokens":8}}\n\n',
+    ].join('')
+    const chunks = [payload.slice(0, 43), payload.slice(43, 177), payload.slice(177)]
+    const fetcher = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) {
+        chunks.forEach((chunk) => controller.enqueue(encoder.encode(chunk)))
+        controller.close()
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } }))
+    const events: PublicAgentStreamEvent[] = []
+
+    const result = await answerPublicProfileQuestion('项目使用了什么技术栈？', {
+      fetcher,
+      onEvent: (event) => events.push(event),
+    })
+
+    expect(events.filter((event) => event.type === 'stage').map((event) => event.label))
+      .toEqual(['检索公开资料', '核对回答依据'])
+    expect(events.filter((event) => event.type === 'answer_delta').map((event) => event.delta).join(''))
+      .toBe('Sage 使用 Vue 3、FastAPI 和 PostgreSQL。[E1]')
+    expect(result.mode).toBe('live')
+    expect(result.sources[0]).toMatchObject({ id: 'sage-architecture', revision: '2026-07-24' })
+    expect(result.receipt?.packageRevision).toBe('2026-07-24.2')
+    expect(fetcher).toHaveBeenCalledWith('/api/public/v1/ask', expect.objectContaining({
+      headers: expect.objectContaining({ Accept: 'text/event-stream' }),
     }))
   })
 

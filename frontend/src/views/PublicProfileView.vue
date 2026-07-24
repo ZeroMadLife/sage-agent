@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import {
   ArrowRight,
   ArrowUpRight,
@@ -24,6 +24,7 @@ import {
   answerPublicProfileQuestion,
   type PublicAgentReceipt,
   type PublicAgentSource,
+  type PublicAgentStreamEvent,
 } from '../harness/publicAgent'
 
 type AgentMessage = {
@@ -33,6 +34,8 @@ type AgentMessage = {
   receipt?: PublicAgentReceipt
   mode?: 'live' | 'fallback'
   notice?: string
+  stage?: string
+  streaming?: boolean
 }
 
 const drawerOpen = ref(false)
@@ -182,20 +185,42 @@ async function answerQuestion() {
   if (!value || isAnswering.value) return
   question.value = ''
   agentMessages.value.push({ role: 'visitor', text: value })
+  const reply = reactive<AgentMessage>({
+    role: 'sage',
+    text: '',
+    stage: '连接受限公开 Agent',
+    streaming: true,
+  })
+  agentMessages.value.push(reply)
   isAnswering.value = true
   try {
-    const response = await answerPublicProfileQuestion(value)
-    agentMessages.value.push({
-      role: 'sage',
-      text: response.answer,
-      sources: response.sources,
-      receipt: response.receipt,
-      mode: response.mode,
-      notice: response.notice,
+    const response = await answerPublicProfileQuestion(value, {
+      onEvent: (event) => applyStreamEvent(reply, event),
     })
+    reply.text = response.answer
+    reply.sources = response.sources
+    reply.receipt = response.receipt
+    reply.mode = response.mode
+    reply.notice = response.notice
   } finally {
+    reply.stage = undefined
+    reply.streaming = false
     isAnswering.value = false
   }
+}
+
+function applyStreamEvent(message: AgentMessage, event: PublicAgentStreamEvent) {
+  if (event.type === 'stage') message.stage = event.label
+  if (event.type === 'answer_delta') message.text += event.delta
+  if (event.type === 'sources') message.sources = event.sources
+  if (event.type === 'completed') message.receipt = event.receipt
+  if (event.type === 'error') message.stage = event.message
+}
+
+function handleQuestionKeydown(event: KeyboardEvent) {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return
+  event.preventDefault()
+  void answerQuestion()
 }
 
 function inspectWork(id: string) {
@@ -515,7 +540,8 @@ onBeforeUnmount(() => {
           <section class="agent-body" aria-live="polite">
             <div v-for="(message, index) in agentMessages" :key="index" class="agent-message" :class="message.role">
               <span>{{ message.role === 'sage' ? 'Sage' : '你' }}</span>
-              <p>{{ message.text }}</p>
+              <small v-if="message.stage" class="agent-stream-stage"><i></i>{{ message.stage }}</small>
+              <p v-if="message.text" :class="{ 'is-streaming': message.streaming }">{{ message.text }}<i v-if="message.streaming" class="agent-stream-caret"></i></p>
               <p v-if="message.notice" class="agent-notice">{{ message.notice }}，以下为本页公开资料回退。</p>
               <p v-if="message.receipt" class="agent-receipt">
                 资料包 {{ message.receipt.packageRevision }} · {{ message.receipt.requestId }}
@@ -543,14 +569,14 @@ onBeforeUnmount(() => {
           </section>
 
           <div class="agent-prompts">
-            <span>公开问题</span>
-            <button type="button" @click="openAgent('Sage 是做什么的？')">Sage 是做什么的？</button>
-            <button type="button" @click="openAgent('Harness 2.0 解决什么问题？')">Harness 如何恢复运行？</button>
-            <button type="button" @click="openAgent('Mastery Evidence 为什么不是模型自评？')">Mastery Evidence 如何成立？</button>
+            <span>HR 常问</span>
+            <button type="button" @click="openAgent('请介绍一下这个项目')">这个项目解决什么问题？</button>
+            <button type="button" @click="openAgent('项目使用了什么技术栈？')">项目使用了什么技术栈？</button>
+            <button type="button" @click="openAgent('你在这个项目中做了什么？')">你在项目中做了什么？</button>
           </div>
 
           <form class="agent-form" :aria-busy="isAnswering" @submit.prevent="answerQuestion">
-            <textarea v-model="question" rows="3" aria-label="询问公开资料" placeholder="询问公开的项目与方法…" :disabled="isAnswering"></textarea>
+            <textarea v-model="question" rows="3" aria-label="询问公开资料" placeholder="询问项目、技术栈与工程实践…" :disabled="isAnswering" @keydown="handleQuestionKeydown"></textarea>
             <button type="submit" aria-label="发送问题" title="发送问题" :disabled="isAnswering || !question.trim()"><Send :size="16" /></button>
           </form>
           <p class="agent-disclaimer">versioned public corpus · no private session · same-origin API</p>
@@ -969,6 +995,9 @@ onBeforeUnmount(() => {
 .agent-message.visitor p { border-color: var(--public-green); color: #fff; background: var(--public-green); }
 .agent-message .agent-notice { border-color: #e4c878; color: #725415; background: #fff9e7; font-size: 10px; }
 .agent-message .agent-receipt { border: 0; padding: 0; color: var(--public-faint); background: transparent; font-family: var(--public-font-mono); font-size: 9px; }
+.agent-stream-stage { display: inline-flex; align-items: center; gap: 6px; margin: 0 0 7px; color: var(--public-green); font-size: 10px; }
+.agent-stream-stage i { width: 6px; height: 6px; border-radius: 50%; background: currentcolor; animation: agent-stage-pulse 1s ease-in-out infinite; }
+.agent-stream-caret { display: inline-block; width: 1px; height: 1em; margin-left: 3px; background: var(--public-green); vertical-align: -2px; animation: agent-caret-blink .75s steps(1) infinite; }
 .agent-sources { display: grid; width: min(88%, 340px); margin-top: 7px; border: 1px solid var(--public-line); border-radius: 4px; background: #fff; }
 .agent-sources > strong { padding: 9px 11px 6px; color: var(--public-faint); font-size: 9px; }
 .agent-source { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; padding: 8px 11px; border: 0; border-top: 1px solid #edf1ee; color: var(--public-green); background: transparent; text-align: left; }
@@ -977,6 +1006,9 @@ onBeforeUnmount(() => {
 .agent-source small { grid-column: 1; color: var(--public-muted); font-size: 9px; line-height: 1.45; }
 .agent-source svg { grid-row: 1 / span 2; grid-column: 2; align-self: center; }
 .agent-source:hover { background: var(--public-band); }
+
+@keyframes agent-stage-pulse { 50% { opacity: .35; transform: scale(.72); } }
+@keyframes agent-caret-blink { 50% { opacity: 0; } }
 .agent-prompts { display: grid; gap: 3px; padding: 14px 18px; border-top: 1px solid var(--public-line); }
 .agent-prompts > span { margin-bottom: 3px; color: var(--public-faint); font-size: 9px; }
 .agent-prompts button { padding: 5px 0; border: 0; color: #4f6e59; background: transparent; text-align: left; font-size: 11px; }
@@ -1119,7 +1151,9 @@ onBeforeUnmount(() => {
 @media (prefers-reduced-motion: reduce) {
   :global(html) { scroll-behavior: auto; }
   .hero-copy > *,
-  .hero-product { animation: none; }
+  .hero-product,
+  .agent-stream-stage i,
+  .agent-stream-caret { animation: none; }
   .is-motion-ready [data-reveal] { opacity: 1; transform: none; transition: none; }
   .reading-progress,
   .hero-evidence__row,
