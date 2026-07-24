@@ -54,9 +54,10 @@ type PublicApiResponse = {
 
 const sources = {
   sage: { id: 'sage', label: 'Sage 项目现场', target: 'work', detail: '目标、Knowledge、Practice 与 Evidence 的产品闭环' },
-  harness: { id: 'harness', label: 'Chat Harness 2.0', target: 'writing', detail: '统一 timeline、审批与恢复语义的工程案例' },
-  knowledge: { id: 'knowledge', label: 'Knowledge Surface', target: 'writing', detail: '图谱、RAG、revision 与冻结上下文的设计取舍' },
+  harness: { id: 'harness', label: 'Chat Harness 2.0', target: 'writing', detail: '统一 context、model、tool、approval、answer 与恢复语义的工程案例' },
+  knowledge: { id: 'knowledge', label: 'Knowledge Surface', target: 'writing', detail: '本地混合检索、图谱、citation、revision 与冻结上下文的设计取舍' },
   growth: { id: 'growth', label: 'Learning Path', target: 'path', detail: '按真实证据记录的公开成长轨迹' },
+  publicAgent: { id: 'public-agent', label: '受控 Public Agent', target: 'writing', detail: '不可变 PublishedPackage、独立容器与公网隔离' },
 } satisfies Record<string, PublicAgentSource>
 
 const entries: PublicAnswerEntry[] = [
@@ -67,7 +68,7 @@ const entries: PublicAnswerEntry[] = [
   },
   {
     keywords: ['harness', '恢复', '运行', 'timeline', '审批'],
-    answer: 'Harness 2.0 把 planning、tool、approval、reply 和 terminal 统一投影到 durable Timeline。刷新或断线后，界面从同一条审计事实恢复，而不是重新伪造模型状态。',
+    answer: 'Harness 2.0 把 context、planning、model、tool、approval、answer 和 terminal 统一投影到 durable Timeline。刷新或断线后，界面从同一条审计事实恢复，而不是重新伪造模型状态。',
     sources: [sources.harness],
   },
   {
@@ -79,6 +80,11 @@ const entries: PublicAnswerEntry[] = [
     keywords: ['成长', '进度', '掌握', '证据', '面试'],
     answer: '公开成长记录不展示模型自评百分比，而是展示已经形成的项目、时间线、引用、测试或实践结果。没有可验证证据时，Sage 会保持“尚未验证”。',
     sources: [sources.growth],
+  },
+  {
+    keywords: ['公开', 'public agent', 'hr', '你是谁', '资料包'],
+    answer: '我是 Sage 的受限公开资料助手。线上回答只读取已激活的不可变 PublishedPackage，并返回 citation、revision 与 receipt；这个入口使用独立容器和凭据，不连接私人 Session、Memory、Knowledge、工作区或工具。',
+    sources: [sources.publicAgent],
   },
 ]
 

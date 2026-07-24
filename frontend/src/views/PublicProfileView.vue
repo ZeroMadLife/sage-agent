@@ -87,7 +87,7 @@ const workItems = [
     tags: ['Thread Goal', 'Run snapshot', 'Manual / Auto continue'],
     reason: '普通聊天只记住上一轮说了什么，却无法稳定说明任务目标、完成条件和下一次续跑是否仍指向同一版本。',
     decision: '把 Goal 作为 session 级契约写入既有事件日志；创建、修改、评估和继续都校验 revision，run 启动时冻结快照。',
-    evidence: '当前分支已覆盖 Goal CRUD、旧 revision 拒绝、手动继续、自动 follow-up 上限和重启后幂等恢复测试。',
+    evidence: '已覆盖 Goal 创建与修改、旧 revision 拒绝、手动继续、自动 follow-up 上限和重启后幂等恢复测试。',
     boundary: 'Goal 默认关闭；没有明确目标时保留普通对话行为，也不会用模型自评直接宣布目标完成。',
     question: 'Sage 的目标驱动具体体现在哪里？',
     linkLabel: '查看 Thread Goal 实现',
@@ -121,8 +121,8 @@ const workItems = [
     tags: ['Evidence Ledger', 'Deterministic rubric', 'Idempotent replay'],
     reason: '知识页面、聊天回答和模型自信度都不能证明一个人已经掌握某项能力。',
     decision: '只把经过验证的 evidence 写入跨会话 Ledger，并按 workspace、goal revision 与 capability 隔离；失效证据触发重算。',
-    evidence: 'H2.7C 已交付幂等写入、冲突回滚、固定 rubric 投影、Knowledge 只读 API 和 Harness outbox 恢复链。',
-    boundary: '当前只开放受控 code_test 候选；用户可见的 rubric 校正 UI 属于下一切片，不把单一证据包装成“已掌握”。',
+    evidence: 'Mastery Ledger 已覆盖幂等写入、冲突回滚、固定 rubric 投影、Knowledge 只读 API 和 Harness outbox 恢复链。',
+    boundary: '当前只接收受控 code_test 候选；rubric 尚未开放用户校正，不把单一证据包装成“已掌握”。',
     question: 'Mastery Evidence 为什么不是模型自评？',
     linkLabel: '查看 Mastery Ledger',
     href: 'https://github.com/ZeroMadLife/sage-agent/blob/dev/sage-v7/core/learning/mastery.py',
@@ -132,9 +132,21 @@ const workItems = [
 const milestones = [
   {
     date: '2026 · 07',
+    title: '受控 Public Agent 上线',
+    detail: '独立 PublishedPackage、citation、receipt、可见流式问答与公网隔离通过 Canary 验证。',
+    status: '公网已验证',
+  },
+  {
+    date: '2026 · 07',
+    title: '产品界面与 Harness 收敛',
+    detail: 'Assistant、Knowledge 与 Harness Timeline 共用可恢复运行事实，并以真实产品界面对外展示。',
+    status: '已验证',
+  },
+  {
+    date: '2026 · 07',
     title: 'Goal 与 Mastery Evidence',
     detail: '目标版本、续跑边界与跨会话证据账本进入同一条可恢复运行路径。',
-    status: '当前阶段',
+    status: '已验证',
   },
   {
     date: '2026 · 07',
@@ -143,9 +155,9 @@ const milestones = [
     status: '已验证',
   },
   {
-    date: '2026 · 06',
-    title: 'Personal Knowledge Base',
-    detail: '来源、Wiki、混合检索、citation、revision 与知识图谱形成可追溯结构。',
+    date: '2026 · 07',
+    title: '可审计 Knowledge Platform',
+    detail: '来源快照、Wiki 提案、本地混合检索、citation、revision 与知识图谱形成可追溯结构。',
     status: '已验证',
   },
   {
@@ -158,10 +170,28 @@ const milestones = [
 
 const engineeringNotes = [
   {
-    date: '07.20',
-    category: 'Public Surface',
-    title: '公开门面先证明边界，再证明能力',
-    text: '公开 Ask Sage 只回答内置资料；私人 Knowledge、Memory、Session 和网络能力不进入静态构建。',
+    date: '07.24',
+    category: 'Public Agent',
+    title: '公开助手不是私人 Agent 的匿名入口',
+    text: '公开问答只读取已激活的不可变 PublishedPackage；独立容器、凭据和同源路由不接入私人 Harness。',
+  },
+  {
+    date: '07.24',
+    category: 'Streaming',
+    title: '流式不是打字动画',
+    text: '检索、依据核对和回答正文来自真实 SSE 事件；界面只投影服务端阶段，不伪造模型或工具状态。',
+  },
+  {
+    date: '07.23',
+    category: 'Release',
+    title: '部署成功必须落到同一个 SHA',
+    text: '私有服务与公开 Agent 共用候选 commit，通过 CI、迁移、健康探针和共同回滚后才算完成发布。',
+  },
+  {
+    date: '07.22',
+    category: 'Knowledge',
+    title: '图谱是投影，不是事实源',
+    text: '节点与社区帮助探索结构；回答仍要回到 source、page revision 与 citation，不能只凭图上的关系下结论。',
   },
   {
     date: '07.19',

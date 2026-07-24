@@ -34,11 +34,11 @@ def test_bootstrap_stages_and_activates_an_immutable_package(tmp_path: Path) -> 
     result = registry.bootstrap(PACKAGE, actor="root")
 
     assert result["status"] == "activated"
-    assert result["active_revision"] == "2026-07-24.2"
-    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.2"
+    assert result["active_revision"] == "2026-07-24.3"
+    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.3"
     state = json.loads((tmp_path / "registry.json").read_text(encoding="utf-8"))
     assert [event["action"] for event in state["events"]] == ["staged", "activated"]
-    assert (tmp_path / "packages/sage-public/2026-07-24.2.json").stat().st_mode & 0o777 == 0o644
+    assert (tmp_path / "packages/sage-public/2026-07-24.3.json").stat().st_mode & 0o777 == 0o644
 
 
 def test_publish_switches_active_revision_and_provider_reloads_without_restart(
@@ -47,20 +47,20 @@ def test_publish_switches_active_revision_and_provider_reloads_without_restart(
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(PACKAGE, actor="root")
     provider = PublishedPackageProvider(tmp_path)
-    assert provider.current().revision == "2026-07-24.2"
-    registry.stage_payload(_payload("2026-07-24.3", suffix=" P3"), actor="sage-deploy")
+    assert provider.current().revision == "2026-07-24.3"
+    registry.stage_payload(_payload("2026-07-24.4", suffix=" P3"), actor="sage-deploy")
 
     result = registry.activate(
         "sage-public",
-        "2026-07-24.3",
-        expected_active_revision="2026-07-24.2",
+        "2026-07-24.4",
+        expected_active_revision="2026-07-24.3",
         actor="sage-deploy",
     )
 
-    assert result["active_revision"] == "2026-07-24.3"
-    assert provider.current().revision == "2026-07-24.3"
+    assert result["active_revision"] == "2026-07-24.4"
+    assert provider.current().revision == "2026-07-24.4"
     states = {item["revision"]: item["state"] for item in registry.status()["packages"]}
-    assert states == {"2026-07-24.2": "inactive", "2026-07-24.3": "active"}
+    assert states == {"2026-07-24.3": "inactive", "2026-07-24.4": "active"}
 
 
 def test_revoke_active_revision_atomically_restores_previous_healthy_revision(
@@ -68,29 +68,29 @@ def test_revoke_active_revision_atomically_restores_previous_healthy_revision(
 ) -> None:
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(PACKAGE, actor="root")
-    registry.stage_payload(_payload("2026-07-24.3", suffix=" P3"), actor="sage-deploy")
+    registry.stage_payload(_payload("2026-07-24.4", suffix=" P3"), actor="sage-deploy")
     registry.activate(
         "sage-public",
-        "2026-07-24.3",
-        expected_active_revision="2026-07-24.2",
+        "2026-07-24.4",
+        expected_active_revision="2026-07-24.3",
         actor="sage-deploy",
     )
 
     result = registry.revoke(
         "sage-public",
-        "2026-07-24.3",
-        expected_active_revision="2026-07-24.3",
+        "2026-07-24.4",
+        expected_active_revision="2026-07-24.4",
         actor="sage-deploy",
         reason="资料需要重新审核",
     )
 
     assert result["status"] == "revoked"
-    assert result["replacement_revision"] == "2026-07-24.2"
-    assert result["active_revision"] == "2026-07-24.2"
-    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.2"
+    assert result["replacement_revision"] == "2026-07-24.3"
+    assert result["active_revision"] == "2026-07-24.3"
+    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.3"
     state = json.loads((tmp_path / "registry.json").read_text(encoding="utf-8"))
     assert state["events"][-1]["reason"] == "资料需要重新审核"
-    assert state["events"][-1]["replacement_revision"] == "2026-07-24.2"
+    assert state["events"][-1]["replacement_revision"] == "2026-07-24.3"
 
 
 def test_revoke_only_rolls_back_to_the_same_package_id(tmp_path: Path) -> None:
@@ -102,26 +102,26 @@ def test_revoke_only_rolls_back_to_the_same_package_id(tmp_path: Path) -> None:
     registry.activate(
         "other-public",
         "2026-07-23.other",
-        expected_active_revision="2026-07-24.2",
+        expected_active_revision="2026-07-24.3",
         actor="root",
     )
-    registry.stage_payload(_payload("2026-07-24.3", suffix=" P3"), actor="root")
+    registry.stage_payload(_payload("2026-07-24.4", suffix=" P3"), actor="root")
     registry.activate(
         "sage-public",
-        "2026-07-24.3",
+        "2026-07-24.4",
         expected_active_revision="2026-07-23.other",
         actor="root",
     )
 
     result = registry.revoke(
         "sage-public",
-        "2026-07-24.3",
-        expected_active_revision="2026-07-24.3",
+        "2026-07-24.4",
+        expected_active_revision="2026-07-24.4",
         actor="root",
         reason="回退同一资料包",
     )
 
-    assert result["replacement_revision"] == "2026-07-24.2"
+    assert result["replacement_revision"] == "2026-07-24.3"
     assert PublishedPackageProvider(tmp_path).current().package_id == "sage-public"
 
 
@@ -132,13 +132,13 @@ def test_revoke_only_active_revision_is_rejected_without_losing_service(tmp_path
     with pytest.raises(PublishedPackageError, match="没有可回退"):
         registry.revoke(
             "sage-public",
-            "2026-07-24.2",
-            expected_active_revision="2026-07-24.2",
+            "2026-07-24.3",
+            expected_active_revision="2026-07-24.3",
             actor="sage-deploy",
             reason="错误发布",
         )
 
-    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.2"
+    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.3"
 
 
 def test_same_revision_with_different_content_cannot_overwrite_immutable_file(
@@ -148,29 +148,29 @@ def test_same_revision_with_different_content_cannot_overwrite_immutable_file(
     registry.bootstrap(PACKAGE, actor="root")
 
     with pytest.raises(PublishedPackageError, match="禁止覆盖"):
-        registry.stage_payload(_payload("2026-07-24.2", suffix=" changed"), actor="root")
+        registry.stage_payload(_payload("2026-07-24.3", suffix=" changed"), actor="root")
 
 
 def test_publish_uses_compare_and_swap_for_the_active_revision(tmp_path: Path) -> None:
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(PACKAGE, actor="root")
-    registry.stage_payload(_payload("2026-07-24.3", suffix=" P3"), actor="root")
+    registry.stage_payload(_payload("2026-07-24.4", suffix=" P3"), actor="root")
 
     with pytest.raises(PublishedPackageError, match="active revision 已变化"):
         registry.activate(
             "sage-public",
-            "2026-07-24.3",
+            "2026-07-24.4",
             expected_active_revision="stale",
             actor="root",
         )
 
-    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.2"
+    assert PublishedPackageProvider(tmp_path).current().revision == "2026-07-24.3"
 
 
 def test_corrupted_active_package_fails_closed(tmp_path: Path) -> None:
     registry = PublishedPackageRegistry(tmp_path)
     registry.bootstrap(PACKAGE, actor="root")
-    active = tmp_path / "packages/sage-public/2026-07-24.2.json"
+    active = tmp_path / "packages/sage-public/2026-07-24.3.json"
     active.write_text("{}", encoding="utf-8")
 
     with pytest.raises(PublishedPackageError, match="校验失败"):
@@ -180,7 +180,7 @@ def test_corrupted_active_package_fails_closed(tmp_path: Path) -> None:
 @pytest.mark.parametrize("unsafe", ["../escape", "/absolute", "with space", ""])
 def test_package_references_cannot_escape_registry_root(tmp_path: Path, unsafe: str) -> None:
     registry = PublishedPackageRegistry(tmp_path)
-    payload = _payload("2026-07-24.3")
+    payload = _payload("2026-07-24.4")
     payload["revision"] = unsafe
 
     with pytest.raises(PublishedPackageError, match="(revision 格式无效|校验失败)"):

@@ -1,6 +1,6 @@
 # V7 Beta Changelog
 
-> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
+> Last verified against: `dev/sage-v7@7a26197` (2026-07-24)
 
 本文件描述 V7 Beta 相对早期 TourSwarm/Sage 原型的产品与架构变化。精确行为以当前代码、
 迁移和测试为准；历史设计稿中的未来能力不自动进入此清单。
@@ -11,7 +11,19 @@
   组成持续学习闭环。
 - 增加 Assistant 首页、Knowledge 工作台、Practice 工作台、成长记录和公开主页。
 - 统一中文产品壳、响应式布局、深链接和 light/dark 主题。
-- 公开主页以经过筛选的项目与成长记录为内容源，确定性问答限制在公开 corpus，并附来源回执。
+- 公开主页以经过筛选的项目与成长记录为内容源；受控 Public Agent 只依据已发布 corpus
+  流式回答，并附 citation、package revision 与请求回执。
+
+## Public Release
+
+- 增加独立公开静态构建、独立 Public Agent 容器、独立模型凭据和同源单路由，公网不暴露
+  私人 Session、Memory、Knowledge、Workspace、Shell、Web 或私有 MCP。
+- 建立不可变 PublishedPackage 生命周期：候选校验、原子激活、revision guard、撤回和上一
+  健康 revision 回退；问答请求冻结自己的资料包快照。
+- 增加面向 HR 的项目、技术栈、个人职责、工程难点、测试、部署和路线图问答，并以真实
+  SSE 事件呈现检索、依据核对、正文和引用。
+- 私有服务与公开 Agent 使用同一候选 commit，通过 GitHub Actions、迁移、双镜像探活、
+  Canary 和共同回滚后发布；公开门面已部署到临时 HTTP IP。
 
 ## Harness
 
@@ -53,8 +65,8 @@
 
 ## Known Limitations
 
-- 尚无正式公网发布地址、SLA、备份恢复演练或生产发布流水线。
+- 公网门面已有临时 HTTP IP 和自动 Canary 发布；正式 HTTPS 域名、SLA 与完整恢复演练尚未完成。
 - Container Sandbox 有实现和测试，但没有完成公网 workload admission。
 - Knowledge 的本地来源工作流不等于云端 tenant-scoped 导入。
-- 公开主页问答是限定静态内容，不是拥有私有文件权限的 Agent。
+- 公开主页问答是限定 PublishedPackage 的独立 Agent，不拥有私人文件、会话或工具权限。
 - 实验性的 Loop Engineer 自动扫描实现已从当前发布树移除；历史实现仍可从 Git 追溯。

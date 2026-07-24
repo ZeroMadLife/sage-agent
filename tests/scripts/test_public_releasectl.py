@@ -97,7 +97,7 @@ def test_public_api_probe_verifies_the_minimum_identity_question(monkeypatch) ->
                 {
                     "status": "answered",
                     "citations": [{"document_id": "sage-identity"}],
-                    "receipt": {"package_revision": "2026-07-24.2"},
+                    "receipt": {"package_revision": "2026-07-24.3"},
                 }
             ).encode()
 
