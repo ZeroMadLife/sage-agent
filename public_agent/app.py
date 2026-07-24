@@ -25,6 +25,7 @@ from public_agent.schemas import PublicAskRequest, PublicAskResponse, PublicHeal
 from public_agent.service import PublicAgentResult, PublicAgentService
 
 DEFAULT_PACKAGE = Path(__file__).resolve().parent.parent / "data" / "public" / "sage-public-v1.json"
+STREAM_CHUNK_DELAY_SECONDS = 0.025
 
 
 def create_public_agent_app(
@@ -193,7 +194,8 @@ async def _stream_answer(
     yield _sse("stage", {"stage": "grounding", "label": "核对回答依据"})
     for delta in _answer_deltas(result.answer):
         yield _sse("answer_delta", {"delta": delta})
-        await asyncio.sleep(0)
+        # Give browsers a paint opportunity so validated chunks are not coalesced.
+        await asyncio.sleep(STREAM_CHUNK_DELAY_SECONDS)
     yield _sse(
         "sources",
         {"citations": [asdict(citation) for citation in result.citations]},
