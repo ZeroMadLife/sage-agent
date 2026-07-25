@@ -1,6 +1,6 @@
 # 长短记忆与 Dream：长期事实必须经过提案与批准
 
-> Last verified against: `codex/release-v7-rewrite@9fb82d4` (2026-07-23)
+> Last verified against: `codex/harness-evidence-v2@0e21fda` (2026-07-25)
 
 记忆系统最重要的能力不是“记得多”，而是区分临时线索、已批准事实和模型提案，避免一次幻觉长期污染后续任务。
 
@@ -11,7 +11,7 @@
 | 层 | 生命周期 | 来源 | 写入语义 |
 | --- | --- | --- | --- |
 | Working Memory | 当前 run | Session 历史与运行状态 | 每次重建，不持久化 |
-| Durable Memory | 跨 session、workspace scoped | 显式 remember 或已批准 proposal | 写入文件投影 |
+| Durable Memory | 跨 session、workspace scoped | 显式 remember 或已批准 proposal | SQLite canonical + 文件投影 |
 | Dream Proposal | pending 到 approved/rejected | 模型或 Harness 候选 | 批准前不得成为事实 |
 
 Memory 也不是 Context Summary 或 Knowledge Wiki。
@@ -41,7 +41,9 @@ Durable Memory 以规范 workspace path 的摘要作为 workspace id。
 
 文件层包含 daily log、topic JSONL 和可重建的 `MEMORY.md` 索引。
 
-`remember` 当前会直接写入这个文件层，并记录 topic、source 与 source_ref。
+`MemoryManager.remember` 先进入 SQLite proposal/fact/event 审计链，再写入文件投影，并记录
+topic、source 与 source_ref。直接使用底层 `DurableMemory` 仍属于兼容投影路径，不是 Harness
+长期事实入口。
 
 它代表显式记忆意图，但仍经过工具审批；自动模式不会隐式批准。
 
@@ -69,7 +71,8 @@ Proposal 自身也有 revision，重复同一 transition 幂等返回，冲突 t
 
 批准与 SQLite fact/event 写入在一个事务内；Markdown 投影失败时保留 `projection_status=pending`，重启后重放。
 
-这是一种“事务事实 + 可恢复投影”设计，不等于完整 Memory CAS 或通用版本控制。
+schema v2 还为 fact 增加 `active / superseded / retracted`、revision、更新时间、替代关系和
+撤回原因。Proposal CAS 与 Fact CAS 分开：前者保护审批，后者保护已批准事实的撤回。
 
 ## Dream 的真实边界：proposal-only 已实现，反思质量链仍有限
 
@@ -79,7 +82,8 @@ Proposal 自身也有 revision，重复同一 transition 幂等返回，冲突 t
 
 用户通过 API 批准或拒绝后，批准内容才进入 SQLite facts 与文件投影。
 
-当前 Legacy `DurableMemory.propose_dream` 主要把已有事实复制成 proposed 状态，并非完整的独立 Reflection Agent。
+当前 Legacy `DurableMemory.propose_dream` 主要把 lifecycle-filtered active facts 复制成
+proposed 状态，并非完整的独立 Reflection Agent。
 
 Harness 的 memory adapter 可以提交带 run/reflection provenance 的候选，但同样无权自行批准。
 
@@ -97,7 +101,8 @@ DurableMemory 文件是当前模型读取和人类查看的投影。
 
 这个顺序避免“文件写了一半但数据库认为未批准”的分裂状态。
 
-不过显式 `remember` 仍直接走文件层，说明两条写入路径尚未收敛为单一 canonical store。
+文件层保持 append-only，不删除 superseded 或 retracted 的历史行。召回时以 SQLite 全状态
+集合屏蔽旧投影，避免被撤回内容从 Markdown 重新进入模型。
 
 ## 召回必须把事实当数据
 
@@ -111,17 +116,17 @@ Durable context middleware 会把 memory reference 放在不可信数据边界�
 
 Memory 可以影响推理，但不能改写当前用户请求或安全策略。
 
-## “可回滚”目前是设计目标，不是已交付按钮
+## 更正与撤回：保留历史，不让旧事实继续召回
 
-当前 proposal 状态只支持 pending、approved、rejected，以及投影恢复。
+更正不会原地覆盖旧事实。系统创建带 `supersedes_content_hash` 的 pending proposal；用户批准
+后，新事实与旧事实的 `superseded` 状态在同一事务内落库。撤回则要求 expected fact revision，
+保存 reason、actor 与 append-only fact event。
 
-代码中没有 Memory fact rollback/inverse transaction API。
+Consolidation 首版接收已有 evidence refs 的 episodic evidence，执行精确去重和证据门禁，
+只生成 pending proposal。它不自动批准，也不会在没有显式 target 时推断语义替代。
 
-因此已批准的错误事实不能靠本章描述的状态机一键回滚。
-
-现阶段应通过新的显式更正、受控文件维护或后续 retraction 设计处理。
-
-Release 文档必须把“可恢复投影”与“可回滚事实”分开，不能把计划写成已实现能力。
+40 条确定性 lifecycle 场景覆盖 proposal 隔离、撤回、替代、consolidation 和重启/作用域，
+结果为 40/40。这个数字证明状态机不变量，不是自然对话事实抽取准确率。
 
 ## 为什么不是最小聊天摘要文件
 
@@ -136,7 +141,7 @@ Release 文档必须把“可恢复投影”与“可回滚事实”分开，不
 | 反思 | Dream proposal-only；Legacy 生成逻辑仍简单 | 对标系统可能自动总结，是否直接写长期记忆需按文档核对 |
 | 并发 | proposal/base revision 与事务事件 | 对标产品内部冲突控制通常不公开 |
 | 恢复 | SQLite 提交后可重放文件投影 | 对标产品对用户通常隐藏投影机制 |
-| 当前差距 | remember 与 proposal 双写路径；无事实 rollback API；Legacy recall 仍是 index prefix | 成熟产品在相关性召回与记忆管理 UI 上更完整 |
+| 当前差距 | 自动事实抽取、语义 consolidation、重要度/TTL 与记忆管理 UI 未完成 | 成熟产品在相关性召回与用户管理体验上更完整 |
 
 比较记忆能力时，必须同时问“谁写的、谁批准、怎么撤销、来源在哪”。
 
@@ -168,7 +173,8 @@ Release 文档必须把“可恢复投影”与“可回滚事实”分开，不
 
 ### 7. 把投影恢复写成事实回滚
 
-最危险的不是术语不严谨，而是用户在错误批准后误以为系统有可靠撤销能力。
+最危险的不是术语不严谨，而是把 projection replay、fact retraction 和任意历史回滚混成
+一件事。当前支持替代与撤回，不支持把任意旧数据库快照直接恢复为当前事实。
 
 ## 设计文档补充：记忆治理契约
 
@@ -177,26 +183,29 @@ Release 文档必须把“可恢复投影”与“可回滚事实”分开，不
 - 临时工作状态不进入长期事实；
 - 模型生成候选在批准前零 durable mutation；
 - Proposal、fact 与 event 共享事务边界；
+- Fact 更正与撤回保留 append-only 生命周期证据；
 - 文件投影失败可以在重启后恢复；
 - 召回内容始终作为有 provenance 的不可信数据。
 
 ### 非目标
 
 - 不宣称当前 Dream 已具备完整反思 Agent；
-- 不宣称显式 remember 已统一写入 SQLite canonical；
-- 不宣称事实级 rollback 已实现；
+- 不宣称 consolidation 已能从自然对话自动抽取高质量事实；
+- 不把 supersession/retraction 宣传成任意版本快照 rollback；
 - 不用 Memory 取代 Knowledge 或 Context Summary。
 
 ### 验收清单
 
-- [ ] Working Memory 不写入 Transcript 或 durable store；
-- [ ] Pending proposal 不出现在 approved facts；
-- [ ] stale base revision 的批准被拒绝；
-- [ ] 重复批准/拒绝保持幂等；
-- [ ] SQLite 提交与 event 写入处于同一事务；
-- [ ] pending projection 能在重启后重放；
+- [x] Working Memory 不写入 Transcript 或 durable store；
+- [x] Pending proposal 不出现在 approved facts；
+- [x] stale base revision 的批准被拒绝；
+- [x] 重复批准/拒绝保持幂等；
+- [x] SQLite 提交与 event 写入处于同一事务；
+- [x] pending projection 能在重启后重放；
+- [x] Superseded/retracted facts 不进入 active recall；
+- [x] 显式 remember 与 Dream 从 SQLite lifecycle 取数；
 - [ ] durable learning 即使 auto mode 也要求审批；
-- [ ] memory reference 带来源、预算和不可信数据边界。
+- [x] memory reference 带来源、预算和不可信数据边界。
 
 ## 第一入口
 
@@ -205,15 +214,20 @@ Release 文档必须把“可恢复投影”与“可回滚事实”分开，不
 1. `core/coding/memory/working.py::WorkingMemory.from_session`：临时运行投影；
 2. `core/coding/memory/durable.py::DurableMemory`：文件型长期记忆；
 3. `core/coding/persistence/memory_store.py::MemoryStore.create_proposal`：提案事务；
-4. `core/coding/persistence/memory_store.py::MemoryStore._transition`：批准、拒绝与 revision；
-5. `core/coding/memory/manager.py::MemoryManager.approve`：事务到文件投影；
-6. `core/coding/tools/memory_tools.py::dream`：proposal-only 工具入口；
-7. `core/harness/memory_adapter.py::SageMemoryAdapter`：Harness 召回与提案适配。
+4. `core/coding/persistence/memory_store.py::MemoryStore._transition`：批准、替代与 revision；
+5. `core/coding/persistence/memory_store.py::MemoryStore.retract_fact`：事实 CAS 撤回；
+6. `core/coding/memory/consolidation.py::consolidate_evidence`：证据门禁与精确去重；
+7. `core/coding/memory/manager.py::MemoryManager.approve`：事务到文件投影；
+8. `core/coding/tools/memory_tools.py::dream`：proposal-only 工具入口；
+9. `core/harness/memory_adapter.py::CodingMemoryPort`：Harness 召回与提案适配。
 
 验证证据集中在 `test_memory.py`、`test_memory_store.py`、`test_memory_adapter.py` 与 memory proposal API 测试。
 
 ## 面试里可以这样收束
 
-Sage 把 Working Memory、Durable Memory 和 Dream Proposal 分成不同信任层：运行线索每轮重建，显式长期记忆必须审批，模型反思只能先生成 proposal。批准事务与文件投影可恢复，但当前还没有事实级 rollback，remember 与 proposal 也尚未统一 canonical 写入；这条边界比“系统会记忆”更重要。
+Sage 把 Working Memory、Durable Memory 和 Dream Proposal 分成不同信任层：运行线索每轮
+重建，显式 remember 进入 SQLite 审计链，模型反思和 consolidation 只能先生成 proposal。
+已批准事实可以通过 CAS 撤回或经新 proposal 替代，旧投影保留但不会继续召回；40 条确定性
+场景验证了生命周期不变量，同时自动事实抽取与语义 consolidation 仍是后续工作。
 
 下一章：[Knowledge 与 RAG 检索：知识必须可验证](09-knowledge-rag-retrieval.md)

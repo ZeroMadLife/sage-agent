@@ -1,6 +1,6 @@
 # Sage 持续学习手册
 
-> Last verified against: `dev/sage-v7@1009e53` (2026-07-20)
+> Last verified against: `codex/harness-evidence-v2@0e21fda` (2026-07-25)
 
 这套手册不是宣传稿，也不是源码的逐行翻译。它的目标是建立一种可重复的学习方法：
 从产品问题进入架构，沿真实调用链找到状态与证据，再用测试校正自己的理解。
@@ -102,7 +102,7 @@ Sage adapter 验证这些框架概念如何映射到真实产品运行时。
 ### 第六遍：目标架构与团队 Harness
 
 15. [Sage 五层目标架构](15-sage-five-layer-target-architecture.md)
-16. [RAG 检索全链路与多模型评测](16-rag-eval-benchmark.md)
+16. [RAG Benchmark v2 与可复现检索评测](16-rag-eval-benchmark.md)
 
 重点看规范输入、Harness 约束、数据/能力、生成与反馈回写如何组成闭环，以及如何对齐
 CodeBuddy / WorkBuddy 的分层思路；再用第 16 章的真实评测数据检查检索取舍。

@@ -1,6 +1,6 @@
 # 权限审批与沙箱：危险操作必须在执行前被挡住
 
-> Last verified against: `codex/release-v7-rewrite@8ac5dea` (2026-07-23)
+> Last verified against: `codex/harness-evidence-v2@1b7a9f8` (2026-07-25)
 
 安全不是 system prompt 里的一句“请谨慎”，而是模型无法绕过的执行前门禁与执行后证据。
 
@@ -106,11 +106,21 @@ Permission 回答“能不能做”，Policy 回答“现在这样做是否合�
 - workspace 是唯一可写 bind mount；
 - network 关闭；
 - PID、内存与 CPU 有上限；
+- capability 全部丢弃，禁止提权，启用默认 seccomp；
+- swap、文件描述符、进程数与单文件大小受限；
+- `/tmp` 使用 `noexec/nosuid/nodev`，workspace bind propagation 为 `rprivate`；
 - 容器使用后负责终止和回收。
 
-容器实现存在不等于生产门禁已经完成。
+容器复用前会核验实际 `docker inspect`，包括 label、network、rootfs、资源、ulimit、tmpfs 和
+mount。Sage-owned 漂移容器会重建；同名但无 ownership label 的容器 fail closed。
 
-目标环境仍需验证 Docker 权限、并发隔离、资源限制、残留清理和逃逸测试。
+Docker Desktop live audit 的 10 个场景全部通过，覆盖禁网、只读 rootfs、`CapEff=0`、
+`NoNewPrivs=1`、宿主环境不透传、文件上限和终态清理。Shell 非零退出也会转换为结构化
+tool error，继续进入 Timeline 与恢复链路。
+
+生产使用独立 `sage-sandbox` Rootless Docker daemon。容器内 namespace root 映射为非特权
+宿主 UID，不等于宿主 root；当前不能宣称容器内 non-root。整个 workspace 仍是可写 bind，
+镜像仍使用版本 tag，这两项与生产 rootless 复跑仍是后续门禁。
 
 ## 第五层：Workspace 与持久化路径 fail closed
 
@@ -143,7 +153,7 @@ SQLite 等关键文件会核对设备号与 inode，防止打开过程中的替�
 | 审批复用 | once/session；always 暂等同 session | 成熟产品常支持规则化批准，持久范围依产品配置 |
 | 执行隔离 | Local 与 Container 通过统一 port | 对标系统有本机或隔离执行，具体隔离强度取决于环境 |
 | 路径防护 | resolve、nofollow、hardlink、inode 多层校验 | 对标产品不会完整公开本地持久化防护细节 |
-| 当前差距 | Container 仍需目标环境生产验证；always 未持久化 | 成熟产品在跨平台 sandbox 运维上经验更充分 |
+| 当前差距 | writable workspace overlay、image digest 和生产 rootless live audit 未关闭；always 未持久化 | 成熟产品在跨平台 sandbox 运维上经验更充分 |
 
 安全比较必须落到可验证的威胁模型，不能只比较“是否弹审批框”。
 
@@ -201,7 +211,9 @@ SQLite 等关键文件会核对设备号与 inode，防止打开过程中的替�
 - [ ] 新鲜读取失效后写操作被拒绝；
 - [ ] shell 批准绑定精确规范化命令；
 - [ ] 停止 session 会唤醒并拒绝待审批项；
-- [ ] Container 默认无网络、只读 root、资源受限；
+- [x] Container 默认无网络、只读 rootfs、cap-drop、no-new-privileges、资源受限；
+- [x] 容器复用前核验 security profile，配置漂移 fail closed 或重建；
+- [ ] 生产 rootless daemon 复跑 live audit，并固定 image digest；
 - [ ] symlink、hardlink 与 inode 替换均 fail closed。
 
 ## 第一入口

@@ -1,6 +1,6 @@
 # Sage V7 Beta
 
-> Last verified against: `dev/sage-v7@7a26197` (2026-07-24)
+> Last verified against: `codex/harness-evidence-v2@0e21fda` (2026-07-25)
 
 这里是 V7 Beta 的稳定发布入口，也是随代码持续校正的学习索引。它不记录每小时的开发
 流水账，也不把计划写成已交付能力；版本事实以对应 source ref、代码和测试为准。
@@ -36,6 +36,7 @@ V7 Beta 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学�
 - 本地 Workspace 的文件、搜索、Shell、写入、Patch、Diff 和 Git 工具。
 - 本地 Knowledge 来源、图谱、Wiki 提案、混合检索与引用。
 - Skills、MCP、受限子 Agent、模型 Provider 和运行配置。
+- RAG Benchmark v2、Sandbox Level 1 live audit 与 Memory lifecycle 确定性评测。
 - 公开工程主页、三屏真实产品画廊，以及限定 PublishedPackage 的流式 Public Agent、
   citation、revision、receipt、限流与透明回退。
 
@@ -44,7 +45,9 @@ V7 Beta 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学�
 - 当前仍是 Beta，`main` 只接收完成发布门禁的版本。
 - `docker-compose.yml` 是本地依赖编排，不是生产栈。
 - `local_workspace` 仅用于可信开发机；公网任务必须使用 Container Sandbox。
+- Container workspace 仍整体可写，生产 rootless live audit 和 image digest 尚未关闭。
 - 云端 Knowledge 尚未开放租户级来源与元数据工作流。
+- RAG 无答案拒答准确率仍为 0，不能把 retrieval 指标等同于最终回答可信度。
 - 公开主页不是公网 Harness，不具备主会话的文件或工具权限。
 
 ## 手册维护规则
@@ -57,6 +60,7 @@ V7 Beta 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学�
 ## 下一道发布门禁
 
 1. 完成 ICP 备案，将临时 HTTP IP 迁移到正式 HTTPS 域名，并完成恢复演练。
-2. 完成生产 Container Sandbox 的 admission、资源限制和故障清理验证。
+2. 在生产 rootless daemon 复跑 Sandbox live audit，固定 image digest，并设计只读源 + writable overlay。
 3. 完成云端 Knowledge 来源与元数据的 tenant scope，再开放多用户导入。
-4. 完善新用户首次进入、数据库和 Provider 配置流程，再准备更广泛试用。
+4. 在 RAG dev split 校准 abstention，并用 test split 验收无答案行为与 generation 质量。
+5. 完善新用户首次进入、数据库和 Provider 配置流程，再准备更广泛试用。

@@ -1,169 +1,115 @@
-# 16 - RAG 检索全链路与多模型评测
+# 16 - RAG Benchmark v2：指标必须绑定当前语料与 Provider
 
-> Last verified against: `codex/eval-resume-data` (2026-07-22)
+> Last verified against: `codex/harness-evidence-v2@a03802d` (2026-07-25)
 
-> 本章目标：能画出 RAG 从文档到回答的全链路，解释 sparse/dense/hybrid 三路检索的差别，并读懂三模型评测数据背后的取舍。
+RAG 评测最容易犯的错误，是拿旧语料、旧映射和旧 Provider 产生的数字描述当前系统。
+Benchmark v2 首先解决证据可复现，再比较检索策略。
 
-![RAG 检索与评测](assets/16-rag-eval-benchmark.png)
+![RAG 全链路评测](assets/16-rag-eval-benchmark.png)
 
-## RAG 解决什么问题
+## RAG 在 Sage 中解决什么问题
 
-模型的参数化知识有截止日期，也不知道你的私人材料。RAG（Retrieval-Augmented Generation）的本质是**给模型外挂一个可检索、可引用、受控写入的长期记忆**。
+Sage 的 Knowledge 不是把全部文档塞进 prompt，而是把来源 revision、chunk、检索、引用和
+回答组装拆成可追溯链路：
 
-它回答一个问题：
-
-> 如何让模型的回答能回到真实来源，而不是靠参数里的记忆临时编造？
-
-这跟 Sage 的三个约束之一"回答可回到来源"直接对应。citation 指向具体 revision，不是模型编的字符串。
-
-## 全链路：从文档到回答
-
-```mermaid
-flowchart LR
-    DOC[原始文档<br/>MD/PDF/HTML] --> PARSE[Parser<br/>语义块切分]
-    PARSE --> CHUNK[KnowledgeChunk<br/>带 revision/content_hash]
-    CHUNK --> INDEX[(SQLite Index<br/>FTS5 + 向量)]
-    INDEX --> RETRIEVE
-    QUERY[用户 query] --> RETRIEVE[检索]
-    RETRIEVE --> SPARSE[Sparse<br/>BM25]
-    RETRIEVE --> DENSE[Dense<br/>cosine]
-    SPARSE --> RRF[RRF 融合]
-    DENSE --> RRF
-    RRF --> ASSEMBLE[拼装<br/>token_budget 截断]
-    ASSEMBLE --> GEN[模型生成<br/>带 citation]
-    GEN --> ANSWER[回答 + 引用]
+```text
+source snapshot
+  -> parse + section-preserving chunk
+  -> FTS5 BM25 / pluggable embedding
+  -> RRF fusion
+  -> token-bounded context
+  -> citation_id + source revision
 ```
 
-### 第 0 层：ingest（灌库）
+HashingEmbedding 是可离线运行的确定性基线，不支持语义召回。只有 Provider 明确声明
+`supports_semantic_recall=true`，才能把 dense 路径称为语义检索。
 
-```
-原始文档 → Parser → ParsedDocument（语义块）→ chunk_document → KnowledgeChunk → Index
-```
+## v1 为什么不能继续作为简历证据
 
-- **Parser 保留语义结构**：heading/paragraph/code/list，不是暴力按字数切。chunk 带 `heading_path`，知道自己在文档哪个章节下。
-- **chunk 带 `content_hash` 和 `source_revision`**：引用可追溯，不因后续编辑失效（类 Git commit）。
-- **写入走 proposal + approve**：模型不能直接污染知识库。这是代码强制，不是文档约定。
+旧评测只有 50 条文档级 `relevant_sources`，并且从 V6 结构映射到 V7 时只剩 35 条可用。
+旧报告还引用了不在当前分支中的 Provider 脚本和缓存路径。
 
-### 第 1 层：retrieve（检索）
+这些数字可以作为历史实验记录，但不能证明当前 17 份语料、当前 chunk 和当前检索代码的
+效果。Benchmark v2 因而 fail closed：数据集、文件集合或任一语料 SHA 漂移，运行器直接
+终止，不静默重算标签。
 
-三路并行，各有取舍：
+## 200 条固定查询
 
-| 路 | 原理 | 优点 | 缺点 |
-|---|---|---|---|
-| **Sparse（FTS5 BM25）** | 词频 × 逆文档频率 | 精确关键词匹配 | 不懂语义（"lease"≠"互斥锁"） |
-| **Dense（向量 cosine）** | 文本压成向量，算相似度 | 懂语义，能跨词匹配 | 可能找语义近但不对的 |
-| **Hybrid（RRF 融合）** | 只看两路的排名，不看看原始分数 | 取两者之长 | 依赖 dense 有语义能力 |
+| 类别 | 数量 | 主要验证 |
+| --- | ---: | --- |
+| 旧查询迁移 | 50 | 保留历史 smoke 回归 |
+| 真实用户式问题 | 60 | 避免标题复制式查询 |
+| 改写与中英文混合 | 30 | 验证语义召回 |
+| hard negative | 20 | 区分相似概念 |
+| 多文档问题 | 20 | 验证跨来源召回 |
+| 无答案问题 | 20 | 验证 abstention |
 
-**RRF 为什么不看原始分数**：BM25 和 cosine 量纲不同，直接加权无意义。RRF 只用排名：`score = 1/(60+sparse_rank) + 1/(60+dense_rank)`。两路都靠前的 chunk 融合分高。
+每条记录保存 split、provenance、section 级 graded qrels、required claims 和 forbidden claims。
+本阶段只评 retrieval；claims 为后续 generation evaluation 预留，不能提前当成回答正确率。
 
-### 第 2 层：assemble（拼装）
+## 指标口径
 
-检索回来一堆 chunk，不能全塞进 context。`assemble_retrieval_bundle` 按 `rrf_score` 排序，累加 `token_count`，超过 `token_budget`（默认 3000）就截断。
+- `Recall@10`：相关 passage 有多少被找回；
+- `Precision@10`：前 10 个结果中有多少相关；
+- `MRR`：第一个相关结果是否足够靠前；
+- `NDCG@10`：结合位置与 1-3 级相关性的排序质量；
+- `HitRate@10`：可回答查询是否至少命中一次；
+- `unanswerable_accuracy`：无答案查询是否返回空结果；
+- P50/P95：同一机器上 search 调用耗时，不包含首次远程 embedding 预热。
 
-**关键设计**：检索结果不进 context 全文，而是带 `citation_id`。模型回答时引用 citation，citation 指向具体 chunk 的 `source_revision`。这跟 artifact_ref（大输出 offload 成引用）是同一个思想--用引用替代全文，省 context + 可追溯。
+## 2026-07-25 clean baseline
 
-### 第 3 层：generate（生成）
+固定输入为 17 份 Markdown、915 active chunks、180 条可回答查询和 20 条无答案查询。
 
-模型被约束成只能基于检索到的 evidence 回答，不能编造。evidence 里没有就说"知识库里没有"。这就是"可引用"约束--回答能回到来源。
+| 配置 | Recall@10 | MRR | NDCG@10 | HitRate@10 | P50 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| FTS5 + Hashing + RRF | 0.569 | 0.389 | 0.428 | 0.600 | 28.9 ms |
+| FTS5 + text-embedding-v3 + RRF | 0.819 | 0.666 | 0.692 | 0.856 | 165.3 ms |
 
-## 评测：四个指标
+语义双路相对 Hashing 基线：Recall@10 提升 43.9%，MRR 提升 71.1%，NDCG@10 提升
+61.8%。30 条改写题的 Recall@10 从 0.400 提升到 0.867，说明提升主要来自真实语义能力，
+不是把确定性哈希重新命名。
 
-基于 50 条 Golden Queries（每条有标准答案 `relevant_sources`），算四个指标：
+## 失败结果同样是结论
 
-| 指标 | 含义 | 通俗 |
-|---|---|---|
-| **Recall@K** | 前 K 个结果里正确答案被召回的比例 | 找没找全 |
-| **MRR** | 第一个正确答案的排名倒数（第1名=1.0） | 找得准不准 |
-| **NDCG@K** | 考虑排名位置的加权（靠前贡献大） | 最全面 |
-| **HitRate@K** | 前 K 个里有没有正确答案（二值） | 有没有命中 |
+两个配置的无答案准确率均为 0。当前 search 固定返回 top-k，尚未实现校准过的 abstention。
 
-## 三模型评测结果
+因此项目可以写“建立了无答案评测并识别拒答缺口”，不能写“RAG 已可靠避免无依据回答”。
+下一步需要只在 dev split 上校准阈值，再用 test split 验收，不能反复看 test 结果调参。
 
-语料：`release/v7-beta/learning` 16 个文件，768 chunks。Golden Queries 50 条（实际评估 35 条，可映射到 V7 章节）。sparse（FTS5 BM25）与 embedding 无关，三种 embedding 共用同一组 sparse 结果。
+多文档 Recall@10 也只有 0.525，说明单次 section 级检索不能替代 query decomposition 或
+multi-hop 组装。
 
-### HashingEmbedding（256d，离线词法）
-
-| 检索方式 | Recall@5 | MRR@5 | NDCG@5 | HitRate@5 |
-|---|---|---|---|---|
-| sparse | 0.6571 | 0.4900 | 0.5243 | 0.6571 |
-| dense | 0.5857 | 0.4414 | 0.4678 | 0.6000 |
-| hybrid | 0.6143 | 0.4067 | 0.4474 | 0.6286 |
-
-| 检索方式 | Recall@10 | MRR@10 | NDCG@10 | HitRate@10 |
-|---|---|---|---|---|
-| sparse | 0.8286 | 0.5150 | 0.5819 | 0.8286 |
-| dense | 0.8143 | 0.4732 | 0.5429 | 0.8286 |
-| hybrid | 0.8429 | 0.4408 | 0.5250 | 0.8571 |
-
-**解读**：哈希 embedding 无语义能力，dense ≈ sparse（都是词法），RRF 融合反而稀释了 sparse 的精度。证明真实语义 embedding 不可替代。
-
-### DashScope text-embedding-v3（1024d，真实语义）
-
-| 检索方式 | Recall@5 | MRR@5 | NDCG@5 | HitRate@5 |
-|---|---|---|---|---|
-| sparse | 0.6571 | 0.4900 | 0.5243 | 0.6571 |
-| dense | 0.7857 | 0.6210 | 0.6503 | 0.8000 |
-| hybrid | 0.8571 | 0.6262 | 0.6783 | 0.8571 |
-
-| 检索方式 | Recall@10 | MRR@10 | NDCG@10 | HitRate@10 |
-|---|---|---|---|---|
-| sparse | 0.8286 | 0.5150 | 0.5819 | 0.8286 |
-| dense | 0.9714 | 0.6459 | 0.7134 | 0.9714 |
-| hybrid | 1.0000 | 0.6424 | **0.7216** | **1.0000** |
-
-**解读**：语义 dense 强，hybrid 取两者之长，最优。Hybrid + RRF 将 NDCG@10 从 sparse baseline 的 0.5819 提升至 **0.7216**（+24%），HitRate@10 达到 **1.0000**。
-
-### Doubao embedding-vision（2048d，多模态语义）
-
-| 检索方式 | Recall@5 | MRR@5 | NDCG@5 | HitRate@5 |
-|---|---|---|---|---|
-| sparse | 0.6571 | 0.4900 | 0.5243 | 0.6571 |
-| dense | 0.8000 | 0.6057 | 0.6509 | 0.8000 |
-| hybrid | 0.8000 | 0.5995 | 0.6467 | 0.8000 |
-
-| 检索方式 | Recall@10 | MRR@10 | NDCG@10 | HitRate@10 |
-|---|---|---|---|---|
-| sparse | 0.8286 | 0.5150 | 0.5819 | 0.8286 |
-| dense | 0.9429 | 0.6237 | 0.6959 | 0.9429 |
-| hybrid | 0.9143 | 0.6167 | 0.6855 | 0.9143 |
-
-**解读**：dense 很强（NDCG@10=0.6959），但 hybrid 被 sparse 拖累（dense 已够好，RRF 反而引入噪声）。亮点是**支持图片 embedding**（多模态），纯文本检索略逊 DashScope。
-
-## 结论
-
-1. **Hybrid 的价值依赖 dense 的语义能力**。Hashing（无语义）时 hybrid 反而更差；真实语义 embedding 时 hybrid 才优于单路。
-2. **DashScope + Hybrid 最优**，适合作为文本知识库的默认方案。
-3. **Doubao 多模态**适合需要图片检索的场景，纯文本略逊但维度更高、能力更广。
-
-## 与 Harness 设计的共鸣
-
-RAG 全链路的每个环节，都对应到 Sage Harness 的设计哲学：
-
-| RAG 环节 | Harness 对应 | 共同思想 |
-|---|---|---|
-| ingest 走 proposal | Knowledge 写入 proposal-only | 长期事实不能被模型直接污染 |
-| chunk 带 revision | transcript append-only | 引用可追溯，不因编辑失效 |
-| citation_id 引用 | artifact_ref 引用 | 用引用替代全文，省 context + 可追溯 |
-| token_budget 截断 | context budget 6 级 | 大对象不爆 context |
-
-一句话：RAG 是"给模型外挂一个可检索、可引用、受控写入的长期记忆"。它的 revision/citation/proposal/budget 跟 Harness 的事实边界是同一套思想，只是作用在"知识"维度。
-
-## 评测复现
+## 复现
 
 ```bash
-# 三模型对比（需 DashScope key + 方舟 key，离线 Hashing 无需 key）
-python scripts/eval_rag_resume.py --embedding all
+# 无远程凭据的离线基线
+python scripts/benchmark_knowledge_retrieval_v2.py \
+  --top-k 10 \
+  --output tmp/knowledge-benchmark-v2-hashing.json
 
-# 单独跑某个 embedding
-python scripts/eval_rag_resume.py --embedding hashing
-python scripts/eval_rag_resume.py --embedding dashscope
-python scripts/eval_rag_resume.py --embedding doubao
+# 显式注入真实 Provider
+DASHSCOPE_API_KEY=... python scripts/benchmark_knowledge_retrieval_v2.py \
+  --provider-factory scripts.benchmark_providers.dashscope:create_provider \
+  --top-k 10 \
+  --output tmp/knowledge-benchmark-v2-dashscope.json
 ```
 
-脚本：`scripts/eval_rag_resume.py`、`scripts/dashscope_embedding.py`、`scripts/doubao_embedding.py`。embedding 有本地缓存，重跑不重复调 API。
+数据清单：`evals/knowledge_benchmark_v2_manifest.json`。机器摘要：
+`evals/reports/knowledge_benchmark_v2_2026-07-25.json`。完整逐 case 报告由命令生成，不把
+约 1.8 MB 运行产物提交到仓库。
 
 ## 当前边界
 
-- 语料规模小（16 文件 / 768 chunks），后续计划扩展 GitHub 公开技术文档。
-- Golden Queries 是 V6 知识结构，映射到 V7 有损（50 条中 35 条可映射）。
-- 多模态检索（图片 embedding）未纳入评测，仅验证了 doubao-embedding-vision 文本输入可用。
+- 数据集来自项目维护者构造和复核，不是独立外部用户流量；
+- 当前数字只证明 retrieval，不证明最终回答 faithful 或 complete；
+- 没有可靠 abstention，无答案问题仍可能召回相似但无关内容；
+- 真实语义 Provider P50 高于离线基线，质量与延迟需要一起展示；
+- 语料规模是 17 文件 / 915 chunks，不得扩写为企业级知识库规模。
+
+## 面试里可以这样收束
+
+Sage 不再引用旧语料产生的漂亮数字，而是冻结 200 条分层查询、section 级 qrels 和 17 份
+语料 SHA，通过同一运行器比较离线 Hashing 与真实语义 Provider。语义双路将 Recall@10
+从 0.569 提升到 0.819；同时 20 条无答案题暴露出 abstention 为 0，下一阶段围绕阈值校准
+和回答生成评测继续闭环。
