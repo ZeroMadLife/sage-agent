@@ -13,12 +13,12 @@ import urllib.error
 import urllib.request
 
 _API_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-_MODEL = "text-embedding-v3"
+_MODEL = "text-embedding-v4"
 _BATCH_SIZE = 10
 
 
 class DashScopeEmbeddingProvider:
-    model_id = "dashscope.text-embedding-v3"
+    model_id = "dashscope.text-embedding-v4"
     model_revision = "api-v1"
     dimensions = 1024
     supports_semantic_recall = True
@@ -47,7 +47,9 @@ class DashScopeEmbeddingProvider:
         return vector
 
     def _request(self, texts: list[str]) -> list[tuple[float, ...]]:
-        payload = json.dumps({"model": _MODEL, "input": texts}).encode("utf-8")
+        payload = json.dumps(
+            {"model": _MODEL, "input": texts, "dimensions": self.dimensions}
+        ).encode("utf-8")
         request = urllib.request.Request(
             _API_URL,
             data=payload,

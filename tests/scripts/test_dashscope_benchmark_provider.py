@@ -32,6 +32,8 @@ def test_provider_batches_caches_and_restores_response_order(
     def fake_urlopen(request: Any, *, timeout: int) -> _Response:
         assert timeout == 30
         payload = json.loads(request.data)
+        assert payload["model"] == "text-embedding-v4"
+        assert payload["dimensions"] == 1024
         texts = list(payload["input"])
         calls.append(texts)
         data = [
@@ -42,6 +44,8 @@ def test_provider_batches_caches_and_restores_response_order(
 
     monkeypatch.setattr(dashscope.urllib.request, "urlopen", fake_urlopen)
     provider = dashscope.DashScopeEmbeddingProvider()
+
+    assert provider.model_id == "dashscope.text-embedding-v4"
 
     provider.prepare(tuple(f"text-{index}" for index in range(12)))
 
