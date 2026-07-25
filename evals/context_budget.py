@@ -493,7 +493,7 @@ async def run_evaluation(manifest_path: Path = _DEFAULT_CASES) -> dict[str, Any]
             "compact_reachable_before_run_cap": baseline_compact_tokens < 250_000,
             "artifact_offload_threshold_bytes": PERSIST_THRESHOLD_BYTES,
             "rejected_artifact_offload_candidate_bytes": 4 * 1_024,
-            "model_visible_artifact_reload": False,
+            "model_visible_artifact_reload": True,
         },
         "pre_optimization_threshold": {
             "working_set_tokens": 64_000,
