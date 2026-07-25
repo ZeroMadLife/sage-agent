@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 from io import BytesIO
 from typing import Any
@@ -53,3 +54,25 @@ def test_provider_batches_caches_and_restores_response_order(
     assert provider.embed("text-0") == (0.0,) * 1024
     assert provider.embed("text-11") == (1.0,) * 1024
     assert len(calls) == 2
+
+
+def test_provider_retries_truncated_responses(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-only")
+    attempts = 0
+    sleeps: list[int] = []
+
+    def fake_urlopen(request: Any, *, timeout: int) -> _Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise http.client.IncompleteRead(b"partial", 4)
+        return _Response({"data": [{"index": 0, "embedding": [0.5] * 1024}]})
+
+    monkeypatch.setattr(dashscope.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(dashscope.time, "sleep", sleeps.append)
+
+    vector = dashscope.DashScopeEmbeddingProvider().embed("retry-me")
+
+    assert vector == (0.5,) * 1024
+    assert attempts == 2
+    assert sleeps == [1]

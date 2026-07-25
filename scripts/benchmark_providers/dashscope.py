@@ -6,6 +6,7 @@ project files, Keychain entries, or persistent caches.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import time
@@ -70,6 +71,7 @@ class DashScopeEmbeddingProvider:
                     raise RuntimeError("DashScope embedding dimensions changed")
                 return vectors
             except (
+                http.client.IncompleteRead,
                 urllib.error.URLError,
                 TimeoutError,
                 OSError,
