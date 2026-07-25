@@ -1,0 +1,56 @@
+{
+  "benchmark_id": "sage-knowledge-v2",
+  "benchmark_revision": "2026-07-25.1",
+  "source_commit": "a03802dcfbf5cea28fea54b204944d42a4e44e1f",
+  "source_dirty": false,
+  "dataset_sha256": "3b54e55a631c164721772a3477e9b0ce5433aba7be51348bcd72b8c3d0d1d1b7",
+  "corpus_file_count": 17,
+  "indexed_chunk_count": 915,
+  "query_count": 200,
+  "answerable_query_count": 180,
+  "unanswerable_query_count": 20,
+  "top_k": 10,
+  "baselines": {
+    "hashing_fts5_rrf": {
+      "provider": "sage.hashing@1.0.0",
+      "supports_semantic_recall": false,
+      "recall_at_10": 0.5694444444444444,
+      "mrr": 0.38928791887125225,
+      "ndcg_at_10": 0.42789458671931513,
+      "hit_rate_at_10": 0.6,
+      "unanswerable_accuracy": 0.0,
+      "latency_ms": {"p50": 28.913, "p95": 32.014}
+    },
+    "dashscope_fts5_rrf": {
+      "provider": "dashscope.text-embedding-v3@api-v1",
+      "supports_semantic_recall": true,
+      "recall_at_10": 0.8194444444444444,
+      "mrr": 0.6662389770723104,
+      "ndcg_at_10": 0.692151337373443,
+      "hit_rate_at_10": 0.8555555555555555,
+      "unanswerable_accuracy": 0.0,
+      "latency_ms": {"p50": 165.349, "p95": 174.236},
+      "category_recall_at_10": {
+        "real_user": 0.8333333333333334,
+        "paraphrase": 0.8666666666666667,
+        "hard_negative": 0.85,
+        "multi_document": 0.525
+      }
+    }
+  },
+  "semantic_vs_hashing": {
+    "absolute_delta": {
+      "recall_at_10": 0.25,
+      "mrr": 0.27695105820105814,
+      "ndcg_at_10": 0.2642567506541279,
+      "hit_rate_at_10": 0.25555555555555554
+    },
+    "relative_improvement_pct": {
+      "recall_at_10": 43.90243902439024,
+      "mrr": 71.14298820371386,
+      "ndcg_at_10": 61.75744186908159,
+      "hit_rate_at_10": 42.59259259259258
+    }
+  },
+  "known_gap": "Both baselines returned results for all 20 unanswerable queries; calibrated abstention is not implemented."
+}
