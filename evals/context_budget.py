@@ -9,6 +9,7 @@ import re
 import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,7 +99,7 @@ class DeterministicContextCompactor(ContextCompactionMiddleware):
             return messages, usage, {}
         return super()._prune_artifact_backed_tools(*args, **kwargs)
 
-    def _can_attempt(self, state: dict[str, Any], before_tokens: int) -> bool:
+    def _can_attempt(self, state: Mapping[str, Any], before_tokens: int) -> bool:
         return self._compaction_enabled and super()._can_attempt(state, before_tokens)
 
     @staticmethod
