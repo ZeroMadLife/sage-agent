@@ -155,7 +155,7 @@ def test_legacy_v0_proposal_schema_migrates(tmp_path: Path) -> None:
     store = MemoryStore(tmp_path / "storage", "workspace")
     assert store.path.exists()
     with sqlite3.connect(store.path) as check:
-        assert check.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
         assert (
             check.execute(
                 "SELECT projection_status FROM memory_proposals WHERE proposal_id=?",
@@ -259,7 +259,7 @@ def test_store_rejects_noncanonical_schema_objects(tmp_path: Path, schema_sql: s
         MemoryStore(tmp_path / "storage", "workspace")
 
 
-@pytest.mark.parametrize("version", [-1, 2])
+@pytest.mark.parametrize("version", [-1, 3])
 def test_store_rejects_unsupported_schema_versions(tmp_path: Path, version: int) -> None:
     store = MemoryStore(tmp_path / "storage", "workspace")
     with sqlite3.connect(store.path) as db:
@@ -267,6 +267,93 @@ def test_store_rejects_unsupported_schema_versions(tmp_path: Path, version: int)
 
     with pytest.raises(MemoryStoreError):
         MemoryStore(tmp_path / "storage", "workspace")
+
+
+def test_v1_schema_migrates_existing_facts_to_active_lifecycle(tmp_path: Path) -> None:
+    root = tmp_path / "storage" / "memory" / "workspace"
+    root.mkdir(parents=True)
+    path = root / "memory.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.executescript("""
+        CREATE TABLE memory_facts (content_hash TEXT PRIMARY KEY, content TEXT NOT NULL, topic TEXT NOT NULL, source TEXT NOT NULL, source_ref TEXT NOT NULL, created_at TEXT NOT NULL, proposal_id TEXT NOT NULL DEFAULT '');
+        CREATE TABLE memory_proposals (proposal_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, candidates_json TEXT NOT NULL, status TEXT NOT NULL, projection_status TEXT NOT NULL DEFAULT 'pending', revision INTEGER NOT NULL, session_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', reflection_id TEXT NOT NULL DEFAULT '', base_revision INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+        CREATE TABLE memory_events (event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, proposal_id TEXT NOT NULL, workspace_id TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', run_id TEXT NOT NULL DEFAULT '', reflection_id TEXT NOT NULL DEFAULT '', candidate_count INTEGER NOT NULL, base_revision INTEGER NOT NULL, revision INTEGER NOT NULL, created_at TEXT NOT NULL);
+        CREATE INDEX memory_events_proposal_idx ON memory_events(proposal_id, created_at);
+        PRAGMA user_version=1;
+        """)
+        db.execute(
+            "INSERT INTO memory_facts VALUES (?, 'legacy active', 'decisions', 'legacy', 'run-1', '2026-07-01', 'p1')",
+            (MemoryCandidate("legacy active").content_hash,),
+        )
+
+    store = MemoryStore(tmp_path / "storage", "workspace")
+
+    fact = store.list_stored_facts()[0]
+    assert fact.status == "active"
+    assert fact.revision == 1
+    assert fact.updated_at == "2026-07-01"
+    with sqlite3.connect(store.path) as check:
+        assert check.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_correction_is_pending_then_atomically_supersedes_active_fact(tmp_path: Path) -> None:
+    store = MemoryStore(tmp_path / "storage", "workspace")
+    original = MemoryCandidate("Use SQLite for checkpoints", topic="decisions")
+    store.create_proposal([original], proposal_id="original")
+    store.approve("original", 0)
+    replacement = MemoryCandidate(
+        "Use PostgreSQL for shared checkpoints",
+        topic="decisions",
+        source="memory_correction",
+        supersedes_content_hash=original.content_hash,
+    )
+
+    store.create_proposal([replacement], proposal_id="correction")
+
+    assert [fact.content for fact in store.list_facts()] == [original.content]
+    store.approve("correction", 0)
+    by_hash = {fact.content_hash: fact for fact in store.list_stored_facts()}
+    assert by_hash[original.content_hash].status == "superseded"
+    assert by_hash[original.content_hash].revision == 2
+    assert by_hash[replacement.content_hash].status == "active"
+    assert by_hash[replacement.content_hash].supersedes_content_hash == original.content_hash
+    assert [fact.content for fact in store.list_facts()] == [replacement.content]
+    assert [event.event_type for event in store.list_fact_events()] == [
+        "fact_activated",
+        "fact_activated",
+        "fact_superseded",
+    ]
+
+
+def test_retraction_is_cas_guarded_append_only_and_hidden_from_active_facts(
+    tmp_path: Path,
+) -> None:
+    store = MemoryStore(tmp_path / "storage", "workspace")
+    candidate = MemoryCandidate("Never expose provider keys")
+    store.create_proposal([candidate], proposal_id="security")
+    store.approve("security", 0)
+
+    retracted = store.retract_fact(
+        candidate.content_hash,
+        expected_revision=1,
+        reason="The wording is too broad",
+        actor_ref="session-1",
+    )
+
+    assert retracted.status == "retracted"
+    assert retracted.revision == 2
+    assert retracted.retraction_reason == "The wording is too broad"
+    assert store.list_facts() == []
+    events = store.list_fact_events(candidate.content_hash)
+    assert [event.event_type for event in events] == ["fact_activated", "fact_retracted"]
+    assert events[-1].actor_ref == "session-1"
+    with pytest.raises(MemoryConflictError):
+        store.retract_fact(
+            candidate.content_hash,
+            expected_revision=1,
+            reason="stale replay",
+            actor_ref="session-1",
+        )
 
 
 @pytest.mark.parametrize(

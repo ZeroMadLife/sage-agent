@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_CONTENT = 32_000
 MAX_CANDIDATES = 256
 MAX_JSON_BYTES = 512 * 1024
@@ -26,11 +26,21 @@ _DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
 _FILE_FLAGS = os.O_CLOEXEC | os.O_NOFOLLOW
 _SIDECAR_SUFFIXES = ("-wal", "-shm")
 
-_FACTS_SQL = """
+_FACTS_V1_SQL = """
 CREATE TABLE memory_facts (
     content_hash TEXT PRIMARY KEY, content TEXT NOT NULL,
     topic TEXT NOT NULL, source TEXT NOT NULL, source_ref TEXT NOT NULL,
     created_at TEXT NOT NULL, proposal_id TEXT NOT NULL DEFAULT ''
+)
+"""
+_FACTS_SQL = """
+CREATE TABLE memory_facts (
+    content_hash TEXT PRIMARY KEY, content TEXT NOT NULL,
+    topic TEXT NOT NULL, source TEXT NOT NULL, source_ref TEXT NOT NULL,
+    created_at TEXT NOT NULL, proposal_id TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active', revision INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT '', supersedes_content_hash TEXT NOT NULL DEFAULT '',
+    retraction_reason TEXT NOT NULL DEFAULT ''
 )
 """
 _PROPOSALS_SQL = """
@@ -58,6 +68,19 @@ _EVENT_INDEX_SQL = """
 CREATE INDEX memory_events_proposal_idx
     ON memory_events(proposal_id, created_at)
 """
+_FACT_EVENTS_SQL = """
+CREATE TABLE memory_fact_events (
+    event_id TEXT PRIMARY KEY, event_type TEXT NOT NULL,
+    content_hash TEXT NOT NULL, related_content_hash TEXT NOT NULL DEFAULT '',
+    proposal_id TEXT NOT NULL DEFAULT '', workspace_id TEXT NOT NULL,
+    actor_ref TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+    revision INTEGER NOT NULL, created_at TEXT NOT NULL
+)
+"""
+_FACT_EVENT_INDEX_SQL = """
+CREATE INDEX memory_fact_events_fact_idx
+    ON memory_fact_events(content_hash, created_at)
+"""
 
 
 class MemoryStoreError(RuntimeError):
@@ -79,6 +102,7 @@ class MemoryCandidate:
     source: str = "dream_proposal"
     source_ref: str = ""
     created_at: str = ""
+    supersedes_content_hash: str = ""
 
     @property
     def content_hash(self) -> str:
@@ -114,6 +138,36 @@ class MemoryEvent:
     base_revision: int = 0
     revision: int = 0
     created_at: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryStoredFact:
+    content_hash: str
+    content: str
+    topic: str
+    source: str
+    source_ref: str
+    created_at: str
+    proposal_id: str
+    status: str
+    revision: int
+    updated_at: str
+    supersedes_content_hash: str = ""
+    retraction_reason: str = ""
+
+
+@dataclass(frozen=True)
+class MemoryFactEvent:
+    event_id: str
+    event_type: str
+    content_hash: str
+    related_content_hash: str
+    proposal_id: str
+    workspace_id: str
+    actor_ref: str
+    reason: str
+    revision: int
+    created_at: str
 
 
 class MemoryStore:
@@ -163,17 +217,23 @@ class MemoryStore:
             db.execute("BEGIN IMMEDIATE")
             try:
                 version = int(db.execute("PRAGMA user_version").fetchone()[0])
-                if version not in {0, SCHEMA_VERSION}:
+                if version not in {0, 1, SCHEMA_VERSION}:
                     raise MemoryStoreError(f"unsupported memory schema version {version}")
                 objects = _schema_objects(db)
                 if version == 0:
                     if objects:
                         _migrate_legacy_v0(db, objects)
+                        _migrate_v1_to_v2(db)
                     else:
                         db.execute(_FACTS_SQL)
                         db.execute(_PROPOSALS_SQL)
                         db.execute(_EVENTS_SQL)
                         db.execute(_EVENT_INDEX_SQL)
+                        db.execute(_FACT_EVENTS_SQL)
+                        db.execute(_FACT_EVENT_INDEX_SQL)
+                    db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif version == 1:
+                    _migrate_v1_to_v2(db)
                     db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 _validate_schema(db, self.path)
                 integrity = db.execute("PRAGMA integrity_check").fetchall()
@@ -230,9 +290,13 @@ class MemoryStore:
         # Deduplicate within a proposal while preserving order.
         unique: list[MemoryCandidate] = []
         seen: set[str] = set()
+        superseded: set[str] = set()
         for candidate in values:
-            if len(candidate.content) > MAX_CONTENT or candidate.topic not in _TOPICS:
-                raise ValueError("invalid memory candidate")
+            _validate_candidate(candidate)
+            if candidate.supersedes_content_hash:
+                if candidate.supersedes_content_hash in superseded:
+                    raise ValueError("proposal cannot supersede one fact more than once")
+                superseded.add(candidate.supersedes_content_hash)
             if candidate.content_hash not in seen:
                 unique.append(candidate)
                 seen.add(candidate.content_hash)
@@ -362,8 +426,25 @@ class MemoryStore:
             new_revision = current.revision + 1
             if status == "approved":
                 for candidate in current.candidates:
-                    db.execute(
-                        "INSERT OR IGNORE INTO memory_facts VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    if not candidate.supersedes_content_hash:
+                        continue
+                    old = db.execute(
+                        "SELECT * FROM memory_facts WHERE content_hash=?",
+                        (candidate.supersedes_content_hash,),
+                    ).fetchone()
+                    if old is None or old["status"] != "active":
+                        raise MemoryConflictError("superseded memory fact is not active")
+                    if candidate.content_hash == candidate.supersedes_content_hash:
+                        raise MemoryConflictError("memory correction must change content")
+                    duplicate = db.execute(
+                        "SELECT 1 FROM memory_facts WHERE content_hash=?",
+                        (candidate.content_hash,),
+                    ).fetchone()
+                    if duplicate is not None:
+                        raise MemoryConflictError("replacement memory fact already exists")
+                for candidate in current.candidates:
+                    inserted = db.execute(
+                        "INSERT OR IGNORE INTO memory_facts (content_hash, content, topic, source, source_ref, created_at, proposal_id, status, revision, updated_at, supersedes_content_hash, retraction_reason) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 1, ?, ?, '')",
                         (
                             candidate.content_hash,
                             candidate.content,
@@ -372,8 +453,45 @@ class MemoryStore:
                             candidate.source_ref,
                             candidate.created_at or now,
                             proposal_id,
+                            now,
+                            candidate.supersedes_content_hash,
                         ),
                     )
+                    if inserted.rowcount:
+                        self._fact_event(
+                            db,
+                            "fact_activated",
+                            candidate.content_hash,
+                            candidate.supersedes_content_hash,
+                            proposal_id,
+                            current.workspace_id,
+                            current.run_id or current.session_id,
+                            "",
+                            1,
+                            now,
+                        )
+                    if candidate.supersedes_content_hash:
+                        old = db.execute(
+                            "SELECT revision FROM memory_facts WHERE content_hash=?",
+                            (candidate.supersedes_content_hash,),
+                        ).fetchone()
+                        old_revision = int(old["revision"]) + 1
+                        db.execute(
+                            "UPDATE memory_facts SET status='superseded', revision=?, updated_at=? WHERE content_hash=? AND status='active'",
+                            (old_revision, now, candidate.supersedes_content_hash),
+                        )
+                        self._fact_event(
+                            db,
+                            "fact_superseded",
+                            candidate.supersedes_content_hash,
+                            candidate.content_hash,
+                            proposal_id,
+                            current.workspace_id,
+                            current.run_id or current.session_id,
+                            "",
+                            old_revision,
+                            now,
+                        )
             db.execute(
                 "UPDATE memory_proposals SET status=?, projection_status=?, revision=?, updated_at=? WHERE proposal_id=?",
                 (
@@ -403,9 +521,81 @@ class MemoryStore:
     def list_facts(self) -> list[MemoryCandidate]:
         with self._connect() as db:
             rows = db.execute(
-                "SELECT f.content, f.topic, f.source, f.source_ref, f.created_at FROM memory_facts f JOIN memory_proposals p ON p.proposal_id=f.proposal_id WHERE p.status='approved' ORDER BY f.rowid"
+                "SELECT f.content, f.topic, f.source, f.source_ref, f.created_at, f.supersedes_content_hash FROM memory_facts f JOIN memory_proposals p ON p.proposal_id=f.proposal_id WHERE p.status='approved' AND f.status='active' ORDER BY f.rowid"
             ).fetchall()
         return [MemoryCandidate(**dict(r)) for r in rows]
+
+    def list_stored_facts(self, status: str | None = None) -> list[MemoryStoredFact]:
+        if status is not None and status not in {"active", "superseded", "retracted"}:
+            raise ValueError("unsupported memory fact status")
+        with self._connect() as db:
+            query = "SELECT * FROM memory_facts"
+            args: tuple[str, ...] = ()
+            if status is not None:
+                query += " WHERE status=?"
+                args = (status,)
+            query += " ORDER BY rowid"
+            rows = db.execute(query, args).fetchall()
+        return [MemoryStoredFact(**dict(row)) for row in rows]
+
+    def get_fact(self, content_hash: str) -> MemoryStoredFact | None:
+        _validate_content_hash(content_hash)
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM memory_facts WHERE content_hash=?", (content_hash,)
+            ).fetchone()
+        return MemoryStoredFact(**dict(row)) if row is not None else None
+
+    def retract_fact(
+        self,
+        content_hash: str,
+        *,
+        expected_revision: int,
+        reason: str,
+        actor_ref: str,
+    ) -> MemoryStoredFact:
+        _validate_content_hash(content_hash)
+        normalized_reason = " ".join(reason.split())
+        normalized_actor = actor_ref.strip()
+        if not normalized_reason or len(normalized_reason) > 1_000:
+            raise ValueError("memory retraction requires a bounded reason")
+        if not normalized_actor or len(normalized_actor) > 256:
+            raise ValueError("memory retraction requires a bounded actor reference")
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise ValueError("memory fact revision must be positive")
+        now = _now()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM memory_facts WHERE content_hash=?", (content_hash,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(content_hash)
+            current = MemoryStoredFact(**dict(row))
+            if current.revision != expected_revision or current.status != "active":
+                raise MemoryConflictError("memory fact revision or status conflict")
+            revision = current.revision + 1
+            db.execute(
+                "UPDATE memory_facts SET status='retracted', revision=?, updated_at=?, retraction_reason=? WHERE content_hash=?",
+                (revision, now, normalized_reason, content_hash),
+            )
+            self._fact_event(
+                db,
+                "fact_retracted",
+                content_hash,
+                "",
+                current.proposal_id,
+                self._workspace_id(),
+                normalized_actor,
+                normalized_reason,
+                revision,
+                now,
+            )
+            db.commit()
+        result = self.get_fact(content_hash)
+        if result is None:
+            raise MemoryCorruptionError("retracted memory fact disappeared")
+        return result
 
     def list_events(self, proposal_id: str | None = None) -> list[MemoryEvent]:
         with self._connect() as db:
@@ -416,6 +606,18 @@ class MemoryStore:
             else:
                 rows = db.execute("SELECT * FROM memory_events ORDER BY rowid").fetchall()
         return [MemoryEvent(**dict(r)) for r in rows]
+
+    def list_fact_events(self, content_hash: str | None = None) -> list[MemoryFactEvent]:
+        with self._connect() as db:
+            if content_hash:
+                _validate_content_hash(content_hash)
+                rows = db.execute(
+                    "SELECT * FROM memory_fact_events WHERE content_hash=? ORDER BY rowid",
+                    (content_hash,),
+                ).fetchall()
+            else:
+                rows = db.execute("SELECT * FROM memory_fact_events ORDER BY rowid").fetchall()
+        return [MemoryFactEvent(**dict(row)) for row in rows]
 
     def _workspace_id(self) -> str:
         return self.root.name
@@ -451,6 +653,35 @@ class MemoryStore:
             ),
         )
 
+    @staticmethod
+    def _fact_event(
+        db: sqlite3.Connection,
+        event_type: str,
+        content_hash: str,
+        related_content_hash: str,
+        proposal_id: str,
+        workspace_id: str,
+        actor_ref: str,
+        reason: str,
+        revision: int,
+        now: str,
+    ) -> None:
+        db.execute(
+            "INSERT INTO memory_fact_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                uuid.uuid4().hex,
+                event_type,
+                content_hash,
+                related_content_hash,
+                proposal_id,
+                workspace_id,
+                actor_ref,
+                reason,
+                revision,
+                now,
+            ),
+        )
+
 
 def _proposal(row: sqlite3.Row) -> MemoryProposal:
     data = dict(row)
@@ -468,7 +699,14 @@ def _proposal(row: sqlite3.Row) -> MemoryProposal:
         if not isinstance(raw_candidates, list) or not (1 <= len(raw_candidates) <= MAX_CANDIDATES):
             raise TypeError("candidates_json must be a non-empty bounded list")
         candidates_list: list[MemoryCandidate] = []
-        expected = {"content", "topic", "source", "source_ref", "created_at"}
+        expected = {
+            "content",
+            "topic",
+            "source",
+            "source_ref",
+            "created_at",
+            "supersedes_content_hash",
+        }
         for item in raw_candidates:
             if not isinstance(item, dict) or not set(item).issubset(expected):
                 raise TypeError("candidate must be an object with known fields")
@@ -481,15 +719,11 @@ def _proposal(row: sqlite3.Row) -> MemoryProposal:
                     candidate.source,
                     candidate.source_ref,
                     candidate.created_at,
+                    candidate.supersedes_content_hash,
                 )
             ):
                 raise TypeError("candidate fields must be strings")
-            if (
-                not candidate.content.strip()
-                or len(candidate.content) > MAX_CONTENT
-                or candidate.topic not in _TOPICS
-            ):
-                raise ValueError("invalid memory candidate")
+            _validate_candidate(candidate)
             candidates_list.append(candidate)
         candidates = tuple(candidates_list)
     except (ValueError, TypeError, KeyError) as exc:
@@ -530,10 +764,13 @@ def _validate_schema(db: sqlite3.Connection, path: Path) -> None:
         ("table", "memory_facts"): _FACTS_SQL,
         ("table", "memory_proposals"): _PROPOSALS_SQL,
         ("table", "memory_events"): _EVENTS_SQL,
+        ("table", "memory_fact_events"): _FACT_EVENTS_SQL,
         ("index", "memory_events_proposal_idx"): _EVENT_INDEX_SQL,
+        ("index", "memory_fact_events_fact_idx"): _FACT_EVENT_INDEX_SQL,
         ("index", "sqlite_autoindex_memory_facts_1"): None,
         ("index", "sqlite_autoindex_memory_proposals_1"): None,
         ("index", "sqlite_autoindex_memory_events_1"): None,
+        ("index", "sqlite_autoindex_memory_fact_events_1"): None,
     }
     actual = {(kind, name): sql for kind, name, _, sql in objects}
     if set(actual) != set(expected_sql):
@@ -547,6 +784,9 @@ def _validate_schema(db: sqlite3.Connection, path: Path) -> None:
     event_index = db.execute("PRAGMA index_info(memory_events_proposal_idx)").fetchall()
     if [row[2] for row in event_index] != ["proposal_id", "created_at"]:
         raise MemoryStoreError(f"invalid memory event index at {path}")
+    fact_event_index = db.execute("PRAGMA index_info(memory_fact_events_fact_idx)").fetchall()
+    if [row[2] for row in fact_event_index] != ["content_hash", "created_at"]:
+        raise MemoryStoreError(f"invalid memory fact event index at {path}")
 
 
 def _migrate_legacy_v0(
@@ -576,6 +816,54 @@ def _migrate_legacy_v0(
     )
     db.execute("DROP TABLE memory_proposals_legacy")
     db.execute(_EVENT_INDEX_SQL)
+
+
+def _migrate_v1_to_v2(db: sqlite3.Connection) -> None:
+    """Add append-only fact lifecycle state to the canonical v1 schema."""
+
+    objects = _schema_objects(db)
+    expected = {
+        ("table", "memory_facts"): _FACTS_V1_SQL,
+        ("table", "memory_proposals"): _PROPOSALS_SQL,
+        ("table", "memory_events"): _EVENTS_SQL,
+        ("index", "memory_events_proposal_idx"): _EVENT_INDEX_SQL,
+        ("index", "sqlite_autoindex_memory_facts_1"): None,
+        ("index", "sqlite_autoindex_memory_proposals_1"): None,
+        ("index", "sqlite_autoindex_memory_events_1"): None,
+    }
+    actual = {(kind, name): sql for kind, name, _, sql in objects}
+    if set(actual) != set(expected):
+        raise MemoryStoreError("unknown objects in memory schema v1")
+    for key, sql in expected.items():
+        if sql is None:
+            if actual[key] is not None:
+                raise MemoryStoreError("invalid generated index in memory schema v1")
+        elif _normalize_sql(actual[key]) != _normalize_sql(sql):
+            raise MemoryStoreError(f"non-canonical memory schema v1 object {key[1]}")
+    db.execute("ALTER TABLE memory_facts RENAME TO memory_facts_v1")
+    db.execute(_FACTS_SQL)
+    db.execute(
+        "INSERT INTO memory_facts (content_hash, content, topic, source, source_ref, created_at, proposal_id, status, revision, updated_at, supersedes_content_hash, retraction_reason) SELECT content_hash, content, topic, source, source_ref, created_at, proposal_id, 'active', 1, created_at, '', '' FROM memory_facts_v1"
+    )
+    db.execute("DROP TABLE memory_facts_v1")
+    db.execute(_FACT_EVENTS_SQL)
+    db.execute(_FACT_EVENT_INDEX_SQL)
+
+
+def _validate_candidate(candidate: MemoryCandidate) -> None:
+    if (
+        not candidate.content.strip()
+        or len(candidate.content) > MAX_CONTENT
+        or candidate.topic not in _TOPICS
+    ):
+        raise ValueError("invalid memory candidate")
+    if candidate.supersedes_content_hash:
+        _validate_content_hash(candidate.supersedes_content_hash)
+
+
+def _validate_content_hash(value: str) -> None:
+    if not re.fullmatch(r"[a-f0-9]{64}", value):
+        raise ValueError("invalid memory content hash")
 
 
 def _trusted_root(root: Path) -> Path:

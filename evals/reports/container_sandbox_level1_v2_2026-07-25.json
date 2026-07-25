@@ -1,0 +1,29 @@
+{
+  "audit_id": "sage-container-sandbox-level1-v2",
+  "generated_at": "2026-07-25T04:43:27.767862+00:00",
+  "source_commit": "1b7a9f8b3d9fc3b447bfe01f51f36096d3b02d40",
+  "source_dirty": false,
+  "image": "python:3.11-slim",
+  "case_count": 10,
+  "passed": 10,
+  "failed": 0,
+  "pass_rate": 1.0,
+  "cases": [
+    {"case_id": "inspect_profile", "passed": true, "evidence": "[]"},
+    {"case_id": "workspace_write", "passed": true, "evidence": "wrote audit/allowed.txt (17 chars)"},
+    {"case_id": "read_only_rootfs", "passed": true, "evidence": "exit_code: 1; Read-only file system"},
+    {"case_id": "network_disabled", "passed": true, "evidence": "exit_code: 1; Network is unreachable"},
+    {"case_id": "capabilities_dropped", "passed": true, "evidence": "CapEff=0000000000000000"},
+    {"case_id": "no_new_privileges", "passed": true, "evidence": "NoNewPrivs=1"},
+    {"case_id": "isolated_home", "passed": true, "evidence": "HOME=/tmp/sage-home"},
+    {"case_id": "host_environment_not_forwarded", "passed": true, "evidence": "audit secret absent"},
+    {"case_id": "file_size_limited", "passed": true, "evidence": "exit_code: 1; File too large"},
+    {"case_id": "terminal_cleanup", "passed": true, "evidence": "container missing after close"}
+  ],
+  "known_gaps": [
+    "The entire workspace remains a writable bind mount.",
+    "The configured image uses a version tag rather than an immutable digest.",
+    "Container namespace root is retained for rootless workspace ACL compatibility.",
+    "gVisor, Firecracker, and syscall-level attack coverage are not implemented."
+  ]
+}

@@ -301,22 +301,6 @@ def _validated_budgets(value: Mapping[str, int]) -> dict[str, int]:
 def _deduplicated_facts(runtime: CodingRuntime) -> list[MemoryFact]:
     facts: list[MemoryFact] = []
     seen: set[tuple[str, str]] = set()
-    approved = runtime.memory_manager.memory_store.list_facts()
-    for candidate in approved:
-        key = (candidate.topic, " ".join(candidate.content.split()).casefold())
-        if key in seen:
-            continue
-        seen.add(key)
-        facts.append(
-            MemoryFact(
-                topic=candidate.topic,
-                content=candidate.content,
-                source=candidate.source,
-                source_ref=candidate.source_ref,
-                created_at=candidate.created_at,
-                status="active",
-            )
-        )
     for fact in runtime.memory_manager.list_facts():
         key = (fact.topic, " ".join(fact.content.split()).casefold())
         if key in seen:

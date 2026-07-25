@@ -72,7 +72,13 @@ from api.schemas import (
     CodingMcpServer,
     CodingMcpServersResponse,
     CodingMemoryCandidate,
+    CodingMemoryCorrectionRequest,
     CodingMemoryEvent,
+    CodingMemoryFact,
+    CodingMemoryFactDetail,
+    CodingMemoryFactEvent,
+    CodingMemoryFactRetractionRequest,
+    CodingMemoryFactsResponse,
     CodingMemoryProposal,
     CodingMemoryProposalDecisionRequest,
     CodingMemoryProposalDetail,
@@ -124,7 +130,9 @@ from core.coding.persistence import (
     CodingSessionStore,
     MemoryConflictError,
     MemoryEvent,
+    MemoryFactEvent,
     MemoryProposal,
+    MemoryStoredFact,
     MemoryStoreError,
 )
 from core.coding.persistence.session_event_journal import (
@@ -2454,6 +2462,99 @@ async def reject_memory_proposal_by_id(
     )
 
 
+@router.get(
+    "/api/v1/coding/{session_id}/memory/facts",
+    response_model=CodingMemoryFactsResponse,
+)
+async def list_memory_facts(
+    session_id: str,
+    request: Request,
+    status: Literal["active", "superseded", "retracted"] | None = None,
+) -> CodingMemoryFactsResponse:
+    runtime = _require_runtime(request, session_id)
+    try:
+        facts = runtime.memory_manager.list_stored_facts(status)
+    except MemoryStoreError as exc:
+        raise _memory_storage_error() from exc
+    return CodingMemoryFactsResponse(facts=[_memory_fact_response(fact) for fact in facts])
+
+
+@router.get(
+    "/api/v1/coding/{session_id}/memory/facts/{content_hash}",
+    response_model=CodingMemoryFactDetail,
+)
+async def get_memory_fact(
+    session_id: str,
+    content_hash: str,
+    request: Request,
+) -> CodingMemoryFactDetail:
+    runtime = _require_runtime(request, session_id)
+    fact = _session_memory_fact(runtime, content_hash)
+    try:
+        events = runtime.memory_manager.list_fact_events(content_hash)
+    except (ValueError, MemoryStoreError) as exc:
+        raise _memory_storage_error() from exc
+    return CodingMemoryFactDetail(
+        fact=_memory_fact_response(fact),
+        events=[_memory_fact_event_response(event) for event in events],
+    )
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/facts/{content_hash}/retract",
+    response_model=CodingMemoryFact,
+)
+async def retract_memory_fact(
+    session_id: str,
+    content_hash: str,
+    payload: CodingMemoryFactRetractionRequest,
+    request: Request,
+) -> CodingMemoryFact:
+    runtime = _require_runtime(request, session_id)
+    _session_memory_fact(runtime, content_hash)
+    try:
+        fact = runtime.memory_manager.retract_fact(
+            content_hash,
+            expected_revision=payload.expected_revision,
+            reason=payload.reason,
+            actor_ref=session_id,
+        )
+    except MemoryConflictError as exc:
+        raise HTTPException(status_code=409, detail="memory fact conflict") from exc
+    except (ValueError, MemoryStoreError) as exc:
+        raise _memory_storage_error() from exc
+    return _memory_fact_response(fact)
+
+
+@router.post(
+    "/api/v1/coding/{session_id}/memory/facts/{content_hash}/corrections",
+    response_model=CodingMemoryProposal,
+)
+async def create_memory_correction(
+    session_id: str,
+    content_hash: str,
+    payload: CodingMemoryCorrectionRequest,
+    request: Request,
+) -> CodingMemoryProposal:
+    runtime = _require_runtime(request, session_id)
+    fact = _session_memory_fact(runtime, content_hash)
+    if fact.status != "active" or fact.revision != payload.expected_revision:
+        raise HTTPException(status_code=409, detail="memory fact conflict")
+    try:
+        proposal = runtime.memory_manager.create_correction_proposal(
+            content_hash,
+            payload.replacement,
+            expected_revision=payload.expected_revision,
+            session_id=session_id,
+            run_id=runtime.active_run_id or "",
+        )
+    except MemoryConflictError as exc:
+        raise HTTPException(status_code=409, detail="memory fact conflict") from exc
+    except (ValueError, MemoryStoreError) as exc:
+        raise _memory_storage_error() from exc
+    return _memory_proposal_response(proposal)
+
+
 @router.post(
     "/api/v1/coding/{session_id}/memory/proposal/approve",
     response_model=CodingMemoryProposal,
@@ -2969,6 +3070,18 @@ def _session_memory_proposal(
     return proposal
 
 
+def _session_memory_fact(runtime: CodingRuntime, content_hash: str) -> MemoryStoredFact:
+    if not re.fullmatch(r"[a-f0-9]{64}", content_hash):
+        raise HTTPException(status_code=404, detail="memory fact not found")
+    try:
+        fact = runtime.memory_manager.memory_store.get_fact(content_hash)
+    except (ValueError, MemoryStoreError) as exc:
+        raise _memory_storage_error() from exc
+    if fact is None:
+        raise HTTPException(status_code=404, detail="memory fact not found")
+    return fact
+
+
 def _transition_memory_proposal(
     request: Request,
     session_id: str,
@@ -3012,12 +3125,21 @@ def _memory_proposal_response(proposal: MemoryProposal) -> CodingMemoryProposal:
                 source=candidate.source,
                 source_ref=candidate.source_ref,
                 created_at=candidate.created_at,
+                supersedes_content_hash=candidate.supersedes_content_hash,
             )
             for candidate in proposal.candidates
         ],
         created_at=proposal.created_at,
         updated_at=proposal.updated_at,
     )
+
+
+def _memory_fact_response(fact: MemoryStoredFact) -> CodingMemoryFact:
+    return CodingMemoryFact(**fact.__dict__)
+
+
+def _memory_fact_event_response(event: MemoryFactEvent) -> CodingMemoryFactEvent:
+    return CodingMemoryFactEvent(**event.__dict__)
 
 
 def _memory_event_response(event: MemoryEvent) -> CodingMemoryEvent:

@@ -111,6 +111,20 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
 | **Release Engineering** | 前后端质量门禁、不可变镜像、同 SHA Canary、公开/私有隔离与共同回滚 |
 
+## 可复现工程证据
+
+| 能力 | 当前证据 | 仍未解决 |
+| --- | --- | --- |
+| **RAG Benchmark v2** | 固定 200 条分层查询、16 份语料与 879 chunks；真实语义双路相对 Hashing 基线将 Recall@10 从 0.578 提升到 0.814，NDCG@10 从 0.444 提升到 0.695 | 20 条无答案题的 abstention accuracy 仍为 0 |
+| **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
+| **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
+
+评测协议、复现命令和 clean source commit 见
+[RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
+[Sandbox 报告](docs/evals/container-sandbox-level1-v2.md) 与
+[Memory 报告](docs/evals/memory-lifecycle-v1.md)。这里的 case 数证明对应工程不变量，不把
+确定性回归包装成真实用户准确率。
+
 ## 技术栈
 
 - **前端**：Vue 3、TypeScript、Pinia、Vite、Vitest
@@ -196,7 +210,9 @@ sage-agent/
 ## 当前边界
 
 - `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
+- Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
+- RAG 尚未完成可信 abstention 与回答生成评测，无答案查询可能召回相似但无关内容。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - `sagecompanion.top` 尚未完成 ICP 备案与 HTTPS 切换，当前公网 IP 只用于受控展示。
 - 原 TourSwarm 旅游规划能力作为领域 Skill 与多约束 benchmark 保留，不再是主产品入口。

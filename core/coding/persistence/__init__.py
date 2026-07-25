@@ -10,8 +10,10 @@ from core.coding.persistence.memory_store import (
     MemoryCandidate,
     MemoryConflictError,
     MemoryEvent,
+    MemoryFactEvent,
     MemoryProposal,
     MemoryStore,
+    MemoryStoredFact,
     MemoryStoreError,
 )
 from core.coding.persistence.run_store import RunStore
@@ -34,9 +36,11 @@ __all__ = [
     "MemoryCandidate",
     "MemoryConflictError",
     "MemoryEvent",
+    "MemoryFactEvent",
     "MemoryProposal",
     "MemoryStore",
     "MemoryStoreError",
+    "MemoryStoredFact",
     "RunStore",
     "SessionEventBus",
     "TodoLedger",

@@ -81,6 +81,7 @@ def test_list_detail_and_status_filter_use_wire_contract(tmp_path: Path) -> None
                         "source": "dream_proposal",
                         "source_ref": "reflection-1",
                         "created_at": "2026-07-12T00:00:00+00:00",
+                        "supersedes_content_hash": "",
                     }
                 ],
                 "created_at": proposal.created_at,
@@ -214,3 +215,86 @@ def test_legacy_routes_require_explicit_id_and_revision_and_use_cas(tmp_path: Pa
     assert approved.status_code == 200
     assert approved.headers["deprecation"] == "true"
     assert approved.json()["status"] == "approved"
+
+
+def test_fact_correction_and_retraction_keep_lifecycle_evidence(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    client = TestClient(app)
+    session_id = _session(client)
+    original = _proposal(app, session_id)
+    approved = client.post(
+        f"/api/v1/coding/{session_id}/memory/proposals/{original.proposal_id}/approve",
+        json={"expected_revision": 0},
+    )
+    assert approved.status_code == 200
+    active = client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active")
+    assert active.status_code == 200
+    original_fact = active.json()["facts"][0]
+
+    correction = client.post(
+        f"/api/v1/coding/{session_id}/memory/facts/{original_fact['content_hash']}/corrections",
+        json={
+            "expected_revision": 1,
+            "replacement": "Use PostgreSQL as canonical memory evidence",
+        },
+    )
+
+    assert correction.status_code == 200
+    correction_body = correction.json()
+    assert correction_body["status"] == "pending"
+    assert (
+        correction_body["candidates"][0]["supersedes_content_hash"] == original_fact["content_hash"]
+    )
+    assert (
+        client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active").json()["facts"][0][
+            "content"
+        ]
+        == "Use SQLite as canonical memory evidence"
+    )
+
+    corrected = client.post(
+        f"/api/v1/coding/{session_id}/memory/proposals/{correction_body['proposal_id']}/approve",
+        json={"expected_revision": 0},
+    )
+    assert corrected.status_code == 200
+    facts = client.get(f"/api/v1/coding/{session_id}/memory/facts").json()["facts"]
+    assert {fact["status"] for fact in facts} == {"active", "superseded"}
+    replacement = next(fact for fact in facts if fact["status"] == "active")
+
+    retracted = client.post(
+        f"/api/v1/coding/{session_id}/memory/facts/{replacement['content_hash']}/retract",
+        json={"expected_revision": 1, "reason": "User revoked this decision"},
+    )
+
+    assert retracted.status_code == 200
+    assert retracted.json()["status"] == "retracted"
+    assert client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active").json() == {
+        "facts": []
+    }
+    detail = client.get(f"/api/v1/coding/{session_id}/memory/facts/{replacement['content_hash']}")
+    assert [event["event_type"] for event in detail.json()["events"]] == [
+        "fact_activated",
+        "fact_retracted",
+    ]
+
+
+def test_fact_lifecycle_rejects_stale_revision_and_unknown_hash(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    client = TestClient(app)
+    session_id = _session(client)
+    proposal = _proposal(app, session_id)
+    client.post(
+        f"/api/v1/coding/{session_id}/memory/proposals/{proposal.proposal_id}/approve",
+        json={"expected_revision": 0},
+    )
+    fact = client.get(f"/api/v1/coding/{session_id}/memory/facts").json()["facts"][0]
+
+    stale = client.post(
+        f"/api/v1/coding/{session_id}/memory/facts/{fact['content_hash']}/retract",
+        json={"expected_revision": 9, "reason": "stale"},
+    )
+    unknown = client.get(f"/api/v1/coding/{session_id}/memory/facts/not-a-hash")
+
+    assert stale.status_code == 409
+    assert stale.json() == {"detail": "memory fact conflict"}
+    assert unknown.status_code == 404
