@@ -40,6 +40,11 @@ _WRITE_OPERATIONS = frozenset({"write_file", "patch_file"})
 _DEFAULT_IMAGE = "python:3.11-slim"
 _CONTAINER_ROOT = "/workspace"
 _DEFAULT_COMMAND_TIMEOUT = 30.0
+_SECURITY_PROFILE = "level1-v2"
+_MEMORY_BYTES = 1024 * 1024 * 1024
+_NANO_CPUS = 2_000_000_000
+_PIDS_LIMIT = 256
+_TMPFS_OPTIONS = "rw,noexec,nosuid,nodev,size=64m"
 _IGNORED_NAMES = frozenset({*IGNORED_PATH_NAMES, *PROTECTED_PATH_NAMES, ".env", ".env.*"})
 
 
@@ -191,6 +196,7 @@ class ContainerWorkspaceSandbox:
         with self._lifecycle_lock:
             if self._started:
                 return
+            self._require_isolated_daemon()
             existing = self._docker_capture(
                 [
                     "ps",
@@ -203,45 +209,31 @@ class ContainerWorkspaceSandbox:
                 check=False,
             ).strip()
             if existing:
-                self._started = True
-                return
+                payload = self._inspect_container()
+                self._require_owned_container(payload)
+                violations = self._security_violations(payload)
+                if not violations:
+                    self._started = True
+                    return
+                self._docker_capture(["rm", "-f", self._container_name])
 
             stopped = self._docker_capture(
                 ["ps", "-aq", "--filter", f"name=^{self._container_name}$"],
                 check=False,
             ).strip()
             if stopped:
-                self._docker_capture(["rm", "-f", self._container_name], check=False)
+                payload = self._inspect_container()
+                self._require_owned_container(payload)
+                self._docker_capture(["rm", "-f", self._container_name])
 
             self._workspace.root.mkdir(parents=True, exist_ok=True)
-            self._docker_capture(
-                [
-                    "run",
-                    "-d",
-                    "--name",
-                    self._container_name,
-                    "--label",
-                    "com.sage.sandbox=true",
-                    "--label",
-                    f"com.sage.sandbox_id={self._descriptor.sandbox_id}",
-                    "--network",
-                    "none",
-                    "--pids-limit",
-                    "256",
-                    "--memory",
-                    "1g",
-                    "--cpus",
-                    "2",
-                    "--read-only",
-                    "--tmpfs",
-                    "/tmp:rw,noexec,nosuid,size=64m",
-                    "--mount",
-                    f"type=bind,source={self._workspace.root},target={_CONTAINER_ROOT},readonly=false",
-                    self._image,
-                    "sleep",
-                    "infinity",
-                ]
-            )
+            self._docker_capture(self._container_run_args())
+            payload = self._inspect_container()
+            violations = self._security_violations(payload)
+            if violations:
+                self._docker_capture(["rm", "-f", self._container_name], check=False)
+                joined = ", ".join(violations)
+                raise SandboxPolicyError(f"container security profile mismatch: {joined}")
             self._started = True
 
     def _health_sync(self) -> dict[str, object]:
@@ -282,14 +274,173 @@ class ContainerWorkspaceSandbox:
                 "running": False,
                 "healthy": False,
             }
+        violations = self._security_violations(payload)
         return {
             "sandbox_id": self._descriptor.sandbox_id,
             "provider": self._descriptor.provider,
             "status": status,
             "running": running,
-            "healthy": running and image == self._image,
+            "healthy": running and not violations,
             "image": image,
+            "security_profile": _SECURITY_PROFILE,
+            "security_violations": violations,
         }
+
+    def _container_run_args(self) -> list[str]:
+        mount = (
+            f"type=bind,source={self._workspace.root},target={_CONTAINER_ROOT},"
+            "readonly=false,bind-propagation=rprivate"
+        )
+        return [
+            "run",
+            "-d",
+            "--name",
+            self._container_name,
+            "--label",
+            "com.sage.sandbox=true",
+            "--label",
+            f"com.sage.sandbox_id={self._descriptor.sandbox_id}",
+            "--label",
+            f"com.sage.security_profile={_SECURITY_PROFILE}",
+            "--network",
+            "none",
+            "--pids-limit",
+            str(_PIDS_LIMIT),
+            "--memory",
+            "1g",
+            "--memory-swap",
+            "1g",
+            "--cpus",
+            "2",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges=true",
+            "--ulimit",
+            "nofile=256:256",
+            "--ulimit",
+            "nproc=256:256",
+            "--ulimit",
+            "fsize=67108864:67108864",
+            "--init",
+            "--stop-timeout",
+            "3",
+            "--tmpfs",
+            f"/tmp:{_TMPFS_OPTIONS}",
+            "--mount",
+            mount,
+            self._image,
+            "sh",
+            "-c",
+            "mkdir -p /tmp/sage-home && exec sleep infinity",
+        ]
+
+    def _inspect_container(self) -> dict[str, Any]:
+        raw = self._docker_capture(
+            ["inspect", "--format", "{{json .}}", self._container_name]
+        )
+        try:
+            payload: Any = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise SandboxPolicyError("container inspect returned invalid JSON") from exc
+        if not isinstance(payload, dict):
+            raise SandboxPolicyError("container inspect returned invalid payload")
+        return payload
+
+    def _require_owned_container(self, payload: dict[str, Any]) -> None:
+        labels = payload.get("Config", {}).get("Labels", {})
+        if not isinstance(labels, dict) or labels.get("com.sage.sandbox") != "true":
+            raise SandboxPolicyError("sandbox container name is owned by another workload")
+        if labels.get("com.sage.sandbox_id") != self._descriptor.sandbox_id:
+            raise SandboxPolicyError("sandbox container ownership label does not match")
+
+    def _security_violations(self, payload: dict[str, Any]) -> list[str]:
+        violations: list[str] = []
+        config = payload.get("Config", {})
+        host = payload.get("HostConfig", {})
+        state = payload.get("State", {})
+        if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(state, dict):
+            return ["invalid_inspect_payload"]
+        labels = config.get("Labels", {})
+        if not isinstance(labels, dict) or labels.get("com.sage.security_profile") != _SECURITY_PROFILE:
+            violations.append("security_profile")
+        if config.get("Image") != self._image:
+            violations.append("image_reference")
+        if host.get("NetworkMode") != "none":
+            violations.append("network")
+        if host.get("ReadonlyRootfs") is not True:
+            violations.append("read_only_rootfs")
+        if host.get("PidsLimit") != _PIDS_LIMIT:
+            violations.append("pids_limit")
+        if host.get("Memory") != _MEMORY_BYTES or host.get("MemorySwap") != _MEMORY_BYTES:
+            violations.append("memory_limit")
+        if host.get("NanoCpus") != _NANO_CPUS:
+            violations.append("cpu_limit")
+        cap_drop = host.get("CapDrop", [])
+        if not isinstance(cap_drop, list) or "ALL" not in cap_drop:
+            violations.append("cap_drop")
+        security_options = host.get("SecurityOpt", [])
+        if not isinstance(security_options, list) or not any(
+            str(item).startswith("no-new-privileges") for item in security_options
+        ):
+            violations.append("no_new_privileges")
+        if any("seccomp=unconfined" in str(item) for item in security_options):
+            violations.append("seccomp_unconfined")
+        if host.get("Init") is not True:
+            violations.append("init")
+        tmpfs = host.get("Tmpfs", {})
+        options = str(tmpfs.get("/tmp", "")) if isinstance(tmpfs, dict) else ""
+        required_tmpfs = {"rw", "noexec", "nosuid", "nodev", "size=64m"}
+        if not required_tmpfs.issubset(set(options.split(","))):
+            violations.append("tmpfs")
+        ulimits = host.get("Ulimits", [])
+        actual_ulimits = {
+            str(item.get("Name")): (item.get("Soft"), item.get("Hard"))
+            for item in ulimits
+            if isinstance(item, dict)
+        } if isinstance(ulimits, list) else {}
+        expected_ulimits = {
+            "nofile": (256, 256),
+            "nproc": (256, 256),
+            "fsize": (67_108_864, 67_108_864),
+        }
+        if any(actual_ulimits.get(name) != value for name, value in expected_ulimits.items()):
+            violations.append("ulimits")
+        mounts = payload.get("Mounts", [])
+        expected_source = str(self._workspace.root.resolve())
+        if not isinstance(mounts, list) or len(mounts) != 1:
+            violations.append("mount_count")
+        else:
+            mount = mounts[0]
+            if not isinstance(mount, dict) or (
+                mount.get("Type") != "bind"
+                or mount.get("Source") != expected_source
+                or mount.get("Destination") != _CONTAINER_ROOT
+                or mount.get("RW") is not True
+                or mount.get("Propagation") != "rprivate"
+            ):
+                violations.append("workspace_mount")
+        if state.get("Running") is not True:
+            violations.append("not_running")
+        return violations
+
+    def _require_isolated_daemon(self) -> None:
+        raw = self._docker_capture(["info", "--format", "{{json .}}"])
+        try:
+            payload: Any = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise SandboxPolicyError("docker daemon security metadata is invalid") from exc
+        if not isinstance(payload, dict):
+            raise SandboxPolicyError("docker daemon security metadata is invalid")
+        security_options = payload.get("SecurityOptions", [])
+        operating_system = str(payload.get("OperatingSystem", ""))
+        has_seccomp = any("seccomp" in str(item) for item in security_options)
+        isolated_host = any("rootless" in str(item) for item in security_options) or (
+            "Docker Desktop" in operating_system
+        )
+        if not has_seccomp or not isolated_host:
+            raise SandboxPolicyError("container sandbox requires rootless Docker or Docker Desktop with seccomp")
 
     def _invoke_sync(
         self, operation: SandboxOperation, arguments: dict[str, Any]
@@ -448,7 +599,7 @@ class ContainerWorkspaceSandbox:
         for key, value in env.items():
             command_args.extend(["--env", f"{key}={value}"])
         command_args.extend([self._container_name, "sh", "-lc", timeout_command])
-        completed = self._docker_run(command_args, timeout=timeout + 5)
+        completed = self._docker_run(command_args, timeout=timeout + 5, check=False)
         output = completed.stdout.strip()
         if completed.stderr.strip():
             output = (
@@ -487,7 +638,7 @@ class ContainerWorkspaceSandbox:
         # The image owns its executable search path and home directory.
         return {
             "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "HOME": "/root",
+            "HOME": "/tmp/sage-home",
             "LANG": "C.UTF-8",
             "LC_ALL": "C.UTF-8",
         }
