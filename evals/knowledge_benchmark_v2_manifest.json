@@ -1,0 +1,26 @@
+{
+  "benchmark_id": "sage-knowledge-v2",
+  "benchmark_revision": "2026-07-25.1",
+  "dataset": "evals/knowledge_benchmark_v2.jsonl",
+  "dataset_sha256": "3b54e55a631c164721772a3477e9b0ce5433aba7be51348bcd72b8c3d0d1d1b7",
+  "corpus_root": "release/v7-beta/learning",
+  "files": [
+    {"path": "00-reading-map.md", "sha256": "b0476809747bb05348db0a68b636528b955ffa34d29a24b6be905e39e1c7d8b9"},
+    {"path": "01-overall-architecture.md", "sha256": "9c73e47ee8a22e2addc30e63a8e5371106a32da4e30dad5b6eecdfba4da389c1"},
+    {"path": "02-three-planes-fact-boundary.md", "sha256": "7e611a569e7f732a49722fa74f28c9887bafc2e5d42f7aeeb3c270f9e498679d"},
+    {"path": "03-runtime-engine.md", "sha256": "54c960d95d855ccc20aca50d06989fe93f6a44c9b3583591c6a09272153038d3"},
+    {"path": "04-context-cost-governance.md", "sha256": "b89b1e1d24fefe8f8a20b2b90fcb75fd472a4eff0367e4bc2c16cec9d7c85cc3"},
+    {"path": "05-tools-execution-pipeline.md", "sha256": "c538cc040849fb80d48915a4c7b4cfd7ed85000912310b04090a21608056a012"},
+    {"path": "06-permissions-approval-sandbox.md", "sha256": "3003a98c4a6746ae643caaf4a93ce040a8f9d429fdd1b23fe0cc4c7887146f5f"},
+    {"path": "07-skills-commands.md", "sha256": "ea78d51166e71b7c2c66bf5388b1eff60dc5541dc722c9f3b9ef9af523696614"},
+    {"path": "08-memory-dream.md", "sha256": "4a8f824ee57d8826197f9b139b0e2d088cfa97f9e43fdb8d1f7ba290f9e0ee50"},
+    {"path": "09-knowledge-rag-retrieval.md", "sha256": "fedab85745e7c6b8ed29e14d39de7089848c75f9fa0284bc8663c937b9159e89"},
+    {"path": "10-subagents-research.md", "sha256": "407a3883c181362a53a9cebf047e6fb81b7dac1af80a712da13d7d723fe1a4a5"},
+    {"path": "11-timeline-reconnect.md", "sha256": "a5ed01103af36d9a0f43f2f4f15d3dc44455ee917ddcbc755c1f1e94983274e9"},
+    {"path": "12-security-audit.md", "sha256": "6c9f5fa56503133311664f7adfc1cadd8455d88893e811879c5e4f8cd7818a40"},
+    {"path": "13-module-map.md", "sha256": "e307bd3e5407fa6a99dc7ff8a722ff072ae6214c236ebee779b3e2aa96bc138b"},
+    {"path": "14-create-agent-langgraph.md", "sha256": "d1b8e25c134ba526bd7ad00d135362aeae02fcb5f2abac2de869c7b777196e21"},
+    {"path": "15-sage-five-layer-target-architecture.md", "sha256": "0b8c9cb170583a71669d7393b64667a4cd4107fadc9ea34d6f6fcfd89bc93c48"},
+    {"path": "16-rag-eval-benchmark.md", "sha256": "6c76d42cb0ebe0ce8d7b1bcc3e84b0414981c476cde09ef5d72125cfe5968b2c"}
+  ]
+}
