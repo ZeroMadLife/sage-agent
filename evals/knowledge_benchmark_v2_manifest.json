@@ -2,7 +2,7 @@
   "benchmark_id": "sage-knowledge-v2",
   "benchmark_revision": "2026-07-25.2",
   "dataset": "evals/knowledge_benchmark_v2.jsonl",
-  "dataset_sha256": "7ef88c148b78ada8e24ebe78db2e285043fc347fdee3deb242b978a4e4efe68d",
+  "dataset_sha256": "095707c016154ebf8b7657bfc29a765aea0ceab63c375727ec70ef0359c77c0c",
   "corpus_root": "release/v7-beta/learning",
   "files": [
     {"path": "00-reading-map.md", "sha256": "08a65e435ca11f76332b1cc8d38b77ea78afa6d8ee14d8d17f052c469062444d"},
