@@ -70,11 +70,11 @@ relevant_passages[{source, section, relevance}], required_claims, forbidden_clai
 
 ### 4.2 新增最小权限
 
-- 容器进程使用固定 non-root UID/GID，并设置非 root `HOME`；
+- daemon 必须运行在 Rootless Docker（本地允许 Docker Desktop VM），容器内 namespace root 映射为非特权宿主用户；`HOME` 固定到临时目录且不透传宿主环境；
 - 显式 `--cap-drop ALL` 与 `--security-opt no-new-privileges`；
 - 显式要求 Docker 默认或指定 seccomp profile，禁止 `unconfined`；
 - 限制 swap、文件描述符和单文件大小；
-- 镜像必须使用 digest 或由部署配置提供经过验证的不可变引用；
+- 镜像 digest 固定作为后续部署切片；本阶段验证容器实际 image reference 与配置一致，不把 tag 等同于不可变镜像；
 - 不向容器传递宿主 Provider key、Docker socket或服务端环境；
 - 每个 thread 独立容器，终态清理且重用前校验实际安全配置。
 
@@ -85,6 +85,12 @@ relevant_passages[{source, section, relevance}], required_claims, forbidden_clai
 至少覆盖：网络访问、容器 root 身份、capability、`no-new-privileges`、fork bomb、内存/文件写入、workspace 越界、symlink、跨 thread、超时残留进程、容器配置漂移和关闭后复用。
 
 gVisor/Firecracker 属于 Level 2，不在本切片引入。
+
+生产 workspace 通过 ACL 授权给 `sage-sandbox` 宿主用户。Rootless Docker 中容器内 UID 0
+映射到该非特权宿主 UID；改用任意容器 UID 会映射到 subordinate UID，从而失去现有 workspace
+写权限。首版因此保留 namespace root，并依赖 rootless daemon、`cap-drop ALL`、
+`no-new-privileges`、seccomp 和只读 rootfs 叠加约束。后续若引入只读源 + overlay，可再把
+overlay 所有权交给固定容器 non-root UID；当前简历不得宣称“容器内 non-root”。
 
 ## 5. 切片 C：Memory Consolidation 与 Retraction
 
