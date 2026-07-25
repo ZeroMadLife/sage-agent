@@ -75,7 +75,7 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 
 | 架构部分 | 当前职责 |
 | --- | --- |
-| **上下文管理** | 组织指令、代码、知识与预算，长输出转为有界 preview + artifact 引用 |
+| **上下文管理** | Artifact 可恢复清理、32k 语义工作集压缩、六状态硬窗口保护三层治理；长结果可按 session 分页回载 |
 | **运行编排** | 推进模型、工具、多步任务、checkpoint 与可恢复终态 |
 | **工具治理** | schema 校验、能力发现、permission、policy、approval 与 Sandbox |
 | **状态与记忆** | Session、Transcript、Memory、Checkpoint、Todo 与 Subagent 各守生命周期 |
@@ -116,11 +116,13 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
 | **RAG Benchmark v2** | 固定 200 条分层查询、16 份语料与 879 chunks；真实语义双路相对 Hashing 基线将 Recall@10 从 0.578 提升到 0.814，NDCG@10 从 0.444 提升到 0.695 | 20 条无答案题的 abstention accuracy 仍为 0 |
+| **Context Governance v2.1** | 13 条确定性长任务；可恢复 pruning + `32k/12k` 语义压缩使累计输入估算下降 25.05%、checkpoint 内容下降 49.18%，扣除 1.06% 摘要成本后净 token 下降 23.99%；当前意图、工具调用对、决策标记与 Artifact 探针均 100% 保留/恢复 | 未评估真实摘要模型的语义质量、Provider 账单 token 与线上延迟 |
 | **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
 [RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
+[Context 报告](docs/evals/context-budget-v2.md)、
 [Sandbox 报告](docs/evals/container-sandbox-level1-v2.md) 与
 [Memory 报告](docs/evals/memory-lifecycle-v1.md)。这里的 case 数证明对应工程不变量，不把
 确定性回归包装成真实用户准确率。
@@ -213,6 +215,7 @@ sage-agent/
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
 - RAG 尚未完成可信 abstention 与回答生成评测，无答案查询可能召回相似但无关内容。
+- Context Governance v2.1 的节省率来自确定性长任务和 provider-neutral 估算，不代表线上账单或回答质量。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - `sagecompanion.top` 尚未完成 ICP 备案与 HTTPS 切换，当前公网 IP 只用于受控展示。
 - 原 TourSwarm 旅游规划能力作为领域 Skill 与多约束 benchmark 保留，不再是主产品入口。

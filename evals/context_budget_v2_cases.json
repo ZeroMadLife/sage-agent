@@ -1,0 +1,26 @@
+{
+  "evaluation_id": "sage-context-budget-v2",
+  "schema_version": 1,
+  "scope": "Deterministic context-cost and safety invariants; not an LLM answer-quality benchmark.",
+  "cases": [
+    {"case_id": "short_read_4", "tool_turns": 4, "result_bytes": 4096, "fill": "ascii"},
+    {"case_id": "shell_6x20k", "tool_turns": 6, "result_bytes": 20480, "fill": "ascii"},
+    {"case_id": "shell_8x20k", "tool_turns": 8, "result_bytes": 20480, "fill": "ascii"},
+    {"case_id": "shell_10x20k", "tool_turns": 10, "result_bytes": 20480, "fill": "ascii"},
+    {"case_id": "search_6x24k", "tool_turns": 6, "result_bytes": 24576, "fill": "ascii"},
+    {"case_id": "search_9x24k", "tool_turns": 9, "result_bytes": 24576, "fill": "ascii"},
+    {"case_id": "artifact_5x64k", "tool_turns": 5, "result_bytes": 65536, "fill": "ascii"},
+    {"case_id": "artifact_8x64k", "tool_turns": 8, "result_bytes": 65536, "fill": "ascii"},
+    {"case_id": "mixed_12x18k", "tool_turns": 12, "result_bytes": 18432, "fill": "ascii"},
+    {"case_id": "unicode_6x24k", "tool_turns": 6, "result_bytes": 24576, "fill": "unicode"},
+    {"case_id": "unicode_9x24k", "tool_turns": 9, "result_bytes": 24576, "fill": "unicode"},
+    {"case_id": "stress_14x32k", "tool_turns": 14, "result_bytes": 32768, "fill": "ascii"},
+    {"case_id": "knowledge_20x8k", "tool_turns": 20, "result_bytes": 8192, "fill": "ascii", "artifact_eligible": false}
+  ],
+  "threshold_candidates": [
+    {"working_set_tokens": 32000, "keep_tokens": 12000},
+    {"working_set_tokens": 48000, "keep_tokens": 18000},
+    {"working_set_tokens": 64000, "keep_tokens": 24000},
+    {"working_set_tokens": 80000, "keep_tokens": 30000}
+  ]
+}

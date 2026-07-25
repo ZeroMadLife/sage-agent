@@ -23,10 +23,12 @@ Redis、Vue 3、TypeScript、Docker
   通过 FTS5 BM25 + `text-embedding-v4` 双路召回与 RRF 融合，使 Recall@10 从 0.578 提升至
   0.814（+40.9%）、NDCG@10 从 0.444 提升至 0.695（+56.3%），并用 20 条无答案题识别出
   abstention accuracy 为 0 的真实缺口。
-- **上下文预算与 Artifact 按需装载**：针对 Shell、Fetch 等大工具结果反复进入 prompt 导致
-  上下文膨胀，将超过 16 KiB 的完整结果 offload 到 session/run scoped Artifact Store，模型
-  仅保留最多 200 行、12,000 字符预览与 `artifact_ref`；结合六级压力控制、turn-boundary
-  compaction 和 emergency 阻断，实现完整证据与有界模型视图分离，授权宿主路径可按作用域读取全文。
+- **三层上下文治理与 Artifact 按需装载**：针对长工具循环中压缩阈值不可达、摘要重复投影和
+  工具证据过早清理造成的目标/证据丢失，设计 Artifact 可恢复 pruning、`32k/12k` 语义工作集
+  压缩与六状态硬窗口保护；超过 16 KiB 的完整结果按 session/run offload，只有已被后续模型
+  文本承接的旧结果才替换为 `artifact_ref`，并支持同 session、单页 16 KiB 的 UTF-8 安全回载。
+  13 条确定性长任务中累计输入估算下降 25.05%、checkpoint 内容下降 49.18%，扣除 1.06%
+  摘要成本后净 token 下降 23.99%，最新用户、工具调用对、决策标记和 Artifact 探针均 100%。
 - **Harness 治理与可恢复运行证据**：将参数校验、permission、policy、approval 与 sandbox
   固定在副作用前执行；通过 LangGraph checkpoint、SQLite Timeline、run lease/fencing 和
   persist-then-push 重放支持断线恢复及过期 writer 拒绝，并用结构化 stage/tool/result 事件
@@ -45,9 +47,9 @@ Redis、Vue 3、TypeScript、Docker
 - 构建 FTS5 BM25 + 语义 Embedding + RRF 混合检索，重建 200 条 section 级 Benchmark；在
   16 份语料/879 chunks 上将 Recall@10 从 0.578 提升至 0.814，NDCG@10 从 0.444 提升至
   0.695，并以无答案集显式暴露 abstention 缺口。
-- 面向 Shell/Fetch 大结果导致的 prompt 膨胀，设计六级上下文压力控制与 Artifact offload：
-  超过 16 KiB 的全文按 session/run 保存，模型仅消费 200 行/12,000 字符预览和稳定引用，
-  授权宿主路径可 scoped read，配合 turn-boundary compaction 与 emergency 阻断。
+- 面向长工具链的目标/证据丢失，设计 Artifact 可恢复 pruning、32k 语义工作集与硬窗口三层
+  治理；13 条确定性任务中累计输入估算下降 25.05%、checkpoint 内容下降 49.18%，扣除摘要
+  成本后净 token 下降 23.99%，当前意图、工具调用对与决策标记保留率 100%。
 - 将 Pydantic 参数校验、permission、policy、approval、Sandbox 与结构化 Timeline 串成统一
   Harness；结合 checkpoint、lease/fencing 和 persist-then-push 支持断线重放、审批恢复与
   过期写入拒绝，不暴露模型原始 CoT。
@@ -59,5 +61,7 @@ Redis、Vue 3、TypeScript、Docker
 - `+40.9%` 与 `+56.3%` 是真实语义 Provider 相对 Hashing 离线基线，不是相对上一生产版本；
 - `10/10` 是 Docker Desktop Level 1 live audit，不等同于内核级逃逸证明；
 - `40/40` 是确定性 Memory 生命周期场景，不是自然对话记忆准确率；
+- Context 的 `25.05% / 49.18% / 23.99%` 来自 provider-neutral 确定性机制评测，
+  不等同于真实 Provider 账单、摘要语义质量或线上延迟；
 - 当前公开演示为普通 HTTP，正式投递应优先使用备案后的 HTTPS；
 - 不写“完整安全 CoT”：Sage 保存结构化运行证据，不保存或展示模型私有推理链。

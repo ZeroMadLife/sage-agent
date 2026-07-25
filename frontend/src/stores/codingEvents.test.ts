@@ -75,6 +75,35 @@ describe('codingEvents', () => {
     expect(current.contextSnapshot.value?.effective_limit_tokens).toBe(80000)
 
     applyCodingEvent(current, {
+      type: 'context_pruning_completed',
+      session_id: 'coding_1',
+      compaction_id: 'prune-1',
+      before_tokens: 31000,
+      after_tokens: 18000,
+      pruned_tool_results: 2,
+      saved_ratio: 0.419,
+      budget_scope: 'graph_working_set',
+    })
+    expect(current.contextChars.value).toBe(18000)
+
+    applyCodingEvent(current, {
+      type: 'context_usage_updated',
+      session_id: 'coding_1',
+      used_tokens: 31000,
+      model_limit_tokens: 32000,
+      output_reserve_tokens: 0,
+      effective_limit_tokens: 32000,
+      usage_ratio: 0.96875,
+      level: 'snip',
+      estimated: true,
+      compactable: true,
+      budget_scope: 'graph_working_set',
+      working_set_tokens: 32000,
+    })
+    expect(current.contextChars.value).toBe(31000)
+    expect(current.contextSnapshot.value?.effective_limit_tokens).toBe(80000)
+
+    applyCodingEvent(current, {
       type: 'context_compaction_started',
       session_id: 'coding_1',
       compaction_id: 'compact-1',

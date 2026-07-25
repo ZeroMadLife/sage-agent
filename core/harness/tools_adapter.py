@@ -28,6 +28,7 @@ from sage_harness import (
 )
 
 from core.coding.engine.events import ToolResultEvent, event_to_dict
+from core.coding.persistence.tool_result_store import MAX_SLICE_BYTES, ToolResultStore
 from core.coding.runtime import CodingRuntime
 from core.coding.tool_executor.approval import ApprovalChoice
 from core.coding.tool_executor.executor import ToolExecutor
@@ -63,6 +64,14 @@ class SaveWebSourceArgs(BaseModel):
     artifact_ref: str = Field(min_length=1, max_length=1_000)
     reason: str = Field(min_length=1, max_length=1_000)
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
+class LoadArtifactArgs(BaseModel):
+    """Model-visible bounded byte-range request for one opaque tool artifact."""
+
+    artifact_ref: str = Field(min_length=1, max_length=1_000)
+    offset_bytes: int = Field(default=0, ge=0, le=2**31 - 1)
+    max_bytes: int = Field(default=8 * 1024, ge=1, le=MAX_SLICE_BYTES)
 
 
 def build_deerflow_coding_tools(
@@ -303,6 +312,55 @@ def build_deerflow_coding_tool_bundle(
             )
             (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
 
+    artifact_load_available = (
+        isinstance(artifact_store, ToolResultStore) and not strict_retrieval and not no_tools
+    )
+    if artifact_load_available and isinstance(artifact_store, ToolResultStore):
+
+        async def load_artifact(
+            artifact_ref: str,
+            offset_bytes: int = 0,
+            max_bytes: int = 8 * 1024,
+        ) -> str:
+            result = artifact_store.read_session_slice(
+                artifact_ref,
+                offset_bytes=offset_bytes,
+                max_bytes=max_bytes,
+            )
+            return json.dumps(
+                {
+                    "artifact_ref": result.artifact_ref,
+                    "content": result.content,
+                    "offset_bytes": result.offset_bytes,
+                    "next_offset_bytes": result.next_offset_bytes,
+                    "total_bytes": result.total_bytes,
+                    "truncated": result.truncated,
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+
+        resident_tools.append(
+            StructuredTool.from_function(
+                coroutine=load_artifact,
+                name="load_artifact",
+                description=(
+                    "Read one bounded byte range from a tool artifact_ref in this exact "
+                    "conversation. Use next_offset_bytes to continue only when the omitted "
+                    "section is necessary for the current task."
+                ),
+                args_schema=LoadArtifactArgs,
+                metadata={
+                    "capability_id": local_tool_capability_id("load_artifact"),
+                    "category": "meta",
+                    "risky": False,
+                    # An artifact may originate from Web/MCP even when it is reloaded later.
+                    "remote_content": True,
+                    "sage_source": "tool_result_store",
+                },
+            )
+        )
+
     if subagent_executor is not None and not strict_retrieval and not no_tools:
         task_tool = build_task_tool(subagent_executor, subagent_config)
         task_metadata = dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
@@ -424,6 +482,7 @@ def build_deerflow_coding_tool_bundle(
         web_search_available=web_search_available,
         web_fetch_available=web_fetch_available,
         web_source_proposal_available=web_source_proposal_available,
+        artifact_load_available=artifact_load_available,
         research_subagent_available=(
             not strict_retrieval
             and not no_tools

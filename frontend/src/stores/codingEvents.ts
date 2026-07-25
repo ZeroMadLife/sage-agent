@@ -156,6 +156,7 @@ export function applyCodingEvent(
   }
   if (event.type === 'context_usage_updated') {
     state.contextChars.value = event.used_tokens
+    if (event.budget_scope === 'graph_working_set') return {}
     const previous = state.contextSnapshot.value
     state.contextSnapshot.value = {
       configured: true,
@@ -185,6 +186,10 @@ export function applyCodingEvent(
       state.contextSnapshot.value.context_operation_active = true
     }
     state.thinkingPhase.value = '正在压缩上下文...'
+    return {}
+  }
+  if (event.type === 'context_pruning_completed') {
+    state.contextChars.value = event.after_tokens
     return {}
   }
   if (event.type === 'context_compaction_completed') {

@@ -7,6 +7,7 @@ import pytest
 
 from core.coding.persistence import tool_result_store as tool_result_module
 from core.coding.persistence.tool_result_store import (
+    MAX_SLICE_BYTES,
     PREVIEW_CHARS,
     ToolResultStore,
 )
@@ -73,6 +74,66 @@ def test_artifact_reference_is_bound_to_its_session_and_run(tmp_path):
     assert first.read(archived.artifact_ref) == "private result"
     with pytest.raises(ValueError, match="scope"):
         second.read(archived.artifact_ref)
+
+
+def test_artifact_slice_is_bounded_and_returns_a_byte_cursor(tmp_path):
+    content = "0123456789" * 3
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    archived = store.archive("call_1", content)
+
+    first = store.read_slice(archived.artifact_ref, offset_bytes=5, max_bytes=8)
+    second = store.read_slice(
+        archived.artifact_ref,
+        offset_bytes=first.next_offset_bytes,
+        max_bytes=MAX_SLICE_BYTES,
+    )
+
+    assert first.content == "56789012"
+    assert first.offset_bytes == 5
+    assert first.next_offset_bytes == 13
+    assert first.total_bytes == len(content.encode("utf-8"))
+    assert first.truncated is True
+    assert second.content == content[13:]
+    assert second.truncated is False
+
+
+def test_session_scoped_slice_can_read_a_prior_run_but_not_another_session(tmp_path):
+    prior = ToolResultStore(tmp_path, "s1", "run_old")
+    current = ToolResultStore(tmp_path, "s1", "run_new")
+    other = ToolResultStore(tmp_path, "s2", "run_new")
+    archived = prior.archive("call_1", "historical evidence")
+
+    assert current.read_session_slice(archived.artifact_ref).content == "historical evidence"
+    with pytest.raises(ValueError, match="session"):
+        other.read_session_slice(archived.artifact_ref)
+
+
+def test_artifact_slice_rejects_unbounded_or_out_of_range_reads(tmp_path):
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    archived = store.archive("call_1", "bounded")
+
+    with pytest.raises(ValueError, match="max_bytes"):
+        store.read_slice(archived.artifact_ref, max_bytes=MAX_SLICE_BYTES + 1)
+    with pytest.raises(ValueError, match="offset"):
+        store.read_slice(archived.artifact_ref, offset_bytes=100)
+
+
+def test_artifact_slice_preserves_utf8_across_byte_pages(tmp_path):
+    content = "a知识库b"
+    store = ToolResultStore(tmp_path, "s1", "run_1")
+    archived = store.archive("call_1", content)
+    cursor = 0
+    chunks: list[str] = []
+
+    while cursor < len(content.encode("utf-8")):
+        page = store.read_slice(archived.artifact_ref, offset_bytes=cursor, max_bytes=4)
+        chunks.append(page.content)
+        assert page.next_offset_bytes > cursor
+        cursor = page.next_offset_bytes
+
+    assert "".join(chunks) == content
+    with pytest.raises(ValueError, match="UTF-8 boundary"):
+        store.read_slice(archived.artifact_ref, offset_bytes=2, max_bytes=4)
 
 
 def test_artifact_metadata_is_bounded_private_and_scope_bound(tmp_path):

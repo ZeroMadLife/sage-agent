@@ -18,6 +18,7 @@ from sage_harness import ToolArtifactReceipt
 PERSIST_THRESHOLD_BYTES = 16 * 1024
 PREVIEW_LINES = 200
 PREVIEW_CHARS = 12_000
+MAX_SLICE_BYTES = 16 * 1024
 
 _HEAD_LINES = 120
 _TAIL_LINES = PREVIEW_LINES - _HEAD_LINES
@@ -30,6 +31,27 @@ class ArchivedToolResult(ToolArtifactReceipt):
     """A persisted tool result and its bounded preview."""
 
     artifact_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ToolArtifactRef:
+    """Validated scope encoded by one opaque coding tool-result URI."""
+
+    session_id: str
+    run_id: str
+    call_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolArtifactSlice:
+    """One bounded byte range plus the cursor required to continue reading."""
+
+    artifact_ref: str
+    content: str
+    offset_bytes: int
+    next_offset_bytes: int
+    total_bytes: int
+    truncated: bool
 
 
 class ToolResultStore:
@@ -104,6 +126,76 @@ class ToolResultStore:
                 os.close(file_fd)
             os.close(directory_fd)
 
+    def read_slice(
+        self,
+        artifact_ref: str,
+        *,
+        offset_bytes: int = 0,
+        max_bytes: int = 8 * 1024,
+    ) -> ToolArtifactSlice:
+        """Read one bounded byte range whose reference matches this exact store."""
+
+        if not isinstance(offset_bytes, int) or isinstance(offset_bytes, bool) or offset_bytes < 0:
+            raise ValueError("offset_bytes must be a non-negative integer")
+        if (
+            not isinstance(max_bytes, int)
+            or isinstance(max_bytes, bool)
+            or not 1 <= max_bytes <= MAX_SLICE_BYTES
+        ):
+            raise ValueError(f"max_bytes must be within 1..{MAX_SLICE_BYTES}")
+        artifact_name = self._artifact_name(artifact_ref)
+        directory_fd = _open_directory(self._root, self._components, create=False)
+        file_fd = -1
+        try:
+            file_fd = os.open(artifact_name, os.O_RDONLY | _FILE_FLAGS, dir_fd=directory_fd)
+            metadata = os.fstat(file_fd)
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError("artifact file is not a private regular file")
+            total_bytes = metadata.st_size
+            if offset_bytes > total_bytes:
+                raise ValueError("offset_bytes exceeds artifact size")
+            os.lseek(file_fd, offset_bytes, os.SEEK_SET)
+            requested = min(max_bytes, total_bytes - offset_bytes)
+            payload = bytearray()
+            while len(payload) < requested:
+                chunk = os.read(file_fd, requested - len(payload))
+                if not chunk:
+                    break
+                payload.extend(chunk)
+            content, consumed_bytes = _decode_utf8_slice(bytes(payload), offset_bytes=offset_bytes)
+            next_offset = offset_bytes + consumed_bytes
+            return ToolArtifactSlice(
+                artifact_ref=artifact_ref,
+                content=content,
+                offset_bytes=offset_bytes,
+                next_offset_bytes=next_offset,
+                total_bytes=total_bytes,
+                truncated=next_offset < total_bytes,
+            )
+        finally:
+            if file_fd >= 0:
+                os.close(file_fd)
+            os.close(directory_fd)
+
+    def read_session_slice(
+        self,
+        artifact_ref: str,
+        *,
+        offset_bytes: int = 0,
+        max_bytes: int = 8 * 1024,
+    ) -> ToolArtifactSlice:
+        """Read a current or historical run artifact from this exact session."""
+
+        parsed = self.parse_ref(artifact_ref)
+        if parsed.session_id != self._session_id:
+            raise ValueError("artifact reference session does not match store")
+        scoped = ToolResultStore(self._root, parsed.session_id, parsed.run_id)
+        return scoped.read_slice(
+            artifact_ref,
+            offset_bytes=offset_bytes,
+            max_bytes=max_bytes,
+        )
+
     def read_metadata(self, artifact_ref: str) -> dict[str, object]:
         """Read bounded server-only metadata bound to this artifact scope."""
 
@@ -139,25 +231,39 @@ class ToolResultStore:
         session_id, run_id, artifact_name = (quote(item, safe="") for item in segments)
         return f"sage://coding/{session_id}/runs/{run_id}/tool-results/{artifact_name}"
 
-    def _artifact_name(self, artifact_ref: str) -> str:
+    @staticmethod
+    def parse_ref(artifact_ref: str) -> ToolArtifactRef:
+        """Parse and validate an opaque tool-result URI without touching disk."""
+
         parsed = urlsplit(artifact_ref)
         parts = [unquote(item) for item in parsed.path.split("/") if item]
         if (
             parsed.scheme != "sage"
             or parsed.netloc != "coding"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
             or parsed.query
             or parsed.fragment
             or len(parts) != 5
             or parts[1] != "runs"
             or parts[3] != "tool-results"
-            or parts[0] != self._session_id
-            or parts[2] != self._run_id
             or not parts[4].endswith(".txt")
         ):
-            raise ValueError("artifact reference scope does not match store")
+            raise ValueError("invalid coding tool artifact reference")
+        session_id = parts[0]
+        run_id = parts[2]
         call_id = parts[4][:-4]
+        _validate_scope_id(session_id, "session")
+        _validate_scope_id(run_id, "run")
         _validate_scope_id(call_id, "call")
-        return f"{call_id}.txt"
+        return ToolArtifactRef(session_id=session_id, run_id=run_id, call_id=call_id)
+
+    def _artifact_name(self, artifact_ref: str) -> str:
+        parsed = self.parse_ref(artifact_ref)
+        if parsed.session_id != self._session_id or parsed.run_id != self._run_id:
+            raise ValueError("artifact reference scope does not match store")
+        return f"{parsed.call_id}.txt"
 
     def _replace_artifact(self, directory_fd: int, artifact_ref: str, content: str) -> None:
         temp_name = ""
@@ -293,6 +399,22 @@ def _write_all(fd: int, data: bytes) -> None:
         if written == 0:
             raise OSError("short write")
         view = view[written:]
+
+
+def _decode_utf8_slice(payload: bytes, *, offset_bytes: int) -> tuple[str, int]:
+    """Decode a bounded prefix without corrupting a code point at either cursor boundary."""
+
+    try:
+        return payload.decode("utf-8"), len(payload)
+    except UnicodeDecodeError as exc:
+        if payload and payload[0] & 0xC0 == 0x80:
+            raise ValueError("offset_bytes must point to a UTF-8 boundary") from exc
+        if exc.reason == "unexpected end of data" and exc.end == len(payload):
+            complete = payload[: exc.start]
+            if not complete:
+                raise ValueError("max_bytes is too small for the next UTF-8 code point") from exc
+            return complete.decode("utf-8"), len(complete)
+        raise ValueError("artifact content is not valid UTF-8") from exc
 
 
 def _validate_scope_id(value: str, label: str) -> None:

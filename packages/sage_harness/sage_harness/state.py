@@ -552,6 +552,21 @@ class SageThreadState(AgentState):
     run_child_token_usage: NotRequired[int]
     run_child_model_calls: NotRequired[int]
     run_child_tool_calls: NotRequired[int]
+    context_compaction_run_id: NotRequired[str]
+    context_compaction_count: NotRequired[int]
+    context_compaction_token_usage: NotRequired[int]
+    context_compaction_model_calls: NotRequired[int]
+    context_compaction_failure_count: NotRequired[int]
+    context_compaction_ineffective_count: NotRequired[int]
+    context_compaction_cooldown_until: NotRequired[float]
+    context_compaction_failure_class: NotRequired[str]
+    context_pruning_count: NotRequired[int]
+    context_pruned_tool_results: NotRequired[int]
+    context_last_input_tokens: NotRequired[int]
+    context_last_after_tokens: NotRequired[int]
+    context_working_set_tokens: NotRequired[int]
+    context_usage_source: NotRequired[str]
+    context_provider_reported_input_tokens: NotRequired[int]
 
 
 __all__ = [

@@ -279,14 +279,27 @@ function projectCodingRuntimeResources(
         : unavailable ? 'blocked' : 'completed',
     })
   }
-  const context = [...events].reverse().find((event) => event.kind === 'context')
+  const context = [...events].reverse().find((event) => {
+    if (event.kind !== 'context') return false
+    const eventType = stringValue(event.payload.type)
+    return eventType === 'context_usage_updated'
+      || eventType === 'context_pruning_completed'
+      || eventType === 'context_compaction_completed'
+  })
   if (context) {
-    const used = numberValue(context.payload.used_tokens)
-    const limit = numberValue(context.payload.effective_limit_tokens)
+    const eventType = stringValue(context.payload.type)
+    const used = eventType === 'context_compaction_completed'
+      || eventType === 'context_pruning_completed'
+      ? numberValue(context.payload.after_tokens)
+      : numberValue(context.payload.used_tokens)
+    const graphWorkingSet = stringValue(context.payload.budget_scope) === 'graph_working_set'
+    const limit = graphWorkingSet
+      ? numberValue(context.payload.working_set_tokens)
+      : numberValue(context.payload.effective_limit_tokens)
     resources.push({
       id: 'context-budget',
       kind: 'context',
-      label: '上下文',
+      label: graphWorkingSet ? '图工作集' : '上下文',
       detail: limit ? `${used} / ${limit} tokens` : `${used} tokens`,
       status: explicitStatus(context.status),
     })

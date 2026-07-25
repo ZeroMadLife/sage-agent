@@ -186,12 +186,14 @@ class ContextUsageUpdatedEvent(RunEventBase):
     run_id: str
     used_tokens: int = Field(ge=0)
     model_limit_tokens: int = Field(gt=0)
-    output_reserve_tokens: int = Field(gt=0)
+    output_reserve_tokens: int = Field(ge=0)
     effective_limit_tokens: int = Field(gt=0)
     usage_ratio: float = Field(ge=0)
     level: Literal["normal", "budget", "snip", "compact", "high", "emergency"]
     estimated: bool
     compactable: bool
+    budget_scope: Literal["hard_window", "graph_working_set"] = "hard_window"
+    working_set_tokens: int | None = Field(default=None, gt=0)
 
 
 class ContextCompactionStartedEvent(RunEventBase):
@@ -202,6 +204,18 @@ class ContextCompactionStartedEvent(RunEventBase):
     compaction_id: str
     trigger: str
     before_tokens: int = Field(ge=0)
+
+
+class ContextPruningCompletedEvent(RunEventBase):
+    """Artifact-backed tool previews were replaced by recoverable references."""
+
+    type: Literal["context_pruning_completed"] = "context_pruning_completed"
+    session_id: str
+    compaction_id: str
+    before_tokens: int = Field(ge=0)
+    after_tokens: int = Field(ge=0)
+    pruned_tool_results: int = Field(ge=1)
+    saved_ratio: float = Field(default=0.0, ge=0, le=1)
 
 
 class ContextCompactionCompletedEvent(RunEventBase):
@@ -256,6 +270,7 @@ RunEvent: TypeAlias = (
     | WorkspaceDiffReadyEvent
     | MemoryProposalReadyEvent
     | ContextUsageUpdatedEvent
+    | ContextPruningCompletedEvent
     | ContextCompactionStartedEvent
     | ContextCompactionCompletedEvent
     | ContextCompactionFailedEvent

@@ -910,6 +910,22 @@ export type CodingContextUsageEvent = CodingEventMeta & {
   level: 'normal' | 'budget' | 'snip' | 'compact' | 'high' | 'emergency'
   estimated: boolean
   compactable: boolean
+  budget_scope?: 'hard_window' | 'graph_working_set'
+  working_set_tokens?: number
+  usage_source?: 'estimated' | 'provider_calibrated'
+  provider_reported_input_tokens?: number
+}
+
+export type CodingContextPruningCompletedEvent = CodingEventMeta & {
+  type: 'context_pruning_completed'
+  session_id: string
+  compaction_id: string
+  before_tokens: number
+  after_tokens: number
+  pruned_tool_results: number
+  saved_ratio: number
+  budget_scope?: 'graph_working_set'
+  working_set_tokens?: number
 }
 
 export type CodingCompactionStartedEvent = CodingEventMeta & {
@@ -937,6 +953,7 @@ export type CodingCompactionFailedEvent = CodingEventMeta & {
   reason: string
   preserved_original: boolean
   retryable: boolean
+  failure_class?: 'transient' | 'configuration' | 'context_overflow' | 'internal' | 'ineffective'
 }
 
 export type CodingErrorEvent = CodingEventMeta & {
@@ -965,6 +982,7 @@ export type CodingServerEvent =
   | CodingKnowledgeSourceProposalCreatedEvent
   | CodingRunFinishedEvent
   | CodingContextUsageEvent
+  | CodingContextPruningCompletedEvent
   | CodingCompactionStartedEvent
   | CodingCompactionCompletedEvent
   | CodingCompactionFailedEvent
