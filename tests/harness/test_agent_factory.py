@@ -212,6 +212,55 @@ def test_durable_context_is_injected_as_hidden_untrusted_data() -> None:
     assert messages[-1].content == "continue"
 
 
+def test_current_summary_channel_overrides_stale_nested_projection() -> None:
+    middleware = DurableContextMiddleware()
+    request = ModelRequest(
+        model=FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        messages=[HumanMessage(content="continue")],
+        state={
+            "durable_context": {
+                "summary_text": "stale handoff",
+                "goal": {"description": "ship context v2.1", "status": "in_progress"},
+            },
+            "summary_text": "current handoff",
+        },
+    )
+    captured: list[ModelRequest] = []
+
+    def capture(modified: ModelRequest) -> ModelResponse:
+        captured.append(modified)
+        return ModelResponse(result=[AIMessage(content="ready")])
+
+    middleware.wrap_model_call(request, capture)
+
+    rendered = "\n".join(str(message.content) for message in captured[0].messages)
+    assert rendered.count("current handoff") == 1
+    assert "stale handoff" not in rendered
+    assert "ship context v2.1" in rendered
+
+
+def test_explicit_empty_current_channel_does_not_revive_stale_nested_value() -> None:
+    middleware = DurableContextMiddleware()
+    request = ModelRequest(
+        model=FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        messages=[HumanMessage(content="continue")],
+        state={
+            "durable_context": {"summary_text": "stale handoff"},
+            "summary_text": None,
+        },
+    )
+    captured: list[ModelRequest] = []
+
+    def capture(modified: ModelRequest) -> ModelResponse:
+        captured.append(modified)
+        return ModelResponse(result=[AIMessage(content="ready")])
+
+    middleware.wrap_model_call(request, capture)
+
+    rendered = "\n".join(str(message.content) for message in captured[0].messages)
+    assert "stale handoff" not in rendered
+
+
 def test_provider_errors_remain_failed_runs_with_safe_classification() -> None:
     middleware = ProviderErrorMiddleware()
     request = ModelRequest(

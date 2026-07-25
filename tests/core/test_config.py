@@ -38,6 +38,10 @@ def test_harness_budget_defaults_allow_long_evidence_runs() -> None:
     assert settings.sage_harness_context_keep_tokens == 12_000
     assert settings.sage_harness_context_summary_input_tokens == 32_000
     assert settings.sage_harness_context_static_overhead_tokens == 8_000
+    assert settings.sage_harness_context_transient_cooldown_seconds == 30.0
+    assert settings.sage_harness_context_prune_trigger_ratio == 0.70
+    assert settings.sage_harness_context_prune_min_reclaim_tokens == 2_048
+    assert settings.sage_harness_artifact_offload_threshold_bytes == 16 * 1_024
 
 
 def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:

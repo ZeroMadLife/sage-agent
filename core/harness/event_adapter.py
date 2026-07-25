@@ -453,6 +453,7 @@ class HarnessEventAdapter:
 
         if event_type in {
             "context_usage_updated",
+            "context_pruning_completed",
             "context_compaction_started",
             "context_compaction_completed",
             "context_compaction_failed",

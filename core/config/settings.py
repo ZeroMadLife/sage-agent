@@ -132,6 +132,12 @@ class Settings(BaseSettings):
     sage_harness_context_keep_tokens: int = Field(default=12_000, ge=500)
     sage_harness_context_summary_input_tokens: int = Field(default=32_000, ge=500)
     sage_harness_context_static_overhead_tokens: int = Field(default=8_000, ge=0)
+    sage_harness_context_transient_cooldown_seconds: float = Field(
+        default=30.0, gt=0.0, le=600.0
+    )
+    sage_harness_context_prune_trigger_ratio: float = Field(default=0.70, gt=0.0, le=1.0)
+    sage_harness_context_prune_min_reclaim_tokens: int = Field(default=2_048, ge=1)
+    sage_harness_artifact_offload_threshold_bytes: int = Field(default=16 * 1_024, ge=1)
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, override
 
 from langchain.agents.middleware import AgentState, SummarizationMiddleware
@@ -14,6 +15,7 @@ from langchain_core.messages import (
     HumanMessage,
     RemoveMessage,
     SystemMessage,
+    ToolMessage,
     get_buffer_string,
 )
 from langchain_core.messages.utils import count_tokens_approximately
@@ -45,6 +47,14 @@ Untrusted conversation to compact:
 _MAX_INEFFECTIVE_ATTEMPTS = 2
 
 
+@dataclass(frozen=True, slots=True)
+class _WorkingUsage:
+    tokens: int
+    source: str
+    provider_reported_input_tokens: int | None = None
+    calibration_tokens: int = 0
+
+
 def _counter(state: Mapping[str, object], key: str) -> int:
     value = state.get(key, 0)
     return max(value, 0) if isinstance(value, int) and not isinstance(value, bool) else 0
@@ -74,6 +84,9 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         static_overhead_tokens: int,
         min_savings_ratio: float = 0.10,
         cooldown_seconds: float = 300.0,
+        transient_cooldown_seconds: float = 30.0,
+        prune_trigger_ratio: float = 0.70,
+        prune_min_reclaim_tokens: int = 2_048,
         clock: Callable[[], float] = time.time,
     ) -> None:
         if static_overhead_tokens < 0:
@@ -82,6 +95,12 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
             raise ValueError("min_savings_ratio must be within 0..1")
         if cooldown_seconds <= 0:
             raise ValueError("cooldown_seconds must be positive")
+        if transient_cooldown_seconds <= 0:
+            raise ValueError("transient_cooldown_seconds must be positive")
+        if not 0.0 < prune_trigger_ratio <= 1.0:
+            raise ValueError("prune_trigger_ratio must be within 0..1")
+        if prune_min_reclaim_tokens < 1:
+            raise ValueError("prune_min_reclaim_tokens must be positive")
         super().__init__(
             model,
             trigger=("tokens", working_set_tokens),
@@ -94,6 +113,9 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         self.static_overhead_tokens = static_overhead_tokens
         self.min_savings_ratio = min_savings_ratio
         self.cooldown_seconds = cooldown_seconds
+        self.transient_cooldown_seconds = transient_cooldown_seconds
+        self.prune_trigger_ratio = prune_trigger_ratio
+        self.prune_min_reclaim_tokens = prune_min_reclaim_tokens
         self._clock = clock
 
     @override
@@ -113,6 +135,8 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
             "context_compaction_token_usage": 0,
             "context_compaction_model_calls": 0,
             "context_compaction_failure_count": 0,
+            "context_pruning_count": 0,
+            "context_pruned_tool_results": 0,
         }
 
     @override
@@ -130,15 +154,20 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         runtime: Runtime[HarnessRunContext],
     ) -> dict[str, Any] | None:
         messages = list(state.get("messages", []))
-        before_tokens = self._working_tokens(messages)
-        self._emit_usage(state, runtime, before_tokens)
-        base = self._base_update(before_tokens)
-        if not self._can_attempt(state, before_tokens):
+        usage = self._working_usage(messages, str(state.get("summary_text") or ""))
+        self._emit_usage(state, runtime, usage)
+        base = self._base_update(usage)
+        messages, usage, prune_update = self._prune_artifact_backed_tools(
+            state, runtime, messages, usage
+        )
+        if prune_update:
+            base = {**base, **prune_update, **self._base_update(usage)}
+        if not self._can_attempt(state, usage.tokens):
             return base
         try:
-            return self._compact_sync(state, runtime, messages, before_tokens, base)
+            return self._compact_sync(state, runtime, messages, usage, base)
         except Exception as exc:
-            return self._failed_update(state, runtime, before_tokens, base, exc)
+            return self._failed_update(state, runtime, usage.tokens, base, exc)
 
     @override
     async def abefore_model(
@@ -147,29 +176,34 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         runtime: Runtime[HarnessRunContext],
     ) -> dict[str, Any] | None:
         messages = list(state.get("messages", []))
-        before_tokens = self._working_tokens(messages)
-        self._emit_usage(state, runtime, before_tokens)
-        base = self._base_update(before_tokens)
-        if not self._can_attempt(state, before_tokens):
+        usage = self._working_usage(messages, str(state.get("summary_text") or ""))
+        self._emit_usage(state, runtime, usage)
+        base = self._base_update(usage)
+        messages, usage, prune_update = self._prune_artifact_backed_tools(
+            state, runtime, messages, usage
+        )
+        if prune_update:
+            base = {**base, **prune_update, **self._base_update(usage)}
+        if not self._can_attempt(state, usage.tokens):
             return base
         try:
-            return await self._compact_async(state, runtime, messages, before_tokens, base)
+            return await self._compact_async(state, runtime, messages, usage, base)
         except Exception as exc:
-            return self._failed_update(state, runtime, before_tokens, base, exc)
+            return self._failed_update(state, runtime, usage.tokens, base, exc)
 
     def _compact_sync(
         self,
         state: Mapping[str, Any],
         runtime: Runtime[HarnessRunContext],
         messages: list[AnyMessage],
-        before_tokens: int,
+        usage: _WorkingUsage,
         base: dict[str, object],
     ) -> dict[str, Any]:
-        prepared = self._prepare(messages)
+        prepared = self._prepare(messages, force=usage.source == "provider_calibrated")
         if prepared is None:
             return base
         compacted, preserved = prepared
-        self._emit_started(runtime, state, before_tokens)
+        self._emit_started(runtime, state, usage.tokens)
         summary, summary_usage = self._generate_summary(
             compacted,
             str(state.get("summary_text") or ""),
@@ -177,12 +211,13 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         return self._completed_update(
             state,
             runtime,
-            before_tokens,
+            usage.tokens,
             base,
             summary,
             summary_usage,
             len(compacted),
             preserved,
+            usage.calibration_tokens,
         )
 
     async def _compact_async(
@@ -190,14 +225,14 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         state: Mapping[str, Any],
         runtime: Runtime[HarnessRunContext],
         messages: list[AnyMessage],
-        before_tokens: int,
+        usage: _WorkingUsage,
         base: dict[str, object],
     ) -> dict[str, Any]:
-        prepared = self._prepare(messages)
+        prepared = self._prepare(messages, force=usage.source == "provider_calibrated")
         if prepared is None:
             return base
         compacted, preserved = prepared
-        self._emit_started(runtime, state, before_tokens)
+        self._emit_started(runtime, state, usage.tokens)
         summary, summary_usage = await self._agenerate_summary(
             compacted,
             str(state.get("summary_text") or ""),
@@ -205,20 +240,35 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         return self._completed_update(
             state,
             runtime,
-            before_tokens,
+            usage.tokens,
             base,
             summary,
             summary_usage,
             len(compacted),
             preserved,
+            usage.calibration_tokens,
         )
 
     def _prepare(
         self,
         messages: list[AnyMessage],
+        *,
+        force: bool = False,
     ) -> tuple[list[AnyMessage], list[AnyMessage]] | None:
         self._ensure_message_ids(messages)
         cutoff = self._determine_cutoff_index(messages)
+        if cutoff <= 0 and force:
+            latest_user_index = next(
+                (
+                    index
+                    for index in range(len(messages) - 1, -1, -1)
+                    if isinstance(messages[index], HumanMessage)
+                    and messages[index].additional_kwargs.get("lc_source")
+                    not in {"summarization", "sage_context_compaction"}
+                ),
+                0,
+            )
+            cutoff = latest_user_index
         if cutoff <= 0:
             return None
         compacted, preserved = self._partition_messages(messages, cutoff)
@@ -351,14 +401,18 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         summary_usage: int,
         archived_items: int,
         preserved: list[AnyMessage],
+        calibration_tokens: int,
     ) -> dict[str, Any]:
         count = _counter(state, "context_compaction_count") + 1
-        summary_message = HumanMessage(
-            content=f"Here is a bounded conversation handoff:\n\n{summary}",
-            id=f"sage-context-summary:{runtime.context.run_id}:{count}",
-            additional_kwargs={"lc_source": "sage_context_compaction"},
-        )
-        after_tokens = self._working_tokens([summary_message, *preserved])
+        after_usage = self._working_usage(preserved, summary)
+        if calibration_tokens > after_usage.calibration_tokens:
+            after_usage = _WorkingUsage(
+                tokens=after_usage.tokens + calibration_tokens - after_usage.calibration_tokens,
+                source="provider_calibrated",
+                provider_reported_input_tokens=after_usage.provider_reported_input_tokens,
+                calibration_tokens=calibration_tokens,
+            )
+        after_tokens = after_usage.tokens
         savings_ratio = max(0.0, (before_tokens - after_tokens) / max(before_tokens, 1))
         usage_update = self._usage_cost_update(state, summary_usage)
         if savings_ratio < self.min_savings_ratio:
@@ -368,6 +422,7 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
                 **usage_update,
                 "context_compaction_ineffective_count": ineffective,
                 "context_last_after_tokens": before_tokens,
+                "context_compaction_failure_class": "ineffective",
             }
             if ineffective >= _MAX_INEFFECTIVE_ATTEMPTS:
                 update["context_compaction_cooldown_until"] = self._clock() + self.cooldown_seconds
@@ -377,6 +432,7 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
                 before_tokens,
                 reason="insufficient_savings",
                 retryable=ineffective < _MAX_INEFFECTIVE_ATTEMPTS,
+                failure_class="ineffective",
             )
             return update
         self._emit_completed(
@@ -392,7 +448,6 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
             **usage_update,
             "messages": [
                 RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                summary_message,
                 *preserved,
             ],
             "summary_text": summary,
@@ -412,25 +467,147 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         exc: Exception,
     ) -> dict[str, object]:
         failures = _counter(state, "context_compaction_failure_count") + 1
+        failure_class, retryable, cooldown = self._failure_policy(exc, failures)
         update: dict[str, object] = {
             **base,
             **self._model_call_update(state),
             "context_compaction_failure_count": failures,
+            "context_compaction_failure_class": failure_class,
             "context_last_after_tokens": before_tokens,
         }
-        if failures >= _MAX_INEFFECTIVE_ATTEMPTS:
-            update["context_compaction_cooldown_until"] = self._clock() + self.cooldown_seconds
+        if cooldown is not None:
+            update["context_compaction_cooldown_until"] = self._clock() + cooldown
         self._emit_failed(
             runtime,
             state,
             before_tokens,
             reason=type(exc).__name__,
-            retryable=failures < _MAX_INEFFECTIVE_ATTEMPTS,
+            retryable=retryable,
+            failure_class=failure_class,
         )
         return update
 
-    def _working_tokens(self, messages: list[AnyMessage]) -> int:
-        return int(self.token_counter(messages)) + self.static_overhead_tokens
+    def _working_usage(self, messages: list[AnyMessage], summary_text: str) -> _WorkingUsage:
+        counted_messages = list(messages)
+        summary_tokens = 0
+        if summary_text.strip() and not any(
+            message.additional_kwargs.get("lc_source") == "sage_context_compaction"
+            for message in counted_messages
+        ):
+            summary_message = HumanMessage(content=summary_text)
+            counted_messages.append(summary_message)
+            summary_tokens = int(self.token_counter([summary_message]))
+        estimated = int(self.token_counter(counted_messages)) + self.static_overhead_tokens
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            usage = message.usage_metadata if isinstance(message, AIMessage) else None
+            input_tokens = usage.get("input_tokens") if isinstance(usage, Mapping) else None
+            if not isinstance(input_tokens, int) or isinstance(input_tokens, bool) or input_tokens <= 0:
+                continue
+            estimated_prefix = (
+                int(self.token_counter(messages[:index]))
+                + summary_tokens
+                + self.static_overhead_tokens
+            )
+            calibration = max(input_tokens - estimated_prefix, 0)
+            return _WorkingUsage(
+                tokens=estimated + calibration,
+                source="provider_calibrated",
+                provider_reported_input_tokens=input_tokens,
+                calibration_tokens=calibration,
+            )
+        return _WorkingUsage(tokens=estimated, source="estimated")
+
+    def _prune_artifact_backed_tools(
+        self,
+        state: Mapping[str, Any],
+        runtime: Runtime[HarnessRunContext],
+        messages: list[AnyMessage],
+        usage: _WorkingUsage,
+    ) -> tuple[list[AnyMessage], _WorkingUsage, dict[str, object]]:
+        if usage.tokens < int(self.working_set_tokens * self.prune_trigger_ratio):
+            return messages, usage, {}
+        cutoff = self._determine_cutoff_index(messages)
+        if cutoff <= 0:
+            return messages, usage, {}
+        pruned = list(messages)
+        changed = 0
+        for index, message in enumerate(messages[:cutoff]):
+            artifact = message.artifact if isinstance(message, ToolMessage) else None
+            artifact_ref = artifact.get("artifact_ref") if isinstance(artifact, Mapping) else None
+            if not isinstance(artifact_ref, str) or not artifact_ref.strip():
+                continue
+            content = message.content
+            if not isinstance(content, str) or content.startswith(
+                "[tool output removed from active context;"
+            ):
+                continue
+            consumed_by_later_model_text = any(
+                isinstance(later, AIMessage) and bool(later.text.strip())
+                for later in messages[index + 1 :]
+            )
+            if not consumed_by_later_model_text:
+                continue
+            original_chars = artifact.get("original_chars") if isinstance(artifact, Mapping) else None
+            marker = (
+                "[tool output removed from active context; "
+                f"artifact_ref={artifact_ref}; original_chars={original_chars or len(content)}; "
+                "use load_artifact for exact evidence]"
+            )
+            pruned[index] = message.model_copy(update={"content": marker})
+            changed += 1
+        if not changed:
+            return messages, usage, {}
+        before_estimated = int(self.token_counter(messages))
+        after_estimated = int(self.token_counter(pruned))
+        reclaimed = max(before_estimated - after_estimated, 0)
+        if reclaimed < self.prune_min_reclaim_tokens:
+            return messages, usage, {}
+        after_usage = _WorkingUsage(
+            tokens=max(usage.tokens - reclaimed, 0),
+            source=usage.source,
+            provider_reported_input_tokens=usage.provider_reported_input_tokens,
+            calibration_tokens=usage.calibration_tokens,
+        )
+        self._emit_pruned(runtime, state, usage.tokens, after_usage.tokens, changed)
+        return (
+            pruned,
+            after_usage,
+            {
+                "messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *pruned],
+                "context_compaction_count": _counter(state, "context_compaction_count"),
+                "context_pruning_count": _counter(state, "context_pruning_count") + 1,
+                "context_pruned_tool_results": _counter(
+                    state, "context_pruned_tool_results"
+                )
+                + changed,
+            },
+        )
+
+    def _failure_policy(
+        self,
+        exc: Exception,
+        failures: int,
+    ) -> tuple[str, bool, float | None]:
+        detail = f"{type(exc).__name__}: {exc}".lower()
+        if isinstance(exc, TimeoutError | ConnectionError) or any(
+            marker in detail for marker in ("timeout", "timed out", "429", "rate limit")
+        ):
+            return "transient", True, self.transient_cooldown_seconds
+        if any(
+            marker in detail
+            for marker in ("authentication", "unauthorized", "forbidden", "invalid api key", "quota")
+        ):
+            return "configuration", False, self.cooldown_seconds
+        if "context" in detail and any(
+            marker in detail for marker in ("overflow", "too long", "maximum context")
+        ):
+            return "context_overflow", True, self.transient_cooldown_seconds
+        return (
+            "internal",
+            failures < _MAX_INEFFECTIVE_ATTEMPTS,
+            self.cooldown_seconds if failures >= _MAX_INEFFECTIVE_ATTEMPTS else None,
+        )
 
     def _can_attempt(self, state: Mapping[str, Any], before_tokens: int) -> bool:
         if before_tokens < self.working_set_tokens:
@@ -438,10 +615,12 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         cooldown = state.get("context_compaction_cooldown_until", 0.0)
         return not isinstance(cooldown, int | float) or cooldown <= self._clock()
 
-    def _base_update(self, before_tokens: int) -> dict[str, object]:
+    def _base_update(self, usage: _WorkingUsage) -> dict[str, object]:
         return {
-            "context_last_input_tokens": before_tokens,
+            "context_last_input_tokens": usage.tokens,
             "context_working_set_tokens": self.working_set_tokens,
+            "context_usage_source": usage.source,
+            "context_provider_reported_input_tokens": usage.provider_reported_input_tokens or 0,
         }
 
     @staticmethod
@@ -464,28 +643,30 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         self,
         state: Mapping[str, Any],
         runtime: Runtime[HarnessRunContext],
-        before_tokens: int,
+        usage: _WorkingUsage,
     ) -> None:
         writer = _stream_writer()
         if writer is None:
             return
         run_used = _counter(state, "run_token_usage") + _counter(state, "run_child_token_usage")
         run_limit = _counter(state, "run_token_limit")
-        usage_ratio = before_tokens / self.working_set_tokens
+        usage_ratio = usage.tokens / self.working_set_tokens
         writer(
             {
                 "type": "context_usage_updated",
                 "budget_scope": "graph_working_set",
                 "session_id": runtime.context.thread_id,
                 "run_id": runtime.context.run_id,
-                "used_tokens": before_tokens,
+                "used_tokens": usage.tokens,
                 "model_limit_tokens": self.working_set_tokens,
                 "output_reserve_tokens": 0,
                 "effective_limit_tokens": self.working_set_tokens,
                 "working_set_tokens": self.working_set_tokens,
                 "usage_ratio": usage_ratio,
                 "level": self._usage_level(usage_ratio),
-                "estimated": True,
+                "estimated": usage.source == "estimated",
+                "usage_source": usage.source,
+                "provider_reported_input_tokens": usage.provider_reported_input_tokens,
                 "compactable": True,
                 "run_used_tokens": run_used,
                 "run_limit_tokens": run_limit,
@@ -564,6 +745,31 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
                 }
             )
 
+    def _emit_pruned(
+        self,
+        runtime: Runtime[HarnessRunContext],
+        state: Mapping[str, Any],
+        before_tokens: int,
+        after_tokens: int,
+        pruned_tool_results: int,
+    ) -> None:
+        writer = _stream_writer()
+        if writer is not None:
+            writer(
+                {
+                    "type": "context_pruning_completed",
+                    "budget_scope": "graph_working_set",
+                    "session_id": runtime.context.thread_id,
+                    "run_id": runtime.context.run_id,
+                    "compaction_id": self._compaction_id(state, runtime),
+                    "before_tokens": before_tokens,
+                    "after_tokens": after_tokens,
+                    "pruned_tool_results": pruned_tool_results,
+                    "working_set_tokens": self.working_set_tokens,
+                    "saved_ratio": (before_tokens - after_tokens) / max(before_tokens, 1),
+                }
+            )
+
     def _emit_failed(
         self,
         runtime: Runtime[HarnessRunContext],
@@ -572,6 +778,7 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
         *,
         reason: str,
         retryable: bool,
+        failure_class: str,
     ) -> None:
         writer = _stream_writer()
         if writer is not None:
@@ -584,6 +791,7 @@ class ContextCompactionMiddleware(SummarizationMiddleware[Any, HarnessRunContext
                     "compaction_id": self._compaction_id(state, runtime),
                     "before_tokens": before_tokens,
                     "reason": reason[:128],
+                    "failure_class": failure_class,
                     "preserved_original": True,
                     "retryable": retryable,
                 }

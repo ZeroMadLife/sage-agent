@@ -273,7 +273,7 @@ describe('harness timeline projection', () => {
         effective_limit_tokens: 32_000,
       }),
       codingEvent(2, 'context', {
-        type: 'context_compaction_completed',
+        type: 'context_pruning_completed',
         budget_scope: 'graph_working_set',
         after_tokens: 12_500,
         working_set_tokens: 32_000,

@@ -282,11 +282,14 @@ function projectCodingRuntimeResources(
   const context = [...events].reverse().find((event) => {
     if (event.kind !== 'context') return false
     const eventType = stringValue(event.payload.type)
-    return eventType === 'context_usage_updated' || eventType === 'context_compaction_completed'
+    return eventType === 'context_usage_updated'
+      || eventType === 'context_pruning_completed'
+      || eventType === 'context_compaction_completed'
   })
   if (context) {
     const eventType = stringValue(context.payload.type)
     const used = eventType === 'context_compaction_completed'
+      || eventType === 'context_pruning_completed'
       ? numberValue(context.payload.after_tokens)
       : numberValue(context.payload.used_tokens)
     const graphWorkingSet = stringValue(context.payload.budget_scope) === 'graph_working_set'

@@ -206,6 +206,18 @@ class ContextCompactionStartedEvent(RunEventBase):
     before_tokens: int = Field(ge=0)
 
 
+class ContextPruningCompletedEvent(RunEventBase):
+    """Artifact-backed tool previews were replaced by recoverable references."""
+
+    type: Literal["context_pruning_completed"] = "context_pruning_completed"
+    session_id: str
+    compaction_id: str
+    before_tokens: int = Field(ge=0)
+    after_tokens: int = Field(ge=0)
+    pruned_tool_results: int = Field(ge=1)
+    saved_ratio: float = Field(default=0.0, ge=0, le=1)
+
+
 class ContextCompactionCompletedEvent(RunEventBase):
     """A semantic context compaction attempt completed."""
 
@@ -258,6 +270,7 @@ RunEvent: TypeAlias = (
     | WorkspaceDiffReadyEvent
     | MemoryProposalReadyEvent
     | ContextUsageUpdatedEvent
+    | ContextPruningCompletedEvent
     | ContextCompactionStartedEvent
     | ContextCompactionCompletedEvent
     | ContextCompactionFailedEvent

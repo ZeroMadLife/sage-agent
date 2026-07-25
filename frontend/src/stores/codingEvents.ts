@@ -188,6 +188,10 @@ export function applyCodingEvent(
     state.thinkingPhase.value = '正在压缩上下文...'
     return {}
   }
+  if (event.type === 'context_pruning_completed') {
+    state.contextChars.value = event.after_tokens
+    return {}
+  }
   if (event.type === 'context_compaction_completed') {
     state.compactionState.value = 'succeeded'
     if (state.contextSnapshot.value) {

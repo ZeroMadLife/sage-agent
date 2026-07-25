@@ -559,9 +559,14 @@ class SageThreadState(AgentState):
     context_compaction_failure_count: NotRequired[int]
     context_compaction_ineffective_count: NotRequired[int]
     context_compaction_cooldown_until: NotRequired[float]
+    context_compaction_failure_class: NotRequired[str]
+    context_pruning_count: NotRequired[int]
+    context_pruned_tool_results: NotRequired[int]
     context_last_input_tokens: NotRequired[int]
     context_last_after_tokens: NotRequired[int]
     context_working_set_tokens: NotRequired[int]
+    context_usage_source: NotRequired[str]
+    context_provider_reported_input_tokens: NotRequired[int]
 
 
 __all__ = [

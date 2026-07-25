@@ -82,8 +82,13 @@ def test_compaction_triggers_before_model_and_preserves_current_tool_group() -> 
 
     assert update is not None
     assert isinstance(update["messages"][0], RemoveMessage)
-    preserved = update["messages"][2:]
+    preserved = update["messages"][1:]
     assert [message.id for message in preserved] == ["ai-tool", "tool-1", "human-current"]
+    assert not any(
+        message.additional_kwargs.get("lc_source") == "sage_context_compaction"
+        for message in update["messages"]
+        if not isinstance(message, RemoveMessage)
+    )
     assert update["summary_text"] == "old investigation summarized"
     assert update["context_compaction_count"] == 1
     assert update["context_compaction_token_usage"] == 50
@@ -195,9 +200,241 @@ def test_compaction_pins_latest_user_even_when_tool_loop_makes_it_oldest() -> No
     )
 
     assert update is not None and "messages" in update
-    preserved_ids = [message.id for message in update["messages"][2:]]
+    preserved_ids = [message.id for message in update["messages"][1:]]
     assert preserved_ids == ["current-user", "ai-2", "tool-2"]
-    assert update["messages"][2].content == "authoritative current request"
+    assert update["messages"][1].content == "authoritative current request"
+
+
+def test_artifact_backed_tool_output_is_pruned_before_llm_compaction() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="must not be used")]),
+        working_set_tokens=1_000,
+        keep_tokens=200,
+        summary_input_tokens=1_000,
+        static_overhead_tokens=0,
+        prune_trigger_ratio=0.50,
+        prune_min_reclaim_tokens=100,
+    )
+    middleware._agenerate_summary = AsyncMock(  # type: ignore[method-assign]
+        side_effect=AssertionError("cheap pruning should avoid an LLM summary")
+    )
+    messages = [
+        HumanMessage(content="old request", id="human-old"),
+        AIMessage(
+            content="",
+            id="ai-old",
+            tool_calls=[
+                {
+                    "name": "run_shell",
+                    "args": {"command": "pytest"},
+                    "id": "call-old",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content="test output\n" + "x" * 8_000,
+            name="run_shell",
+            tool_call_id="call-old",
+            id="tool-old",
+            artifact={
+                "artifact_ref": "sage://coding/thread-1/runs/run-1/tool-results/call-old.txt",
+                "original_chars": 8_012,
+                "truncated": True,
+            },
+        ),
+        AIMessage(content="tests passed; evidence consumed", id="ai-consumed"),
+        HumanMessage(content="current user intent", id="human-current"),
+    ]
+
+    update = asyncio.run(
+        middleware.abefore_model(
+            {"messages": messages, "context_compaction_run_id": "run-1"},
+            MagicMock(context=_context()),
+        )
+    )
+
+    assert update is not None and "messages" in update
+    assert update["context_pruning_count"] == 1
+    assert update["context_compaction_count"] == 0
+    pruned = next(
+        message
+        for message in update["messages"]
+        if isinstance(message, ToolMessage) and message.id == "tool-old"
+    )
+    assert "artifact_ref=sage://coding/thread-1/runs/run-1/tool-results/call-old.txt" in str(
+        pruned.content
+    )
+    assert middleware._agenerate_summary.await_count == 0  # type: ignore[attr-defined]
+
+
+def test_unconsumed_latest_tool_output_is_not_pruned() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        working_set_tokens=1_000,
+        keep_tokens=200,
+        summary_input_tokens=1_000,
+        static_overhead_tokens=0,
+        prune_trigger_ratio=0.50,
+        prune_min_reclaim_tokens=100,
+    )
+    messages = [
+        HumanMessage(content="old request", id="human-old"),
+        AIMessage(
+            content="",
+            id="ai-old",
+            tool_calls=[
+                {
+                    "name": "run_shell",
+                    "args": {"command": "pytest"},
+                    "id": "call-old",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(
+            content="unconsumed evidence " + "x" * 8_000,
+            name="run_shell",
+            tool_call_id="call-old",
+            id="tool-old",
+            artifact={
+                "artifact_ref": "sage://coding/thread-1/runs/run-1/tool-results/call-old.txt",
+                "original_chars": 8_020,
+                "truncated": True,
+            },
+        ),
+    ]
+
+    update = asyncio.run(
+        middleware.abefore_model(
+            {"messages": messages, "context_compaction_run_id": "run-1"},
+            MagicMock(context=_context()),
+        )
+    )
+
+    assert update is not None
+    assert "messages" not in update
+    assert "context_pruning_count" not in update
+
+
+def test_provider_reported_input_calibrates_working_set_trigger() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="bounded handoff")]),
+        working_set_tokens=400,
+        keep_tokens=80,
+        summary_input_tokens=500,
+        static_overhead_tokens=0,
+        min_savings_ratio=0.0,
+    )
+    messages = [
+        HumanMessage(content="old objective " + "x" * 1_000, id="human-old"),
+        AIMessage(
+            content="old answer",
+            id="ai-old",
+            usage_metadata={
+                "input_tokens": 450,
+                "output_tokens": 10,
+                "total_tokens": 460,
+            },
+        ),
+        HumanMessage(content="current objective", id="human-current"),
+    ]
+
+    update = asyncio.run(
+        middleware.abefore_model(
+            {"messages": messages, "context_compaction_run_id": "run-1"},
+            MagicMock(context=_context()),
+        )
+    )
+
+    assert update is not None
+    assert update["context_last_input_tokens"] >= 450
+    assert update["context_compaction_count"] == 1
+    assert update["context_usage_source"] == "provider_calibrated"
+
+
+def test_provider_calibration_does_not_count_durable_summary_twice() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        working_set_tokens=1_000,
+        keep_tokens=200,
+        summary_input_tokens=1_000,
+        static_overhead_tokens=50,
+    )
+    messages = [
+        HumanMessage(content="old objective", id="human-old"),
+        AIMessage(
+            content="acknowledged",
+            id="ai-old",
+            usage_metadata={"input_tokens": 200, "output_tokens": 5, "total_tokens": 205},
+        ),
+        HumanMessage(content="current objective", id="human-current"),
+    ]
+
+    usage = middleware._working_usage(messages, "durable summary " + "s" * 400)
+
+    assert usage.source == "provider_calibrated"
+    assert 200 <= usage.tokens < 260
+
+
+def test_provider_calibration_is_not_reported_as_compaction_savings() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="bounded handoff")]),
+        working_set_tokens=400,
+        keep_tokens=80,
+        summary_input_tokens=500,
+        static_overhead_tokens=0,
+        min_savings_ratio=0.0,
+    )
+    messages = [
+        HumanMessage(content="old objective " + "x" * 1_000, id="human-old"),
+        AIMessage(
+            content="old answer",
+            id="ai-old",
+            usage_metadata={"input_tokens": 450, "output_tokens": 10, "total_tokens": 460},
+        ),
+        HumanMessage(content="current objective", id="human-current"),
+    ]
+
+    update = asyncio.run(
+        middleware.abefore_model(
+            {"messages": messages, "context_compaction_run_id": "run-1"},
+            MagicMock(context=_context()),
+        )
+    )
+
+    assert update is not None
+    assert update["context_last_after_tokens"] >= 150
+
+
+def test_transient_summary_failure_enters_short_classified_cooldown() -> None:
+    middleware = ContextCompactionMiddleware(
+        FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
+        working_set_tokens=200,
+        keep_tokens=50,
+        summary_input_tokens=500,
+        static_overhead_tokens=0,
+        clock=lambda: 100.0,
+        cooldown_seconds=300.0,
+        transient_cooldown_seconds=30.0,
+    )
+    middleware._agenerate_summary = AsyncMock(  # type: ignore[method-assign]
+        side_effect=TimeoutError("summary provider timed out")
+    )
+
+    update = asyncio.run(
+        middleware.abefore_model(
+            {
+                "messages": _long_tool_history(),
+                "context_compaction_run_id": "run-1",
+            },
+            MagicMock(context=_context()),
+        )
+    )
+
+    assert update is not None and "messages" not in update
+    assert update["context_compaction_failure_class"] == "transient"
+    assert update["context_compaction_cooldown_until"] == 130.0
 
 
 def test_two_ineffective_compactions_enter_checkpoint_safe_cooldown() -> None:
@@ -258,4 +495,6 @@ def test_before_agent_resets_run_local_compaction_counters_only_for_new_run() ->
         "context_compaction_token_usage": 0,
         "context_compaction_model_calls": 0,
         "context_compaction_failure_count": 0,
+        "context_pruning_count": 0,
+        "context_pruned_tool_results": 0,
     }

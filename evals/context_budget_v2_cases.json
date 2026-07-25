@@ -14,7 +14,8 @@
     {"case_id": "mixed_12x18k", "tool_turns": 12, "result_bytes": 18432, "fill": "ascii"},
     {"case_id": "unicode_6x24k", "tool_turns": 6, "result_bytes": 24576, "fill": "unicode"},
     {"case_id": "unicode_9x24k", "tool_turns": 9, "result_bytes": 24576, "fill": "unicode"},
-    {"case_id": "stress_14x32k", "tool_turns": 14, "result_bytes": 32768, "fill": "ascii"}
+    {"case_id": "stress_14x32k", "tool_turns": 14, "result_bytes": 32768, "fill": "ascii"},
+    {"case_id": "knowledge_20x8k", "tool_turns": 20, "result_bytes": 8192, "fill": "ascii", "artifact_eligible": false}
   ],
   "threshold_candidates": [
     {"working_set_tokens": 32000, "keep_tokens": 12000},

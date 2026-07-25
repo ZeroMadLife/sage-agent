@@ -1,122 +1,148 @@
-# Sage Context Budget v2 设计
+# Sage Context Governance v2.1 设计
 
-## 1. 为什么必须改
+## 1. 难题不是“模型忘了”这么简单
 
-当前 Sage 已经具备上下文计数、六级压力状态、轮次边界压缩和大工具结果 Artifact 化，
-但它们尚未组成可验证的闭环：
+长 Shell / Search 工具循环出现过一种典型症状：任务开始时已经确认的目标或证据，随着
+上下文增长，在后续回答中不再稳定出现。最初很容易把它归因于模型能力或长期 Memory，
+但代码和可复现测试最终定位到三种上下文失真叠加：
 
-1. 六级压力状态按模型硬窗口计算。当前默认模型有效输入上限约为 `936k` token，
-   `compact` 要到约 `608k` token 才触发；而单次 Harness 累计预算只有 `250k` token，
-   因此正常运行通常先耗尽 run budget，压缩根本不可达。
-2. 自动压缩只发生在新用户轮次开始前。Shell、搜索和子任务结果在同一轮 ReAct 循环中
-   持续增长时，没有模型调用前的工作集治理。
-3. 大工具结果超过 `16 KiB` 后会 offload，但模型只有截断预览和 `artifact_ref`，
-   没有通过作用域校验的按需分段读取工具。“on-demand load” 目前只能算设计，不能算交付。
-4. 现有测试主要验证局部不变量，尚未把 baseline、单项能力和组合能力放在同一批长任务上做消融。
+1. **压缩不可达**：旧六级压力状态按约 `936k` 有效硬窗口计算，`compact` 约在 `608k`
+   才触发；单 run token 上限为 `250k`，正常任务会先耗尽 run budget。
+2. **摘要双重投影**：同一 handoff 同时作为普通 `HumanMessage` 和 `summary_text` 注入；当
+   `durable_context` 中还有旧摘要时，旧值又可能覆盖顶层新值。模型看到的不是一份历史，
+   而是两份甚至新旧冲突的历史。
+3. **工具证据过早清理**：仅凭“完整结果已落盘”就删除活跃预览，虽然字节仍可恢复，模型
+   却未必知道何时需要回载；若后续模型尚未形成文本承接，关键决定会从当前工作集消失。
 
-这会造成两个实际风险：长工具循环的 prompt 和 checkpoint 继续膨胀；简历虽然描述了正确方向，
-但无法给出“何时触发、降低多少、是否保留当前任务、是否能找回完整工具证据”的机器可读证据。
+因此本版本不把问题包装成“新增一个总结器”，而是把上下文改为三层治理，并用失败测试
+分别冻结以上三条根因。长期 Memory 的 consolidation / retraction 是另一条状态生命周期，
+不与本次上下文问题混合归因。
 
-## 2. 设计目标与非目标
+## 2. 外部调研与 Sage 的取舍
 
-本版本交付四件事：
+### 2.1 Hermes Agent
 
-- 将原六级机制明确为模型硬窗口安全层，不承担日常工作集控制；
-- 在 LangGraph 每次模型调用前执行可达的工作集计量和循环内压缩；
-- 为同一 session 的工具结果提供有界、只读、可审计的 Artifact 分段回载；
-- 建立固定语料的消融评测，先记录 baseline，再比较各层能力并做一轮阈值优化。
+[Hermes Context Compression](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/developer-guide/context-compression-and-caching.md)
+提供 gateway safety net 与 in-loop compressor 两级触发，优先使用 provider 报告用量，先清理
+旧工具结果，再做结构化摘要，并保护最近用户消息与工具调用组。
 
-本版本不改长期记忆写入、冲突、合并和撤回语义。Memory v2 要用单独的评测集和 PR，
-否则无法区分上下文压缩与长期记忆对结果的贡献。
+Sage 借鉴了“循环内治理、真实用量校准、cheap prune 在 semantic compact 之前”的顺序，
+但没有照搬无条件清理：只有已有 `artifact_ref`、位于保护尾部之外、且存在后续非空
+AI 文本承接的工具结果才有 pruning 资格。否则宁可进入语义压缩，也不把“磁盘中仍存在”
+误当成“模型仍然记得”。
 
-## 3. 双层预算模型
+### 2.2 Claude Code
 
-### 3.1 硬窗口安全层
+[Claude Code 工作机制](https://code.claude.com/docs/en/how-claude-code-works)明确区分会话历史与
+持久规则：接近窗口时先清理旧工具输出，再按需总结；长期必须保留的规则放入 `CLAUDE.md`
+等持久层；连续压缩后又立即被超大结果撑满时停止自动 thrash。
 
-现有 `ContextPolicy` 和六级状态继续使用模型声明的 context window 与 output reserve。
-它负责轮次入口投影、极端情况下阻止模型请求，以及兼容原有 Timeline 和恢复路径。
-它不是日常压缩阈值，事件中必须标明 `budget_scope=hard_window`。
+Sage 因此把 durable context 和 conversation summary 分开管理，保留节省不足 `10%` 的
+anti-thrash，并将失败分成 transient / configuration / context_overflow / internal，而不是
+所有异常都使用同一重试节奏。
 
-### 3.2 Graph 工作集层
+### 2.3 DeerFlow 与 LangChain
 
-新增 Harness 配置：
+[DeerFlow Summarization](https://github.com/bytedance/deer-flow/blob/main/backend/docs/summarization.md)
+及其[中间件源码](https://github.com/bytedance/deer-flow/blob/main/backend/packages/harness/deerflow/agents/middlewares/summarization_middleware.py)
+基于 LangChain `SummarizationMiddleware`，保护 AI / Tool 对，把摘要保存在独立
+`summary_text` channel，并通过隐藏的低权威 durable data 临时投影，而不是把摘要伪装成
+新的用户指令。
 
-- `context_compaction_enabled`：是否启用循环内压缩；
-- `context_working_set_tokens`：单次模型输入的操作上限；
-- `context_keep_tokens`：压缩后保留的最近消息目标；
-- `context_summary_input_tokens`：生成摘要时允许读取的历史上限；
-- `context_static_overhead_tokens`：对 system prompt、工具 schema 和动态 durable context 的保守预算。
+Sage 采用同一原则：`summary_text` 是摘要唯一真相源；普通消息只保留未压缩尾部；当前顶层
+state channel 覆盖兼容性的 nested durable snapshot。摘要调用不向 UI 流式输出，失败时
+保留原消息。
 
-工作集从 run budget 推导，而不是模型宣传窗口。消融前候选值为 `64k / 24k`；固定数据集扫描后，
-普通 Coding Surface 最终采用 `32k / 12k`，公开检索 Surface 采用更保守的 `16k / 8k`。
-阈值扫描和优化前后结果必须同时保留在机器可读报告中，避免只展示有利结果。
+## 3. 三层治理模型
 
-每次模型调用前都发出 `context_usage_updated`，至少包含 estimated input、工作集上限、
-工作集比率、累计 run token 和剩余 run token。Provider 返回 usage 后，下次计量保留
-provider 报告的最近输入作为校验信息，但不同模型的 usage 不能混用为另一模型的精确计数。
+### 第一层：确定性、可恢复的工具结果治理
 
-## 4. 循环内压缩
+- 结果超过 `16 KiB` 时完整 offload 到 session/run scoped Artifact Store；活跃消息只保留
+  最多 200 行、12,000 字符预览与 `artifact_ref`。
+- 当工作集达到 `70%` 时，扫描保护尾部之外的旧 ToolMessage。
+- 仅当完整 Artifact 已存在且后续 AI 已形成非空文本承接，才把预览替换成带
+  `artifact_ref` 的恢复标记；未消费的最新结果绝不清理。
+- `load_artifact` 按同 session、最大 `16 KiB`、UTF-8 byte cursor 分页回载完整证据。
+- pruning 是独立 Timeline 事件，不伪装成语义摘要。
 
-压缩中间件位于 `durable_context` 之后、`run_budget` 之前。它在工具结果回到图后、
-下一次模型调用前同样执行，因此不依赖用户开始新一轮。
+曾评估把 offload 阈值从 `16 KiB` 降至 `4 KiB`。固定任务上模型输入和 checkpoint 均无
+改善，只增加小结果落盘，因此生产默认继续使用 `16 KiB`。这也是本次“用消融否决方案”
+而非凭直觉调参的例子。
 
-压缩流程：
+### 第二层：语义工作集压缩
 
-1. 对 state messages 做近似 token 计数并加上静态开销；
-2. 未达到工作集阈值时只发计量事件；
-3. 选择安全 cutoff，禁止拆开 `AIMessage.tool_calls` 与对应 `ToolMessage`；
-4. 将旧消息与上一版摘要合成为结构化 handoff；
-5. 保留最近消息，使用 `RemoveMessage(REMOVE_ALL_MESSAGES)` 原子替换 graph state；
-6. 摘要调用的 token 计入当前 run budget；
-7. 压缩前后节省不足 `10%` 视为无效，原消息保持不变；连续两次无效后进入持久化 cooldown；
-8. 摘要模型失败、返回空文本或替换后仍不满足安全条件时 fail open：不修改消息，发失败事件。
+- LangGraph 每次 `before_model` 计算 `messages + summary_text + static overhead`，因此同一
+  ReAct 工具循环内也会触发。
+- 默认 `working_set=32k`、`keep=12k`；retrieval-only Surface 使用 `16k/8k`。
+- 最近真实用户消息和完整 AI / Tool 调用组固定保留。
+- 摘要仅写入 `summary_text`，由 DurableContextMiddleware 以隐藏低权威数据投影一次。
+- 最近 provider `input_tokens` 用于校准近似计数；校准基线已包含 system / summary 静态
+  开销，避免再次重复计算摘要。
+- 摘要失败 fail open；transient 首次失败冷却 30 秒，配置错误冷却 300 秒，未知错误连续
+  两次后冷却；节省不足 `10%` 连续两次也停止自动重试。
 
-结构化摘要只保留：最新用户目标、约束、已完成动作、关键决策、文件/Artifact 引用、
-未完成步骤和已知失败。它属于有界的历史 handoff，不得覆盖最新用户消息或 server-owned durable context。
+### 第三层：硬窗口与运行安全
 
-## 5. Artifact 分段回载
+旧 `normal / budget / snip / compact / high / emergency` 六档继续存在，但它们是**一层中的
+六个压力状态**，不是六种连续有损裁剪。它们负责：
 
-新增 `load_artifact` resident tool，参数为 `artifact_ref`、`offset_bytes` 和 `max_bytes`。
+- 按模型 context window 与 output reserve 投影硬窗口压力；
+- 在 high / emergency 状态限制注入并阻止不安全模型请求；
+- 与 run token、model call、tool call 和 wall-time budget 共同形成最终保险；
+- 保持原 Timeline、checkpoint 与恢复契约兼容。
 
-- 单次最多读取 `16 KiB`，返回 `content`、`offset_bytes`、`next_offset_bytes`、
-  `total_bytes` 和 `truncated`；
-- byte cursor 必须位于 UTF-8 字符边界；页尾遇到不完整字符时回退并由下一页重读，
-  不用 replacement character 损坏原始证据；
-- 只接受 `sage://coding/{session}/runs/{run}/tool-results/{call}.txt`；
-- session 必须与当前 thread 相同；run 可以是同一 session 的当前或历史 run；
-- 文件打开继续使用 `O_NOFOLLOW`、普通文件和单硬链接检查；
-- 非法 scope、越界参数、软链接和不存在的文件都显式失败；
-- 工具只读，不授予工作区文件或其他 Artifact namespace 的访问能力。
+所以“六级是否过于激进”的答案是：如果六档都执行独立裁剪会过于激进；当前实现没有这样
+做。日常治理由前两层完成，六档只描述第三层的压力和最终动作。
 
-## 6. 消融评测
+## 4. 一次模型调用前的流转
 
-固定长任务包含：多轮文本、包含工具调用对的长工具结果、当前用户意图、关键决策和
-位于 Artifact 中部的探针。使用同一数据集比较：
+```text
+Tool result
+  -> Artifact offload (only large results)
+  -> working-set measure (estimate + provider calibration)
+  -> recoverable prune (only consumed artifact-backed history)
+  -> semantic compact (only if still over 32k)
+  -> hard-window / run-budget gate
+  -> model request
+```
 
-| 变体 | 工作集计量 | 循环内压缩 | Artifact offload/load |
-| --- | --- | --- | --- |
-| A0 baseline | 否 | 否 | 仅 offload |
-| A1 budget | 是 | 否 | 仅 offload |
-| A2 compact | 是 | 是 | 仅 offload |
-| A3 full | 是 | 是 | offload + load |
+关键不变量：最新用户目标不被摘要覆盖；未消费工具证据不被 cheap prune；摘要只有一个
+state source；任何摘要失败都不删除原消息；完整工具结果仍受 session scope 校验。
 
-报告记录：峰值模型输入、累计模型输入、checkpoint 消息体积、压缩次数、摘要额外 token、
-有效节省率、当前意图保留率、工具调用对完整率、Artifact 探针恢复率、失败保留率和运行时延。
-确定性机制评测不冒充回答质量；后续 LLM judge 评测必须另报模型、provider、温度、延迟和逐条结果。
+## 5. 消融协议
 
-## 7. 验收标准
+固定 13 条任务包含长 Shell/Search 结果、Unicode、Artifact 中部探针，以及无法 Artifact
+offload 的长检索链。变体按层累加：
 
-- 合成长工具循环无需新用户轮次即可触发压缩；
-- 压缩后当前用户消息和完整工具调用对均保留；
-- 摘要失败与无效压缩不会删除原消息；
-- `load_artifact` 能恢复同 session 有界片段，跨 session 和非法路径全部拒绝；
-- A0-A3 机器可读报告可复现，并同时给出绝对值与相对变化；
-- 阈值只根据基线扫描优化一次，文档保留优化前后证据；
-- 现有恢复、审批、工具治理和公开/private API 隔离测试不回归。
+| 变体 | 16 KiB offload | 4 KiB 候选 | recoverable prune | semantic compact | reload |
+| --- | --- | --- | --- | --- | --- |
+| A0 previous offload | 是 | 否 | 否 | 否 | 否 |
+| A1 offload 4k | 否 | 是 | 否 | 否 | 否 |
+| A2 recoverable prune | 是 | 否 | 是 | 否 | 否 |
+| A3 semantic compact | 是 | 否 | 是 | 是 | 否 |
+| A4 full | 是 | 否 | 是 | 是 | 是 |
 
-## 8. 评测后决策
+安全门禁包括：最新用户原文、存活工具调用对、决策标记和 Artifact 探针。只有四项均通过的
+阈值才能按净 token 节省评分。确定性摘要用于隔离机制随机性，不冒充自然语言摘要质量。
 
-`64k / 24k` 在固定 12 条长工具任务上没有触发压缩，说明它仍然无法治理当前工作负载；
-`32k / 12k` 在预先声明的安全不变量全部通过时取得最高净 token 节省分数，因此成为本版本默认值。
-这里的 token 是 provider-neutral 近似计数，摘要也是确定性替身；精确数字和限制以干净 source commit
-生成的 `evals/reports/context_budget_v2_2026-07-25.json` 为准。
+## 6. 当前证据与边界
+
+精确数字见 `evals/reports/context_budget_v2_1_2026-07-25.json` 与
+`docs/evals/context-budget-v2.md`。当前仍未证明：
+
+- 真实摘要模型的 required-fact 保留率和任务完成率；
+- Provider 实际账单 usage、P50/P95 延迟和摘要调用成本；
+- Provider context-overflow 后在同一模型调用内自动压缩并重试；
+- 长期 Memory 自动抽取、冲突合并、TTL 与语义 consolidation。
+
+下一阶段应冻结 Provider / model / temperature，用相同任务先跑改造前 baseline，再跑三层治理，
+记录 required facts、citation correctness、任务成功率、实际 usage 和延迟。只有真实模型结果
+通过，简历才可以从“确定性机制评测”升级为“端到端任务质量提升”。
+
+## 7. 可用于面试的真实问题解决链
+
+这段经历应表述为：长工具任务出现目标和证据不稳定，最初怀疑长期记忆；通过阈值计算发现
+压缩根本不可达，再用失败测试复现摘要重复投影；参考 Hermes / Claude Code / DeerFlow 后
+提出三层治理。第一版照搬 cheap prune 又导致决策标记消失，因此增加“后续模型文本承接”
+资格，并用消融否决 4 KiB offload。最终保留数据支持的机制，未通过真实模型评测的部分继续
+明确为边界。不要虚构线上事故，也不要把确定性 marker 测试描述为回答准确率。

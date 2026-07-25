@@ -12,23 +12,25 @@ def test_context_budget_manifest_is_versioned_and_nontrivial() -> None:
     manifest = load_manifest()
 
     assert manifest["evaluation_id"] == "sage-context-budget-v2"
-    assert len(manifest["cases"]) == 12
+    assert len(manifest["cases"]) == 13
     assert len(manifest["threshold_candidates"]) == 4
 
 
 def test_context_budget_ablation_preserves_invariants_and_reduces_tokens() -> None:
     report = asyncio.run(run_evaluation())
-    baseline = report["ablation"]["A0_baseline"]
-    budget = report["ablation"]["A1_budget"]
-    compact = report["ablation"]["A2_compact"]
-    full = report["ablation"]["A3_full"]
+    baseline = report["ablation"]["A0_previous_offload"]
+    offload = report["ablation"]["A1_offload_4k"]
+    pruned = report["ablation"]["A2_recoverable_prune"]
+    compact = report["ablation"]["A3_semantic_compact"]
+    full = report["ablation"]["A4_full"]
 
     assert report["baseline_diagnosis"]["compact_reachable_before_run_cap"] is False
     assert (
-        report["pre_optimization_ablation"]["A2_compact"]["total_model_input_tokens"]
-        == report["pre_optimization_ablation"]["A0_baseline"]["total_model_input_tokens"]
+        report["pre_optimization_ablation"]["A3_semantic_compact"]["compaction_count"]
+        == 0
     )
-    assert budget["total_model_input_tokens"] == baseline["total_model_input_tokens"]
+    assert offload["total_model_input_tokens"] <= baseline["total_model_input_tokens"]
+    assert pruned["total_model_input_tokens"] < offload["total_model_input_tokens"]
     assert compact["total_model_input_tokens"] < baseline["total_model_input_tokens"]
     assert compact["token_reduction_vs_a0"] > 0
     assert full["exact_user_retention_rate"] == 1.0
@@ -56,4 +58,4 @@ def test_context_budget_report_writes_json_and_markdown(tmp_path: Path) -> None:
     assert output.is_file()
     markdown = output.with_suffix(".md")
     assert markdown.is_file()
-    assert "A0_baseline" in markdown.read_text(encoding="utf-8")
+    assert "A0_previous_offload" in markdown.read_text(encoding="utf-8")

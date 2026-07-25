@@ -337,21 +337,24 @@ class DurableContextMiddleware(AgentMiddleware[SageThreadState, HarnessRunContex
         request: ModelRequest[HarnessRunContext],
     ) -> ModelRequest[HarnessRunContext]:
         state = request.state
-        data = _normalize_durable_context(state.get("durable_context"))
-        if not data:
-            data = {
-                key: state.get(key)
-                for key in (
-                    "summary_text",
-                    "goal",
-                    "todos",
-                    "delegations",
-                    "memory_refs",
-                    "retrieval_gate",
-                    "skill_context",
-                )
-                if state.get(key)
-            }
+        nested = _normalize_durable_context(state.get("durable_context"))
+        channel_names = (
+            "summary_text",
+            "goal",
+            "todos",
+            "delegations",
+            "memory_refs",
+            "retrieval_gate",
+            "skill_context",
+        )
+        raw_current = {key: state.get(key) for key in channel_names if key in state}
+        current = _normalize_durable_context(raw_current)
+        data = dict(nested)
+        for key in raw_current:
+            if key in current:
+                data[key] = current[key]
+            else:
+                data.pop(key, None)
         rendered = _render_durable_context(data)
         if not rendered:
             return request

@@ -23,6 +23,10 @@ class HarnessConfig:
     context_static_overhead_tokens: int = 8_000
     context_min_savings_ratio: float = 0.10
     context_compaction_cooldown_seconds: float = 300.0
+    context_transient_cooldown_seconds: float = 30.0
+    context_prune_trigger_ratio: float = 0.70
+    context_prune_min_reclaim_tokens: int = 2_048
+    artifact_offload_threshold_bytes: int = 16 * 1_024
 
     def __post_init__(self) -> None:
         if self.max_model_calls < 1:
@@ -53,6 +57,18 @@ class HarnessConfig:
             self.context_compaction_cooldown_seconds <= 0
         ):
             raise ValueError("context_compaction_cooldown_seconds must be finite and positive")
+        if not math.isfinite(self.context_transient_cooldown_seconds) or (
+            self.context_transient_cooldown_seconds <= 0
+        ):
+            raise ValueError("context_transient_cooldown_seconds must be finite and positive")
+        if not math.isfinite(self.context_prune_trigger_ratio) or not (
+            0.0 < self.context_prune_trigger_ratio <= 1.0
+        ):
+            raise ValueError("context_prune_trigger_ratio must be within 0..1")
+        if self.context_prune_min_reclaim_tokens < 1:
+            raise ValueError("context_prune_min_reclaim_tokens must be positive")
+        if self.artifact_offload_threshold_bytes < 1:
+            raise ValueError("artifact_offload_threshold_bytes must be positive")
 
 
 @dataclass(frozen=True, slots=True)

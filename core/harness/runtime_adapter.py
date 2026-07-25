@@ -77,6 +77,9 @@ class SageHarnessRuntimeAdapter:
                         static_overhead_tokens=config.context_static_overhead_tokens,
                         min_savings_ratio=config.context_min_savings_ratio,
                         cooldown_seconds=config.context_compaction_cooldown_seconds,
+                        transient_cooldown_seconds=config.context_transient_cooldown_seconds,
+                        prune_trigger_ratio=config.context_prune_trigger_ratio,
+                        prune_min_reclaim_tokens=config.context_prune_min_reclaim_tokens,
                     ),
                 ),
                 after="durable_context",
@@ -85,7 +88,10 @@ class SageHarnessRuntimeAdapter:
             registry = registry.with_spec(
                 MiddlewareSpec(
                     "tool_result_artifact",
-                    lambda config: ToolResultArtifactMiddleware(artifact_store),
+                    lambda config: ToolResultArtifactMiddleware(
+                        artifact_store,
+                        minimum_bytes=config.artifact_offload_threshold_bytes,
+                    ),
                 ),
                 after="remote_content_sanitization",
             )

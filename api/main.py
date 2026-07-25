@@ -455,6 +455,16 @@ def create_app(
         context_keep_tokens=settings.sage_harness_context_keep_tokens,
         context_summary_input_tokens=settings.sage_harness_context_summary_input_tokens,
         context_static_overhead_tokens=settings.sage_harness_context_static_overhead_tokens,
+        context_transient_cooldown_seconds=(
+            settings.sage_harness_context_transient_cooldown_seconds
+        ),
+        context_prune_trigger_ratio=settings.sage_harness_context_prune_trigger_ratio,
+        context_prune_min_reclaim_tokens=(
+            settings.sage_harness_context_prune_min_reclaim_tokens
+        ),
+        artifact_offload_threshold_bytes=(
+            settings.sage_harness_artifact_offload_threshold_bytes
+        ),
     )
     app.state.coding_sandbox_provider = normalize_sandbox_provider(
         settings.sage_coding_sandbox_provider

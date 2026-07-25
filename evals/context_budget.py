@@ -29,7 +29,7 @@ from core.coding.persistence.tool_result_store import (
 
 _ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_CASES = _ROOT / "evals" / "context_budget_v2_cases.json"
-_DEFAULT_REPORT = _ROOT / "evals" / "reports" / "context_budget_v2_2026-07-25.json"
+_DEFAULT_REPORT = _ROOT / "evals" / "reports" / "context_budget_v2_1_2026-07-25.json"
 _MARKER = re.compile(r"\[(?:DECISION|PROBE):[^\]]+\]")
 
 
@@ -39,12 +39,14 @@ class ContextCase:
     tool_turns: int
     result_bytes: int
     fill: str
+    artifact_eligible: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class Variant:
     variant_id: str
-    budget_observed: bool
+    artifact_offload_threshold_bytes: int | None
+    pruning_enabled: bool
     compaction_enabled: bool
     artifact_reload_enabled: bool
 
@@ -57,6 +59,7 @@ class CaseResult:
     peak_model_input_tokens: int
     total_model_input_tokens: int
     checkpoint_content_bytes: int
+    pruning_count: int
     compaction_count: int
     compaction_token_usage: int
     exact_user_retained: bool
@@ -70,7 +73,14 @@ class CaseResult:
 class DeterministicContextCompactor(ContextCompactionMiddleware):
     """Use the production cutoff/state logic with a stable marker-preserving summary."""
 
-    def __init__(self, *, working_set_tokens: int, keep_tokens: int) -> None:
+    def __init__(
+        self,
+        *,
+        working_set_tokens: int,
+        keep_tokens: int,
+        pruning_enabled: bool,
+        compaction_enabled: bool,
+    ) -> None:
         super().__init__(
             FakeMessagesListChatModel(responses=[AIMessage(content="unused")]),
             working_set_tokens=working_set_tokens,
@@ -78,6 +88,18 @@ class DeterministicContextCompactor(ContextCompactionMiddleware):
             summary_input_tokens=32_000,
             static_overhead_tokens=8_000,
         )
+        self._pruning_enabled = pruning_enabled
+        self._compaction_enabled = compaction_enabled
+
+    def _prune_artifact_backed_tools(self, *args: Any, **kwargs: Any) -> Any:
+        if not self._pruning_enabled:
+            messages = args[2]
+            usage = args[3]
+            return messages, usage, {}
+        return super()._prune_artifact_backed_tools(*args, **kwargs)
+
+    def _can_attempt(self, state: dict[str, Any], before_tokens: int) -> bool:
+        return self._compaction_enabled and super()._can_attempt(state, before_tokens)
 
     @staticmethod
     def _deterministic_summary(
@@ -123,10 +145,11 @@ class DeterministicContextCompactor(ContextCompactionMiddleware):
 
 
 VARIANTS = (
-    Variant("A0_baseline", False, False, False),
-    Variant("A1_budget", True, False, False),
-    Variant("A2_compact", True, True, False),
-    Variant("A3_full", True, True, True),
+    Variant("A0_previous_offload", PERSIST_THRESHOLD_BYTES, False, False, False),
+    Variant("A1_offload_4k", 4 * 1_024, False, False, False),
+    Variant("A2_recoverable_prune", PERSIST_THRESHOLD_BYTES, True, False, False),
+    Variant("A3_semantic_compact", PERSIST_THRESHOLD_BYTES, True, True, False),
+    Variant("A4_full", PERSIST_THRESHOLD_BYTES, True, True, True),
 )
 
 
@@ -215,6 +238,8 @@ async def run_case(
         compactor = DeterministicContextCompactor(
             working_set_tokens=working_set_tokens,
             keep_tokens=keep_tokens,
+            pruning_enabled=variant.pruning_enabled,
+            compaction_enabled=variant.compaction_enabled,
         )
         peak_pre = 0
         peak_model = 0
@@ -224,9 +249,17 @@ async def run_case(
 
         for turn in range(case.tool_turns):
             call_id = f"call-{turn}"
+            consumed = (
+                f"Processed tool turn {turn - 1}. "
+                f"[DECISION:{case.case_id}:retain]"
+                if turn == 1
+                else f"Processed tool turn {turn - 1}."
+                if turn > 1
+                else ""
+            )
             messages.append(
                 AIMessage(
-                    content="",
+                    content=consumed,
                     id=f"ai-{turn}",
                     tool_calls=[
                         {
@@ -241,7 +274,12 @@ async def run_case(
             full_content, decision, probe = _content_bytes(case, turn)
             if decision:
                 decisions.append(decision)
-            if len(full_content.encode("utf-8")) >= PERSIST_THRESHOLD_BYTES:
+            if (
+                variant.artifact_offload_threshold_bytes is not None
+                and case.artifact_eligible
+                and len(full_content.encode("utf-8"))
+                >= variant.artifact_offload_threshold_bytes
+            ):
                 receipt = store.archive(call_id, full_content)
                 tool_message = ToolMessage(
                     content=receipt.preview,
@@ -266,7 +304,7 @@ async def run_case(
             state["messages"] = messages
             pre_tokens = count_tokens_approximately(messages) + 8_000
             peak_pre = max(peak_pre, pre_tokens)
-            if variant.compaction_enabled:
+            if variant.pruning_enabled or variant.compaction_enabled:
                 update = await compactor.abefore_model(state, runtime)  # type: ignore[arg-type]
                 if update:
                     replacement = update.get("messages")
@@ -306,6 +344,7 @@ async def run_case(
             peak_model_input_tokens=peak_model,
             total_model_input_tokens=total_model,
             checkpoint_content_bytes=_checkpoint_content_bytes(messages),
+            pruning_count=int(state.get("context_pruning_count", 0)),
             compaction_count=int(state.get("context_compaction_count", 0)),
             compaction_token_usage=int(state.get("context_compaction_token_usage", 0)),
             exact_user_retained=any(message.id == user_id for message in messages),
@@ -343,6 +382,7 @@ def _aggregate(
             else 0.0,
             6,
         ),
+        "pruning_count": sum(item.pruning_count for item in results),
         "compaction_count": sum(item.compaction_count for item in results),
         "compaction_token_usage": compaction_tokens,
         "compaction_overhead_ratio_vs_a0": round(overhead_ratio, 6),
@@ -370,10 +410,10 @@ async def run_evaluation(manifest_path: Path = _DEFAULT_CASES) -> dict[str, Any]
     for variant in VARIANTS:
         initial_by_variant[variant.variant_id] = [await run_case(case, variant) for case in cases]
     baseline_total = sum(
-        item.total_model_input_tokens for item in initial_by_variant["A0_baseline"]
+        item.total_model_input_tokens for item in initial_by_variant["A0_previous_offload"]
     )
     baseline_checkpoint_bytes = sum(
-        item.checkpoint_content_bytes for item in initial_by_variant["A0_baseline"]
+        item.checkpoint_content_bytes for item in initial_by_variant["A0_previous_offload"]
     )
     pre_optimization_ablation = {
         variant.variant_id: _aggregate(
@@ -440,7 +480,7 @@ async def run_evaluation(manifest_path: Path = _DEFAULT_CASES) -> dict[str, Any]
     source_commit, dirty = _git_state()
     return {
         "evaluation_id": manifest["evaluation_id"],
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": datetime.now(UTC).isoformat(),
         "source_commit": source_commit,
         "source_dirty": dirty,
@@ -452,6 +492,7 @@ async def run_evaluation(manifest_path: Path = _DEFAULT_CASES) -> dict[str, Any]
             "run_token_limit": 250_000,
             "compact_reachable_before_run_cap": baseline_compact_tokens < 250_000,
             "artifact_offload_threshold_bytes": PERSIST_THRESHOLD_BYTES,
+            "rejected_artifact_offload_candidate_bytes": 4 * 1_024,
             "model_visible_artifact_reload": False,
         },
         "pre_optimization_threshold": {
@@ -474,6 +515,7 @@ async def run_evaluation(manifest_path: Path = _DEFAULT_CASES) -> dict[str, Any]
             "Deterministic summaries preserve explicit markers; natural-language summary quality is not measured.",
             "Token counts are provider-neutral estimates and must not be presented as provider billing usage.",
             "Latency excludes a live summary-model call and is informational only.",
+            "Cheap pruning requires a later textual model receipt; semantic correctness of that receipt needs a live-model benchmark.",
         ],
     }
 
@@ -503,21 +545,22 @@ def write_report(report: dict[str, Any], output: Path = _DEFAULT_REPORT) -> None
     output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     markdown = output.with_suffix(".md")
     lines = [
-        "# Sage Context Budget v2 消融报告",
+        "# Sage Context Governance v2.1 消融报告",
         "",
         f"- Source commit: `{report['source_commit']}`",
         f"- Cases: {report['case_count']}",
         f"- Scope: {report['scope']}",
         "",
-        "| Variant | Total input | Reduction vs A0 | Peak input | Compactions | User | Tool pairs | Decision | Artifact |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Variant | Total input | Reduction vs A0 | Peak input | Prunes | Compactions | User | Tool pairs | Decision | Artifact |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for variant_id, metrics in report["ablation"].items():
         artifact = metrics["artifact_probe_recovery_rate"]
         lines.append(
             f"| {variant_id} | {metrics['total_model_input_tokens']} | "
             f"{metrics['token_reduction_vs_a0']:.2%} | {metrics['peak_model_input_tokens']} | "
-            f"{metrics['compaction_count']} | {metrics['exact_user_retention_rate']:.0%} | "
+            f"{metrics['pruning_count']} | {metrics['compaction_count']} | "
+            f"{metrics['exact_user_retention_rate']:.0%} | "
             f"{metrics['surviving_tool_pair_valid_rate']:.0%} | "
             f"{metrics['decision_marker_retention_rate']:.0%} | "
             f"{'N/A' if artifact is None else f'{artifact:.0%}'} |"
