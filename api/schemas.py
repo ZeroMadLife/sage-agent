@@ -1267,6 +1267,7 @@ class CodingMemoryCandidate(BaseModel):
     source: str
     source_ref: str = ""
     created_at: str = ""
+    supersedes_content_hash: str = ""
 
 
 class CodingMemoryEvent(BaseModel):
@@ -1320,6 +1321,55 @@ class CodingMemoryProposalTransitionRequest(BaseModel):
     """Revision guard for an ID-addressed proposal transition."""
 
     expected_revision: int = Field(ge=0)
+
+
+class CodingMemoryFact(BaseModel):
+    """One canonical memory fact with explicit lifecycle state."""
+
+    content_hash: str
+    content: str
+    topic: str
+    source: str
+    source_ref: str = ""
+    created_at: str = ""
+    proposal_id: str = ""
+    status: Literal["active", "superseded", "retracted"]
+    revision: int = Field(ge=1)
+    updated_at: str = ""
+    supersedes_content_hash: str = ""
+    retraction_reason: str = ""
+
+
+class CodingMemoryFactsResponse(BaseModel):
+    facts: list[CodingMemoryFact]
+
+
+class CodingMemoryFactEvent(BaseModel):
+    event_id: str
+    event_type: str
+    content_hash: str
+    related_content_hash: str = ""
+    proposal_id: str = ""
+    workspace_id: str
+    actor_ref: str = ""
+    reason: str = ""
+    revision: int = Field(ge=1)
+    created_at: str = ""
+
+
+class CodingMemoryFactDetail(BaseModel):
+    fact: CodingMemoryFact
+    events: list[CodingMemoryFactEvent]
+
+
+class CodingMemoryFactRetractionRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=1_000)
+
+
+class CodingMemoryCorrectionRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    replacement: str = Field(min_length=1, max_length=4_000)
 
 
 class CodingKnowledgeSourceProposal(BaseModel):

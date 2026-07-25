@@ -6,13 +6,21 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from core.coding.memory.consolidation import (
+    EpisodicEvidence,
+    MemoryConsolidationResult,
+    consolidate_evidence,
+)
 from core.coding.memory.durable import DurableMemory, MemoryFact, workspace_id_from_path
 from core.coding.memory.working import WorkingMemory
 from core.coding.persistence.memory_store import (
     MemoryCandidate,
+    MemoryConflictError,
     MemoryEvent,
+    MemoryFactEvent,
     MemoryProposal,
     MemoryStore,
+    MemoryStoredFact,
 )
 
 
@@ -80,16 +88,51 @@ class MemoryManager:
         parts: list[str] = []
         if self.working:
             parts.append(self.working.to_context_block())
-        durable = self.durable.select_for_context(budget=2000)
+        durable = self.get_index()
+        if len(durable) > 2000:
+            durable = durable[:2000] + "\n...[truncated]"
         if durable:
             parts.append(f"<durable-memory>\n{durable}\n</durable-memory>")
         return "\n\n".join(parts)
 
     def get_index(self) -> str:
-        return self.durable.get_index()
+        facts = self.list_facts()
+        if not facts:
+            return ""
+        lines = ["# Memory Index", ""]
+        for topic in self.durable.TOPIC_FILES:
+            selected = [fact for fact in facts if fact.topic == topic]
+            if not selected:
+                continue
+            lines.append(f"## {topic} ({len(selected)} facts)")
+            for fact in selected:
+                ref = f" [run: {fact.source_ref[:8]}]" if fact.source_ref else ""
+                lines.append(f"  - {fact.content}{ref}")
+            lines.append("")
+        return "\n".join(lines)
 
     def list_facts(self, topic: str = "") -> list[MemoryFact]:
-        return self.durable.list_facts(topic)
+        stored = self.memory_store.list_stored_facts()
+        controlled = {
+            (fact.topic, " ".join(fact.content.split()).casefold()) for fact in stored
+        }
+        facts = [
+            MemoryFact(
+                topic=fact.topic,
+                content=fact.content,
+                source=fact.source,
+                source_ref=fact.source_ref,
+                created_at=fact.created_at,
+                status="active",
+            )
+            for fact in stored
+            if fact.status == "active" and (not topic or fact.topic == topic)
+        ]
+        for fact in self.durable.list_facts(topic):
+            key = (fact.topic, " ".join(fact.content.split()).casefold())
+            if key not in controlled:
+                facts.append(fact)
+        return facts
 
     def propose_dream(
         self, *, session_id: str = "", run_id: str = "", reflection_id: str = ""
@@ -171,6 +214,84 @@ class MemoryManager:
 
     def list_memory_events(self, proposal_id: str | None = None) -> list[MemoryEvent]:
         return self.memory_store.list_events(proposal_id)
+
+    def list_stored_facts(self, status: str | None = None) -> list[MemoryStoredFact]:
+        return self.memory_store.list_stored_facts(status)
+
+    def list_fact_events(self, content_hash: str | None = None) -> list[MemoryFactEvent]:
+        return self.memory_store.list_fact_events(content_hash)
+
+    def retract_fact(
+        self,
+        content_hash: str,
+        *,
+        expected_revision: int,
+        reason: str,
+        actor_ref: str,
+    ) -> MemoryStoredFact:
+        return self.memory_store.retract_fact(
+            content_hash,
+            expected_revision=expected_revision,
+            reason=reason,
+            actor_ref=actor_ref,
+        )
+
+    def create_correction_proposal(
+        self,
+        content_hash: str,
+        replacement: str,
+        *,
+        expected_revision: int,
+        session_id: str,
+        run_id: str = "",
+        source_ref: str = "",
+        proposal_id: str | None = None,
+    ) -> MemoryProposal:
+        current = self.memory_store.get_fact(content_hash)
+        if (
+            current is None
+            or current.status != "active"
+            or current.revision != expected_revision
+        ):
+            raise MemoryConflictError("memory correction target is not active")
+        return self.create_proposal(
+            [
+                MemoryCandidate(
+                    content=replacement,
+                    topic=current.topic,
+                    source="memory_correction",
+                    source_ref=source_ref or current.source_ref,
+                    supersedes_content_hash=current.content_hash,
+                )
+            ],
+            session_id=session_id,
+            run_id=run_id,
+            reflection_id=f"correction:{current.content_hash[:16]}",
+            proposal_id=proposal_id,
+        )
+
+    def consolidate(
+        self,
+        evidence: list[EpisodicEvidence],
+        *,
+        session_id: str,
+        run_id: str,
+        proposal_id: str | None = None,
+    ) -> tuple[MemoryConsolidationResult, MemoryProposal | None]:
+        result = consolidate_evidence(
+            evidence,
+            self.memory_store.list_stored_facts("active"),
+        )
+        proposal = None
+        if result.candidates:
+            proposal = self.create_proposal(
+                list(result.candidates),
+                session_id=session_id,
+                run_id=run_id,
+                reflection_id=f"consolidation:{run_id}",
+                proposal_id=proposal_id,
+            )
+        return result, proposal
 
     def approve_dream(self) -> bool:
         """Write the pending proposal to durable files and clear it.
