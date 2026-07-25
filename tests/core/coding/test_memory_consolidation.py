@@ -72,3 +72,30 @@ def test_retracted_markdown_projection_is_not_returned_to_context(tmp_path: Path
     assert "Default to verbose answers" in manager.durable.get_index()
     assert "Default to verbose answers" not in manager.get_index()
     assert manager.list_facts() == []
+
+
+def test_explicit_remember_uses_canonical_store_and_dream_ignores_retracted_projection(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = MemoryManager(tmp_path / "storage", workspace)
+
+    remembered = manager.remember("Prefer concise answers", source_ref="user-choice")
+
+    stored = manager.list_stored_facts("active")
+    assert len(stored) == 1
+    assert stored[0].content == remembered.content
+    assert [event.event_type for event in manager.list_fact_events(stored[0].content_hash)] == [
+        "fact_activated"
+    ]
+    manager.retract_fact(
+        stored[0].content_hash,
+        expected_revision=1,
+        reason="Preference changed",
+        actor_ref="session-1",
+    )
+
+    assert "Prefer concise answers" in manager.durable.get_index()
+    assert manager.propose_dream() == []
+    assert manager.pending_proposal is None

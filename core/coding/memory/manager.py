@@ -80,8 +80,30 @@ class MemoryManager:
     def remember(
         self, content: str, topic: str = "project-conventions", source_ref: str = ""
     ) -> MemoryFact:
-        """Explicitly remember a fact."""
-        return self.durable.remember(content, topic=topic, source_ref=source_ref)
+        """Persist an explicit user-directed fact through the canonical audit chain."""
+        candidate = MemoryCandidate(
+            content=content,
+            topic=topic,
+            source="explicit_remember",
+            source_ref=source_ref,
+        )
+        proposal = self.create_proposal(
+            [candidate],
+            reflection_id="explicit_remember",
+            proposal_id=f"explicit_{uuid.uuid4().hex}",
+        )
+        approved = self.approve(proposal.proposal_id, proposal.revision)
+        stored = self.memory_store.get_fact(candidate.content_hash)
+        if approved.status != "approved" or stored is None:
+            raise RuntimeError("explicit memory approval did not persist a fact")
+        return MemoryFact(
+            topic=stored.topic,
+            content=stored.content,
+            source=stored.source,
+            source_ref=stored.source_ref,
+            created_at=stored.created_at,
+            status="active",
+        )
 
     def get_context_block(self) -> str:
         """Return combined memory context for prompt injection."""
@@ -142,7 +164,7 @@ class MemoryManager:
         Persists the generated proposals as the pending proposal so they can be
         approved or rejected via ``approve_dream`` / ``reject_dream``.
         """
-        facts = self.durable.list_facts()
+        facts = self.list_facts()
         proposals = self.durable.propose_dream(facts)
         if proposals:
             self._proposal_id = reflection_id or f"dream_{uuid.uuid4().hex}"
