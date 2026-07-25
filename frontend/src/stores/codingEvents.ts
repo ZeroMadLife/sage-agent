@@ -156,6 +156,7 @@ export function applyCodingEvent(
   }
   if (event.type === 'context_usage_updated') {
     state.contextChars.value = event.used_tokens
+    if (event.budget_scope === 'graph_working_set') return {}
     const previous = state.contextSnapshot.value
     state.contextSnapshot.value = {
       configured: true,

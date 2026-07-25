@@ -30,6 +30,7 @@ from sage_harness import (
     render_deferred_tool_index,
 )
 from sage_harness.middleware import (
+    ContextCompactionMiddleware,
     MiddlewareSpec,
     ToolResultArtifactMiddleware,
     build_default_registry,
@@ -64,6 +65,22 @@ class SageHarnessRuntimeAdapter:
         self.checkpointer = checkpointer
         self.config = config or HarnessConfig()
         registry = build_default_registry()
+        if self.config.context_compaction_enabled:
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "context_compaction",
+                    lambda config: ContextCompactionMiddleware(
+                        model,
+                        working_set_tokens=config.context_working_set_tokens,
+                        keep_tokens=config.context_keep_tokens,
+                        summary_input_tokens=config.context_summary_input_tokens,
+                        static_overhead_tokens=config.context_static_overhead_tokens,
+                        min_savings_ratio=config.context_min_savings_ratio,
+                        cooldown_seconds=config.context_compaction_cooldown_seconds,
+                    ),
+                ),
+                after="durable_context",
+            )
         if artifact_store is not None:
             registry = registry.with_spec(
                 MiddlewareSpec(

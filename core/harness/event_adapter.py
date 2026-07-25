@@ -158,6 +158,9 @@ class HarnessEventAdapter:
             return ()
         message = payload[0]
         metadata = payload[1] if len(payload) > 1 and isinstance(payload[1], Mapping) else {}
+        graph_node = str(metadata.get("langgraph_node", ""))
+        if graph_node.startswith("ContextCompactionMiddleware."):
+            return ()
         projected = message_payload(message)
         message_type = str(projected.get("type", ""))
         content = projected.get("content", "")
@@ -448,12 +451,23 @@ class HarnessEventAdapter:
                 ),
             )
 
-        if event_type == "context_usage_updated":
+        if event_type in {
+            "context_usage_updated",
+            "context_compaction_started",
+            "context_compaction_completed",
+            "context_compaction_failed",
+        }:
             event_payload = {str(key): _bounded_value(value) for key, value in payload.items()}
             return (
                 self._event(
                     "context",
-                    "completed",
+                    (
+                        "running"
+                        if event_type == "context_compaction_started"
+                        else "error"
+                        if event_type == "context_compaction_failed"
+                        else "completed"
+                    ),
                     event_payload,
                     source_event_id=source_event_id,
                 ),

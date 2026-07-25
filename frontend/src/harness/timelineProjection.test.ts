@@ -263,6 +263,30 @@ describe('harness timeline projection', () => {
     }))
   })
 
+  it('labels graph working-set pressure without presenting it as the model window', () => {
+    const projection = projectLatestCodingHarness([
+      codingEvent(1, 'context', {
+        type: 'context_usage_updated',
+        budget_scope: 'graph_working_set',
+        used_tokens: 29_000,
+        working_set_tokens: 32_000,
+        effective_limit_tokens: 32_000,
+      }),
+      codingEvent(2, 'context', {
+        type: 'context_compaction_completed',
+        budget_scope: 'graph_working_set',
+        after_tokens: 12_500,
+        working_set_tokens: 32_000,
+      }),
+    ])
+
+    expect(projection.runtimeResources).toContainEqual(expect.objectContaining({
+      id: 'context-budget',
+      label: '图工作集',
+      detail: '12500 / 32000 tokens',
+    }))
+  })
+
   it('projects retrieval gate decisions and actual source hits without query content', () => {
     const projection = projectLatestCodingHarness([
       codingEvent(1, 'harness', {

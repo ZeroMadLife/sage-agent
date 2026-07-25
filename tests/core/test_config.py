@@ -33,6 +33,11 @@ def test_harness_budget_defaults_allow_long_evidence_runs() -> None:
     assert settings.sage_harness_max_tool_calls == 64
     assert settings.sage_harness_max_run_tokens == 250_000
     assert settings.sage_harness_max_run_seconds == 1_800.0
+    assert settings.sage_harness_context_compaction_enabled is True
+    assert settings.sage_harness_context_working_set_tokens == 32_000
+    assert settings.sage_harness_context_keep_tokens == 12_000
+    assert settings.sage_harness_context_summary_input_tokens == 32_000
+    assert settings.sage_harness_context_static_overhead_tokens == 8_000
 
 
 def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:

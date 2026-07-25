@@ -186,12 +186,14 @@ class ContextUsageUpdatedEvent(RunEventBase):
     run_id: str
     used_tokens: int = Field(ge=0)
     model_limit_tokens: int = Field(gt=0)
-    output_reserve_tokens: int = Field(gt=0)
+    output_reserve_tokens: int = Field(ge=0)
     effective_limit_tokens: int = Field(gt=0)
     usage_ratio: float = Field(ge=0)
     level: Literal["normal", "budget", "snip", "compact", "high", "emergency"]
     estimated: bool
     compactable: bool
+    budget_scope: Literal["hard_window", "graph_working_set"] = "hard_window"
+    working_set_tokens: int | None = Field(default=None, gt=0)
 
 
 class ContextCompactionStartedEvent(RunEventBase):

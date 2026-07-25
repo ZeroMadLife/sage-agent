@@ -127,6 +127,11 @@ class Settings(BaseSettings):
     sage_harness_max_tool_calls: int = Field(default=64, ge=1, le=512)
     sage_harness_max_run_tokens: int = Field(default=250_000, ge=1_000, le=5_000_000)
     sage_harness_max_run_seconds: float = Field(default=1_800.0, ge=30.0, le=7_200.0)
+    sage_harness_context_compaction_enabled: bool = True
+    sage_harness_context_working_set_tokens: int = Field(default=32_000, ge=1_000)
+    sage_harness_context_keep_tokens: int = Field(default=12_000, ge=500)
+    sage_harness_context_summary_input_tokens: int = Field(default=32_000, ge=500)
+    sage_harness_context_static_overhead_tokens: int = Field(default=8_000, ge=0)
     sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"

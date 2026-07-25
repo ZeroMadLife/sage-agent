@@ -19,6 +19,7 @@ from sage_harness.middleware.builtin import (
     neutralize_remote_content_text,
     neutralize_untrusted_text,
 )
+from sage_harness.middleware.context_compaction import ContextCompactionMiddleware
 from sage_harness.middleware.durable_context import DurableContextMiddleware
 from sage_harness.middleware.registry import (
     MiddlewareRegistry,
@@ -30,6 +31,7 @@ from sage_harness.subagents import SubagentLifecycleMiddleware
 
 __all__ = [
     "CapabilityTelemetryMiddleware",
+    "ContextCompactionMiddleware",
     "DeferredToolFilterMiddleware",
     "DurableContextMiddleware",
     "InputSanitizationMiddleware",

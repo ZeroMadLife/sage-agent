@@ -310,6 +310,25 @@ def _web_save_source_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _artifact_load_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id=local_tool_capability_id("load_artifact"),
+        name="load_artifact",
+        origin="local",
+        kind="tool",
+        revision="tool-artifact-byte-range-v1",
+        description="Read one bounded byte range from a same-session tool artifact.",
+        surfaces=_ALL_SURFACES,
+        risk="medium",
+        permission="runtime",
+        deferred=False,
+        remote_content=True,
+        availability="available",
+        timeout_seconds=5.0,
+        tags=("meta", "artifact", "read-only"),
+    )
+
+
 def build_sage_capability_registry(
     *,
     tools: Mapping[str, object],
@@ -318,6 +337,7 @@ def build_sage_capability_registry(
     web_search_available: bool = False,
     web_fetch_available: bool = False,
     web_source_proposal_available: bool = False,
+    artifact_load_available: bool = False,
     research_subagent_available: bool = False,
     practice_subagent_available: bool = False,
 ) -> CapabilityRegistry:
@@ -336,6 +356,8 @@ def build_sage_capability_registry(
         descriptors.append(_web_fetch_descriptor())
     if web_source_proposal_available:
         descriptors.append(_web_save_source_descriptor())
+    if artifact_load_available:
+        descriptors.append(_artifact_load_descriptor())
     return CapabilityRegistry(descriptors)
 
 

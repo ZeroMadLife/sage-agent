@@ -16,6 +16,13 @@ class HarnessConfig:
     max_run_tokens: int = 250_000
     recursion_limit: int = 100
     max_run_seconds: float = 1_800.0
+    context_compaction_enabled: bool = True
+    context_working_set_tokens: int = 32_000
+    context_keep_tokens: int = 12_000
+    context_summary_input_tokens: int = 32_000
+    context_static_overhead_tokens: int = 8_000
+    context_min_savings_ratio: float = 0.10
+    context_compaction_cooldown_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         if self.max_model_calls < 1:
@@ -28,6 +35,24 @@ class HarnessConfig:
             raise ValueError("recursion_limit must be between 1 and 1000")
         if not math.isfinite(self.max_run_seconds) or self.max_run_seconds <= 0:
             raise ValueError("max_run_seconds must be finite and positive")
+        if self.context_working_set_tokens < 1:
+            raise ValueError("context_working_set_tokens must be positive")
+        if not 1 <= self.context_keep_tokens < self.context_working_set_tokens:
+            raise ValueError(
+                "context_keep_tokens must be positive and below context_working_set_tokens"
+            )
+        if self.context_summary_input_tokens < 1:
+            raise ValueError("context_summary_input_tokens must be positive")
+        if self.context_static_overhead_tokens < 0:
+            raise ValueError("context_static_overhead_tokens must be non-negative")
+        if not math.isfinite(self.context_min_savings_ratio) or not (
+            0.0 <= self.context_min_savings_ratio < 1.0
+        ):
+            raise ValueError("context_min_savings_ratio must be within 0..1")
+        if not math.isfinite(self.context_compaction_cooldown_seconds) or (
+            self.context_compaction_cooldown_seconds <= 0
+        ):
+            raise ValueError("context_compaction_cooldown_seconds must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)

@@ -218,6 +218,10 @@ def _retrieval_scoped_harness_config(
         max_tool_calls=min(effective.max_tool_calls, 4),
         max_run_tokens=min(effective.max_run_tokens, 64_000),
         max_run_seconds=min(effective.max_run_seconds, 120.0),
+        context_working_set_tokens=min(effective.context_working_set_tokens, 16_000),
+        context_keep_tokens=min(effective.context_keep_tokens, 8_000),
+        context_summary_input_tokens=min(effective.context_summary_input_tokens, 12_000),
+        context_static_overhead_tokens=min(effective.context_static_overhead_tokens, 4_000),
     )
 
 

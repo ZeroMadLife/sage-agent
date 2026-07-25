@@ -450,6 +450,11 @@ def create_app(
         max_tool_calls=settings.sage_harness_max_tool_calls,
         max_run_tokens=settings.sage_harness_max_run_tokens,
         max_run_seconds=settings.sage_harness_max_run_seconds,
+        context_compaction_enabled=settings.sage_harness_context_compaction_enabled,
+        context_working_set_tokens=settings.sage_harness_context_working_set_tokens,
+        context_keep_tokens=settings.sage_harness_context_keep_tokens,
+        context_summary_input_tokens=settings.sage_harness_context_summary_input_tokens,
+        context_static_overhead_tokens=settings.sage_harness_context_static_overhead_tokens,
     )
     app.state.coding_sandbox_provider = normalize_sandbox_provider(
         settings.sage_coding_sandbox_provider

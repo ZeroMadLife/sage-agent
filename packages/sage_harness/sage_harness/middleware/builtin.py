@@ -381,7 +381,10 @@ class ToolResultArtifactMiddleware(AgentMiddleware[SageThreadState, HarnessRunCo
         request: ToolCallRequest,
         result: ToolMessage | Command[Any],
     ) -> ToolMessage | Command[Any]:
-        if not isinstance(result, ToolMessage) or result.name == "knowledge_search":
+        if not isinstance(result, ToolMessage) or result.name in {
+            "knowledge_search",
+            "load_artifact",
+        }:
             return result
         if result.artifact is not None or not isinstance(result.content, str):
             return result

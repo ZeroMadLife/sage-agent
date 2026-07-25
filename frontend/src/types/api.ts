@@ -910,6 +910,8 @@ export type CodingContextUsageEvent = CodingEventMeta & {
   level: 'normal' | 'budget' | 'snip' | 'compact' | 'high' | 'emergency'
   estimated: boolean
   compactable: boolean
+  budget_scope?: 'hard_window' | 'graph_working_set'
+  working_set_tokens?: number
 }
 
 export type CodingCompactionStartedEvent = CodingEventMeta & {
