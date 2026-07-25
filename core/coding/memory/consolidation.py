@@ -32,9 +32,7 @@ def consolidate_evidence(
 
     inputs = tuple(evidence)
     seen = {
-        (fact.topic, _normalized(fact.content))
-        for fact in active_facts
-        if fact.status == "active"
+        (fact.topic, _normalized(fact.content)) for fact in active_facts if fact.status == "active"
     }
     candidates: list[MemoryCandidate] = []
     duplicates = 0

@@ -215,8 +215,7 @@ def evaluate_retrieval_v2(
         )
         ideal = sorted(relevance.values(), reverse=True)[:top_k]
         ideal_dcg = sum(
-            ((2**grade) - 1) / math.log2(rank + 1)
-            for rank, grade in enumerate(ideal, start=1)
+            ((2**grade) - 1) / math.log2(rank + 1) for rank, grade in enumerate(ideal, start=1)
         )
         cases.append(
             KnowledgeBenchmarkCaseV2(

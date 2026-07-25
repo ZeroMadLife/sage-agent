@@ -93,8 +93,9 @@ def validate_manifest(repo_root: Path, manifest: BenchmarkManifest) -> None:
         for path in corpus_root.rglob("*.md")
         if path.is_file()
     }
-    if actual != expected:
-        raise ValueError("benchmark corpus file set does not match manifest")
+    missing = expected - actual
+    if missing:
+        raise ValueError("benchmark corpus files are missing from corpus root")
     for item in manifest.files:
         if _sha256(_inside(corpus_root, item.path)) != item.sha256:
             raise ValueError(f"benchmark corpus revision changed: {item.path}")

@@ -314,9 +314,7 @@ def test_container_shell_nonzero_exit_is_returned_as_structured_tool_error(
     monkeypatch.setattr(sandbox, "_ensure_started", lambda: None)
     monkeypatch.setattr(sandbox, "_docker_run", lambda *_args, **_kwargs: completed)
 
-    result = asyncio.run(
-        sandbox.invoke("run_shell", {"command": "touch /blocked", "timeout": 5})
-    )
+    result = asyncio.run(sandbox.invoke("run_shell", {"command": "touch /blocked", "timeout": 5}))
 
     assert result.is_error is True
     assert "exit_code: 13" in result.content

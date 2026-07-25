@@ -337,9 +337,7 @@ class ContainerWorkspaceSandbox:
         ]
 
     def _inspect_container(self) -> dict[str, Any]:
-        raw = self._docker_capture(
-            ["inspect", "--format", "{{json .}}", self._container_name]
-        )
+        raw = self._docker_capture(["inspect", "--format", "{{json .}}", self._container_name])
         try:
             payload: Any = json.loads(raw)
         except (TypeError, ValueError) as exc:
@@ -360,10 +358,17 @@ class ContainerWorkspaceSandbox:
         config = payload.get("Config", {})
         host = payload.get("HostConfig", {})
         state = payload.get("State", {})
-        if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(state, dict):
+        if (
+            not isinstance(config, dict)
+            or not isinstance(host, dict)
+            or not isinstance(state, dict)
+        ):
             return ["invalid_inspect_payload"]
         labels = config.get("Labels", {})
-        if not isinstance(labels, dict) or labels.get("com.sage.security_profile") != _SECURITY_PROFILE:
+        if (
+            not isinstance(labels, dict)
+            or labels.get("com.sage.security_profile") != _SECURITY_PROFILE
+        ):
             violations.append("security_profile")
         if config.get("Image") != self._image:
             violations.append("image_reference")
@@ -395,11 +400,15 @@ class ContainerWorkspaceSandbox:
         if not required_tmpfs.issubset(set(options.split(","))):
             violations.append("tmpfs")
         ulimits = host.get("Ulimits", [])
-        actual_ulimits = {
-            str(item.get("Name")): (item.get("Soft"), item.get("Hard"))
-            for item in ulimits
-            if isinstance(item, dict)
-        } if isinstance(ulimits, list) else {}
+        actual_ulimits = (
+            {
+                str(item.get("Name")): (item.get("Soft"), item.get("Hard"))
+                for item in ulimits
+                if isinstance(item, dict)
+            }
+            if isinstance(ulimits, list)
+            else {}
+        )
         expected_ulimits = {
             "nofile": (256, 256),
             "nproc": (256, 256),
@@ -440,7 +449,9 @@ class ContainerWorkspaceSandbox:
             "Docker Desktop" in operating_system
         )
         if not has_seccomp or not isolated_host:
-            raise SandboxPolicyError("container sandbox requires rootless Docker or Docker Desktop with seccomp")
+            raise SandboxPolicyError(
+                "container sandbox requires rootless Docker or Docker Desktop with seccomp"
+            )
 
     def _invoke_sync(
         self, operation: SandboxOperation, arguments: dict[str, Any]

@@ -13,8 +13,8 @@ from core.coding.persistence.memory_store import (
     MemoryFactEvent,
     MemoryProposal,
     MemoryStore,
-    MemoryStoreError,
     MemoryStoredFact,
+    MemoryStoreError,
 )
 from core.coding.persistence.run_store import RunStore
 from core.coding.persistence.session_events import SessionEventBus

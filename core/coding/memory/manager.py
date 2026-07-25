@@ -135,9 +135,7 @@ class MemoryManager:
 
     def list_facts(self, topic: str = "") -> list[MemoryFact]:
         stored = self.memory_store.list_stored_facts()
-        controlled = {
-            (fact.topic, " ".join(fact.content.split()).casefold()) for fact in stored
-        }
+        controlled = {(fact.topic, " ".join(fact.content.split()).casefold()) for fact in stored}
         facts = [
             MemoryFact(
                 topic=fact.topic,
@@ -270,11 +268,7 @@ class MemoryManager:
         proposal_id: str | None = None,
     ) -> MemoryProposal:
         current = self.memory_store.get_fact(content_hash)
-        if (
-            current is None
-            or current.status != "active"
-            or current.revision != expected_revision
-        ):
+        if current is None or current.status != "active" or current.revision != expected_revision:
             raise MemoryConflictError("memory correction target is not active")
         return self.create_proposal(
             [

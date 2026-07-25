@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -132,9 +133,10 @@ def test_committed_v2_dataset_has_frozen_distribution() -> None:
         "multi_document",
         "unanswerable",
     }
-    assert {category: sum(item.category == category for item in queries) for category in {
-        item.category for item in queries
-    }} == {
+    assert {
+        category: sum(item.category == category for item in queries)
+        for category in {item.category for item in queries}
+    } == {
         "legacy_migrated": 50,
         "real_user": 60,
         "paraphrase": 30,
@@ -154,5 +156,44 @@ def test_committed_v2_manifest_matches_dataset_and_corpus() -> None:
     )
 
     assert manifest.benchmark_id == "sage-knowledge-v2"
-    assert manifest.benchmark_revision == "2026-07-25.1"
-    assert len(manifest.files) == 17
+    assert manifest.benchmark_revision == "2026-07-25.2"
+    assert len(manifest.files) == 16
+
+
+def test_manifest_uses_an_explicit_corpus_allowlist(tmp_path: Path) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    selected = corpus / "selected.md"
+    selected.write_text("# Selected\n", encoding="utf-8")
+    (corpus / "report-not-in-benchmark.md").write_text("# Report\n", encoding="utf-8")
+    dataset = tmp_path / "dataset.jsonl"
+    dataset.write_text(
+        '{"id":"q1","query":"selected","category":"real_user","split":"test",'
+        '"answerable":true,"provenance":"test","relevant_passages":['
+        '{"source":"selected.md","section":"Selected","relevance":3}],'
+        '"required_claims":[],"forbidden_claims":[]}\n',
+        encoding="utf-8",
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "benchmark_id": "test",
+                "benchmark_revision": "1",
+                "dataset": "dataset.jsonl",
+                "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+                "corpus_root": "corpus",
+                "files": [
+                    {
+                        "path": "selected.md",
+                        "sha256": hashlib.sha256(selected.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = load_manifest(tmp_path, manifest_path)
+
+    assert [item.path for item in manifest.files] == ["selected.md"]

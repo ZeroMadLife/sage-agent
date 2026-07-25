@@ -242,12 +242,15 @@ def test_fact_correction_and_retraction_keep_lifecycle_evidence(tmp_path: Path) 
     assert correction.status_code == 200
     correction_body = correction.json()
     assert correction_body["status"] == "pending"
-    assert correction_body["candidates"][0]["supersedes_content_hash"] == original_fact[
-        "content_hash"
-    ]
-    assert client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active").json()[
-        "facts"
-    ][0]["content"] == "Use SQLite as canonical memory evidence"
+    assert (
+        correction_body["candidates"][0]["supersedes_content_hash"] == original_fact["content_hash"]
+    )
+    assert (
+        client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active").json()["facts"][0][
+            "content"
+        ]
+        == "Use SQLite as canonical memory evidence"
+    )
 
     corrected = client.post(
         f"/api/v1/coding/{session_id}/memory/proposals/{correction_body['proposal_id']}/approve",
@@ -268,9 +271,7 @@ def test_fact_correction_and_retraction_keep_lifecycle_evidence(tmp_path: Path) 
     assert client.get(f"/api/v1/coding/{session_id}/memory/facts?status=active").json() == {
         "facts": []
     }
-    detail = client.get(
-        f"/api/v1/coding/{session_id}/memory/facts/{replacement['content_hash']}"
-    )
+    detail = client.get(f"/api/v1/coding/{session_id}/memory/facts/{replacement['content_hash']}")
     assert [event["event_type"] for event in detail.json()["events"]] == [
         "fact_activated",
         "fact_retracted",
