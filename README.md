@@ -115,7 +115,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
-| **RAG Benchmark v2** | 固定 200 条分层查询、17 份语料与 915 chunks；真实语义双路相对 Hashing 基线将 Recall@10 从 0.569 提升到 0.819，NDCG@10 从 0.428 提升到 0.692 | 20 条无答案题的 abstention accuracy 仍为 0 |
+| **RAG Benchmark v2** | 固定 200 条分层查询、16 份语料与 879 chunks；真实语义双路相对 Hashing 基线将 Recall@10 从 0.578 提升到 0.814，NDCG@10 从 0.444 提升到 0.695 | 20 条无答案题的 abstention accuracy 仍为 0 |
 | **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 

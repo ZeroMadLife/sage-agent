@@ -19,9 +19,9 @@ Redis、Vue 3、TypeScript、Docker
 **核心设计与实现**：
 
 - **混合检索与可复现评测**：针对旧 50 条文档级查询无法映射当前语料的问题，重建 200 条
-  分层 Benchmark 与 section 级 graded qrels，以 SHA-256 固定 17 份语料和 915 个 chunks；
-  通过 FTS5 BM25 + 真实语义 Embedding 双路召回与 RRF 融合，使 Recall@10 从 0.569 提升至
-  0.819（+43.9%）、NDCG@10 从 0.428 提升至 0.692（+61.8%），并用 20 条无答案题识别出
+  分层 Benchmark 与 section 级 graded qrels，以 SHA-256 固定 16 份语料和 879 个 chunks；
+  通过 FTS5 BM25 + `text-embedding-v4` 双路召回与 RRF 融合，使 Recall@10 从 0.578 提升至
+  0.814（+40.9%）、NDCG@10 从 0.444 提升至 0.695（+56.3%），并用 20 条无答案题识别出
   abstention accuracy 为 0 的真实缺口。
 - **上下文预算与 Artifact 按需装载**：针对 Shell、Fetch 等大工具结果反复进入 prompt 导致
   上下文膨胀，将超过 16 KiB 的完整结果 offload 到 session/run scoped Artifact Store，模型
@@ -43,8 +43,8 @@ Redis、Vue 3、TypeScript、Docker
 ## 更短的四条版
 
 - 构建 FTS5 BM25 + 语义 Embedding + RRF 混合检索，重建 200 条 section 级 Benchmark；在
-  17 份语料/915 chunks 上将 Recall@10 从 0.569 提升至 0.819，NDCG@10 从 0.428 提升至
-  0.692，并以无答案集显式暴露 abstention 缺口。
+  16 份语料/879 chunks 上将 Recall@10 从 0.578 提升至 0.814，NDCG@10 从 0.444 提升至
+  0.695，并以无答案集显式暴露 abstention 缺口。
 - 面向 Shell/Fetch 大结果导致的 prompt 膨胀，设计六级上下文压力控制与 Artifact offload：
   超过 16 KiB 的全文按 session/run 保存，模型仅消费 200 行/12,000 字符预览和稳定引用，
   授权宿主路径可 scoped read，配合 turn-boundary compaction 与 emergency 阻断。
@@ -56,7 +56,7 @@ Redis、Vue 3、TypeScript、Docker
 
 ## 投递边界
 
-- `+43.9%` 与 `+61.8%` 是真实语义 Provider 相对 Hashing 离线基线，不是相对上一生产版本；
+- `+40.9%` 与 `+56.3%` 是真实语义 Provider 相对 Hashing 离线基线，不是相对上一生产版本；
 - `10/10` 是 Docker Desktop Level 1 live audit，不等同于内核级逃逸证明；
 - `40/40` 是确定性 Memory 生命周期场景，不是自然对话记忆准确率；
 - 当前公开演示为普通 HTTP，正式投递应优先使用备案后的 HTTPS；

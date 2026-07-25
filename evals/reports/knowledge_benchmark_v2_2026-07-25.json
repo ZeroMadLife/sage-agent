@@ -1,11 +1,11 @@
 {
   "benchmark_id": "sage-knowledge-v2",
-  "benchmark_revision": "2026-07-25.1",
-  "source_commit": "a03802dcfbf5cea28fea54b204944d42a4e44e1f",
+  "benchmark_revision": "2026-07-25.2",
+  "source_commit": "8ed67c23f931eea123e6d85717b4acaa3bcd5437",
   "source_dirty": false,
-  "dataset_sha256": "3b54e55a631c164721772a3477e9b0ce5433aba7be51348bcd72b8c3d0d1d1b7",
-  "corpus_file_count": 17,
-  "indexed_chunk_count": 915,
+  "dataset_sha256": "095707c016154ebf8b7657bfc29a765aea0ceab63c375727ec70ef0359c77c0c",
+  "corpus_file_count": 16,
+  "indexed_chunk_count": 879,
   "query_count": 200,
   "answerable_query_count": 180,
   "unanswerable_query_count": 20,
@@ -14,42 +14,42 @@
     "hashing_fts5_rrf": {
       "provider": "sage.hashing@1.0.0",
       "supports_semantic_recall": false,
-      "recall_at_10": 0.5694444444444444,
-      "mrr": 0.38928791887125225,
-      "ndcg_at_10": 0.42789458671931513,
-      "hit_rate_at_10": 0.6,
+      "recall_at_10": 0.5777777777777777,
+      "mrr": 0.4092195767195767,
+      "ndcg_at_10": 0.4443847971978197,
+      "hit_rate_at_10": 0.6111111111111112,
       "unanswerable_accuracy": 0.0,
-      "latency_ms": {"p50": 28.913, "p95": 32.014}
+      "latency_ms": {"p50": 42.228, "p95": 62.703}
     },
     "dashscope_fts5_rrf": {
-      "provider": "dashscope.text-embedding-v3@api-v1",
+      "provider": "dashscope.text-embedding-v4@api-v1",
       "supports_semantic_recall": true,
-      "recall_at_10": 0.8194444444444444,
-      "mrr": 0.6662389770723104,
-      "ndcg_at_10": 0.692151337373443,
-      "hit_rate_at_10": 0.8555555555555555,
+      "recall_at_10": 0.8138888888888889,
+      "mrr": 0.6681547619047619,
+      "ndcg_at_10": 0.69460682625074,
+      "hit_rate_at_10": 0.85,
       "unanswerable_accuracy": 0.0,
-      "latency_ms": {"p50": 165.349, "p95": 174.236},
+      "latency_ms": {"p50": 217.732, "p95": 306.59},
       "category_recall_at_10": {
         "real_user": 0.8333333333333334,
-        "paraphrase": 0.8666666666666667,
-        "hard_negative": 0.85,
-        "multi_document": 0.525
+        "paraphrase": 0.8333333333333334,
+        "hard_negative": 0.8,
+        "multi_document": 0.625
       }
     }
   },
   "semantic_vs_hashing": {
     "absolute_delta": {
-      "recall_at_10": 0.25,
-      "mrr": 0.27695105820105814,
-      "ndcg_at_10": 0.2642567506541279,
-      "hit_rate_at_10": 0.25555555555555554
+      "recall_at_10": 0.23611111111111116,
+      "mrr": 0.25893518518518516,
+      "ndcg_at_10": 0.2502220290529203,
+      "hit_rate_at_10": 0.23888888888888882
     },
     "relative_improvement_pct": {
-      "recall_at_10": 43.90243902439024,
-      "mrr": 71.14298820371386,
-      "ndcg_at_10": 61.75744186908159,
-      "hit_rate_at_10": 42.59259259259258
+      "recall_at_10": 40.86538461538463,
+      "mrr": 63.27536606652229,
+      "ndcg_at_10": 56.30751336021357,
+      "hit_rate_at_10": 39.09090909090908
     }
   },
   "known_gap": "Both baselines returned results for all 20 unanswerable queries; calibrated abstention is not implemented."

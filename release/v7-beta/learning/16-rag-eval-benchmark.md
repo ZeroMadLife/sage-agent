@@ -1,6 +1,6 @@
 # 16 - RAG Benchmark v2：指标必须绑定当前语料与 Provider
 
-> Last verified against: `codex/harness-evidence-v2@a03802d` (2026-07-25)
+> Last verified against: `codex/harness-evidence-v2@8ed67c2` (2026-07-25)
 
 RAG 评测最容易犯的错误，是拿旧语料、旧映射和旧 Provider 产生的数字描述当前系统。
 Benchmark v2 首先解决证据可复现，再比较检索策略。
@@ -29,7 +29,7 @@ HashingEmbedding 是可离线运行的确定性基线，不支持语义召回。
 旧评测只有 50 条文档级 `relevant_sources`，并且从 V6 结构映射到 V7 时只剩 35 条可用。
 旧报告还引用了不在当前分支中的 Provider 脚本和缓存路径。
 
-这些数字可以作为历史实验记录，但不能证明当前 17 份语料、当前 chunk 和当前检索代码的
+这些数字可以作为历史实验记录，但不能证明当前 16 份语料、当前 chunk 和当前检索代码的
 效果。Benchmark v2 因而 fail closed：数据集、文件集合或任一语料 SHA 漂移，运行器直接
 终止，不静默重算标签。
 
@@ -59,15 +59,16 @@ HashingEmbedding 是可离线运行的确定性基线，不支持语义召回。
 
 ## 2026-07-25 clean baseline
 
-固定输入为 17 份 Markdown、915 active chunks、180 条可回答查询和 20 条无答案查询。
+固定输入为 16 份白名单 Markdown、879 active chunks、180 条可回答查询和 20 条无答案查询。
+本章是评测报告，不进入被评索引，避免答案和指标泄漏进语料。
 
 | 配置 | Recall@10 | MRR | NDCG@10 | HitRate@10 | P50 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| FTS5 + Hashing + RRF | 0.569 | 0.389 | 0.428 | 0.600 | 28.9 ms |
-| FTS5 + text-embedding-v3 + RRF | 0.819 | 0.666 | 0.692 | 0.856 | 165.3 ms |
+| FTS5 + Hashing + RRF | 0.578 | 0.409 | 0.444 | 0.611 | 42.2 ms |
+| FTS5 + text-embedding-v4 + RRF | 0.814 | 0.668 | 0.695 | 0.850 | 217.7 ms |
 
-语义双路相对 Hashing 基线：Recall@10 提升 43.9%，MRR 提升 71.1%，NDCG@10 提升
-61.8%。30 条改写题的 Recall@10 从 0.400 提升到 0.867，说明提升主要来自真实语义能力，
+语义双路相对 Hashing 基线：Recall@10 提升 40.9%，MRR 提升 63.3%，NDCG@10 提升
+56.3%。30 条改写题的 Recall@10 从 0.433 提升到 0.833，说明提升主要来自真实语义能力，
 不是把确定性哈希重新命名。
 
 ## 失败结果同样是结论
@@ -105,11 +106,11 @@ DASHSCOPE_API_KEY=... python scripts/benchmark_knowledge_retrieval_v2.py \
 - 当前数字只证明 retrieval，不证明最终回答 faithful 或 complete；
 - 没有可靠 abstention，无答案问题仍可能召回相似但无关内容；
 - 真实语义 Provider P50 高于离线基线，质量与延迟需要一起展示；
-- 语料规模是 17 文件 / 915 chunks，不得扩写为企业级知识库规模。
+- 语料规模是 16 文件 / 879 chunks，不得扩写为企业级知识库规模。
 
 ## 面试里可以这样收束
 
-Sage 不再引用旧语料产生的漂亮数字，而是冻结 200 条分层查询、section 级 qrels 和 17 份
+Sage 不再引用旧语料产生的漂亮数字，而是冻结 200 条分层查询、section 级 qrels 和 16 份
 语料 SHA，通过同一运行器比较离线 Hashing 与真实语义 Provider。语义双路将 Recall@10
-从 0.569 提升到 0.819；同时 20 条无答案题暴露出 abstention 为 0，下一阶段围绕阈值校准
+从 0.578 提升到 0.814；同时 20 条无答案题暴露出 abstention 为 0，下一阶段围绕阈值校准
 和回答生成评测继续闭环。
