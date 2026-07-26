@@ -1,0 +1,85 @@
+{
+  "benchmark_id": "sage-knowledge-v2",
+  "benchmark_revision": "2026-07-26.1",
+  "dataset_sha256": "095707c016154ebf8b7657bfc29a765aea0ceab63c375727ec70ef0359c77c0c",
+  "source_commit": "721f9cfce2a10fa7ae483972c8f92fcec3fad47c",
+  "source_dirty": false,
+  "top_k": 10,
+  "provider": {
+    "model_id": "sage.hashing",
+    "model_revision": "1.0.0",
+    "dimensions": 256,
+    "supports_semantic_recall": false
+  },
+  "index": {
+    "backend": "sqlite-fts5+hashing",
+    "embedding_model": "sage.hashing",
+    "embedding_revision": "1.0.0",
+    "corpus_revision": "kcorpus_6d06ec83401b784fa8ec6dcd6b9fcfe3",
+    "relevance_policy_id": null,
+    "abstention_enabled": false,
+    "revision_count": 16,
+    "indexed_revision_count": 16,
+    "active_chunk_count": 886,
+    "total_chunk_count": 886,
+    "error_count": 0
+  },
+  "policy": {
+    "policy_id": "krp_ce06e627099226df",
+    "benchmark_id": "sage-knowledge-v2",
+    "benchmark_revision": "2026-07-26.1",
+    "corpus_revision": "kcorpus_6d06ec83401b784fa8ec6dcd6b9fcfe3",
+    "embedding_model": "sage.hashing",
+    "embedding_revision": "1.0.0",
+    "top_k": 10,
+    "min_sparse_score": 8.415598087319283,
+    "min_dense_score": null,
+    "minimum_answerable_recall_ratio": 0.9,
+    "schema_version": 1
+  },
+  "dev_baseline": {
+    "query_count": 90,
+    "answerable_query_count": 80,
+    "unanswerable_query_count": 10,
+    "recall_at_k": 0.4625,
+    "precision_at_k": 0.051250000000000004,
+    "mrr": 0.334389880952381,
+    "ndcg_at_k": 0.35957034726333054,
+    "hit_rate": 0.5,
+    "unanswerable_accuracy": 0.0
+  },
+  "dev_calibrated": {
+    "query_count": 90,
+    "answerable_query_count": 80,
+    "unanswerable_query_count": 10,
+    "recall_at_k": 0.41875,
+    "precision_at_k": 0.04625,
+    "mrr": 0.32751488095238096,
+    "ndcg_at_k": 0.34458678529320746,
+    "hit_rate": 0.45,
+    "unanswerable_accuracy": 0.3
+  },
+  "test_baseline": {
+    "query_count": 60,
+    "answerable_query_count": 50,
+    "unanswerable_query_count": 10,
+    "recall_at_k": 0.66,
+    "precision_at_k": 0.07200000000000001,
+    "mrr": 0.4438333333333333,
+    "ndcg_at_k": 0.4843193501695719,
+    "hit_rate": 0.72,
+    "unanswerable_accuracy": 0.0
+  },
+  "test_calibrated": {
+    "query_count": 60,
+    "answerable_query_count": 50,
+    "unanswerable_query_count": 10,
+    "recall_at_k": 0.62,
+    "precision_at_k": 0.068,
+    "mrr": 0.4513333333333333,
+    "ndcg_at_k": 0.48177189296945905,
+    "hit_rate": 0.68,
+    "unanswerable_accuracy": 0.5
+  },
+  "candidate_count": 64
+}

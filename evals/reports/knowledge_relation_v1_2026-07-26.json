@@ -1,0 +1,546 @@
+{
+  "benchmark_id": "sage-knowledge-relation-v1",
+  "benchmark_revision": "sha256:3e7c0c26cd6045e52813c82b6ae9c32c471358838601337875892591397c09e1",
+  "dataset": "evals/knowledge_relation_benchmark_v1.jsonl",
+  "dataset_sha256": "3e7c0c26cd6045e52813c82b6ae9c32c471358838601337875892591397c09e1",
+  "corpus_benchmark_revision": "2026-07-26.1",
+  "source_commit": "721f9cfce2a10fa7ae483972c8f92fcec3fad47c",
+  "source_dirty": false,
+  "provider": {
+    "model_id": "sage.hashing",
+    "model_revision": "1.0.0",
+    "supports_semantic_recall": false
+  },
+  "relevance_policy_id": "krp_ce06e627099226df",
+  "query_count": 14,
+  "answerable_query_count": 12,
+  "unanswerable_query_count": 2,
+  "top_k": 10,
+  "baseline_all_recall_at_k": 0.25,
+  "graph_all_recall_at_k": 1.0,
+  "graph_gain": 0.75,
+  "graph_path_recall": 0.9166666666666666,
+  "graph_path_precision": 0.2894736842105263,
+  "unanswerable_accuracy": 1.0,
+  "latency_ms": {
+    "p50": 41.73366702161729,
+    "p95": 43.6299170833081
+  },
+  "cases": [
+    {
+      "query_id": "rel-dev-001",
+      "split": "dev",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "04-context-cost-governance.md",
+        "01-overall-architecture.md"
+      ],
+      "expanded_sources": [
+        "04-context-cost-governance.md",
+        "05-tools-execution-pipeline.md",
+        "00-reading-map.md",
+        "01-overall-architecture.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "04-context-cost-governance.md",
+          "target": "05-tools-execution-pipeline.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "04-context-cost-governance.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.5,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-002",
+      "split": "dev",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "05-tools-execution-pipeline.md",
+        "00-reading-map.md",
+        "10-subagents-research.md"
+      ],
+      "expanded_sources": [
+        "05-tools-execution-pipeline.md",
+        "06-permissions-approval-sandbox.md",
+        "04-context-cost-governance.md",
+        "00-reading-map.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "05-tools-execution-pipeline.md",
+          "target": "06-permissions-approval-sandbox.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "05-tools-execution-pipeline.md",
+          "target": "04-context-cost-governance.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "05-tools-execution-pipeline.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.3333333333333333,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-003",
+      "split": "dev",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "00-reading-map.md",
+        "06-permissions-approval-sandbox.md",
+        "12-security-audit.md",
+        "04-context-cost-governance.md",
+        "08-memory-dream.md",
+        "05-tools-execution-pipeline.md"
+      ],
+      "expanded_sources": [
+        "00-reading-map.md",
+        "06-permissions-approval-sandbox.md",
+        "05-tools-execution-pipeline.md",
+        "07-skills-commands.md",
+        "08-memory-dream.md",
+        "04-context-cost-governance.md",
+        "12-security-audit.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "06-permissions-approval-sandbox.md",
+          "target": "05-tools-execution-pipeline.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "06-permissions-approval-sandbox.md",
+          "target": "07-skills-commands.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "08-memory-dream.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "04-context-cost-governance.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.25,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-004",
+      "split": "dev",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "07-skills-commands.md",
+        "00-reading-map.md",
+        "05-tools-execution-pipeline.md",
+        "04-context-cost-governance.md"
+      ],
+      "expanded_sources": [
+        "07-skills-commands.md",
+        "00-reading-map.md",
+        "05-tools-execution-pipeline.md",
+        "08-memory-dream.md",
+        "06-permissions-approval-sandbox.md",
+        "04-context-cost-governance.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "07-skills-commands.md",
+          "target": "08-memory-dream.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "07-skills-commands.md",
+          "target": "06-permissions-approval-sandbox.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "07-skills-commands.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.3333333333333333,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-005",
+      "split": "dev",
+      "relation_kind": "reading_map",
+      "answerable": true,
+      "baseline_sources": [
+        "00-reading-map.md"
+      ],
+      "expanded_sources": [
+        "00-reading-map.md",
+        "14-create-agent-langgraph.md",
+        "11-timeline-reconnect.md",
+        "07-skills-commands.md",
+        "01-overall-architecture.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "00-reading-map.md",
+          "target": "14-create-agent-langgraph.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "11-timeline-reconnect.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "07-skills-commands.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "01-overall-architecture.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.25,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-006",
+      "split": "dev",
+      "relation_kind": "reading_map",
+      "answerable": true,
+      "baseline_sources": [
+        "00-reading-map.md",
+        "04-context-cost-governance.md",
+        "14-create-agent-langgraph.md"
+      ],
+      "expanded_sources": [
+        "00-reading-map.md",
+        "01-overall-architecture.md",
+        "03-runtime-engine.md",
+        "02-three-planes-fact-boundary.md",
+        "12-security-audit.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "00-reading-map.md",
+          "target": "01-overall-architecture.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "03-runtime-engine.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "02-three-planes-fact-boundary.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "12-security-audit.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.25,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-dev-007",
+      "split": "dev",
+      "relation_kind": "unanswerable",
+      "answerable": false,
+      "baseline_sources": [],
+      "expanded_sources": [],
+      "graph_paths": [],
+      "baseline_all_recall": false,
+      "expanded_all_recall": false,
+      "path_recall": 0.0,
+      "path_precision": 0.0,
+      "correct_no_answer": true
+    },
+    {
+      "query_id": "rel-test-001",
+      "split": "test",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "08-memory-dream.md"
+      ],
+      "expanded_sources": [
+        "08-memory-dream.md",
+        "07-skills-commands.md",
+        "09-knowledge-rag-retrieval.md",
+        "00-reading-map.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "08-memory-dream.md",
+          "target": "07-skills-commands.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "08-memory-dream.md",
+          "target": "09-knowledge-rag-retrieval.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "08-memory-dream.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.3333333333333333,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-002",
+      "split": "test",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "09-knowledge-rag-retrieval.md",
+        "00-reading-map.md",
+        "10-subagents-research.md",
+        "07-skills-commands.md",
+        "12-security-audit.md",
+        "11-timeline-reconnect.md"
+      ],
+      "expanded_sources": [
+        "09-knowledge-rag-retrieval.md",
+        "00-reading-map.md",
+        "10-subagents-research.md",
+        "11-timeline-reconnect.md",
+        "08-memory-dream.md",
+        "05-tools-execution-pipeline.md",
+        "01-overall-architecture.md",
+        "07-skills-commands.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "09-knowledge-rag-retrieval.md",
+          "target": "10-subagents-research.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "09-knowledge-rag-retrieval.md",
+          "target": "08-memory-dream.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "05-tools-execution-pipeline.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "01-overall-architecture.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": true,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.25,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-003",
+      "split": "test",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "10-subagents-research.md",
+        "00-reading-map.md",
+        "09-knowledge-rag-retrieval.md",
+        "04-context-cost-governance.md"
+      ],
+      "expanded_sources": [
+        "10-subagents-research.md",
+        "09-knowledge-rag-retrieval.md",
+        "11-timeline-reconnect.md",
+        "00-reading-map.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "10-subagents-research.md",
+          "target": "09-knowledge-rag-retrieval.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "10-subagents-research.md",
+          "target": "11-timeline-reconnect.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "10-subagents-research.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.3333333333333333,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-004",
+      "split": "test",
+      "relation_kind": "chapter_next",
+      "answerable": true,
+      "baseline_sources": [
+        "11-timeline-reconnect.md",
+        "00-reading-map.md"
+      ],
+      "expanded_sources": [
+        "11-timeline-reconnect.md",
+        "12-security-audit.md",
+        "10-subagents-research.md",
+        "00-reading-map.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "11-timeline-reconnect.md",
+          "target": "12-security-audit.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "11-timeline-reconnect.md",
+          "target": "10-subagents-research.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "11-timeline-reconnect.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": false,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.3333333333333333,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-005",
+      "split": "test",
+      "relation_kind": "reading_map",
+      "answerable": true,
+      "baseline_sources": [
+        "00-reading-map.md",
+        "15-sage-five-layer-target-architecture.md"
+      ],
+      "expanded_sources": [
+        "00-reading-map.md",
+        "15-sage-five-layer-target-architecture.md",
+        "01-overall-architecture.md",
+        "02-three-planes-fact-boundary.md",
+        "03-runtime-engine.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "00-reading-map.md",
+          "target": "15-sage-five-layer-target-architecture.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "01-overall-architecture.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "02-three-planes-fact-boundary.md",
+          "relation": "WIKILINK"
+        },
+        {
+          "source": "00-reading-map.md",
+          "target": "03-runtime-engine.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": true,
+      "expanded_all_recall": true,
+      "path_recall": 1.0,
+      "path_precision": 0.25,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-006",
+      "split": "test",
+      "relation_kind": "reading_map",
+      "answerable": true,
+      "baseline_sources": [
+        "13-module-map.md"
+      ],
+      "expanded_sources": [
+        "13-module-map.md",
+        "00-reading-map.md"
+      ],
+      "graph_paths": [
+        {
+          "source": "13-module-map.md",
+          "target": "00-reading-map.md",
+          "relation": "WIKILINK"
+        }
+      ],
+      "baseline_all_recall": true,
+      "expanded_all_recall": true,
+      "path_recall": 0.0,
+      "path_precision": 0.0,
+      "correct_no_answer": false
+    },
+    {
+      "query_id": "rel-test-007",
+      "split": "test",
+      "relation_kind": "unanswerable",
+      "answerable": false,
+      "baseline_sources": [],
+      "expanded_sources": [],
+      "graph_paths": [],
+      "baseline_all_recall": false,
+      "expanded_all_recall": false,
+      "path_recall": 0.0,
+      "path_precision": 0.0,
+      "correct_no_answer": true
+    }
+  ]
+}
