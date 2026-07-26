@@ -199,7 +199,10 @@ def run_benchmark(
                     "rank": hit.rank,
                     "rrf_score": hit.rrf_score,
                     "sparse_rank": hit.sparse_rank,
+                    "sparse_score": hit.sparse_score,
                     "dense_rank": hit.dense_rank,
+                    "dense_score": hit.dense_score,
+                    "route_agreement": hit.sparse_rank is not None and hit.dense_rank is not None,
                 }
                 for hit in hits
             ]

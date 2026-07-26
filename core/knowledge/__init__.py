@@ -1,5 +1,9 @@
 """Auditable personal knowledge workspace primitives."""
 
+from core.knowledge.embeddings import (
+    OpenAICompatibleEmbeddingConfig,
+    OpenAICompatibleEmbeddingProvider,
+)
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
 from core.knowledge.goals import (
     LearningCapability,
@@ -14,6 +18,7 @@ from core.knowledge.graph import (
     KnowledgeGraphNeighborhood,
     KnowledgeGraphNode,
     KnowledgeGraphOverview,
+    KnowledgeGraphRelationPath,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
 )
@@ -32,6 +37,11 @@ from core.knowledge.migration import (
     KnowledgeMigrationPlan,
     KnowledgeMigrationResult,
     KnowledgeMigrationResultItem,
+)
+from core.knowledge.relevance import (
+    KnowledgeRelevancePolicy,
+    KnowledgeRelevancePolicyError,
+    load_relevance_policy,
 )
 from core.knowledge.retrieval import (
     HashingEmbeddingProvider,
@@ -87,6 +97,7 @@ __all__ = [
     "KnowledgeGraphNode",
     "KnowledgeGraphNodeMetric",
     "KnowledgeGraphOverview",
+    "KnowledgeGraphRelationPath",
     "KnowledgeGraphSnapshot",
     "KnowledgeIndexSummary",
     "KnowledgeMigrationItem",
@@ -99,6 +110,8 @@ __all__ = [
     "KnowledgePolicyDecision",
     "KnowledgeProjectionError",
     "KnowledgeProposal",
+    "KnowledgeRelevancePolicy",
+    "KnowledgeRelevancePolicyError",
     "KnowledgeRetrievalBundle",
     "KnowledgeSearchHit",
     "KnowledgeSourceRoot",
@@ -111,6 +124,8 @@ __all__ = [
     "LoadedKnowledgeSource",
     "LocalKnowledgeGraph",
     "LocalKnowledgeGraphAnalyzer",
+    "OpenAICompatibleEmbeddingConfig",
+    "OpenAICompatibleEmbeddingProvider",
     "PreparedKnowledgeSource",
     "SourceSection",
     "SourceUnderstanding",
@@ -118,4 +133,5 @@ __all__ = [
     "WorkspaceSourceEvidence",
     "WorkspaceSynthesis",
     "assemble_retrieval_bundle",
+    "load_relevance_policy",
 ]

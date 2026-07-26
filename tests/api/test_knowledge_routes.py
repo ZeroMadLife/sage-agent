@@ -419,6 +419,9 @@ def test_index_status_and_rebuild_api_contract(tmp_path: Path) -> None:
     status_body = status_response.json()
     assert status_body["status"] == "ready"
     assert status_body["backend"] == "sqlite-fts5+hashing"
+    assert status_body["corpus_revision"].startswith("kcorpus_")
+    assert status_body["relevance_policy_id"] is None
+    assert status_body["abstention_enabled"] is False
     assert status_body["revision_count"] == 1
     assert status_body["indexed_revision_count"] == 1
     assert status_body["active_chunk_count"] == 1
@@ -454,6 +457,8 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert body["citations"][0]["citation_id"].startswith("kcite_")
     assert body["citations"][0]["page_revision"].startswith("krev_")
     assert body["citations"][0]["source_relative_path"] == "memory.md"
+    assert body["citations"][0]["retrieval_route"] == "hybrid"
+    assert body["citations"][0]["graph_edge_id"] is None
     assert str(vault) not in found.text
 
     citation = client.get(f"/api/v1/knowledge/citations/{body['citations'][0]['citation_id']}")

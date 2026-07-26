@@ -63,6 +63,7 @@ class CodingKnowledgePort(KnowledgePort):
             normalized,
             top_k=top_k,
             token_budget=token_budget,
+            relation_expand=self._store.knowledge_index.relevance_policy is not None,
         )
         evidence: list[KnowledgeEvidence] = []
         for item in bundle.evidence:
@@ -79,6 +80,12 @@ class CodingKnowledgePort(KnowledgePort):
                 "source_relative_path": chunk.source_relative_path[:500],
                 "token_count": item.token_count,
                 "truncated": item.truncated,
+                "retrieval_route": hit.retrieval_route,
+                "graph_edge_id": hit.graph_edge_id,
+                "graph_evidence_citation_id": hit.graph_evidence_citation_id,
+                "graph_seed_page_id": hit.graph_seed_page_id,
+                "graph_direction": hit.graph_direction,
+                "graph_score": hit.graph_score,
             }
             evidence.append(
                 KnowledgeEvidence(

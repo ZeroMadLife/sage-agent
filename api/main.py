@@ -40,13 +40,22 @@ from core.harness.sandbox_factory import (
 )
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
-from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
+from core.knowledge import (
+    KnowledgeRelevancePolicy,
+    KnowledgeSourceRoot,
+    KnowledgeStore,
+    OpenAICompatibleEmbeddingConfig,
+    OpenAICompatibleEmbeddingProvider,
+    load_relevance_policy,
+)
+from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
     KnowledgeJobService,
     RedisKnowledgeJobQueue,
 )
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
+from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
 from core.learning import MasteryLedger
 from core.llm import create_llm
@@ -101,6 +110,8 @@ def create_app(
     knowledge_workspace_root: str | Path | None = None,
     knowledge_database_path: str | Path | None = None,
     knowledge_source_roots: Mapping[str, KnowledgeSourceRoot] | None = None,
+    knowledge_embedding_provider: DenseEmbeddingProvider | None = None,
+    knowledge_relevance_policy: KnowledgeRelevancePolicy | None = None,
     knowledge_job_service: KnowledgeJobService | None = None,
     knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     knowledge_jobs_enabled: bool | None = None,
@@ -402,10 +413,36 @@ def create_app(
             if settings.knowledge_database_path.strip()
             else configured_knowledge_root / ".sage" / "knowledge.sqlite3"
         )
+        configured_embedding = knowledge_embedding_provider
+        if configured_embedding is None:
+            provider_name = settings.knowledge_embedding_provider.strip().casefold()
+            if provider_name == "openai_compatible":
+                configured_embedding = OpenAICompatibleEmbeddingProvider(
+                    OpenAICompatibleEmbeddingConfig(
+                        api_key=settings.knowledge_embedding_api_key,
+                        base_url=settings.knowledge_embedding_base_url,
+                        model=settings.knowledge_embedding_model,
+                        model_revision=settings.knowledge_embedding_model_revision,
+                        dimensions=settings.knowledge_embedding_dimensions,
+                        batch_size=settings.knowledge_embedding_batch_size,
+                        timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+                    )
+                )
+            elif provider_name != "hashing":
+                raise ValueError("unknown Knowledge embedding provider")
+        configured_relevance_policy = knowledge_relevance_policy
+        if configured_relevance_policy is None and settings.knowledge_relevance_policy_path.strip():
+            configured_relevance_policy = load_relevance_policy(
+                Path(settings.knowledge_relevance_policy_path).expanduser().resolve()
+            )
         app.state.knowledge_store = KnowledgeStore(
             configured_knowledge_root,
             configured_knowledge_database,
             configured_source_roots or {},
+            knowledge_index=LocalKnowledgeIndex(
+                embedding_provider=configured_embedding,
+                relevance_policy=configured_relevance_policy,
+            ),
         )
         app.state.knowledge_store.initialize()
         enable_jobs = (

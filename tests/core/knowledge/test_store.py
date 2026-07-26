@@ -459,6 +459,68 @@ def test_failed_index_projection_is_atomic_and_rebuildable(tmp_path: Path) -> No
     assert rebuilt.active_chunk_count == 2
 
 
+def test_embedding_provider_revision_change_rebuilds_ready_revisions(tmp_path: Path) -> None:
+    class VersionedHashingProvider(HashingEmbeddingProvider):
+        supports_semantic_recall = True
+
+        def __init__(self, revision: str) -> None:
+            super().__init__(dimensions=64)
+            self.model_id = "test.semantic"
+            self.model_revision = revision
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    repository = tmp_path / "knowledge"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    database = tmp_path / "state" / "knowledge.sqlite3"
+    roots = {
+        "sage-learning": KnowledgeSourceRoot(
+            root_id="sage-learning",
+            kind="obsidian",
+            label="Sage Learning",
+            path=vault,
+        )
+    }
+    (vault / "retrieval.md").write_text(
+        "# Retrieval\n\n关系检索连接实体与证据。\n",
+        encoding="utf-8",
+    )
+    first = KnowledgeStore(
+        repository,
+        database,
+        roots,
+        knowledge_index=LocalKnowledgeIndex(embedding_provider=VersionedHashingProvider("v1")),
+    )
+    first.initialize()
+    first.evaluate_and_apply_policy(first.ingest("sage-learning", "retrieval.md").proposal_id)
+    assert first.index_summary().embedding_revision == "v1"
+
+    restarted = KnowledgeStore(
+        repository,
+        database,
+        roots,
+        knowledge_index=LocalKnowledgeIndex(embedding_provider=VersionedHashingProvider("v2")),
+    )
+    restarted.initialize()
+
+    summary = restarted.index_summary()
+    assert summary.embedding_revision == "v2"
+    assert summary.indexed_revision_count == summary.revision_count == 1
+    assert restarted.search("实体关系")
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT embedding_model, embedding_revision FROM knowledge_index_revisions"
+        ).fetchone()
+    assert row == ("test.semantic", "v2")
+
+
 def test_ingest_rejects_traversal_and_symlink_sources(tmp_path: Path) -> None:
     store, vault, _ = _store(tmp_path)
     outside = tmp_path / "outside.md"

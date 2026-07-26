@@ -8,6 +8,7 @@ import sqlite3
 from dataclasses import replace
 
 from core.knowledge.parsing import MarkdownParser, ParseRequest, deserialize_document
+from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
@@ -71,6 +72,8 @@ CREATE TABLE IF NOT EXISTS knowledge_index_revisions (
     page_revision TEXT PRIMARY KEY,
     status TEXT NOT NULL,
     chunk_count INTEGER NOT NULL,
+    embedding_model TEXT NOT NULL DEFAULT '',
+    embedding_revision TEXT NOT NULL DEFAULT '',
     error TEXT,
     indexed_at TEXT NOT NULL
 );
@@ -87,20 +90,44 @@ CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_chunks_fts USING fts5(
 class LocalKnowledgeIndex:
     """Local backend matching the future PostgreSQL FTS + pgvector contract."""
 
-    backend_id = "sqlite-fts5+hashing"
-
     def __init__(
         self,
         *,
         workspace_id: str = "knowledge-local",
         embedding_provider: DenseEmbeddingProvider | None = None,
+        relevance_policy: KnowledgeRelevancePolicy | None = None,
     ) -> None:
         self.workspace_id = workspace_id
         self.embedding_provider = embedding_provider or HashingEmbeddingProvider()
+        if relevance_policy is not None:
+            relevance_policy.assert_provider(
+                model_id=self.embedding_provider.model_id,
+                model_revision=self.embedding_provider.model_revision,
+            )
+        self.relevance_policy = relevance_policy
         self._markdown_parser = MarkdownParser()
+
+    @property
+    def backend_id(self) -> str:
+        dense = "semantic" if self.embedding_provider.supports_semantic_recall else "hashing"
+        return f"sqlite-fts5+{dense}"
 
     def ensure_schema(self, connection: sqlite3.Connection) -> None:
         connection.executescript(_INDEX_SCHEMA)
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(knowledge_index_revisions)").fetchall()
+        }
+        if "embedding_model" not in columns:
+            connection.execute(
+                "ALTER TABLE knowledge_index_revisions "
+                "ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''"
+            )
+        if "embedding_revision" not in columns:
+            connection.execute(
+                "ALTER TABLE knowledge_index_revisions "
+                "ADD COLUMN embedding_revision TEXT NOT NULL DEFAULT ''"
+            )
 
     def backfill(self, connection: sqlite3.Connection, *, force: bool = False) -> None:
         if force:
@@ -111,12 +138,20 @@ class LocalKnowledgeIndex:
         rows = connection.execute(
             """
             SELECT revision_id FROM knowledge_page_revisions AS revision
-            WHERE ? OR revision_id NOT IN (
-                SELECT page_revision FROM knowledge_index_revisions WHERE status='ready'
+            WHERE ? OR NOT EXISTS (
+                SELECT 1 FROM knowledge_index_revisions AS indexed
+                WHERE indexed.page_revision=revision.revision_id
+                  AND indexed.status='ready'
+                  AND indexed.embedding_model=?
+                  AND indexed.embedding_revision=?
             )
             ORDER BY created_at, revision_id
             """,
-            (int(force),),
+            (
+                int(force),
+                self.embedding_provider.model_id,
+                self.embedding_provider.model_revision,
+            ),
         ).fetchall()
         for row in rows:
             self.sync_revision_safely(connection, str(row["revision_id"]))
@@ -192,6 +227,9 @@ class LocalKnowledgeIndex:
             visibility="private",
             active=is_active,
         )
+        prepare = getattr(self.embedding_provider, "prepare", None)
+        if callable(prepare):
+            prepare(tuple(embedding_text(chunk) for chunk in chunks))
         old_ids = [
             str(item["chunk_id"])
             for item in connection.execute(
@@ -219,13 +257,22 @@ class LocalKnowledgeIndex:
         connection.execute(
             """
             INSERT INTO knowledge_index_revisions (
-                page_revision, status, chunk_count, error, indexed_at
-            ) VALUES (?, 'ready', ?, NULL, ?)
+                page_revision, status, chunk_count, embedding_model,
+                embedding_revision, error, indexed_at
+            ) VALUES (?, 'ready', ?, ?, ?, NULL, ?)
             ON CONFLICT(page_revision) DO UPDATE SET
                 status='ready', chunk_count=excluded.chunk_count,
+                embedding_model=excluded.embedding_model,
+                embedding_revision=excluded.embedding_revision,
                 error=NULL, indexed_at=excluded.indexed_at
             """,
-            (revision_id, len(chunks), str(row["created_at"])),
+            (
+                revision_id,
+                len(chunks),
+                self.embedding_provider.model_id,
+                self.embedding_provider.model_revision,
+                str(row["created_at"]),
+            ),
         )
         return len(chunks)
 
@@ -233,13 +280,21 @@ class LocalKnowledgeIndex:
         connection.execute(
             """
             INSERT INTO knowledge_index_revisions (
-                page_revision, status, chunk_count, error, indexed_at
-            ) VALUES (?, 'error', 0, ?, CURRENT_TIMESTAMP)
+                page_revision, status, chunk_count, embedding_model,
+                embedding_revision, error, indexed_at
+            ) VALUES (?, 'error', 0, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(page_revision) DO UPDATE SET
                 status='error', chunk_count=0, error=excluded.error,
+                embedding_model=excluded.embedding_model,
+                embedding_revision=excluded.embedding_revision,
                 indexed_at=excluded.indexed_at
             """,
-            (revision_id, message[:500]),
+            (
+                revision_id,
+                self.embedding_provider.model_id,
+                self.embedding_provider.model_revision,
+                message[:500],
+            ),
         )
 
     def summary(self, connection: sqlite3.Connection) -> KnowledgeIndexSummary:
@@ -248,7 +303,12 @@ class LocalKnowledgeIndex:
         )
         indexed_revision_count = int(
             connection.execute(
-                "SELECT COUNT(*) FROM knowledge_index_revisions WHERE status='ready'"
+                "SELECT COUNT(*) FROM knowledge_index_revisions "
+                "WHERE status='ready' AND embedding_model=? AND embedding_revision=?",
+                (
+                    self.embedding_provider.model_id,
+                    self.embedding_provider.model_revision,
+                ),
             ).fetchone()[0]
         )
         active_chunk_count = int(
@@ -259,13 +319,28 @@ class LocalKnowledgeIndex:
         )
         error_count = int(
             connection.execute(
-                "SELECT COUNT(*) FROM knowledge_index_revisions WHERE status='error'"
+                "SELECT COUNT(*) FROM knowledge_index_revisions "
+                "WHERE status='error' AND embedding_model=? AND embedding_revision=?",
+                (
+                    self.embedding_provider.model_id,
+                    self.embedding_provider.model_revision,
+                ),
             ).fetchone()[0]
+        )
+        corpus_revision = self.corpus_revision(connection)
+        policy_compatible = (
+            self.relevance_policy is not None
+            and self.relevance_policy.corpus_revision == corpus_revision
         )
         return KnowledgeIndexSummary(
             backend=self.backend_id,
             embedding_model=self.embedding_provider.model_id,
             embedding_revision=self.embedding_provider.model_revision,
+            corpus_revision=corpus_revision,
+            relevance_policy_id=(
+                self.relevance_policy.policy_id if self.relevance_policy is not None else None
+            ),
+            abstention_enabled=policy_compatible,
             revision_count=revision_count,
             indexed_revision_count=indexed_revision_count,
             active_chunk_count=active_chunk_count,
@@ -285,6 +360,10 @@ class LocalKnowledgeIndex:
     ) -> tuple[KnowledgeSearchHit, ...]:
         if top_k < 1 or top_k > 50:
             raise ValueError("knowledge search top_k must be between 1 and 50")
+        if self.relevance_policy is not None and top_k > self.relevance_policy.top_k:
+            raise ValueError("knowledge search top_k exceeds calibrated relevance policy")
+        if self.relevance_policy is not None:
+            self.relevance_policy.assert_corpus(corpus_revision=self.corpus_revision(connection))
         if len(source_ids) > 100 or len(page_revisions) > 100:
             raise ValueError("knowledge search filters are too large")
         if visibility not in {"private", "public"}:
@@ -345,6 +424,15 @@ class LocalKnowledgeIndex:
             sparse_ids = {chunk_id for chunk_id, _score in sparse}
             dense = [item for item in dense if item[0] in sparse_ids]
         fused = reciprocal_rank_fusion(sparse, dense)[:top_k]
+        if self.relevance_policy is not None:
+            fused = [
+                item
+                for item in fused
+                if self.relevance_policy.accepts(
+                    sparse_score=item[3],
+                    dense_score=item[5],
+                )
+            ]
         chunk_ids = [item[0] for item in fused]
         if not chunk_ids:
             return ()
@@ -375,6 +463,23 @@ class LocalKnowledgeIndex:
             ) in enumerate(fused, start=1)
             if chunk_id in chunks
         )
+
+    def corpus_revision(self, connection: sqlite3.Connection) -> str:
+        rows = connection.execute(
+            """
+            SELECT source_relative_path, source_revision, ordinal, content_hash
+            FROM knowledge_chunks
+            WHERE workspace_id=? AND active=1
+            ORDER BY source_relative_path, source_revision, ordinal, content_hash
+            """,
+            (self.workspace_id,),
+        ).fetchall()
+        payload = "\n".join(
+            f"{row['source_relative_path']}\0{row['source_revision']}\0"
+            f"{row['ordinal']}\0{row['content_hash']}"
+            for row in rows
+        )
+        return "kcorpus_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
 
     def resolve_citations(
         self,
@@ -408,6 +513,42 @@ class LocalKnowledgeIndex:
         if missing:
             raise KeyError("knowledge learning citation is stale or unknown")
         return tuple((item, resolved[item]) for item in citation_ids)
+
+    def representative_chunks(
+        self,
+        connection: sqlite3.Connection,
+        page_revisions: tuple[str, ...],
+        *,
+        visibility: str = "private",
+        source_ids: tuple[str, ...] = (),
+        per_page: int = 1,
+    ) -> tuple[KnowledgeChunk, ...]:
+        """Load bounded current chunks for graph-expanded page revisions."""
+
+        if not page_revisions or len(page_revisions) > 50:
+            raise ValueError("knowledge relation targets must contain 1 to 50 revisions")
+        if per_page < 1 or per_page > 3:
+            raise ValueError("knowledge relation chunks per page must be between 1 and 3")
+        where, params = self._filters(
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+        )
+        rows = connection.execute(
+            f"SELECT chunk.* FROM knowledge_chunks AS chunk WHERE {where} "
+            "ORDER BY chunk.page_revision, chunk.ordinal, chunk.chunk_id",
+            params,
+        ).fetchall()
+        counts: dict[str, int] = {}
+        selected: list[KnowledgeChunk] = []
+        for row in rows:
+            revision = str(row["page_revision"])
+            count = counts.get(revision, 0)
+            if count >= per_page:
+                continue
+            selected.append(self._chunk(row))
+            counts[revision] = count + 1
+        return tuple(selected)
 
     def _insert_chunk(
         self, connection: sqlite3.Connection, chunk: KnowledgeChunk, created_at: str

@@ -13,7 +13,7 @@ import tempfile
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path, PurePosixPath
@@ -41,6 +41,7 @@ from core.knowledge.graph import (
     KnowledgeGraphNeighborhood,
     KnowledgeGraphNode,
     KnowledgeGraphOverview,
+    KnowledgeGraphRelationPath,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
 )
@@ -83,6 +84,7 @@ from core.knowledge.retrieval import (
     KnowledgeRetrievalBundle,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
+    citation_id,
 )
 from core.knowledge.synthesis import (
     WorkspaceSynthesis,
@@ -1999,16 +2001,88 @@ class KnowledgeStore:
         visibility: str = "private",
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
     ) -> tuple[KnowledgeSearchHit, ...]:
         self.initialize()
         with self._connect() as connection:
-            return self.knowledge_index.search(
+            hits = self.knowledge_index.search(
                 connection,
                 query,
                 top_k=top_k,
                 visibility=visibility,
                 source_ids=source_ids,
                 page_revisions=page_revisions,
+            )
+            if not relation_expand or not hits:
+                return hits
+            if page_revisions:
+                raise ValueError("knowledge relation expansion cannot widen a revision filter")
+            if self.knowledge_index.relevance_policy is None:
+                raise ValueError(
+                    "knowledge relation expansion requires a calibrated relevance policy"
+                )
+            seed_count = min(len(hits), max(1, min(4, (top_k + 1) // 2)))
+            seeds = hits[:seed_count]
+            paths = self.knowledge_graph.expand_page_relations(
+                connection,
+                tuple(dict.fromkeys(hit.chunk.page_id for hit in seeds)),
+                query=query,
+                limit=min(4, top_k),
+            )
+            if not paths:
+                return hits
+            chunks = self.knowledge_index.representative_chunks(
+                connection,
+                tuple(path.target_page_revision for path in paths),
+                visibility=visibility,
+                source_ids=source_ids,
+            )
+            chunks_by_revision = {chunk.page_revision: chunk for chunk in chunks}
+            graph_hits = tuple(
+                KnowledgeSearchHit(
+                    chunk=chunks_by_revision[path.target_page_revision],
+                    citation_id=citation_id(chunks_by_revision[path.target_page_revision]),
+                    rank=0,
+                    rrf_score=0.0,
+                    sparse_rank=None,
+                    sparse_score=None,
+                    dense_rank=None,
+                    dense_score=None,
+                    retrieval_route="graph",
+                    graph_edge_id=path.edge.edge_id,
+                    graph_evidence_citation_id=path.edge.evidence[0].citation_id,
+                    graph_seed_page_id=path.seed_page_id,
+                    graph_direction=path.direction,
+                    graph_score=path.score,
+                )
+                for path in paths
+                if path.target_page_revision in chunks_by_revision
+            )
+            ordered = (*seeds, *graph_hits, *hits[seed_count:])
+            selected: list[KnowledgeSearchHit] = []
+            seen_chunks: set[str] = set()
+            for hit in ordered:
+                if hit.chunk.chunk_id in seen_chunks:
+                    continue
+                seen_chunks.add(hit.chunk.chunk_id)
+                selected.append(replace(hit, rank=len(selected) + 1))
+                if len(selected) >= top_k:
+                    break
+            return tuple(selected)
+
+    def expand_relations(
+        self,
+        query: str,
+        seed_page_ids: tuple[str, ...],
+        *,
+        limit: int = 20,
+    ) -> tuple[KnowledgeGraphRelationPath, ...]:
+        """Expose bounded relation paths for evaluation and inspector projections."""
+
+        self.initialize()
+        with self._connect() as connection:
+            return self.knowledge_graph.expand_page_relations(
+                connection, seed_page_ids, query=query, limit=limit
             )
 
     def retrieve(
@@ -2020,6 +2094,7 @@ class KnowledgeStore:
         visibility: str = "private",
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
     ) -> KnowledgeRetrievalBundle:
         """Return one bounded evidence bundle for API and Agent consumers."""
 
@@ -2029,6 +2104,7 @@ class KnowledgeStore:
             visibility=visibility,
             source_ids=source_ids,
             page_revisions=page_revisions,
+            relation_expand=relation_expand,
         )
         return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
 
