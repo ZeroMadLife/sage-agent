@@ -110,8 +110,23 @@ def calibrate_relevance_policy(
     )
 
 
-def calibration_result_dict(result: RelevanceCalibrationResult) -> dict[str, object]:
+def calibration_result_dict(
+    result: RelevanceCalibrationResult,
+    *,
+    source_report: dict[str, Any],
+) -> dict[str, object]:
+    metadata_fields = (
+        "benchmark_id",
+        "benchmark_revision",
+        "dataset_sha256",
+        "source_commit",
+        "source_dirty",
+        "top_k",
+    )
     return {
+        **{field: source_report[field] for field in metadata_fields},
+        "provider": source_report["provider"],
+        "index": source_report["index"],
         "policy": result.policy.to_dict(),
         "dev_baseline": result.dev_baseline,
         "dev_calibrated": result.dev_calibrated,

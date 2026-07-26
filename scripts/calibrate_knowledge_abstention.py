@@ -66,7 +66,7 @@ def main() -> int:
         top_k=int(raw["top_k"]),
         minimum_answerable_recall_ratio=args.minimum_answerable_recall_ratio,
     )
-    payload = calibration_result_dict(result)
+    payload = calibration_result_dict(result, source_report=raw)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

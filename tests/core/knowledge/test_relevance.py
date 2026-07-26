@@ -17,7 +17,7 @@ from core.knowledge.relevance import (
     KnowledgeRelevancePolicyError,
     load_relevance_policy,
 )
-from core.knowledge.relevance_calibration import calibrate_relevance_policy
+from core.knowledge.relevance_calibration import calibrate_relevance_policy, calibration_result_dict
 from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
 
@@ -150,6 +150,24 @@ def test_calibration_uses_dev_and_reports_test_without_tuning() -> None:
     assert result.test_calibrated["recall_at_k"] == 1.0
     assert result.test_calibrated["unanswerable_accuracy"] == 0.0
     assert 3.0 < (result.policy.min_sparse_score or 0.0) <= 10.0
+
+    payload = calibration_result_dict(
+        result,
+        source_report={
+            "benchmark_id": "sage-knowledge-v2",
+            "benchmark_revision": "sha256:benchmark",
+            "dataset_sha256": "sha256:dataset",
+            "source_commit": "a" * 40,
+            "source_dirty": False,
+            "top_k": 10,
+            "provider": {"model_id": "sage.hashing"},
+            "index": {"corpus_revision": "kcorpus_test"},
+        },
+    )
+    assert payload["source_commit"] == "a" * 40
+    assert payload["source_dirty"] is False
+    assert payload["index"] == {"corpus_revision": "kcorpus_test"}
+    assert payload["policy"] == result.policy.to_dict()
 
 
 def _query(
