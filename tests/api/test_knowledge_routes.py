@@ -6,10 +6,12 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.main import create_app
-from core.knowledge import KnowledgeSourceRoot
+from core.config.settings import get_settings
+from core.knowledge import FastEmbedEmbeddingProvider, KnowledgeSourceRoot
 from core.learning import MasteryEvidenceInput
 
 
@@ -59,6 +61,22 @@ def test_unconfigured_knowledge_is_explicitly_unavailable(tmp_path: Path) -> Non
 
     assert response.status_code == 503
     assert response.json() == {"detail": "knowledge workspace is not configured"}
+
+
+def test_fastembed_runtime_configuration_is_lazy_and_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "fastembed")
+    monkeypatch.setenv("KNOWLEDGE_FASTEMBED_CACHE_DIR", str(tmp_path / "model-cache"))
+    get_settings.cache_clear()
+
+    app, _vault, _knowledge = _app(tmp_path)
+
+    provider = app.state.knowledge_store.knowledge_index.embedding_provider
+    assert isinstance(provider, FastEmbedEmbeddingProvider)
+    assert provider._model is None
+    assert provider.config.cache_dir == (tmp_path / "model-cache").resolve()
 
 
 def test_mastery_projection_and_invalidation_use_current_learning_goal(tmp_path: Path) -> None:
