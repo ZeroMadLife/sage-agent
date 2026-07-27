@@ -81,7 +81,7 @@ cd ..
 git diff --check
 ```
 
-## 3. 八个必跑场景
+## 3. 运行场景矩阵
 
 | # | 场景 | 操作 | 通过标准 |
 | --- | --- | --- | --- |
@@ -94,9 +94,9 @@ git diff --check
 | 7 | 公开主页 | 在 `1440x900` 与 `390x844` 打开 `/#/public`，切换产品画廊并用回车提问 | 无横向溢出；真实 SSE 阶段、回答、citation 和资料包回执可见；私人 API 公网返回 404 |
 | 8 | Sandbox 边界 | 在候选生产配置启动 Container Sandbox | rootfs、网络、资源、mount 与退出清理符合策略；不能回退宿主机 |
 
-场景 8 是**公网开放私人 Harness**的硬门禁，不阻止不带工具权限的独立 Public Agent。
-如果当前环境没有生产容器配置，应记录为 **未执行/阻断**，不能用本地
-`local_workspace` 的成功结果代替。
+本地自用发布必须完成场景 1-6。场景 7-8 是未来重新开放公网时的附加硬门禁，本次发布
+明确记为**不适用/未执行**；不能用本地 `local_workspace` 的成功结果代替生产 Sandbox
+验收。
 
 ## 4. 浏览器回归矩阵
 
@@ -133,8 +133,9 @@ git diff --check
 - 容器与差异：Compose config、API Dockerfile check、相对 `main` 的累计 `git diff --check` 通过。
 - 检索评测：manifest `2026-07-27.1` 契约通过；200 条离线 hashing benchmark 的 Recall@10
   `0.578`、MRR `0.409`、NDCG@10 `0.444` 与历史基线一致。
-- 公开场景：`1440`、`1728`、`390` 视口与 Ask Sage citation/receipt 通过；私有 API 公网为 `404`。
-- 私有匿名边界：health `200`，Coding/Knowledge `401`，遗留 Chat `404`；Canary 状态 `HEALTHY`。
-- 私有登录态场景：等待项目维护者在受控 Chrome 中完成一次性邀请码登录后复核。
-- 当前决策：**继续发布验收**；私有登录态 Chat、WebSocket、文件读取与 Sandbox smoke 通过后，
-  才允许把 release ref 快进到 `main` 并创建 tag。
+- 历史公网证据：候选基线曾完成 `1440`、`1728`、`390` 视口、Ask Sage citation/receipt、
+  私有 API `404` 与 Canary `HEALTHY` 检查；这些结果不代表 `v1.0.0` 当前已部署。
+- 运行范围：飞书入口和自动 Canary 已停止；不执行新的服务器部署，公网与私有登录态场景
+  对本地自用发布不适用。
+- 当前决策：**可发布（本地自用）**；允许将通过自动化门禁的 release ref 快进到 `main`
+  并创建 tag。未来恢复公网服务时，必须重新执行场景 7-8 和登录态安全验收。

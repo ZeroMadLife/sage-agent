@@ -23,7 +23,7 @@ def test_public_package_verifies_digests_and_retrieves_bounded_sources() -> None
     results = package.retrieve("Harness 如何审批恢复 durable timeline？", limit=2)
 
     assert package.package_id == "sage-public"
-    assert package.revision == "2026-07-24.3"
+    assert package.revision == "2026-07-27.1"
     assert results[0].document_id == "harness-2"
     assert all(item.document_id in {"harness-2", "sage-challenges"} for item in results)
     assert results[0].url.startswith("https://")
@@ -73,7 +73,8 @@ def test_public_package_describes_the_current_retrieval_and_roadmap_boundaries()
     assert "pgvector 是可替换方向" in architecture
 
     roadmap = documents["sage-roadmap"]
-    assert "HR 首页、README 和真实产品画廊已经上线" in roadmap
+    assert "HR 首页、README 和真实产品画廊已经完成代码与测试收口" in roadmap
+    assert "当前运行范围为本地自用" in roadmap
     assert "新用户首次进入" in roadmap
     assert "完善 HR 首页、README" not in roadmap
 

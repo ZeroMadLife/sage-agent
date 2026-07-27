@@ -1,6 +1,6 @@
 {
   "package_id": "sage-public",
-  "revision": "2026-07-24.3",
+  "revision": "2026-07-27.1",
   "documents": [
     {
       "id": "sage-identity",
@@ -15,16 +15,16 @@
       "title": "Sage Personal AI Learning Companion",
       "url": "https://github.com/ZeroMadLife/sage-agent#sage",
       "revision": "2026-07-24",
-      "content": "请介绍一下这个项目。为什么要做 Sage？这个项目有什么用、有哪些亮点、现在做到什么程度？Sage 是本地优先的 Personal AI Learning Companion，把目标、对话、个人知识、真实实践和可验证证据组织在同一条可恢复工作流中。它与普通聊天机器人不同：回答不是终点，Knowledge 管理来源与引用，Coding 作为 Practice Engine 验证理解，Harness 保存可恢复运行事实。当前已上线受控 Public Agent、真实产品画廊和自动 Canary 发布，公开入口不连接私人 Harness。",
-      "content_sha256": "620a88162fdd636b4ca71a9bf7eb267d91cd9cf03e39481211d34f46097f85d2"
+      "content": "请介绍一下这个项目。为什么要做 Sage？这个项目有什么用、有哪些亮点、现在做到什么程度？Sage 是本地优先的 Personal AI Learning Companion，把目标、对话、个人知识、真实实践和可验证证据组织在同一条可恢复工作流中。它与普通聊天机器人不同：回答不是终点，Knowledge 管理来源与引用，Coding 作为 Practice Engine 验证理解，Harness 保存可恢复运行事实。当前版本已完成受控 Public Agent、真实产品画廊和 Canary 发布链路，但运行范围已收敛为本地自用，不提供在线入口。",
+      "content_sha256": "d6aa0aebdb63fb9dcac960f5de1a90bda9cb951f884cf183906a91c4453f7215"
     },
     {
       "id": "sage-architecture",
       "title": "Sage 技术栈与系统架构",
       "url": "https://github.com/ZeroMadLife/sage-agent#架构",
       "revision": "2026-07-24",
-      "content": "项目使用了什么技术栈？整体架构是怎么设计的？前端采用 Vue 3、TypeScript、Pinia 与 Vite；后端采用 Python、FastAPI、LangChain 与 LangGraph；PostgreSQL 和 Redis 承担运行状态与任务基础设施。Knowledge 当前默认检索是 SQLite FTS5、deterministic hashing 与 RRF 的本地 baseline，pgvector 是可替换方向，不把它误写成已上线的生产语义检索。REST、WebSocket 与 SSE 连接界面、Harness 和受控 Public Agent；部署使用 rootless Docker Compose、不可变镜像和 Canary 控制器，首台服务器不引入 Kubernetes。",
-      "content_sha256": "408e03d4becce6a501c84bf21cd6dd690096c48728211d5ff32383fec0d36610"
+      "content": "项目使用了什么技术栈？整体架构是怎么设计的？前端采用 Vue 3、TypeScript、Pinia 与 Vite；后端采用 Python、FastAPI、LangChain 与 LangGraph；PostgreSQL 和 Redis 承担运行状态与任务基础设施。Knowledge 当前默认检索是 SQLite FTS5、deterministic hashing 与 RRF 的本地 baseline，pgvector 是可替换方向，不把它误写成已上线的生产语义检索。REST、WebSocket 与 SSE 连接界面、Harness 和受控 Public Agent；仓库保留 rootless Docker Compose、不可变镜像和 Canary 控制器组成的部署链路，但当前未启用自动部署。",
+      "content_sha256": "8387cc81c1ed7ac082f53671841dafceaedc3b5a993066fb1279b862b9625ad5"
     },
     {
       "id": "sage-contribution",
@@ -71,16 +71,16 @@
       "title": "CI/CD、备份与回滚",
       "url": "https://github.com/ZeroMadLife/sage-agent/blob/dev/sage-v7/docs/runbooks/10-Sage本地CI-CD与Canary可用性.md",
       "revision": "2026-07-24",
-      "content": "你们怎么部署、备份和回滚？Sage 通过 GitHub Actions、Canary 控制器和单台 ECS 上的 rootless Docker Compose 发布。部署只接受完整 commit SHA，先 preflight，再备份 PostgreSQL、执行幂等 migration、构建不可变镜像并健康检查；失败保留旧服务，成功后记录 current 与 previous。公开资料包独立支持 stage、原子激活、撤回和上一健康 revision 回退。",
-      "content_sha256": "b34ebb3fc0020b536029256432391d29dd3dd2084eea0a9bc8f5c56fc5729813"
+      "content": "你们怎么部署、备份和回滚？Sage 已实现由 GitHub Actions、Canary 控制器和单台 ECS 上 rootless Docker Compose 组成的发布链路。部署只接受完整 commit SHA，先 preflight，再备份 PostgreSQL、执行幂等 migration、构建不可变镜像并健康检查；失败保留旧服务，成功后记录 current 与 previous。公开资料包独立支持 stage、原子激活、撤回和上一健康 revision 回退。当前自动 Canary 已停止，v1.0.0 不执行服务器部署。",
+      "content_sha256": "aa2b12c942682c82714cad8eb399ef7a4a46734c43b543b04e534e868aacb6b4"
     },
     {
       "id": "sage-roadmap",
       "title": "当前状态与下一阶段边界",
       "url": "https://github.com/ZeroMadLife/sage-agent#当前边界",
       "revision": "2026-07-24",
-      "content": "后续还准备做什么？受控 Public Agent、独立资料包、引用回执、公网隔离、HR 首页、README 和真实产品画廊已经上线。下一阶段会补充经本人审核的简历与联系方式，改进新用户首次进入、数据库与 Provider 配置流程，并继续验证生产 Sandbox、租户级 Knowledge 隔离和正式 HTTPS 域名。以上属于下一阶段边界，不等同于已经交付。",
-      "content_sha256": "c1e50c093b16d97268caba97d2869f03737443f368bbe8a7b213fc27ff9220be"
+      "content": "后续还准备做什么？受控 Public Agent、独立资料包、引用回执、公网隔离、HR 首页、README 和真实产品画廊已经完成代码与测试收口；当前运行范围为本地自用，不提供在线入口。下一阶段会改进新用户首次进入、数据库与 Provider 配置流程，并继续验证生产 Sandbox、租户级 Knowledge 隔离和正式 HTTPS 域名。重新开放公网前必须复跑安全与部署验收，以上属于下一阶段边界，不等同于已经交付。",
+      "content_sha256": "63c27d77629595c7b4a421d4f664d76c1b21de4c3f28c005bbde97b83efec001"
     },
     {
       "id": "harness-2",
