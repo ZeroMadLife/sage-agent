@@ -1,0 +1,11 @@
+{
+  "dataset_id": "sage-official-agent-fullstack-v1",
+  "dataset_revision": "2026-07-27.1",
+  "corpus_manifest": "knowledge/corpus/manifest.jsonl",
+  "corpus_manifest_sha256": "sha256:258b5ee333f9be6d096d5675a63e703b724130e445ed47221836506ae8405548",
+  "cases": "knowledge/eval/cases.jsonl",
+  "cases_sha256": "sha256:9b3da26c83c17ba095fa87973822f89588dda307a20c94efa055945c06243f12",
+  "split_counts": {"dev": 40, "calibration": 20, "test": 20},
+  "frozen_test": true,
+  "reviewed_at": "2026-07-27T14:12:31Z"
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sage.local/schemas/rag-corpus-manifest-v1.json",
+  "title": "Sage RAG Corpus Manifest Entry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "corpus_id", "source_url", "source_type", "project", "version", "commit_sha",
+    "retrieved_at", "license", "license_url", "upstream_path", "upstream_content_hash",
+    "snapshot_path", "content_hash", "parser_version", "modality", "review_status"
+  ],
+  "properties": {
+    "corpus_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"},
+    "source_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "source_type": {"enum": ["official_docs", "official_github"]},
+    "project": {"type": "string", "minLength": 1, "maxLength": 80},
+    "version": {"type": "string", "minLength": 1, "maxLength": 120},
+    "commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "retrieved_at": {"type": "string", "format": "date-time"},
+    "license": {"enum": ["MIT", "PostgreSQL"]},
+    "license_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "upstream_path": {"type": "string", "minLength": 1},
+    "upstream_content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "snapshot_path": {"type": "string", "pattern": "^knowledge/corpus/snapshots/.+\\.md$"},
+    "content_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "parser_version": {"const": "sage.extractive-markdown@1"},
+    "modality": {"enum": ["text", "code", "table", "mixed"]},
+    "review_status": {"const": "approved"}
+  }
+}
