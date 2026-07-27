@@ -1,8 +1,8 @@
 {
-  "policy_id": "krp_ce06e627099226df",
+  "policy_id": "krp_8ea6519cd1e6798e",
   "benchmark_id": "sage-knowledge-v2",
-  "benchmark_revision": "2026-07-26.1",
-  "corpus_revision": "kcorpus_6d06ec83401b784fa8ec6dcd6b9fcfe3",
+  "benchmark_revision": "2026-07-27.1",
+  "corpus_revision": "kcorpus_4d0660b07415eeea75d668b8c7516768",
   "embedding_model": "sage.hashing",
   "embedding_revision": "1.0.0",
   "top_k": 10,

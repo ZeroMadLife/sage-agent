@@ -62,6 +62,28 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
     assert all(call["headers"]["Authorization"] == "Bearer secret" for call in calls)
 
 
+@pytest.mark.parametrize("indexes", ([0, 0], [0, 2]))
+def test_openai_compatible_provider_rejects_invalid_response_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+    indexes: list[int],
+) -> None:
+    def fake_post(*_args: Any, **_kwargs: Any) -> _Response:
+        return _Response({"data": [{"index": index, "embedding": [3.0, 4.0]} for index in indexes]})
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = OpenAICompatibleEmbeddingProvider(
+        OpenAICompatibleEmbeddingConfig(
+            api_key="secret",
+            base_url="https://embedding.example/v1",
+            model="embedding-model",
+            dimensions=2,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="embedding request failed"):
+        provider.prepare(("first", "second"))
+
+
 @pytest.mark.parametrize(
     ("base_url", "message"),
     [

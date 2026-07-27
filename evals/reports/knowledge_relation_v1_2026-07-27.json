@@ -3,15 +3,15 @@
   "benchmark_revision": "sha256:3e7c0c26cd6045e52813c82b6ae9c32c471358838601337875892591397c09e1",
   "dataset": "evals/knowledge_relation_benchmark_v1.jsonl",
   "dataset_sha256": "3e7c0c26cd6045e52813c82b6ae9c32c471358838601337875892591397c09e1",
-  "corpus_benchmark_revision": "2026-07-26.1",
-  "source_commit": "721f9cfce2a10fa7ae483972c8f92fcec3fad47c",
+  "corpus_benchmark_revision": "2026-07-27.1",
+  "source_commit": "937ff70935e336f0e02b2460827938d1a5aa37bd",
   "source_dirty": false,
   "provider": {
     "model_id": "sage.hashing",
     "model_revision": "1.0.0",
     "supports_semantic_recall": false
   },
-  "relevance_policy_id": "krp_ce06e627099226df",
+  "relevance_policy_id": "krp_8ea6519cd1e6798e",
   "query_count": 14,
   "answerable_query_count": 12,
   "unanswerable_query_count": 2,
@@ -23,8 +23,8 @@
   "graph_path_precision": 0.2894736842105263,
   "unanswerable_accuracy": 1.0,
   "latency_ms": {
-    "p50": 41.73366702161729,
-    "p95": 43.6299170833081
+    "p50": 42.27358312346041,
+    "p95": 47.98312485218048
   },
   "cases": [
     {

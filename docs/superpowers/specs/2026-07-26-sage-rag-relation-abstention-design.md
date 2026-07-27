@@ -4,8 +4,8 @@
 > 基线：`dev/sage-v7@b1bedea`
 > 状态：v1 实现与 clean-tree 评测报告已固化
 
-机器证据：`evals/reports/knowledge_abstention_v1_2026-07-26.json` 与
-`evals/reports/knowledge_relation_v1_2026-07-26.json`。
+机器证据：`evals/reports/knowledge_abstention_v1_2026-07-27.json` 与
+`evals/reports/knowledge_relation_v1_2026-07-27.json`。
 
 ## 1. 当前事实与问题
 

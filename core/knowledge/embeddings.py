@@ -107,6 +107,8 @@ class OpenAICompatibleEmbeddingProvider:
             ordered = sorted(rows, key=lambda item: int(item["index"]))
             if len(ordered) != len(texts):
                 raise ValueError("embedding response count mismatch")
+            if [int(item["index"]) for item in ordered] != list(range(len(texts))):
+                raise ValueError("embedding response indexes are invalid")
             vectors = tuple(
                 _normalized_vector(item["embedding"], self.dimensions) for item in ordered
             )

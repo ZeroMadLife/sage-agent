@@ -113,7 +113,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
 | **RAG Benchmark v2** | 上一冻结语料 revision 的 clean 实验中，真实语义双路相对 Hashing 将 Recall@10 从 0.578 提升到 0.814、NDCG@10 从 0.444 提升到 0.695 | 本轮未重新运行真实语义 Provider；generation quality 尚未评测 |
-| **Abstention + Relation v1** | 当前 `2026-07-26.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
+| **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
 | **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 

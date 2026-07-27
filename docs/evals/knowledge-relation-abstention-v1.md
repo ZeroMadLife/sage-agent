@@ -10,17 +10,17 @@
 
 ## 2. 固定证据
 
-- Passage 数据：`evals/knowledge_benchmark_v2.jsonl`，manifest revision `2026-07-26.1`；
+- Passage 数据：`evals/knowledge_benchmark_v2.jsonl`，manifest revision `2026-07-27.1`；
 - Relation 数据：`evals/knowledge_relation_benchmark_v1.jsonl`，14 条受控查询；
-- Source commit：`721f9cfce2a10fa7ae483972c8f92fcec3fad47c`；
+- Source commit：`937ff70935e336f0e02b2460827938d1a5aa37bd`；
 - Provider：`sage.hashing@1.0.0`，不支持真实语义召回；
-- Policy：`krp_ce06e627099226df`；
+- Policy：`krp_8ea6519cd1e6798e`；
 - 两次运行均记录 `source_dirty=false`。
 
 机器报告：
 
-- `evals/reports/knowledge_abstention_v1_2026-07-26.json`；
-- `evals/reports/knowledge_relation_v1_2026-07-26.json`。
+- `evals/reports/knowledge_abstention_v1_2026-07-27.json`；
+- `evals/reports/knowledge_relation_v1_2026-07-27.json`。
 
 ## 3. Abstention 结果
 
@@ -43,7 +43,7 @@
 | Hybrid seed | 0.250 | - | - |
 | + evidence-bound 1-hop | 1.000 | 0.917 | 0.289 |
 
-关系路由 P50 为 41.7 ms、P95 为 43.6 ms，仅表示本机 Hashing 小语料运行。Path precision
+关系路由 P50 为 42.3 ms、P95 为 48.0 ms，仅表示本机 Hashing 小语料运行。Path precision
 0.289 说明仍有非 gold 显式边被扩展；后续需要更大独立标注集验证 query-edge ranking。
 
 ## 5. 复现

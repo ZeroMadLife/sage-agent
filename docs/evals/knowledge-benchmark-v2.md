@@ -50,14 +50,14 @@ Provider 只读取进程环境变量，报告不保存 key、endpoint 响应或�
 
 语义双路相对离线 Hashing 基线：Recall@10 提升 40.9%，MRR 提升 63.3%，NDCG@10 提升 56.3%。其中 30 条改写题 Recall@10 从 0.433 提升到 0.833，多文档题从 0.350 提升到 0.625。
 
-第 09 章机制文档在 2026-07-26 更新后，manifest revision 已升为 `2026-07-26.1`。上表仍是
+第 09 章机制文档在 2026-07-27 同步后，manifest revision 已升为 `2026-07-27.1`。上表仍是
 可复核的 clean 历史实验，但不能冒充当前 corpus 的重跑结果；本轮环境没有真实语义 Provider
 凭据，因此只重新执行离线 Hashing 校准。
 
-## 5. 2026-07-26 校准拒答
+## 5. 2026-07-27 校准拒答
 
-证据文件：`evals/reports/knowledge_abstention_v1_2026-07-26.json`，source commit 为
-`721f9cf`，运行时工作区为 clean。阈值只在 90 条 dev 查询上选择，60 条 test 查询只验收一次。
+证据文件：`evals/reports/knowledge_abstention_v1_2026-07-27.json`，source commit 为
+`937ff70`，运行时工作区为 clean。阈值只在 90 条 dev 查询上选择，60 条 test 查询只验收一次。
 
 | Test 配置 | Recall@10 | MRR | NDCG@10 | 无答案准确率 |
 | --- | ---: | ---: | ---: | ---: |

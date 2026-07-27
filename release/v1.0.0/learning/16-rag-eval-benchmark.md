@@ -1,6 +1,6 @@
 # 16 - RAG Benchmark v2：指标必须绑定当前语料与 Provider
 
-> Last verified against: `codex/rag-graph-v3@721f9cf` (2026-07-26)
+> Last verified against: `codex/rag-graph-v3@937ff70` (2026-07-27)
 
 RAG 评测最容易犯的错误，是拿旧语料、旧映射和旧 Provider 产生的数字描述当前系统。
 Benchmark v2 首先解决证据可复现，再比较检索策略。
@@ -76,9 +76,9 @@ HashingEmbedding 是可离线运行的确定性基线，不支持语义召回。
 第 09 章机制文档在下一 revision 更新，因此上表是上一冻结语料的 clean 历史证据。本轮没有
 真实语义 Provider 凭据，不能把这组数字标成当前 corpus 的重新运行结果。
 
-## 2026-07-26 校准拒答：收益必须连同代价报告
+## 2026-07-27 校准拒答：收益必须连同代价报告
 
-在 `2026-07-26.1` manifest 上，Hashing raw retrieval 仍会对无关问题固定返回 top-k。新的
+在 `2026-07-27.1` manifest 上，Hashing raw retrieval 仍会对无关问题固定返回 top-k。新的
 `KnowledgeRelevancePolicy` 只使用 dev split 选择绝对 sparse threshold，再在 untouched test
 split 验收：
 
@@ -131,8 +131,8 @@ DASHSCOPE_API_KEY=... python scripts/benchmark_knowledge_retrieval_v2.py \
 
 数据清单：`evals/knowledge_benchmark_v2_manifest.json`。机器摘要：
 `evals/reports/knowledge_benchmark_v2_2026-07-25.json`、
-`evals/reports/knowledge_abstention_v1_2026-07-26.json` 与
-`evals/reports/knowledge_relation_v1_2026-07-26.json`。完整 passage 逐 case 原始报告约 1.8 MB，
+`evals/reports/knowledge_abstention_v1_2026-07-27.json` 与
+`evals/reports/knowledge_relation_v1_2026-07-27.json`。完整 passage 逐 case 原始报告约 1.8 MB，
 仍由命令生成，不提交仓库。
 
 ## 当前边界
@@ -140,7 +140,7 @@ DASHSCOPE_API_KEY=... python scripts/benchmark_knowledge_retrieval_v2.py \
 - 数据集来自项目维护者构造和复核，不是独立外部用户流量；
 - 当前数字只证明 retrieval，不证明最终回答 faithful 或 complete；
 - 当前 Hashing test 无答案准确率只有 0.50，仍会召回部分相似但无关内容；
-- 真实语义 Provider 尚未按 `2026-07-26.1` corpus 重新校准；
+- 真实语义 Provider 尚未按 `2026-07-27.1` corpus 重新校准；
 - relation slice 只有显式一跳和 14 条查询，不代表实体、多跳或 community GraphRAG；
 - 真实语义 Provider P50 高于离线基线，质量与延迟需要一起展示；
 - 语料规模是 16 文件 / 879 chunks，不得扩写为企业级知识库规模。
