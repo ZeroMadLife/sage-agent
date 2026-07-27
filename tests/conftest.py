@@ -36,6 +36,9 @@ def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
         "KNOWLEDGE_EXTERNAL_ALLOWED_SOURCE_IDS": "",
         "KNOWLEDGE_QWEN_VL_ENABLED": "false",
         "KNOWLEDGE_QWEN_VL_API_KEY": "",
+        "KNOWLEDGE_RETRIEVAL_OBSERVABILITY_ENABLED": "false",
+        "KNOWLEDGE_RETRIEVAL_OBSERVABILITY_HMAC_KEY": "",
+        "KNOWLEDGE_RETRIEVAL_OBSERVABILITY_CANDIDATE_LIMIT": "50",
     }
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)

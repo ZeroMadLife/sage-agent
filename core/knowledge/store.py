@@ -104,7 +104,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -2556,7 +2556,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {

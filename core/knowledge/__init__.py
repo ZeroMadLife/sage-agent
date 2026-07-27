@@ -64,8 +64,10 @@ from core.knowledge.migration import (
     KnowledgeMigrationResult,
     KnowledgeMigrationResultItem,
 )
+from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
@@ -113,6 +115,7 @@ __all__ = [
     "DEFAULT_FASTEMBED_MODEL_REVISION",
     "DEFAULT_FASTEMBED_REPOSITORY",
     "POSTGRES_INDEX_SCHEMA_REVISION",
+    "POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION",
     "CorpusManifestEntry",
     "EvalCase",
     "EvalDatasetManifest",
@@ -160,6 +163,7 @@ __all__ = [
     "KnowledgeRelevancePolicyError",
     "KnowledgeRetrievalBundle",
     "KnowledgeRetrievalMode",
+    "KnowledgeRetrievalObservabilityConfig",
     "KnowledgeSearchHit",
     "KnowledgeSourceRoot",
     "KnowledgeStore",

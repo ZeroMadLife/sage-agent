@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import uuid
@@ -9,8 +10,10 @@ from pathlib import Path
 import psycopg2
 import pytest
 
+from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
@@ -106,8 +109,52 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
     assert all("hnsw" not in definition.casefold() for _name, definition in indexes)
     assert all("ivfflat" not in definition.casefold() for _name, definition in indexes)
     assert POSTGRES_INDEX_SCHEMA_REVISION in revisions
+    assert POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION in revisions
     assert "embedding_dimensions" in revision_columns
     assert idle_in_transaction == 0
+
+
+def test_postgres_retrieval_trace_excludes_query_and_chunk_text(
+    postgres_store: KnowledgeStore,
+    tmp_path: Path,
+) -> None:
+    index = postgres_store.knowledge_index
+    assert isinstance(index, PostgresKnowledgeIndex)
+    index.observability = KnowledgeRetrievalObservabilityConfig(
+        enabled=True,
+        hmac_key="test-only-postgres-observability-key-v1",
+    )
+    source_text = "# Spring\n\nTransactional boundaries belong at service methods.\n"
+    (tmp_path / "source" / "spring.md").write_text(source_text, encoding="utf-8")
+    proposal = postgres_store.ingest("official", "spring.md")
+    postgres_store.approve(proposal.proposal_id, proposal.revision)
+
+    query = "POSTGRES_TRACE_SECRET Transactional boundaries"
+    hits = postgres_store.search(query, retrieval_mode="hybrid", top_k=4)
+
+    assert hits
+    with psycopg2.connect(index.config.dsn) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT query_hash, query_length, round_index, rewrite_hash,
+                   candidate_count, returned_count, candidates_json,
+                   gate_decision, failure_type, error_type
+            FROM knowledge_retrieval_runs
+            WHERE workspace_id=%s
+            ORDER BY created_at DESC LIMIT 1
+            """,
+            (index.workspace_id,),
+        )
+        row = cursor.fetchone()
+
+    assert row is not None
+    serialized = json.dumps(row, ensure_ascii=False, default=str)
+    assert str(row[0]).startswith("hmac-sha256:")
+    assert row[1:4] == (len(query), 1, None)
+    assert row[4] >= row[5] == len(hits)
+    assert row[7:] == ("not_configured", "none", None)
+    assert "POSTGRES_TRACE_SECRET" not in serialized
+    assert source_text not in serialized
 
 
 def test_postgres_exact_routes_preserve_filters_revisions_and_citations(

@@ -162,6 +162,9 @@ def test_committed_dataset_produces_reproducible_layered_sqlite_report() -> None
         for case in route["cases"]
     )
     assert all("answer_text" not in case for case in route["cases"])
+    assert all(case["trace"]["failure_type"] == case["primary_failure"] for case in route["cases"])
+    assert all(case["trace"]["retrieval"]["candidate_count"] >= 0 for case in route["cases"])
+    assert all("content" not in case["trace"] for case in route["cases"])
 
 
 def test_layered_eval_can_select_dev_and_calibration_without_embedding_frozen_test() -> None:

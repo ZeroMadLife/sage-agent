@@ -1074,6 +1074,34 @@ def _evaluate_case(
         forbidden_matches=forbidden_matches,
         citation_valid=evidence_count == citation_valid_count,
     )
+    trace = {
+        "failure_type": primary_failure,
+        "ingestion": {"dataset_loaded": raw.error_type is None},
+        "retrieval": {
+            "candidate_count": len(raw.hits),
+            "matched_candidate_count": len(matched_candidates),
+            "top_k_count": len(top_hits),
+            "matched_top_k_count": len(matched_top),
+        },
+        "ranking": {"relevant_first_rank": first_rank},
+        "context": {
+            "evidence_count": evidence_count,
+            "omitted_count": bundle.omitted_count,
+            "matched_evidence_count": len(
+                {item for item in context_documents if item in relevance}
+            ),
+        },
+        "gate": {"accepted": accepted, "score_available": score is not None},
+        "generation": {
+            "forbidden_match_count": forbidden_matches,
+            "extractive_grounded": forbidden_matches == 0,
+        },
+        "citation": {
+            "valid_count": citation_valid_count,
+            "evidence_count": evidence_count,
+        },
+        "system": {"error_type": raw.error_type},
+    }
     return {
         "case_id": case.case_id,
         "query": case.query,
@@ -1081,6 +1109,7 @@ def _evaluate_case(
         "category": case.category,
         "answerable": case.answerable,
         "primary_failure": primary_failure,
+        "trace": trace,
         "retrieval": {
             "recall_at_k": len(matched_top) / len(relevance) if relevance else 0.0,
             "candidate_recall": len(matched_candidates) / len(relevance) if relevance else 0.0,
