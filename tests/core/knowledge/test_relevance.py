@@ -55,6 +55,38 @@ def test_relevance_policy_round_trip_and_provider_binding(tmp_path: Path) -> Non
         )
 
 
+def test_v2_relevance_policy_uses_route_specific_hybrid_threshold(tmp_path: Path) -> None:
+    policy = _policy(
+        min_dense_score=0.75,
+        min_hybrid_score=0.03,
+        schema_version=2,
+    )
+    path = tmp_path / "policy-v2.json"
+    path.write_text(json.dumps(policy.to_dict()), encoding="utf-8")
+
+    loaded = load_relevance_policy(path)
+
+    assert loaded == policy
+    assert loaded.accepts(
+        sparse_score=10.0,
+        dense_score=0.90,
+        hybrid_score=0.031,
+        retrieval_mode="hybrid",
+    )
+    assert not loaded.accepts(
+        sparse_score=10.0,
+        dense_score=0.90,
+        hybrid_score=0.029,
+        retrieval_mode="hybrid",
+    )
+    assert loaded.accepts(
+        sparse_score=4.0,
+        dense_score=None,
+        hybrid_score=None,
+        retrieval_mode="sparse",
+    )
+
+
 def test_relevance_policy_rejects_search_above_calibrated_top_k(tmp_path: Path) -> None:
     index = LocalKnowledgeIndex(relevance_policy=_policy(top_k=4))
     connection = sqlite3.connect(":memory:")

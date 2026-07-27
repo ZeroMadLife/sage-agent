@@ -10,11 +10,11 @@ import tempfile
 import time
 import unicodedata
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from core.knowledge.datasets import (
     CorpusManifestEntry,
@@ -52,6 +52,7 @@ _FAILURE_LAYERS = (
     "citation",
     "system",
 )
+EvalSplit = Literal["dev", "calibration", "test"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,6 +147,9 @@ def run_sqlite_layered_eval(
     token_budget: int = 3_000,
     provider: DenseEmbeddingProvider | None = None,
     minimum_answerable_recall: float = 0.90,
+    evaluation_splits: tuple[EvalSplit, ...] = ("dev", "calibration", "test"),
+    precache_queries: bool = True,
+    gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
 ) -> dict[str, Any]:
     """Run the same frozen corpus through isolated SQLite retrieval routes."""
 
@@ -154,13 +158,15 @@ def run_sqlite_layered_eval(
         raise ValueError("retrieval modes must be non-empty and unique")
     if any(mode not in {"sparse", "dense", "hybrid"} for mode in retrieval_modes):
         raise ValueError("unsupported retrieval mode")
+    _validate_gate_thresholds(retrieval_modes, gate_thresholds)
     if top_k < 1 or top_k > 50 or candidate_k < top_k or candidate_k > 50:
         raise ValueError("eval requires 1 <= top_k <= candidate_k <= 50")
     if token_budget < 256 or token_budget > 20_000:
         raise ValueError("eval token budget must be between 256 and 20000")
 
     dataset_file = dataset_path.resolve() if dataset_path.is_absolute() else root / dataset_path
-    dataset = load_versioned_dataset(root, dataset_file)
+    full_dataset = load_versioned_dataset(root, dataset_file)
+    dataset = _select_evaluation_splits(full_dataset, evaluation_splits)
     embedding_provider = provider or HashingEmbeddingProvider()
     source_commit = _git_value(root, "rev-parse", "HEAD")
     source_dirty = bool(_git_value(root, "status", "--porcelain"))
@@ -185,7 +191,13 @@ def run_sqlite_layered_eval(
             ),
         )
         prepared = _prepare_corpus(store, root, snapshot_root, dataset)
-        _prepare_provider(embedding_provider, prepared, dataset.cases)
+        embedding_started = time.perf_counter()
+        _prepare_provider(
+            embedding_provider,
+            prepared,
+            dataset.cases if precache_queries else (),
+        )
+        embedding_preparation_latency_ms = (time.perf_counter() - embedding_started) * 1_000
         ingestion_started = time.perf_counter()
         for entry, source in prepared:
             try:
@@ -211,11 +223,9 @@ def run_sqlite_layered_eval(
                 candidate_k=candidate_k,
                 token_budget=token_budget,
                 minimum_answerable_recall=minimum_answerable_recall,
-                estimated_cost_usd=(
-                    0.0
-                    if embedding_provider.model_id == HashingEmbeddingProvider.model_id
-                    else None
-                ),
+                estimated_cost_usd=_estimated_cost(embedding_provider),
+                gate_threshold=None if gate_thresholds is None else gate_thresholds[mode],
+                semantic_provider=embedding_provider.supports_semantic_recall,
             )
             for mode in retrieval_modes
         }
@@ -223,14 +233,21 @@ def run_sqlite_layered_eval(
 
     result: dict[str, Any] = {
         "schema_version": 1,
-        "evaluation_id": "sage-sqlite-layered-baseline-v1",
+        "evaluation_id": (
+            "sage-sqlite-layered-semantic-v1"
+            if embedding_provider.supports_semantic_recall
+            else "sage-sqlite-layered-baseline-v1"
+        ),
         "dataset": {
             "dataset_id": dataset.manifest.dataset_id,
             "dataset_revision": dataset.manifest.dataset_revision,
             "case_count": len(dataset.cases),
+            "full_case_count": len(full_dataset.cases),
             "corpus_count": len(dataset.corpus),
             "split_counts": dataset.split_counts,
+            "manifest_split_counts": full_dataset.split_counts,
             "frozen_test": dataset.manifest.frozen_test,
+            "frozen_test_evaluated": "test" in evaluation_splits,
         },
         "inputs": {
             "dataset_manifest_sha256": _sha256_file(dataset_file),
@@ -255,7 +272,14 @@ def run_sqlite_layered_eval(
             "candidate_k": candidate_k,
             "token_budget": token_budget,
             "minimum_answerable_recall": minimum_answerable_recall,
+            "evaluation_splits": list(evaluation_splits),
+            "queries_precached": precache_queries,
+            "gate_thresholds": None if gate_thresholds is None else dict(gate_thresholds),
             "test_split_used_for_calibration": False,
+        },
+        "embedding_preparation": {
+            "latency_ms": round(embedding_preparation_latency_ms, 3),
+            "queries_included": precache_queries,
         },
         "ingestion": {
             "approved_source_count": len(dataset.corpus),
@@ -280,6 +304,9 @@ def run_postgres_layered_eval(
     token_budget: int = 3_000,
     provider: DenseEmbeddingProvider | None = None,
     minimum_answerable_recall: float = 0.90,
+    evaluation_splits: tuple[EvalSplit, ...] = ("dev", "calibration", "test"),
+    precache_queries: bool = True,
+    gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
 ) -> dict[str, Any]:
     """Run the frozen corpus through GIN and pgvector exact retrieval routes."""
 
@@ -288,13 +315,15 @@ def run_postgres_layered_eval(
         raise ValueError("retrieval modes must be non-empty and unique")
     if any(mode not in {"sparse", "dense", "hybrid"} for mode in retrieval_modes):
         raise ValueError("unsupported retrieval mode")
+    _validate_gate_thresholds(retrieval_modes, gate_thresholds)
     if top_k < 1 or top_k > 50 or candidate_k < top_k or candidate_k > 50:
         raise ValueError("eval requires 1 <= top_k <= candidate_k <= 50")
     if token_budget < 256 or token_budget > 20_000:
         raise ValueError("eval token budget must be between 256 and 20000")
 
     dataset_file = dataset_path.resolve() if dataset_path.is_absolute() else root / dataset_path
-    dataset = load_versioned_dataset(root, dataset_file)
+    full_dataset = load_versioned_dataset(root, dataset_file)
+    dataset = _select_evaluation_splits(full_dataset, evaluation_splits)
     embedding_provider = provider or HashingEmbeddingProvider()
     source_commit = _git_value(root, "rev-parse", "HEAD")
     source_dirty = bool(_git_value(root, "status", "--porcelain"))
@@ -322,7 +351,13 @@ def run_postgres_layered_eval(
                 knowledge_index=postgres_index,
             )
             prepared = _prepare_corpus(store, root, snapshot_root, dataset)
-            _prepare_provider(embedding_provider, prepared, dataset.cases)
+            embedding_started = time.perf_counter()
+            _prepare_provider(
+                embedding_provider,
+                prepared,
+                dataset.cases if precache_queries else (),
+            )
+            embedding_preparation_latency_ms = (time.perf_counter() - embedding_started) * 1_000
             ingestion_started = time.perf_counter()
             for entry, source in prepared:
                 try:
@@ -349,18 +384,24 @@ def run_postgres_layered_eval(
                     candidate_k=candidate_k,
                     token_budget=token_budget,
                     minimum_answerable_recall=minimum_answerable_recall,
-                    estimated_cost_usd=(
-                        0.0
-                        if embedding_provider.model_id == HashingEmbeddingProvider.model_id
-                        else None
-                    ),
+                    estimated_cost_usd=_estimated_cost(embedding_provider),
+                    gate_threshold=None if gate_thresholds is None else gate_thresholds[mode],
+                    semantic_provider=embedding_provider.supports_semantic_recall,
                 )
                 for mode in retrieval_modes
             }
             route_labels = {
                 "sparse": "PostgreSQL GIN + ts_rank_cd sparse-only; not BM25",
-                "dense": "pgvector exact Hashing dense-only; deterministic and non-semantic",
-                "hybrid": "PostgreSQL GIN + constrained pgvector exact Hashing + RRF",
+                "dense": (
+                    "pgvector exact semantic dense-only"
+                    if embedding_provider.supports_semantic_recall
+                    else "pgvector exact Hashing dense-only; deterministic and non-semantic"
+                ),
+                "hybrid": (
+                    "PostgreSQL GIN + pgvector exact semantic dense + RRF"
+                    if embedding_provider.supports_semantic_recall
+                    else "PostgreSQL GIN + constrained pgvector exact Hashing + RRF"
+                ),
             }
             for mode, route in routes.items():
                 route["label"] = route_labels[mode]
@@ -369,14 +410,21 @@ def run_postgres_layered_eval(
 
         result: dict[str, Any] = {
             "schema_version": 1,
-            "evaluation_id": "sage-postgres-exact-layered-baseline-v1",
+            "evaluation_id": (
+                "sage-postgres-exact-layered-semantic-v1"
+                if embedding_provider.supports_semantic_recall
+                else "sage-postgres-exact-layered-baseline-v1"
+            ),
             "dataset": {
                 "dataset_id": dataset.manifest.dataset_id,
                 "dataset_revision": dataset.manifest.dataset_revision,
                 "case_count": len(dataset.cases),
+                "full_case_count": len(full_dataset.cases),
                 "corpus_count": len(dataset.corpus),
                 "split_counts": dataset.split_counts,
+                "manifest_split_counts": full_dataset.split_counts,
                 "frozen_test": dataset.manifest.frozen_test,
+                "frozen_test_evaluated": "test" in evaluation_splits,
             },
             "inputs": {
                 "dataset_manifest_sha256": _sha256_file(dataset_file),
@@ -402,8 +450,15 @@ def run_postgres_layered_eval(
                 "candidate_k": candidate_k,
                 "token_budget": token_budget,
                 "minimum_answerable_recall": minimum_answerable_recall,
+                "evaluation_splits": list(evaluation_splits),
+                "queries_precached": precache_queries,
+                "gate_thresholds": None if gate_thresholds is None else dict(gate_thresholds),
                 "test_split_used_for_calibration": False,
                 "ann_index_used": False,
+            },
+            "embedding_preparation": {
+                "latency_ms": round(embedding_preparation_latency_ms, 3),
+                "queries_included": precache_queries,
             },
             "ingestion": {
                 "approved_source_count": len(dataset.corpus),
@@ -536,6 +591,165 @@ def compare_layered_reports(
     }
 
 
+def compare_semantic_provider_reports(
+    baseline_report: dict[str, Any],
+    candidate_report: dict[str, Any],
+    *,
+    route: KnowledgeRetrievalMode = "hybrid",
+    minimum_semantic_paraphrase_recall_delta: float = 0.05,
+    minimum_overall_recall_delta: float = -0.01,
+    minimum_abstain_f1_delta: float = -0.05,
+    minimum_citation_support_delta: float = -0.001,
+    maximum_p95_latency_ms: float = 100.0,
+    maximum_estimated_cost_usd: float = 0.01,
+) -> dict[str, Any]:
+    """Apply the frozen PR-4 activation gates to one semantic candidate."""
+
+    compatibility_fields = (
+        (
+            "dataset_id",
+            baseline_report["dataset"]["dataset_id"],
+            candidate_report["dataset"]["dataset_id"],
+        ),
+        (
+            "dataset_revision",
+            baseline_report["dataset"]["dataset_revision"],
+            candidate_report["dataset"]["dataset_revision"],
+        ),
+        (
+            "cases_sha256",
+            baseline_report["inputs"]["cases_sha256"],
+            candidate_report["inputs"]["cases_sha256"],
+        ),
+        ("top_k", baseline_report["parameters"]["top_k"], candidate_report["parameters"]["top_k"]),
+        (
+            "candidate_k",
+            baseline_report["parameters"]["candidate_k"],
+            candidate_report["parameters"]["candidate_k"],
+        ),
+        (
+            "evaluation_splits",
+            baseline_report["parameters"]["evaluation_splits"],
+            candidate_report["parameters"]["evaluation_splits"],
+        ),
+    )
+    mismatches = [
+        name for name, baseline, candidate in compatibility_fields if baseline != candidate
+    ]
+    if mismatches:
+        raise ValueError("incompatible semantic eval inputs: " + ", ".join(mismatches))
+    if baseline_report["provider"]["supports_semantic_recall"]:
+        raise ValueError("semantic comparison baseline must be non-semantic")
+    if not candidate_report["provider"]["supports_semantic_recall"]:
+        raise ValueError("semantic comparison candidate must support semantic recall")
+
+    baseline_route = baseline_report["routes"][route]
+    candidate_route = candidate_report["routes"][route]
+    semantic_delta = _rounded_delta(
+        candidate_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"],
+        baseline_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"],
+    )
+    overall_delta = _rounded_delta(
+        candidate_route["retrieval"]["recall_at_k"],
+        baseline_route["retrieval"]["recall_at_k"],
+    )
+    abstain_delta = _rounded_delta(
+        candidate_route["gate"]["evaluation"]["abstain_f1"],
+        baseline_route["gate"]["evaluation"]["abstain_f1"],
+    )
+    citation_delta = _rounded_delta(
+        candidate_route["citation"]["support_rate"],
+        baseline_route["citation"]["support_rate"],
+    )
+    p95_latency_ms = float(candidate_route["system"]["latency_ms"]["p95"])
+    raw_cost = candidate_route["system"]["estimated_cost_usd"]
+    estimated_cost_usd = None if raw_cost is None else float(raw_cost)
+    gates: dict[str, dict[str, float | bool | None]] = {
+        "semantic_paraphrase_recall": {
+            "minimum_delta": minimum_semantic_paraphrase_recall_delta,
+            "delta": semantic_delta,
+            "passed": semantic_delta >= minimum_semantic_paraphrase_recall_delta,
+        },
+        "overall_recall": {
+            "minimum_delta": minimum_overall_recall_delta,
+            "delta": overall_delta,
+            "passed": overall_delta >= minimum_overall_recall_delta,
+        },
+        "abstain_f1": {
+            "minimum_delta": minimum_abstain_f1_delta,
+            "delta": abstain_delta,
+            "passed": abstain_delta >= minimum_abstain_f1_delta,
+        },
+        "citation_support": {
+            "minimum_delta": minimum_citation_support_delta,
+            "delta": citation_delta,
+            "passed": citation_delta >= minimum_citation_support_delta,
+        },
+        "p95_latency_ms": {
+            "maximum": maximum_p95_latency_ms,
+            "actual": p95_latency_ms,
+            "passed": p95_latency_ms <= maximum_p95_latency_ms,
+        },
+        "estimated_cost_usd": {
+            "maximum": maximum_estimated_cost_usd,
+            "actual": estimated_cost_usd,
+            "passed": estimated_cost_usd is not None
+            and estimated_cost_usd <= maximum_estimated_cost_usd,
+        },
+    }
+    return {
+        "compatible_inputs": True,
+        "route": route,
+        "overall_passed": all(gate.get("passed") is True for gate in gates.values()),
+        "gates": gates,
+    }
+
+
+def _rounded_delta(candidate: str | int | float, baseline: str | int | float) -> float:
+    return round(float(candidate) - float(baseline), 6)
+
+
+def _select_evaluation_splits(
+    dataset: VersionedKnowledgeDataset,
+    splits: tuple[EvalSplit, ...],
+) -> VersionedKnowledgeDataset:
+    allowed = {"dev", "calibration", "test"}
+    if (
+        not splits
+        or len(splits) != len(set(splits))
+        or any(split not in allowed for split in splits)
+    ):
+        raise ValueError("evaluation splits must be non-empty, unique, and supported")
+    if "calibration" not in splits:
+        raise ValueError("evaluation splits must include calibration")
+    selected = tuple(case for case in dataset.cases if case.dataset_split in splits)
+    return replace(dataset, cases=selected)
+
+
+def _validate_gate_thresholds(
+    modes: tuple[KnowledgeRetrievalMode, ...],
+    thresholds: Mapping[KnowledgeRetrievalMode, float] | None,
+) -> None:
+    if thresholds is None:
+        return
+    if set(thresholds) != set(modes):
+        raise ValueError("fixed gate thresholds must match the evaluated retrieval modes")
+    if any(
+        isinstance(value, bool) or not math.isfinite(value) or value < 0.0
+        for value in thresholds.values()
+    ):
+        raise ValueError("fixed gate thresholds must be finite and non-negative")
+
+
+def _estimated_cost(provider: DenseEmbeddingProvider) -> float | None:
+    value = getattr(provider, "estimated_cost_usd", None)
+    if value is not None:
+        return float(value)
+    if provider.model_id == HashingEmbeddingProvider.model_id:
+        return 0.0
+    return None
+
+
 def _prepare_corpus(
     store: KnowledgeStore,
     repo_root: Path,
@@ -595,6 +809,8 @@ def _run_route(
     token_budget: int,
     minimum_answerable_recall: float,
     estimated_cost_usd: float | None,
+    gate_threshold: float | None = None,
+    semantic_provider: bool = False,
 ) -> dict[str, Any]:
     raw_cases: list[_RawCase] = []
     for case in dataset.cases:
@@ -619,17 +835,32 @@ def _run_route(
         )
 
     calibration_rows = [item for item in raw_cases if item.case.dataset_split == "calibration"]
-    calibration = calibrate_gate(
-        tuple(
-            GateObservation(
-                item.case.case_id,
-                item.case.answerable,
-                _route_score(item.hits, retrieval_mode),
-            )
-            for item in calibration_rows
-        ),
-        minimum_answerable_recall=minimum_answerable_recall,
+    observations = tuple(
+        GateObservation(
+            item.case.case_id,
+            item.case.answerable,
+            _route_score(item.hits, retrieval_mode),
+        )
+        for item in calibration_rows
     )
+    if gate_threshold is None:
+        calibration = calibrate_gate(
+            observations,
+            minimum_answerable_recall=minimum_answerable_recall,
+        )
+        threshold_source = "calibrated_current_run"
+    else:
+        metrics = _gate_metrics(observations, gate_threshold)
+        calibration = GateCalibration(
+            threshold=gate_threshold,
+            minimum_answerable_recall=minimum_answerable_recall,
+            target_met=float(metrics["answerable_recall"]) >= minimum_answerable_recall,
+            case_count=len(observations),
+            answerable_count=sum(item.answerable for item in observations),
+            unanswerable_count=sum(not item.answerable for item in observations),
+            metrics=metrics,
+        )
+        threshold_source = "fixed_policy"
     cases = [
         _evaluate_case(
             store,
@@ -647,13 +878,22 @@ def _run_route(
     return {
         "label": {
             "sparse": "SQLite FTS5 sparse-only",
-            "dense": "Hashing dense-only; deterministic and non-semantic",
-            "hybrid": "SQLite FTS5 + constrained Hashing + RRF",
+            "dense": (
+                "Semantic dense-only"
+                if semantic_provider
+                else "Hashing dense-only; deterministic and non-semantic"
+            ),
+            "hybrid": (
+                "SQLite FTS5 + semantic dense + RRF"
+                if semantic_provider
+                else "SQLite FTS5 + constrained Hashing + RRF"
+            ),
         }[retrieval_mode],
         "retrieval": summary["retrieval"],
         "ranking": summary["ranking"],
         "gate": {
             "calibration_split": "calibration",
+            "threshold_source": threshold_source,
             **asdict(calibration),
             "evaluation": summary["gate"],
         },
@@ -1121,10 +1361,12 @@ def _git_value(root: Path, *args: str) -> str:
 
 
 __all__ = [
+    "EvalSplit",
     "GateCalibration",
     "GateObservation",
     "calibrate_gate",
     "compare_layered_reports",
+    "compare_semantic_provider_reports",
     "run_postgres_layered_eval",
     "run_sqlite_layered_eval",
 ]

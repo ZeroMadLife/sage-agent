@@ -10,6 +10,12 @@ from core.knowledge.datasets import (
     validate_eval_dataset,
 )
 from core.knowledge.embeddings import (
+    DEFAULT_FASTEMBED_DIMENSIONS,
+    DEFAULT_FASTEMBED_MODEL,
+    DEFAULT_FASTEMBED_MODEL_REVISION,
+    DEFAULT_FASTEMBED_REPOSITORY,
+    FastEmbedEmbeddingConfig,
+    FastEmbedEmbeddingProvider,
     OpenAICompatibleEmbeddingConfig,
     OpenAICompatibleEmbeddingProvider,
 )
@@ -18,6 +24,7 @@ from core.knowledge.eval_runner import (
     GateObservation,
     calibrate_gate,
     compare_layered_reports,
+    compare_semantic_provider_reports,
     run_postgres_layered_eval,
     run_sqlite_layered_eval,
 )
@@ -101,6 +108,10 @@ from core.knowledge.understanding import (
 )
 
 __all__ = [
+    "DEFAULT_FASTEMBED_DIMENSIONS",
+    "DEFAULT_FASTEMBED_MODEL",
+    "DEFAULT_FASTEMBED_MODEL_REVISION",
+    "DEFAULT_FASTEMBED_REPOSITORY",
     "POSTGRES_INDEX_SCHEMA_REVISION",
     "CorpusManifestEntry",
     "EvalCase",
@@ -108,6 +119,8 @@ __all__ = [
     "EvalPassage",
     "EvidenceLearning",
     "EvidenceLearningCitation",
+    "FastEmbedEmbeddingConfig",
+    "FastEmbedEmbeddingProvider",
     "GateCalibration",
     "GateObservation",
     "HashingEmbeddingProvider",
@@ -173,6 +186,7 @@ __all__ = [
     "build_knowledge_index",
     "calibrate_gate",
     "compare_layered_reports",
+    "compare_semantic_provider_reports",
     "load_relevance_policy",
     "load_versioned_dataset",
     "run_postgres_layered_eval",
