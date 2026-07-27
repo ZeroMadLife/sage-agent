@@ -172,6 +172,10 @@ class Settings(BaseSettings):
     knowledge_retrieval_observability_enabled: bool = False
     knowledge_retrieval_observability_hmac_key: str = Field(default="", repr=False)
     knowledge_retrieval_observability_candidate_limit: int = Field(default=50, ge=1, le=200)
+    knowledge_recovery_enabled: bool = False
+    knowledge_recovery_min_results: int = Field(default=4, ge=1, le=20)
+    knowledge_recovery_top_k_multiplier: int = Field(default=2, ge=1, le=4)
+    knowledge_recovery_max_top_k: int = Field(default=20, ge=1, le=50)
     # External parsing is a separate trust boundary. It stays disabled until
     # both a source-root allowlist and at least one adapter are configured.
     knowledge_external_parsing_enabled: bool = False

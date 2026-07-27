@@ -12,6 +12,7 @@ from core.knowledge.observability import (
     KnowledgeRetrievalObservabilityConfig,
     build_retrieval_trace,
 )
+from core.knowledge.recovery import KnowledgeRecoveryPolicy
 from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
@@ -161,6 +162,34 @@ def test_observability_requires_a_nontrivial_hmac_key() -> None:
         assert "HMAC key" in str(exc)
     else:
         raise AssertionError("enabled observability accepted a weak HMAC key")
+
+
+def test_recovery_trace_links_original_query_and_rewrite_without_raw_text(
+    tmp_path: Path,
+) -> None:
+    store, source = _store(tmp_path)
+    store.recovery_policy = KnowledgeRecoveryPolicy(enabled=True, min_results=4)
+    original_query = "为什么 HNSW 加过滤条件后可能返回不足 top-k？"
+    source_text = (
+        "# Filtering\n\nWith approximate indexes, filtering can produce fewer matching rows. "
+        "Iterative scans continue until enough rows are found.\n"
+    )
+    (source / "pgvector.md").write_text(source_text, encoding="utf-8")
+    proposal = store.ingest("official", "pgvector.md")
+    store.approve(proposal.proposal_id, proposal.revision)
+
+    bundle = store.retrieve(original_query, top_k=8)
+    rows = _runs(store.database_path)
+
+    assert bundle.status == "evidence_found"
+    assert bundle.recovery_status == "recovered"
+    assert [row["round_index"] for row in rows] == [1, 2]
+    assert rows[0]["query_hash"] == rows[1]["query_hash"]
+    assert rows[0]["rewrite_hash"] is None
+    assert str(rows[1]["rewrite_hash"]).startswith("hmac-sha256:")
+    serialized = "\n".join(str(dict(row)) for row in rows)
+    assert original_query not in serialized
+    assert "iterative scans" not in serialized
 
 
 def test_query_fingerprint_is_workspace_scoped_and_returned_results_win_failure_label() -> None:

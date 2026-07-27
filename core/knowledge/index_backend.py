@@ -43,6 +43,9 @@ class KnowledgeIndexBackend(Protocol):
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
         retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
     ) -> tuple[KnowledgeSearchHit, ...]: ...
 
     def corpus_revision(self, connection: sqlite3.Connection) -> str: ...

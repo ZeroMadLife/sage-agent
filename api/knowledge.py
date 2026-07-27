@@ -70,6 +70,8 @@ from api.schemas import (
     KnowledgeProposalEvent,
     KnowledgeProposalResponse,
     KnowledgeProposalsResponse,
+    KnowledgeRecoveryAttemptResponse,
+    KnowledgeRecoveryResponse,
     KnowledgeRetrievalResponse,
     KnowledgeRollbackRequest,
     KnowledgeSearchRequest,
@@ -1543,6 +1545,22 @@ def _retrieval_response(bundle: KnowledgeRetrievalBundle) -> KnowledgeRetrievalR
         token_budget=bundle.token_budget,
         used_tokens=bundle.used_tokens,
         omitted_count=bundle.omitted_count,
+        recovery=KnowledgeRecoveryResponse(
+            status=bundle.recovery_status,
+            round_count=len(bundle.recovery_attempts),
+            no_evidence_reason=bundle.no_evidence_reason,
+            attempts=[
+                KnowledgeRecoveryAttemptResponse(
+                    round_index=attempt.round_index,
+                    trigger_reason=attempt.trigger_reason,
+                    retrieval_mode=attempt.retrieval_mode,
+                    top_k=attempt.top_k,
+                    result_count=attempt.result_count,
+                    query_rewritten=attempt.query_rewritten,
+                )
+                for attempt in bundle.recovery_attempts
+            ],
+        ),
         citations=citations,
     )
 

@@ -343,6 +343,23 @@ export type KnowledgeRetrieval = {
   token_budget: number
   used_tokens: number
   omitted_count: number
+  recovery: {
+    status: 'disabled' | 'not_needed' | 'not_available' | 'recovered' | 'not_improved' | 'exhausted'
+    round_count: number
+    no_evidence_reason:
+      | 'recovery_disabled'
+      | 'no_rewrite_available'
+      | 'bounded_recovery_exhausted'
+      | null
+    attempts: Array<{
+      round_index: 1 | 2
+      trigger_reason: 'initial' | 'insufficient_results'
+      retrieval_mode: 'sparse' | 'dense' | 'hybrid'
+      top_k: number
+      result_count: number
+      query_rewritten: boolean
+    }>
+  }
   citations: KnowledgeEvidence[]
 }
 

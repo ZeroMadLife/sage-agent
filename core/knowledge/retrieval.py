@@ -13,6 +13,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from core.knowledge.parsing import ParsedDocument
+from core.knowledge.recovery import (
+    KnowledgeNoEvidenceReason,
+    KnowledgeRecoveryAttempt,
+    KnowledgeRecoveryStatus,
+)
 
 _LATIN_TOKEN = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
@@ -88,6 +93,9 @@ class KnowledgeRetrievalBundle:
     token_budget: int
     used_tokens: int
     omitted_count: int
+    recovery_status: KnowledgeRecoveryStatus = "disabled"
+    recovery_attempts: tuple[KnowledgeRecoveryAttempt, ...] = ()
+    no_evidence_reason: KnowledgeNoEvidenceReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +366,9 @@ def assemble_retrieval_bundle(
     hits: tuple[KnowledgeSearchHit, ...],
     *,
     token_budget: int = 3_000,
+    recovery_status: KnowledgeRecoveryStatus = "disabled",
+    recovery_attempts: tuple[KnowledgeRecoveryAttempt, ...] = (),
+    no_evidence_reason: KnowledgeNoEvidenceReason | None = None,
 ) -> KnowledgeRetrievalBundle:
     """Select ranked evidence without allowing retrieval to overrun model context."""
 
@@ -401,6 +412,9 @@ def assemble_retrieval_bundle(
         token_budget=token_budget,
         used_tokens=used_tokens,
         omitted_count=max(0, len(hits) - len(selected)),
+        recovery_status=recovery_status,
+        recovery_attempts=recovery_attempts,
+        no_evidence_reason=no_evidence_reason,
     )
 
 

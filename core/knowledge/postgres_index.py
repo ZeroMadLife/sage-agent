@@ -519,6 +519,9 @@ class PostgresKnowledgeIndex:
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
         retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
     ) -> tuple[KnowledgeSearchHit, ...]:
         self._validate_search(
             connection,
@@ -530,6 +533,9 @@ class PostgresKnowledgeIndex:
             retrieval_mode=retrieval_mode,
         )
         normalized = query.strip()
+        trace_source = normalized if trace_query is None else trace_query.strip()
+        if not trace_source or len(trace_source) > 2_000:
+            raise ValueError("knowledge trace query must be between 1 and 2000 characters")
         candidate_limit = min(200, max(20, top_k * 5))
         started = time.perf_counter()
         where, filter_params = self._filters(
@@ -570,7 +576,7 @@ class PostgresKnowledgeIndex:
                 except Exception as exc:
                     self._record_retrieval_trace(
                         connection,
-                        query=normalized,
+                        query=trace_source,
                         retrieval_mode=retrieval_mode,
                         top_k=top_k,
                         candidate_limit=candidate_limit,
@@ -578,6 +584,8 @@ class PostgresKnowledgeIndex:
                         returned_chunk_ids=(),
                         latency_ms=(time.perf_counter() - started) * 1_000,
                         error_type=type(exc).__name__,
+                        round_index=round_index,
+                        rewrite=rewrite,
                     )
                     raise
                 if len(query_vector) != self.embedding_provider.dimensions:
@@ -647,13 +655,15 @@ class PostgresKnowledgeIndex:
         if not chunk_ids:
             self._record_retrieval_trace(
                 connection,
-                query=normalized,
+                query=trace_source,
                 retrieval_mode=retrieval_mode,
                 top_k=top_k,
                 candidate_limit=candidate_limit,
                 ranked_candidates=ranked,
                 returned_chunk_ids=(),
                 latency_ms=(time.perf_counter() - started) * 1_000,
+                round_index=round_index,
+                rewrite=rewrite,
             )
             return ()
         chunks = self._chunks_by_id(chunk_ids)
@@ -681,13 +691,15 @@ class PostgresKnowledgeIndex:
         )
         self._record_retrieval_trace(
             connection,
-            query=normalized,
+            query=trace_source,
             retrieval_mode=retrieval_mode,
             top_k=top_k,
             candidate_limit=candidate_limit,
             ranked_candidates=ranked,
             returned_chunk_ids=tuple(hit.chunk.chunk_id for hit in hits),
             latency_ms=(time.perf_counter() - started) * 1_000,
+            round_index=round_index,
+            rewrite=rewrite,
         )
         return hits
 
@@ -703,6 +715,8 @@ class PostgresKnowledgeIndex:
         returned_chunk_ids: tuple[str, ...],
         latency_ms: float,
         error_type: str | None = None,
+        round_index: int = 1,
+        rewrite: str | None = None,
     ) -> None:
         if not self.observability.enabled:
             return
@@ -738,6 +752,8 @@ class PostgresKnowledgeIndex:
                 indexed_chunk_count=indexed_chunk_count,
                 gate_configured=self.relevance_policy is not None,
                 latency_ms=latency_ms,
+                round_index=round_index,
+                rewrite=rewrite,
                 error_type=error_type,
             )
             self._insert_retrieval_trace(trace)

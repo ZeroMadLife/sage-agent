@@ -28,6 +28,7 @@ from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
+from core.knowledge.recovery import KnowledgeRecoveryOutcome, KnowledgeRecoveryPolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
@@ -79,6 +80,7 @@ class _RawCase:
     hits: tuple[KnowledgeSearchHit, ...]
     latency_ms: float
     error_type: str | None = None
+    recovery: KnowledgeRecoveryOutcome | None = None
 
 
 def calibrate_gate(
@@ -150,6 +152,7 @@ def run_sqlite_layered_eval(
     evaluation_splits: tuple[EvalSplit, ...] = ("dev", "calibration", "test"),
     precache_queries: bool = True,
     gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
+    recovery_policy: KnowledgeRecoveryPolicy | None = None,
 ) -> dict[str, Any]:
     """Run the same frozen corpus through isolated SQLite retrieval routes."""
 
@@ -189,6 +192,7 @@ def run_sqlite_layered_eval(
                 workspace_id="sage-official-agent-fullstack-v1",
                 embedding_provider=embedding_provider,
             ),
+            recovery_policy=recovery_policy,
         )
         prepared = _prepare_corpus(store, root, snapshot_root, dataset)
         embedding_started = time.perf_counter()
@@ -276,6 +280,7 @@ def run_sqlite_layered_eval(
             "queries_precached": precache_queries,
             "gate_thresholds": None if gate_thresholds is None else dict(gate_thresholds),
             "test_split_used_for_calibration": False,
+            "recovery_policy": asdict(recovery_policy or KnowledgeRecoveryPolicy()),
         },
         "embedding_preparation": {
             "latency_ms": round(embedding_preparation_latency_ms, 3),
@@ -307,6 +312,7 @@ def run_postgres_layered_eval(
     evaluation_splits: tuple[EvalSplit, ...] = ("dev", "calibration", "test"),
     precache_queries: bool = True,
     gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
+    recovery_policy: KnowledgeRecoveryPolicy | None = None,
 ) -> dict[str, Any]:
     """Run the frozen corpus through GIN and pgvector exact retrieval routes."""
 
@@ -349,6 +355,7 @@ def run_postgres_layered_eval(
                     )
                 },
                 knowledge_index=postgres_index,
+                recovery_policy=recovery_policy,
             )
             prepared = _prepare_corpus(store, root, snapshot_root, dataset)
             embedding_started = time.perf_counter()
@@ -454,6 +461,7 @@ def run_postgres_layered_eval(
                 "queries_precached": precache_queries,
                 "gate_thresholds": None if gate_thresholds is None else dict(gate_thresholds),
                 "test_split_used_for_calibration": False,
+                "recovery_policy": asdict(recovery_policy or KnowledgeRecoveryPolicy()),
                 "ann_index_used": False,
             },
             "embedding_preparation": {
@@ -475,6 +483,135 @@ def run_postgres_layered_eval(
         with suppress(Exception):
             postgres_index.delete_workspace()
         postgres_index.close()
+
+
+def compare_bounded_recovery_reports(
+    baseline_report: dict[str, Any],
+    candidate_report: dict[str, Any],
+    *,
+    route: KnowledgeRetrievalMode = "hybrid",
+    maximum_p95_latency_ms: float = 100.0,
+) -> dict[str, Any]:
+    """Apply frozen PR-5B gates without changing the baseline relevance threshold."""
+
+    compatibility_fields = (
+        (
+            "dataset_id",
+            baseline_report["dataset"]["dataset_id"],
+            candidate_report["dataset"]["dataset_id"],
+        ),
+        (
+            "dataset_revision",
+            baseline_report["dataset"]["dataset_revision"],
+            candidate_report["dataset"]["dataset_revision"],
+        ),
+        (
+            "cases_sha256",
+            baseline_report["inputs"]["cases_sha256"],
+            candidate_report["inputs"]["cases_sha256"],
+        ),
+        ("top_k", baseline_report["parameters"]["top_k"], candidate_report["parameters"]["top_k"]),
+        (
+            "candidate_k",
+            baseline_report["parameters"]["candidate_k"],
+            candidate_report["parameters"]["candidate_k"],
+        ),
+        (
+            "evaluation_splits",
+            baseline_report["parameters"]["evaluation_splits"],
+            candidate_report["parameters"]["evaluation_splits"],
+        ),
+    )
+    mismatches = [
+        name for name, baseline, candidate in compatibility_fields if baseline != candidate
+    ]
+    if mismatches:
+        raise ValueError("incompatible recovery eval inputs: " + ", ".join(mismatches))
+    baseline_route = baseline_report["routes"][route]
+    candidate_route = candidate_report["routes"][route]
+    baseline_threshold = float(baseline_route["gate"]["threshold"])
+    candidate_threshold = float(candidate_route["gate"]["threshold"])
+    baseline_cases = {str(item["case_id"]): item for item in baseline_route["cases"]}
+    candidate_cases = {str(item["case_id"]): item for item in candidate_route["cases"]}
+    if baseline_cases.keys() != candidate_cases.keys():
+        raise ValueError("recovery eval reports cover different cases")
+    failure_ids = tuple(
+        case_id
+        for case_id, item in baseline_cases.items()
+        if item["primary_failure"] == "retrieval" and item["answerable"]
+    )
+
+    def subset_recall(cases: dict[str, dict[str, Any]]) -> float | None:
+        if not failure_ids:
+            return None
+        return sum(
+            float(cases[case_id]["retrieval"]["recall_at_k"]) for case_id in failure_ids
+        ) / len(failure_ids)
+
+    baseline_subset = subset_recall(baseline_cases)
+    candidate_subset = subset_recall(candidate_cases)
+    subset_passed = baseline_subset is None or (
+        candidate_subset is not None and candidate_subset > baseline_subset
+    )
+    baseline_false_acceptance = sum(
+        item["primary_failure"] == "false_acceptance" for item in baseline_cases.values()
+    )
+    candidate_false_acceptance = sum(
+        item["primary_failure"] == "false_acceptance" for item in candidate_cases.values()
+    )
+    regressions = [
+        case_id
+        for case_id in baseline_cases
+        if float(candidate_cases[case_id]["retrieval"]["recall_at_k"])
+        < float(baseline_cases[case_id]["retrieval"]["recall_at_k"])
+    ]
+    max_rounds = max(
+        (int(item["trace"]["recovery"]["round_count"]) for item in candidate_cases.values()),
+        default=0,
+    )
+    candidate_p95 = float(candidate_route["system"]["latency_ms"]["p95"])
+    raw_cost = candidate_route["system"]["estimated_cost_usd"]
+    estimated_cost = None if raw_cost is None else float(raw_cost)
+    gates: dict[str, dict[str, Any]] = {
+        "retrieval_failure_subset_recall": {
+            "case_ids": list(failure_ids),
+            "baseline": baseline_subset,
+            "candidate": candidate_subset,
+            "passed": subset_passed,
+        },
+        "false_acceptance": {
+            "baseline": baseline_false_acceptance,
+            "candidate": candidate_false_acceptance,
+            "delta": candidate_false_acceptance - baseline_false_acceptance,
+            "passed": candidate_false_acceptance <= baseline_false_acceptance,
+        },
+        "gate_threshold_unchanged": {
+            "baseline": baseline_threshold,
+            "candidate": candidate_threshold,
+            "passed": candidate_threshold == baseline_threshold,
+        },
+        "retrieval_regressions": {
+            "case_ids": regressions,
+            "passed": not regressions,
+        },
+        "maximum_rounds": {"maximum": 2, "actual": max_rounds, "passed": max_rounds <= 2},
+        "p95_latency_ms": {
+            "maximum": maximum_p95_latency_ms,
+            "actual": candidate_p95,
+            "passed": candidate_p95 <= maximum_p95_latency_ms,
+        },
+        "estimated_cost_usd": {
+            "maximum": 0.0,
+            "actual": estimated_cost,
+            "passed": estimated_cost == 0.0,
+        },
+    }
+    return {
+        "compatible_inputs": True,
+        "route": route,
+        "overall_passed": all(item["passed"] for item in gates.values()),
+        "gates": gates,
+    }
 
 
 def compare_layered_reports(
@@ -895,14 +1032,16 @@ def _run_route(
     for case in dataset.cases:
         started = time.perf_counter()
         try:
-            hits = store.search(
+            recovery = store.search_with_recovery(
                 case.query,
                 top_k=candidate_k,
                 retrieval_mode=retrieval_mode,
             )
+            hits = recovery.hits
             error_type = None
         except Exception as exc:  # report exception class without leaking provider details
             hits = ()
+            recovery = None
             error_type = type(exc).__name__
         raw_cases.append(
             _RawCase(
@@ -910,6 +1049,7 @@ def _run_route(
                 hits=hits,
                 latency_ms=(time.perf_counter() - started) * 1_000,
                 error_type=error_type,
+                recovery=recovery,
             )
         )
 
@@ -1101,6 +1241,21 @@ def _evaluate_case(
             "evidence_count": evidence_count,
         },
         "system": {"error_type": raw.error_type},
+        "recovery": (
+            {
+                "status": raw.recovery.status,
+                "round_count": raw.recovery.round_count,
+                "no_evidence_reason": raw.recovery.no_evidence_reason,
+                "attempts": [asdict(attempt) for attempt in raw.recovery.attempts],
+            }
+            if raw.recovery is not None
+            else {
+                "status": "exhausted",
+                "round_count": 0,
+                "no_evidence_reason": "bounded_recovery_exhausted",
+                "attempts": [],
+            }
+        ),
     }
     return {
         "case_id": case.case_id,
