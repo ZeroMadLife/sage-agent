@@ -5,6 +5,7 @@ import pytest
 from core.config.settings import Settings
 from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.index_factory import build_knowledge_index
+from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import PostgresKnowledgeIndex
 from core.knowledge.retrieval import HashingEmbeddingProvider
 
@@ -23,6 +24,29 @@ def test_knowledge_index_factory_keeps_sqlite_as_default() -> None:
 
     assert isinstance(index, LocalKnowledgeIndex)
     assert index.workspace_id == "knowledge-local"
+    assert index.observability.enabled is False
+
+
+def test_knowledge_index_factory_binds_private_observability_config() -> None:
+    config = KnowledgeRetrievalObservabilityConfig(
+        enabled=True,
+        hmac_key="factory-test-observability-key-value",
+        max_candidates=12,
+    )
+
+    index = build_knowledge_index(
+        backend="sqlite",
+        workspace_id="knowledge-local",
+        postgres_dsn="postgresql://unused:unused@localhost/unused",
+        postgres_connect_timeout_seconds=5,
+        postgres_pool_max_connections=4,
+        embedding_provider=HashingEmbeddingProvider(dimensions=64),
+        observability=config,
+    )
+
+    assert isinstance(index, LocalKnowledgeIndex)
+    assert index.observability is config
+    assert "factory-test-observability-key-value" not in repr(config)
 
 
 def test_knowledge_index_factory_builds_lazy_postgres_backend_without_leaking_dsn() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.index_backend import KnowledgeIndexBackend
+from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
@@ -21,6 +22,7 @@ def build_knowledge_index(
     postgres_pool_max_connections: int,
     embedding_provider: DenseEmbeddingProvider | None = None,
     relevance_policy: KnowledgeRelevancePolicy | None = None,
+    observability: KnowledgeRetrievalObservabilityConfig | None = None,
 ) -> KnowledgeIndexBackend:
     normalized = backend.strip().casefold()
     if normalized == "sqlite":
@@ -28,6 +30,7 @@ def build_knowledge_index(
             workspace_id=workspace_id,
             embedding_provider=embedding_provider,
             relevance_policy=relevance_policy,
+            observability=observability,
         )
     if normalized == "postgres":
         return PostgresKnowledgeIndex(
@@ -39,5 +42,6 @@ def build_knowledge_index(
             workspace_id=workspace_id,
             embedding_provider=embedding_provider,
             relevance_policy=relevance_policy,
+            observability=observability,
         )
     raise ValueError("unknown Knowledge index backend")

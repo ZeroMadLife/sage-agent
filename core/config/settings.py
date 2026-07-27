@@ -169,6 +169,9 @@ class Settings(BaseSettings):
     knowledge_fastembed_batch_size: int = Field(default=32, ge=1, le=256)
     knowledge_fastembed_local_files_only: bool = False
     knowledge_relevance_policy_path: str = ""
+    knowledge_retrieval_observability_enabled: bool = False
+    knowledge_retrieval_observability_hmac_key: str = Field(default="", repr=False)
+    knowledge_retrieval_observability_candidate_limit: int = Field(default=50, ge=1, le=200)
     # External parsing is a separate trust boundary. It stays disabled until
     # both a source-root allowlist and at least one adapter are configured.
     knowledge_external_parsing_enabled: bool = False

@@ -44,6 +44,7 @@ from core.knowledge import (
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
     KnowledgeRelevancePolicy,
+    KnowledgeRetrievalObservabilityConfig,
     KnowledgeSourceRoot,
     KnowledgeStore,
     OpenAICompatibleEmbeddingConfig,
@@ -464,6 +465,11 @@ def create_app(
             postgres_pool_max_connections=settings.knowledge_postgres_pool_max_connections,
             embedding_provider=configured_embedding,
             relevance_policy=configured_relevance_policy,
+            observability=KnowledgeRetrievalObservabilityConfig(
+                enabled=settings.knowledge_retrieval_observability_enabled,
+                hmac_key=settings.knowledge_retrieval_observability_hmac_key,
+                max_candidates=settings.knowledge_retrieval_observability_candidate_limit,
+            ),
         )
         app.state.knowledge_store = KnowledgeStore(
             configured_knowledge_root,

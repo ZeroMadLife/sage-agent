@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
@@ -13,6 +15,12 @@ from importlib import import_module
 from threading import RLock
 from typing import Any
 
+from core.knowledge.observability import (
+    KnowledgeRetrievalObservabilityConfig,
+    KnowledgeRetrievalTrace,
+    RankedCandidate,
+    build_retrieval_trace,
+)
 from core.knowledge.parsing import MarkdownParser, ParseRequest, deserialize_document
 from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import (
@@ -31,6 +39,9 @@ from core.knowledge.retrieval import (
 )
 
 POSTGRES_INDEX_SCHEMA_REVISION = "20260727_rag_postgres_exact_v1"
+POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION = "20260728_rag_retrieval_trace_v1"
+
+logger = logging.getLogger(__name__)
 
 _POSTGRES_INDEX_SCHEMA = """
 CREATE TABLE IF NOT EXISTS knowledge_index_schema_migrations (
@@ -130,14 +141,24 @@ CREATE TABLE IF NOT EXISTS knowledge_retrieval_runs (
     workspace_id TEXT NOT NULL,
     run_id TEXT NOT NULL,
     query_hash TEXT NOT NULL,
+    query_length INTEGER NOT NULL,
+    round_index INTEGER NOT NULL,
+    rewrite_hash TEXT,
     retrieval_mode TEXT NOT NULL,
     corpus_revision TEXT NOT NULL,
     embedding_model TEXT NOT NULL,
     embedding_revision TEXT NOT NULL,
     top_k INTEGER NOT NULL,
+    candidate_limit INTEGER NOT NULL,
     candidate_count INTEGER NOT NULL,
+    returned_count INTEGER NOT NULL,
+    candidates_json JSONB NOT NULL,
+    result_coverage DOUBLE PRECISION NOT NULL,
+    gate_decision TEXT NOT NULL,
     latency_ms DOUBLE PRECISION NOT NULL,
     failure_layer TEXT,
+    failure_type TEXT NOT NULL,
+    error_type TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (workspace_id, run_id)
 );
@@ -190,6 +211,7 @@ class PostgresKnowledgeIndex:
         workspace_id: str = "knowledge-local",
         embedding_provider: DenseEmbeddingProvider | None = None,
         relevance_policy: KnowledgeRelevancePolicy | None = None,
+        observability: KnowledgeRetrievalObservabilityConfig | None = None,
     ) -> None:
         if not workspace_id.strip() or len(workspace_id) > 128:
             raise ValueError("invalid Knowledge PostgreSQL workspace id")
@@ -202,6 +224,7 @@ class PostgresKnowledgeIndex:
                 model_revision=self.embedding_provider.model_revision,
             )
         self.relevance_policy = relevance_policy
+        self.observability = observability or KnowledgeRetrievalObservabilityConfig()
         self._markdown_parser = MarkdownParser()
         self._pool: Any | None = None
         self._pool_lock = RLock()
@@ -237,10 +260,32 @@ class PostgresKnowledgeIndex:
                 )
                 cursor.execute(
                     """
+                    ALTER TABLE knowledge_retrieval_runs
+                    ADD COLUMN IF NOT EXISTS query_length INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS round_index INTEGER NOT NULL DEFAULT 1,
+                    ADD COLUMN IF NOT EXISTS rewrite_hash TEXT,
+                    ADD COLUMN IF NOT EXISTS candidate_limit INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS returned_count INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS candidates_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    ADD COLUMN IF NOT EXISTS result_coverage DOUBLE PRECISION NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS gate_decision TEXT NOT NULL DEFAULT 'not_configured',
+                    ADD COLUMN IF NOT EXISTS failure_type TEXT NOT NULL DEFAULT 'none',
+                    ADD COLUMN IF NOT EXISTS error_type TEXT
+                    """
+                )
+                cursor.execute(
+                    """
                     INSERT INTO knowledge_index_schema_migrations (revision)
                     VALUES (%s) ON CONFLICT (revision) DO NOTHING
                     """,
                     (POSTGRES_INDEX_SCHEMA_REVISION,),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO knowledge_index_schema_migrations (revision)
+                    VALUES (%s) ON CONFLICT (revision) DO NOTHING
+                    """,
+                    (POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,),
                 )
             postgres.commit()
 
@@ -486,6 +531,7 @@ class PostgresKnowledgeIndex:
         )
         normalized = query.strip()
         candidate_limit = min(200, max(20, top_k * 5))
+        started = time.perf_counter()
         where, filter_params = self._filters(
             visibility=visibility,
             source_ids=source_ids,
@@ -517,9 +563,23 @@ class PostgresKnowledgeIndex:
                     )
                     sparse_rows = tuple(cursor.fetchall())
             if retrieval_mode in {"dense", "hybrid"}:
-                query_vector = tuple(
-                    float(item) for item in self.embedding_provider.embed(normalized)
-                )
+                try:
+                    query_vector = tuple(
+                        float(item) for item in self.embedding_provider.embed(normalized)
+                    )
+                except Exception as exc:
+                    self._record_retrieval_trace(
+                        connection,
+                        query=normalized,
+                        retrieval_mode=retrieval_mode,
+                        top_k=top_k,
+                        candidate_limit=candidate_limit,
+                        ranked_candidates=[],
+                        returned_chunk_ids=(),
+                        latency_ms=(time.perf_counter() - started) * 1_000,
+                        error_type=type(exc).__name__,
+                    )
+                    raise
                 if len(query_vector) != self.embedding_provider.dimensions:
                     raise ValueError("Knowledge PostgreSQL query embedding dimensions do not match")
                 vector = self._database_vector(query_vector)
@@ -570,7 +630,8 @@ class PostgresKnowledgeIndex:
             )
             for row in stable_rows
         }
-        fused = reciprocal_rank_fusion(sparse, dense, tie_breakers=tie_breakers)[:top_k]
+        ranked = reciprocal_rank_fusion(sparse, dense, tie_breakers=tie_breakers)
+        fused = ranked[:top_k]
         if self.relevance_policy is not None:
             fused = [
                 item
@@ -584,9 +645,19 @@ class PostgresKnowledgeIndex:
             ]
         chunk_ids = [item[0] for item in fused]
         if not chunk_ids:
+            self._record_retrieval_trace(
+                connection,
+                query=normalized,
+                retrieval_mode=retrieval_mode,
+                top_k=top_k,
+                candidate_limit=candidate_limit,
+                ranked_candidates=ranked,
+                returned_chunk_ids=(),
+                latency_ms=(time.perf_counter() - started) * 1_000,
+            )
             return ()
         chunks = self._chunks_by_id(chunk_ids)
-        return tuple(
+        hits = tuple(
             KnowledgeSearchHit(
                 chunk=chunks[chunk_id],
                 citation_id=citation_id(chunks[chunk_id]),
@@ -608,6 +679,116 @@ class PostgresKnowledgeIndex:
             ) in enumerate(fused, start=1)
             if chunk_id in chunks
         )
+        self._record_retrieval_trace(
+            connection,
+            query=normalized,
+            retrieval_mode=retrieval_mode,
+            top_k=top_k,
+            candidate_limit=candidate_limit,
+            ranked_candidates=ranked,
+            returned_chunk_ids=tuple(hit.chunk.chunk_id for hit in hits),
+            latency_ms=(time.perf_counter() - started) * 1_000,
+        )
+        return hits
+
+    def _record_retrieval_trace(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        query: str,
+        retrieval_mode: KnowledgeRetrievalMode,
+        top_k: int,
+        candidate_limit: int,
+        ranked_candidates: list[RankedCandidate],
+        returned_chunk_ids: tuple[str, ...],
+        latency_ms: float,
+        error_type: str | None = None,
+    ) -> None:
+        if not self.observability.enabled:
+            return
+        try:
+            with self._connection() as postgres, postgres.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM knowledge_index_chunks
+                    WHERE workspace_id=%s AND active=TRUE
+                      AND embedding_model=%s AND embedding_revision=%s
+                      AND embedding_dimensions=%s
+                    """,
+                    (
+                        self.workspace_id,
+                        self.embedding_provider.model_id,
+                        self.embedding_provider.model_revision,
+                        self.embedding_provider.dimensions,
+                    ),
+                )
+                indexed_chunk_count = int(cursor.fetchone()[0])
+            trace = build_retrieval_trace(
+                self.observability,
+                workspace_id=self.workspace_id,
+                query=query,
+                retrieval_mode=retrieval_mode,
+                corpus_revision=self.corpus_revision(connection),
+                embedding_model=self.embedding_provider.model_id,
+                embedding_revision=self.embedding_provider.model_revision,
+                top_k=top_k,
+                candidate_limit=candidate_limit,
+                ranked_candidates=ranked_candidates,
+                returned_chunk_ids=returned_chunk_ids,
+                indexed_chunk_count=indexed_chunk_count,
+                gate_configured=self.relevance_policy is not None,
+                latency_ms=latency_ms,
+                error_type=error_type,
+            )
+            self._insert_retrieval_trace(trace)
+        except Exception as exc:
+            logger.warning(
+                "Knowledge PostgreSQL retrieval trace persistence failed (%s)",
+                type(exc).__name__,
+            )
+            return
+
+    def _insert_retrieval_trace(self, trace: KnowledgeRetrievalTrace) -> None:
+        with self._connection() as postgres, postgres.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO knowledge_retrieval_runs (
+                    workspace_id, run_id, query_hash, query_length, round_index,
+                    rewrite_hash, retrieval_mode, corpus_revision, embedding_model,
+                    embedding_revision, top_k, candidate_limit, candidate_count,
+                    returned_count, candidates_json, result_coverage, gate_decision,
+                    latency_ms, failure_layer, failure_type, error_type, created_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                (
+                    self.workspace_id,
+                    trace.run_id,
+                    trace.query_hash,
+                    trace.query_length,
+                    trace.round_index,
+                    trace.rewrite_hash,
+                    trace.retrieval_mode,
+                    trace.corpus_revision,
+                    trace.embedding_model,
+                    trace.embedding_revision,
+                    trace.top_k,
+                    trace.candidate_limit,
+                    trace.candidate_count,
+                    trace.returned_count,
+                    trace.candidates_json,
+                    trace.result_coverage,
+                    trace.gate_decision,
+                    trace.latency_ms,
+                    trace.failure_type,
+                    trace.failure_type,
+                    trace.error_type,
+                    trace.created_at,
+                ),
+            )
+            postgres.commit()
 
     def corpus_revision(self, connection: sqlite3.Connection) -> str:
         del connection
