@@ -157,7 +157,9 @@ const proposal = {
 
 const indexSummary = {
   status: 'ready' as const, backend: 'sqlite-fts5+hashing', embedding_model: 'sage.hashing',
-  embedding_revision: '1.0.0', revision_count: 1, indexed_revision_count: 1,
+  embedding_revision: '1.0.0', corpus_revision: 'kcorpus-test',
+  relevance_policy_id: null, abstention_enabled: false,
+  revision_count: 1, indexed_revision_count: 1,
   active_chunk_count: 4, total_chunk_count: 4, error_count: 0,
 }
 

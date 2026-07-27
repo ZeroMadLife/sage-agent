@@ -39,7 +39,7 @@ DASHSCOPE_API_KEY=... python scripts/benchmark_knowledge_retrieval_v2.py \
 
 Provider 只读取进程环境变量，报告不保存 key、endpoint 响应或本机缓存。
 
-## 4. 2026-07-25 基线
+## 4. 2026-07-25 语义基线（上一语料 revision）
 
 证据文件：`evals/reports/knowledge_benchmark_v2_2026-07-25.json`，source commit 为 `8ed67c2`，运行时工作区为 clean。评测说明第 16 章不在语料白名单中，避免报告内容泄漏进被评索引。
 
@@ -50,8 +50,27 @@ Provider 只读取进程环境变量，报告不保存 key、endpoint 响应或�
 
 语义双路相对离线 Hashing 基线：Recall@10 提升 40.9%，MRR 提升 63.3%，NDCG@10 提升 56.3%。其中 30 条改写题 Recall@10 从 0.433 提升到 0.833，多文档题从 0.350 提升到 0.625。
 
-## 5. 当前边界
+第 09 章机制文档在 2026-07-27 同步后，manifest revision 已升为 `2026-07-27.1`。上表仍是
+可复核的 clean 历史实验，但不能冒充当前 corpus 的重跑结果；本轮环境没有真实语义 Provider
+凭据，因此只重新执行离线 Hashing 校准。
 
-20 条无答案问题的准确率仍为 0。现有搜索固定返回 top-k，尚未基于校准集加入 abstention，因此不能声称系统已经具备可靠拒答能力。下一步应在 dev split 上校准置信阈值，再只用 test split 验收；不得用 20 条无答案题反复调参后仍把它们称为独立测试集。
+## 5. 2026-07-27 校准拒答
+
+证据文件：`evals/reports/knowledge_abstention_v1_2026-07-27.json`，source commit 为
+`937ff70`，运行时工作区为 clean。阈值只在 90 条 dev 查询上选择，60 条 test 查询只验收一次。
+
+| Test 配置 | Recall@10 | MRR | NDCG@10 | 无答案准确率 |
+| --- | ---: | ---: | ---: | ---: |
+| Hashing，无 gate | 0.660 | 0.444 | 0.484 | 0.00 |
+| Hashing，校准 gate | 0.620 | 0.451 | 0.482 | 0.50 |
+
+拒答不是免费收益：无答案准确率提升 50 个百分点时，Recall@10 下降 4 个百分点。Policy 固定
+绑定 benchmark revision、corpus revision、embedding model/revision 与 top-k；任一条件漂移
+时搜索 fail closed，不能沿用旧阈值。
+
+## 6. 当前边界
+
+当前 0.50 来自 10 条 untouched test 无答案题，样本仍小，不能声称“可靠拒答”。真实语义
+Provider 需要在当前 manifest 上重新生成 raw scores 和独立 policy，不能复用 Hashing 阈值。
 
 当前数字只覆盖 retrieval，不等同于回答生成质量。`required_claims` 和 `forbidden_claims` 已保留在数据契约中，生成阶段评测应作为独立切片完成。

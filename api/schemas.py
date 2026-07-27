@@ -196,6 +196,9 @@ class KnowledgeIndexResponse(BaseModel):
     backend: str
     embedding_model: str
     embedding_revision: str
+    corpus_revision: str
+    relevance_policy_id: str | None
+    abstention_enabled: bool
     revision_count: int = Field(ge=0)
     indexed_revision_count: int = Field(ge=0)
     active_chunk_count: int = Field(ge=0)
@@ -212,6 +215,7 @@ class KnowledgeSearchRequest(BaseModel):
     visibility: Literal["private", "public"] = "private"
     source_ids: list[str] = Field(default_factory=list, max_length=100)
     page_revisions: list[str] = Field(default_factory=list, max_length=100)
+    relation_expand: bool = False
 
 
 class KnowledgeEvidenceResponse(BaseModel):
@@ -224,6 +228,12 @@ class KnowledgeEvidenceResponse(BaseModel):
     sparse_score: float | None = None
     dense_rank: int | None = Field(default=None, ge=1)
     dense_score: float | None = None
+    retrieval_route: Literal["hybrid", "graph"]
+    graph_edge_id: str | None = None
+    graph_evidence_citation_id: str | None = None
+    graph_seed_page_id: str | None = None
+    graph_direction: Literal["outbound", "inbound"] | None = None
+    graph_score: float | None = Field(default=None, ge=0)
     chunk_id: str
     page_id: str
     page_revision: str

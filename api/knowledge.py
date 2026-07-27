@@ -113,6 +113,7 @@ from core.knowledge import (
     KnowledgePolicyDecision,
     KnowledgeProjectionError,
     KnowledgeProposal,
+    KnowledgeRelevancePolicyError,
     KnowledgeRetrievalBundle,
     KnowledgeStore,
     LearningCapability,
@@ -579,7 +580,10 @@ async def search_knowledge(
             visibility=payload.visibility,
             source_ids=tuple(payload.source_ids),
             page_revisions=tuple(payload.page_revisions),
+            relation_expand=payload.relation_expand,
         )
+    except KnowledgeRelevancePolicyError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     response.headers["Cache-Control"] = "no-store"
@@ -1215,11 +1219,15 @@ def _migration_plan_response(plan: KnowledgeMigrationPlan) -> KnowledgeMigration
 
 
 def _index_response(summary: KnowledgeIndexSummary) -> KnowledgeIndexResponse:
+    policy_stale = summary.relevance_policy_id is not None and not summary.abstention_enabled
     return KnowledgeIndexResponse(
-        status=("degraded" if summary.error_count else "ready"),
+        status=("degraded" if summary.error_count or policy_stale else "ready"),
         backend=summary.backend,
         embedding_model=summary.embedding_model,
         embedding_revision=summary.embedding_revision,
+        corpus_revision=summary.corpus_revision,
+        relevance_policy_id=summary.relevance_policy_id,
+        abstention_enabled=summary.abstention_enabled,
         revision_count=summary.revision_count,
         indexed_revision_count=summary.indexed_revision_count,
         active_chunk_count=summary.active_chunk_count,
@@ -1503,6 +1511,12 @@ def _retrieval_response(bundle: KnowledgeRetrievalBundle) -> KnowledgeRetrievalR
                 sparse_score=hit.sparse_score,
                 dense_rank=hit.dense_rank,
                 dense_score=hit.dense_score,
+                retrieval_route=hit.retrieval_route,
+                graph_edge_id=hit.graph_edge_id,
+                graph_evidence_citation_id=hit.graph_evidence_citation_id,
+                graph_seed_page_id=hit.graph_seed_page_id,
+                graph_direction=hit.graph_direction,
+                graph_score=hit.graph_score,
                 chunk_id=chunk.chunk_id,
                 page_id=chunk.page_id,
                 page_revision=chunk.page_revision,

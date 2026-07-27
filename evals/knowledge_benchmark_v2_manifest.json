@@ -14,7 +14,7 @@
     {"path": "06-permissions-approval-sandbox.md", "sha256": "95be5a31ddfb3f6a0457cdf14c45f3e8b1447c5f4e326496f56da6226a819c35"},
     {"path": "07-skills-commands.md", "sha256": "ea78d51166e71b7c2c66bf5388b1eff60dc5541dc722c9f3b9ef9af523696614"},
     {"path": "08-memory-dream.md", "sha256": "d5d31ba13f3728e494d6147fd7a765f5bdd65ebb745b75894c6ba144ad10f1a0"},
-    {"path": "09-knowledge-rag-retrieval.md", "sha256": "fedab85745e7c6b8ed29e14d39de7089848c75f9fa0284bc8663c937b9159e89"},
+    {"path": "09-knowledge-rag-retrieval.md", "sha256": "ef4d25b148b80686d4df3ed07720fd18ba2eabf6ed4aab5916169402abc98609"},
     {"path": "10-subagents-research.md", "sha256": "407a3883c181362a53a9cebf047e6fb81b7dac1af80a712da13d7d723fe1a4a5"},
     {"path": "11-timeline-reconnect.md", "sha256": "a5ed01103af36d9a0f43f2f4f15d3dc44455ee917ddcbc755c1f1e94983274e9"},
     {"path": "12-security-audit.md", "sha256": "6c9f5fa56503133311664f7adfc1cadd8455d88893e811879c5e4f8cd7818a40"},

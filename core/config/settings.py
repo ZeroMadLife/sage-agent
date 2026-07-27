@@ -147,6 +147,15 @@ class Settings(BaseSettings):
     knowledge_source_label: str = "Sage Learning"
     knowledge_source_kind: str = "obsidian"
     knowledge_jobs_enabled: bool = False
+    knowledge_embedding_provider: str = "hashing"
+    knowledge_embedding_api_key: str = Field(default="", repr=False)
+    knowledge_embedding_base_url: str = ""
+    knowledge_embedding_model: str = ""
+    knowledge_embedding_model_revision: str = "api-v1"
+    knowledge_embedding_dimensions: int = Field(default=1_024, ge=1, le=8_192)
+    knowledge_embedding_batch_size: int = Field(default=32, ge=1, le=256)
+    knowledge_embedding_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    knowledge_relevance_policy_path: str = ""
     # External parsing is a separate trust boundary. It stays disabled until
     # both a source-root allowlist and at least one adapter are configured.
     knowledge_external_parsing_enabled: bool = False

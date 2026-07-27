@@ -121,6 +121,9 @@ export type KnowledgeIndexSummary = {
   backend: string
   embedding_model: string
   embedding_revision: string
+  corpus_revision: string
+  relevance_policy_id: string | null
+  abstention_enabled: boolean
   revision_count: number
   indexed_revision_count: number
   active_chunk_count: number
@@ -308,6 +311,12 @@ export type KnowledgeEvidence = {
   sparse_score: number | null
   dense_rank: number | null
   dense_score: number | null
+  retrieval_route: 'hybrid' | 'graph'
+  graph_edge_id: string | null
+  graph_evidence_citation_id: string | null
+  graph_seed_page_id: string | null
+  graph_direction: 'outbound' | 'inbound' | null
+  graph_score: number | null
   chunk_id: string
   page_id: string
   page_revision: string

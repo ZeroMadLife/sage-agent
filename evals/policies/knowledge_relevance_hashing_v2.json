@@ -1,0 +1,13 @@
+{
+  "policy_id": "krp_8ea6519cd1e6798e",
+  "benchmark_id": "sage-knowledge-v2",
+  "benchmark_revision": "2026-07-27.1",
+  "corpus_revision": "kcorpus_4d0660b07415eeea75d668b8c7516768",
+  "embedding_model": "sage.hashing",
+  "embedding_revision": "1.0.0",
+  "top_k": 10,
+  "min_sparse_score": 8.415598087319283,
+  "min_dense_score": null,
+  "minimum_answerable_recall_ratio": 0.9,
+  "schema_version": 1
+}

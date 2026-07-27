@@ -51,6 +51,7 @@ def knowledge_search(
         str(args["query"]),
         top_k=int(args["top_k"]),
         token_budget=int(args["token_budget"]),
+        relation_expand=store.knowledge_index.relevance_policy is not None,
     )
     payload = {
         "status": bundle.status,
@@ -77,6 +78,12 @@ def knowledge_search(
                 "title": evidence.hit.chunk.title,
                 "heading_path": list(evidence.hit.chunk.heading_path),
                 "block_id": evidence.hit.chunk.block_id,
+                "retrieval_route": evidence.hit.retrieval_route,
+                "graph_edge_id": evidence.hit.graph_edge_id,
+                "graph_evidence_citation_id": evidence.hit.graph_evidence_citation_id,
+                "graph_seed_page_id": evidence.hit.graph_seed_page_id,
+                "graph_direction": evidence.hit.graph_direction,
+                "graph_score": evidence.hit.graph_score,
                 "excerpt": evidence.excerpt,
                 "truncated": evidence.truncated,
             }

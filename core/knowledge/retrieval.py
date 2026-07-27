@@ -57,6 +57,12 @@ class KnowledgeSearchHit:
     sparse_score: float | None
     dense_rank: int | None
     dense_score: float | None
+    retrieval_route: Literal["hybrid", "graph"] = "hybrid"
+    graph_edge_id: str | None = None
+    graph_evidence_citation_id: str | None = None
+    graph_seed_page_id: str | None = None
+    graph_direction: Literal["outbound", "inbound"] | None = None
+    graph_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +92,9 @@ class KnowledgeIndexSummary:
     backend: str
     embedding_model: str
     embedding_revision: str
+    corpus_revision: str
+    relevance_policy_id: str | None
+    abstention_enabled: bool
     revision_count: int
     indexed_revision_count: int
     active_chunk_count: int

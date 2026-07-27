@@ -88,7 +88,7 @@ export function fetchKnowledgeGraphNeighborhood(
 
 export function searchKnowledge(
   query: string,
-  options: { topK?: number; tokenBudget?: number } = {},
+  options: { topK?: number; tokenBudget?: number; relationExpand?: boolean } = {},
 ): Promise<KnowledgeRetrieval> {
   return request('/api/v1/knowledge/search', {
     method: 'POST',
@@ -97,6 +97,7 @@ export function searchKnowledge(
       query,
       top_k: options.topK ?? 8,
       token_budget: options.tokenBudget ?? 3000,
+      relation_expand: options.relationExpand ?? false,
     }),
   })
 }
