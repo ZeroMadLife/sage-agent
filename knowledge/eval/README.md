@@ -33,6 +33,9 @@ Generation 层当前是 deterministic extractive proxy，只衡量已检索 exce
 的覆盖和 forbidden claim 精确命中。中英跨语言 token recall 只作 completeness 下界，不设通过
 阈值；它不使用 LLM judge，也不能写成真实生成质量。
 
+当前 clean baseline 的指标解释、失败案例和可写边界见
+[`docs/evals/knowledge-sqlite-layered-baseline-v1.md`](../../docs/evals/knowledge-sqlite-layered-baseline-v1.md)。
+
 ## 当前边界
 
 - 80 条 case 是首批人工策划资产，不代表真实线上分布。
