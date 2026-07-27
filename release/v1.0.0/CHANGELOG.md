@@ -1,13 +1,13 @@
 # v1.0.0 Changelog
 
-> 状态：候选版本，尚未创建 `v1.0.0` tag 或 GitHub Release。
+> 发布日期：2026-07-27 · Release ref：`v1.0.0`
 
 ## 主要能力
 
 - 统一 Assistant、Knowledge 与 Practice 的 Agent Harness、事件协议和可恢复时间线。
 - 提供受工作区、权限、审批与 Sandbox 约束的文件、Shell、Patch、Diff 和 Git 工具。
 - 建立来源快照、Wiki proposal、混合检索、稳定 citation 与知识图谱工作流。
-- 独立发布只读取 PublishedPackage 的 Public Agent，隔离私人 Session、Knowledge、Memory、
+- 实现只读取 PublishedPackage 的独立 Public Agent，隔离私人 Session、Knowledge、Memory、
   Workspace 与工具权限。
 
 ## 可复现证据
@@ -22,6 +22,7 @@
 - 移除早期旅游原型的 Agent、地图/天气/景点 MCP、mock 数据、旧聊天 API 与对应测试。
 - 清理旧品牌命名、过期环境变量、重复文件排除规则和失效的 Docker COPY 路径。
 - 将发布资料收敛到 `release/v1.0.0/`，重写 README 首屏与当前开发指南。
+- 将运行范围收敛为本地自用；停止飞书入口与自动 Canary，不执行服务器部署。
 
 ## 已知边界
 
@@ -30,4 +31,5 @@
 - 无答案查询的 abstention accuracy 仍为 0，检索指标不等于回答可信度。
 - Container Sandbox 的生产 rootless audit、固定 image digest 与 workspace 写边界仍需验收。
 - 云端 Knowledge tenant scope、正式 HTTPS 域名与完整恢复演练尚未关闭。
-- 合入 `main`、tag 和 GitHub Release 以候选 SHA 的完整门禁结果为准。
+- Public Agent 和公开构建保留为代码能力，但 v1.0.0 当前不提供在线入口；tag 不代表已部署。
+- `v1.0.0` 固定本次已完成的能力；上述已知边界继续作为后续版本门禁。

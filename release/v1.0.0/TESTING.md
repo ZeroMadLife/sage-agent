@@ -1,6 +1,6 @@
 # v1.0.0 Testing
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 本页提供当前可执行的验证入口。任何发布结论都应记录 source ref、命令、退出码和失败项；
 不要只复制一个会快速失真的测试数量。
@@ -81,7 +81,7 @@ cd ..
 git diff --check
 ```
 
-## 3. 八个必跑场景
+## 3. 运行场景矩阵
 
 | # | 场景 | 操作 | 通过标准 |
 | --- | --- | --- | --- |
@@ -94,9 +94,9 @@ git diff --check
 | 7 | 公开主页 | 在 `1440x900` 与 `390x844` 打开 `/#/public`，切换产品画廊并用回车提问 | 无横向溢出；真实 SSE 阶段、回答、citation 和资料包回执可见；私人 API 公网返回 404 |
 | 8 | Sandbox 边界 | 在候选生产配置启动 Container Sandbox | rootfs、网络、资源、mount 与退出清理符合策略；不能回退宿主机 |
 
-场景 8 是**公网开放私人 Harness**的硬门禁，不阻止不带工具权限的独立 Public Agent。
-如果当前环境没有生产容器配置，应记录为 **未执行/阻断**，不能用本地
-`local_workspace` 的成功结果代替。
+本地自用发布必须完成场景 1-6。场景 7-8 是未来重新开放公网时的附加硬门禁，本次发布
+明确记为**不适用/未执行**；不能用本地 `local_workspace` 的成功结果代替生产 Sandbox
+验收。
 
 ## 4. 浏览器回归矩阵
 
@@ -124,3 +124,18 @@ git diff --check
 
 不要将 `.env`、Provider key、OAuth secret、邀请 token、用户文件内容或私有 timeline 附到
 公开 issue、PR 或发布记录中。
+
+## 6. v1.0.0 发布记录
+
+- Source ref：`v1.0.0`；候选基线 `dev/sage-v7@887263d3`。
+- 后端质量：Ruff、format、mypy 193 个 source files、pytest `1619 passed`。
+- 前端质量：Vitest `69` 个文件、`504 passed`；私有与公开生产构建通过。
+- 容器与差异：Compose config、API Dockerfile check、相对 `main` 的累计 `git diff --check` 通过。
+- 检索评测：manifest `2026-07-27.1` 契约通过；200 条离线 hashing benchmark 的 Recall@10
+  `0.578`、MRR `0.409`、NDCG@10 `0.444` 与历史基线一致。
+- 历史公网证据：候选基线曾完成 `1440`、`1728`、`390` 视口、Ask Sage citation/receipt、
+  私有 API `404` 与 Canary `HEALTHY` 检查；这些结果不代表 `v1.0.0` 当前已部署。
+- 运行范围：飞书入口和自动 Canary 已停止；不执行新的服务器部署，公网与私有登录态场景
+  对本地自用发布不适用。
+- 当前决策：**可发布（本地自用）**；允许将通过自动化门禁的 release ref 快进到 `main`
+  并创建 tag。未来恢复公网服务时，必须重新执行场景 7-8 和登录态安全验收。

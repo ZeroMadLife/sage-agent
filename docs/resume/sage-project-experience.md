@@ -1,6 +1,6 @@
 # Sage 项目经历简历稿
 
-> 证据更新时间：2026-07-25。正式投递前将临时 HTTP 演示地址替换为备案后的 HTTPS 域名。
+> 证据更新时间：2026-07-27。当前仅提供源码，不开放在线演示。
 
 ## 建议版
 
@@ -13,7 +13,6 @@
 Redis、Vue 3、TypeScript、Docker
 
 **项目链接**：[源码](https://github.com/ZeroMadLife/sage-agent)｜
-[在线演示](http://121.40.185.188/)｜
 [技术博客](https://blog.sagecompanion.top/)
 
 **核心设计与实现**：
@@ -59,5 +58,5 @@ Redis、Vue 3、TypeScript、Docker
 - `+40.9%` 与 `+56.3%` 是真实语义 Provider 相对 Hashing 离线基线，不是相对上一生产版本；
 - `10/10` 是 Docker Desktop Level 1 live audit，不等同于内核级逃逸证明；
 - `40/40` 是确定性 Memory 生命周期场景，不是自然对话记忆准确率；
-- 当前公开演示为普通 HTTP，正式投递应优先使用备案后的 HTTPS；
+- 当前不开放在线演示，正式投递只提供源码与技术博客；
 - 不写“完整安全 CoT”：Sage 保存结构化运行证据，不保存或展示模型私有推理链。

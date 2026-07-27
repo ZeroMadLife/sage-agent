@@ -1,14 +1,14 @@
 # Sage v1.0.0 Showcase
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 **Sage 是一个本地优先的 Personal AI Learning Companion，把目标、知识、真实实践与可复核证据组织进同一套 Agent Harness。**
 
 ![Sage 五层架构封面](learning/assets/sage-five-layer-cover.png)
 
-> 封面展示的是下一阶段五层目标架构，不是当前完成度清单。v1.0.0 的受控公开资料 Agent
-> 已上线；私人 Harness 仍只适合本地使用与受控私测，生产 Sandbox 和云端 Knowledge
-> 租户隔离尚未闭合。
+> 封面展示的是下一阶段五层目标架构，不是当前完成度清单。v1.0.0 当前仅供本地自用；
+> 公开资料 Agent 保留为代码能力但不对外运行，生产 Sandbox 和云端 Knowledge 租户隔离
+> 尚未闭合。
 
 ## 5 个核心技术亮点
 
@@ -78,11 +78,12 @@ PostgreSQL/pgvector 与 Redis。pgvector 当前属于本地依赖和生产检索
 
 ![Sage Practice 工作台](../../docs/assets/readme/screenshots/practice-desktop.webp)
 
-### 用受控公开资料回答 HR 问题
+### 可独立部署的受控公开资料能力
 
 公开主页使用独立静态构建和独立 Public Agent，只读取已激活的不可变 PublishedPackage。
 回答通过 SSE 展示真实检索与依据核对阶段，并返回 citation、package revision 与 receipt；
-私人 API 在公网保持 404，公开助手不连接私人 Session、Memory、Knowledge 或工作区工具。
+公开助手不连接私人 Session、Memory、Knowledge 或工作区工具。该能力当前未部署，未来
+重新开放时需要重新验证公网路由隔离与安全门禁。
 
 ## 技术决策与权衡
 

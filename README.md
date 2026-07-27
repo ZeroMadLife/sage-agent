@@ -7,8 +7,7 @@
 ![Sage 控制面、状态面与证据面架构](release/v1.0.0/learning/assets/01-overall-architecture.png)
 
 <p align="center">
-  <a href="http://121.40.185.188/"><strong>在线体验</strong></a>
-  · <a href="release/v1.0.0/SHOWCASE.md">3 分钟了解项目</a>
+  <a href="release/v1.0.0/SHOWCASE.md"><strong>3 分钟了解项目</strong></a>
   · <a href="release/v1.0.0/learning/00-reading-map.md">架构学习手册</a>
   · <a href="docs/GETTING-STARTED.md">开发指南</a>
 </p>
@@ -46,10 +45,9 @@ Sage 不是给聊天框增加几个工具，而是一个**本地优先的个人 
 | **Knowledge** | 把个人资料变成可检索、可引用、可审阅的知识 | 模型只能提出 proposal，不能静默改写长期事实 |
 | **Practice Engine** | 阅读源码、修改代码、运行工具并验证理解 | 路径、权限、审批、Sandbox 与运行证据共同约束动作 |
 
-> **公开状态**：工程主页与受限 Ask Sage 已部署到
-> [http://121.40.185.188/](http://121.40.185.188/)。Public Agent 只读取已审核发布的
-> PublishedPackage，返回 citation、revision 与 receipt；它不连接私人 Session、Memory、
-> Knowledge、Workspace 或工具。正式域名仍等待 ICP 备案，当前入口为普通 HTTP。
+> **运行方式**：v1.0.0 当前仅供本地自用，不提供在线入口，也不执行自动 Canary 部署。
+> 仓库保留独立 Public Agent 与公开构建能力，后续重新开放前仍需完成生产环境、安全与
+> 域名验收。
 
 ## 真实产品界面
 
@@ -202,7 +200,7 @@ sage-agent/
 ├── frontend/                    # Vue 3 产品界面与公开工程主页
 ├── public_agent/                # 只读 PublishedPackage 的受限公开 Agent
 ├── tests/                       # 后端、API、契约与集成测试
-├── release/v1.0.0/             # 候选版本说明、架构图与持续学习手册
+├── release/v1.0.0/             # 正式版本说明、架构图与持续学习手册
 └── docs/                        # 产品、设计、开发与运维文档
 ```
 
@@ -213,12 +211,12 @@ sage-agent/
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
 - RAG 尚未完成可信 abstention 与回答生成评测，无答案查询可能召回相似但无关内容。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
-- `sagecompanion.top` 尚未完成 ICP 备案与 HTTPS 切换，当前公网 IP 只用于受控展示。
+- 飞书入口与自动 Canary 部署当前均已停止；`v1.0.0` tag 不代表服务器已经部署。
 
 ## 深入阅读
 
 - [v1.0.0 Showcase](release/v1.0.0/SHOWCASE.md)：3 分钟理解产品与工程亮点
-- [v1.0.0 候选版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
+- [v1.0.0 正式版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
 - [持续学习手册](release/v1.0.0/learning/00-reading-map.md)：从架构边界到验证证据
 - [工具执行闭环](release/v1.0.0/learning/05-tools-execution-pipeline.md)：工具如何被发现、校验、授权和执行
 - [Knowledge 与 RAG](release/v1.0.0/learning/09-knowledge-rag-retrieval.md)：来源、proposal、检索与 citation

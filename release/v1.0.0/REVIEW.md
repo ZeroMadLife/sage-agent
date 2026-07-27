@@ -1,6 +1,6 @@
 # v1.0.0 Architecture Review
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 ## 评审结论
 
@@ -8,9 +8,9 @@ v1.0.0 已形成一条可运行的本地产品主线：用户从 Assistant 进�
 Knowledge 中获得带来源的上下文，在 Practice 中用真实执行验证理解，并由 timeline、
 artifact、citation、diff 和测试留下证据。
 
-当前结论是：**受控公开资料 Agent 已可公网访问，私人 Harness 仍只适合本地使用与受控
-私测**。公开门面依靠独立资料包、凭据、容器、预算和路由隔离；生产 Sandbox admission、
-云端 Knowledge tenant scope 与正式 HTTPS 域名仍未闭合，因此不能扩大成公网私人 Agent。
+当前结论是：**v1.0.0 可按本地自用模式发布，不开放公网服务**。代码保留独立公开资料
+Agent 的资料包、凭据、容器、预算和路由隔离，但生产 Sandbox admission、云端 Knowledge
+tenant scope 与正式 HTTPS 域名仍未闭合，因此不能把 tag 解释为已完成服务器部署。
 
 ## 分层结构
 
@@ -101,7 +101,7 @@ Harness、Knowledge、Memory、Workspace 或工具；限流、预算和审计记
 
 ## 决策
 
-- **本地开发与受控私测**：可继续。
-- **受控公开资料 Agent**：可继续；ICP备案前使用临时 HTTP IP，并保持独立公开数据边界。
-- **公网开放私有 Harness**：暂缓，直到 Critical/High 发布门禁关闭。
-- **合入 `main`**：必须以当次 release candidate 的完整 CI、迁移和人工场景为准。
+- **本地自用**：可发布。
+- **飞书入口与自动 Canary**：已停止，不属于 v1.0.0 运行范围。
+- **公开资料 Agent 与公网私人 Harness**：均不开放；恢复前重新关闭 Critical/High 门禁。
+- **正式版本**：`v1.0.0` 只固定本次已完成门禁的范围；未关闭边界不随 tag 自动升级为已交付能力。

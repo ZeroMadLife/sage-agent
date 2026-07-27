@@ -1,8 +1,8 @@
 # Sage v1.0.0
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
-这里是 v1.0.0 的候选版本入口，也是随代码持续校正的学习索引。它不记录每小时的开发
+这里是 v1.0.0 的正式版本入口，也是随代码持续校正的学习索引。它不记录每小时的开发
 流水账，也不把计划写成已交付能力；版本事实以对应 source ref、代码和测试为准。
 
 ## 阅读顺序
@@ -26,8 +26,8 @@ v1.0.0 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习
 2. 将 Coding 收敛为可审批、可恢复、可验证的 Practice Engine。
 3. 建立来源快照、Wiki 提案、混合检索和 citation 组成的 Knowledge 工作流。
 4. 引入 Context budget、checkpoint、timeline、artifact 与 usage，保留运行证据。
-5. 提供云控制面的身份、Workspace 和 Provider 基础，并将受控公开资料 Agent 与私人
-   Harness 分离发布；公开门面上线不等于私人运行时可以开放公网。
+5. 提供云控制面的身份、Workspace 和 Provider 基础，并在代码层将受控公开资料 Agent 与
+   私人 Harness 隔离；v1.0.0 当前仅按本地自用模式发布。
 
 ## 当前可用
 
@@ -42,7 +42,8 @@ v1.0.0 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习
 
 ## 发布边界
 
-- 当前仍是 release candidate；尚未合入 `main`、创建 tag 或发布 GitHub Release。
+- `v1.0.0` 固定在 `main` 的正式发布提交；后续开发继续进入 `dev/sage-v7`。
+- 当前运行模式为本地自用；飞书入口、自动 Canary 与公网部署不属于本次发布交付。
 - `docker-compose.yml` 是本地依赖编排，不是生产栈。
 - `local_workspace` 仅用于可信开发机；公网任务必须使用 Container Sandbox。
 - Container workspace 仍整体可写，生产 rootless live audit 和 image digest 尚未关闭。
@@ -57,7 +58,7 @@ v1.0.0 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习
 - 竞品只作为设计参考，不使用无法由一手资料和源码复现的排他性结论。
 - 测试数量不是长期事实；发布时记录命令和 CI 链接，避免维护会快速失真的数字。
 
-## 下一道发布门禁
+## 重新开放前的门禁
 
 1. 完成 ICP 备案，将临时 HTTP IP 迁移到正式 HTTPS 域名，并完成恢复演练。
 2. 在生产 rootless daemon 复跑 Sandbox live audit，固定 image digest，并设计只读源 + writable overlay。
