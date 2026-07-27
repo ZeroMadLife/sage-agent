@@ -6,6 +6,7 @@ from pathlib import Path
 from core.knowledge.eval_runner import (
     GateObservation,
     calibrate_gate,
+    compare_layered_reports,
     run_sqlite_layered_eval,
 )
 from core.knowledge.index import LocalKnowledgeIndex
@@ -147,3 +148,68 @@ def test_committed_dataset_produces_reproducible_layered_sqlite_report() -> None
         for case in route["cases"]
     )
     assert all("answer_text" not in case for case in route["cases"])
+
+
+def test_layered_report_comparison_enforces_recall_gate_and_lists_regressions() -> None:
+    def report(recall: float, cases: list[dict[str, object]]) -> dict[str, object]:
+        return {
+            "dataset": {"dataset_id": "d", "dataset_revision": "r"},
+            "inputs": {"cases_sha256": "sha256:c"},
+            "provider": {"model_id": "m", "model_revision": "v"},
+            "parameters": {"top_k": 10, "candidate_k": 50},
+            "routes": {
+                "sparse": {
+                    "retrieval": {"recall_at_k": recall},
+                    "ranking": {"mrr": recall - 0.1, "ndcg_at_k": recall - 0.05},
+                    "system": {"latency_ms": {"p50": 1.0, "p95": 2.0}},
+                    "cases": cases,
+                }
+            },
+        }
+
+    sqlite = report(
+        0.95,
+        [
+            {
+                "case_id": "stable",
+                "primary_failure": "none",
+                "retrieval": {"recall_at_k": 1.0},
+            },
+            {
+                "case_id": "regressed",
+                "primary_failure": "none",
+                "retrieval": {"recall_at_k": 1.0},
+            },
+        ],
+    )
+    postgres = report(
+        0.92,
+        [
+            {
+                "case_id": "stable",
+                "primary_failure": "none",
+                "retrieval": {"recall_at_k": 1.0},
+            },
+            {
+                "case_id": "regressed",
+                "primary_failure": "retrieval",
+                "retrieval": {"recall_at_k": 0.0},
+            },
+        ],
+    )
+
+    comparison = compare_layered_reports(sqlite, postgres, recall_tolerance=0.02)
+
+    assert comparison["compatible_inputs"] is True
+    assert comparison["overall_passed"] is False
+    sparse = comparison["routes"]["sparse"]
+    assert sparse["recall_at_k_delta"] == -0.03
+    assert sparse["recall_gate_passed"] is False
+    assert sparse["regressions"] == [
+        {
+            "case_id": "regressed",
+            "sqlite_failure": "none",
+            "postgres_failure": "retrieval",
+            "recall_at_k_delta": -1.0,
+        }
+    ]

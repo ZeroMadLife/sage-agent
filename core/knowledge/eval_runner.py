@@ -9,7 +9,9 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+import uuid
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,11 @@ from core.knowledge.datasets import (
     load_versioned_dataset,
 )
 from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.postgres_index import (
+    POSTGRES_INDEX_SCHEMA_REVISION,
+    PostgresKnowledgeIndex,
+    PostgresKnowledgeIndexConfig,
+)
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
@@ -260,6 +267,273 @@ def run_sqlite_layered_eval(
     }
     result["deterministic_digest"] = _deterministic_digest(result)
     return result
+
+
+def run_postgres_layered_eval(
+    repo_root: Path,
+    dataset_path: Path,
+    *,
+    postgres_dsn: str,
+    retrieval_modes: tuple[KnowledgeRetrievalMode, ...] = ("sparse", "dense", "hybrid"),
+    top_k: int = 10,
+    candidate_k: int = 50,
+    token_budget: int = 3_000,
+    provider: DenseEmbeddingProvider | None = None,
+    minimum_answerable_recall: float = 0.90,
+) -> dict[str, Any]:
+    """Run the frozen corpus through GIN and pgvector exact retrieval routes."""
+
+    root = repo_root.resolve()
+    if not retrieval_modes or len(retrieval_modes) != len(set(retrieval_modes)):
+        raise ValueError("retrieval modes must be non-empty and unique")
+    if any(mode not in {"sparse", "dense", "hybrid"} for mode in retrieval_modes):
+        raise ValueError("unsupported retrieval mode")
+    if top_k < 1 or top_k > 50 or candidate_k < top_k or candidate_k > 50:
+        raise ValueError("eval requires 1 <= top_k <= candidate_k <= 50")
+    if token_budget < 256 or token_budget > 20_000:
+        raise ValueError("eval token budget must be between 256 and 20000")
+
+    dataset_file = dataset_path.resolve() if dataset_path.is_absolute() else root / dataset_path
+    dataset = load_versioned_dataset(root, dataset_file)
+    embedding_provider = provider or HashingEmbeddingProvider()
+    source_commit = _git_value(root, "rev-parse", "HEAD")
+    source_dirty = bool(_git_value(root, "status", "--porcelain"))
+    snapshot_root = root / "knowledge" / "corpus" / "snapshots"
+    workspace_id = f"sage-eval-{uuid.uuid4().hex}"
+    postgres_index = PostgresKnowledgeIndex(
+        PostgresKnowledgeIndexConfig(dsn=postgres_dsn),
+        workspace_id=workspace_id,
+        embedding_provider=embedding_provider,
+    )
+    try:
+        with tempfile.TemporaryDirectory(prefix="sage-rag-postgres-eval-") as temp:
+            temporary = Path(temp)
+            store = KnowledgeStore(
+                temporary / "workspace",
+                temporary / "canonical.sqlite3",
+                {
+                    "versioned-corpus": KnowledgeSourceRoot(
+                        root_id="versioned-corpus",
+                        kind="markdown",
+                        label="Sage Versioned Corpus",
+                        path=snapshot_root,
+                    )
+                },
+                knowledge_index=postgres_index,
+            )
+            prepared = _prepare_corpus(store, root, snapshot_root, dataset)
+            _prepare_provider(embedding_provider, prepared, dataset.cases)
+            ingestion_started = time.perf_counter()
+            for entry, source in prepared:
+                try:
+                    proposal = store.ingest_prepared(source)
+                    store.approve(proposal.proposal_id, proposal.revision)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"failed to ingest approved corpus entry: {entry.corpus_id}"
+                    ) from exc
+            ingestion_latency_ms = (time.perf_counter() - ingestion_started) * 1_000
+            relative_to_entry = {
+                Path(entry.snapshot_path)
+                .relative_to("knowledge/corpus/snapshots")
+                .as_posix(): entry
+                for entry in dataset.corpus
+            }
+            routes = {
+                mode: _run_route(
+                    store,
+                    dataset,
+                    relative_to_entry,
+                    retrieval_mode=mode,
+                    top_k=top_k,
+                    candidate_k=candidate_k,
+                    token_budget=token_budget,
+                    minimum_answerable_recall=minimum_answerable_recall,
+                    estimated_cost_usd=(
+                        0.0
+                        if embedding_provider.model_id == HashingEmbeddingProvider.model_id
+                        else None
+                    ),
+                )
+                for mode in retrieval_modes
+            }
+            route_labels = {
+                "sparse": "PostgreSQL GIN + ts_rank_cd sparse-only; not BM25",
+                "dense": "pgvector exact Hashing dense-only; deterministic and non-semantic",
+                "hybrid": "PostgreSQL GIN + constrained pgvector exact Hashing + RRF",
+            }
+            for mode, route in routes.items():
+                route["label"] = route_labels[mode]
+            index = asdict(store.index_summary())
+            storage = postgres_index.storage_summary()
+
+        result: dict[str, Any] = {
+            "schema_version": 1,
+            "evaluation_id": "sage-postgres-exact-layered-baseline-v1",
+            "dataset": {
+                "dataset_id": dataset.manifest.dataset_id,
+                "dataset_revision": dataset.manifest.dataset_revision,
+                "case_count": len(dataset.cases),
+                "corpus_count": len(dataset.corpus),
+                "split_counts": dataset.split_counts,
+                "frozen_test": dataset.manifest.frozen_test,
+            },
+            "inputs": {
+                "dataset_manifest_sha256": _sha256_file(dataset_file),
+                "corpus_manifest_sha256": dataset.manifest.corpus_manifest_sha256,
+                "cases_sha256": dataset.manifest.cases_sha256,
+            },
+            "source": {"commit": source_commit, "dirty": source_dirty},
+            "backend": "postgres-tsvector+pgvector-exact",
+            "backend_schema_revision": POSTGRES_INDEX_SCHEMA_REVISION,
+            "provider": {
+                "model_id": embedding_provider.model_id,
+                "model_revision": embedding_provider.model_revision,
+                "dimensions": embedding_provider.dimensions,
+                "supports_semantic_recall": embedding_provider.supports_semantic_recall,
+                "label": (
+                    "deterministic feature hashing; not semantic retrieval"
+                    if not embedding_provider.supports_semantic_recall
+                    else "semantic embedding provider"
+                ),
+            },
+            "parameters": {
+                "top_k": top_k,
+                "candidate_k": candidate_k,
+                "token_budget": token_budget,
+                "minimum_answerable_recall": minimum_answerable_recall,
+                "test_split_used_for_calibration": False,
+                "ann_index_used": False,
+            },
+            "ingestion": {
+                "approved_source_count": len(dataset.corpus),
+                "failure_count": 0,
+                "latency_ms": round(ingestion_latency_ms, 3),
+            },
+            "index": index,
+            "storage": storage,
+            "routes": routes,
+        }
+        result["deterministic_digest"] = _deterministic_digest(result)
+        return result
+    finally:
+        with suppress(Exception):
+            postgres_index.delete_workspace()
+        postgres_index.close()
+
+
+def compare_layered_reports(
+    sqlite_report: dict[str, Any],
+    postgres_report: dict[str, Any],
+    *,
+    recall_tolerance: float = 0.02,
+) -> dict[str, Any]:
+    """Compare compatible routes and expose case-level retrieval regressions."""
+
+    if recall_tolerance < 0.0 or recall_tolerance > 1.0:
+        raise ValueError("recall tolerance must be between zero and one")
+    compatibility_fields = {
+        "dataset_id": (
+            sqlite_report["dataset"]["dataset_id"],
+            postgres_report["dataset"]["dataset_id"],
+        ),
+        "dataset_revision": (
+            sqlite_report["dataset"]["dataset_revision"],
+            postgres_report["dataset"]["dataset_revision"],
+        ),
+        "cases_sha256": (
+            sqlite_report["inputs"]["cases_sha256"],
+            postgres_report["inputs"]["cases_sha256"],
+        ),
+        "provider_model": (
+            sqlite_report["provider"]["model_id"],
+            postgres_report["provider"]["model_id"],
+        ),
+        "provider_revision": (
+            sqlite_report["provider"]["model_revision"],
+            postgres_report["provider"]["model_revision"],
+        ),
+        "top_k": (
+            sqlite_report["parameters"]["top_k"],
+            postgres_report["parameters"]["top_k"],
+        ),
+        "candidate_k": (
+            sqlite_report["parameters"]["candidate_k"],
+            postgres_report["parameters"]["candidate_k"],
+        ),
+    }
+    mismatches = [
+        field
+        for field, (sqlite_value, postgres_value) in compatibility_fields.items()
+        if sqlite_value != postgres_value
+    ]
+    if mismatches:
+        raise ValueError("incompatible layered eval inputs: " + ", ".join(mismatches))
+
+    common_modes = tuple(
+        mode for mode in sqlite_report["routes"] if mode in postgres_report["routes"]
+    )
+    if not common_modes:
+        raise ValueError("layered eval reports have no common retrieval routes")
+    routes: dict[str, Any] = {}
+    for mode in common_modes:
+        sqlite_route = sqlite_report["routes"][mode]
+        postgres_route = postgres_report["routes"][mode]
+        sqlite_recall = float(sqlite_route["retrieval"]["recall_at_k"])
+        postgres_recall = float(postgres_route["retrieval"]["recall_at_k"])
+        sqlite_cases = {str(item["case_id"]): item for item in sqlite_route["cases"]}
+        postgres_cases = {str(item["case_id"]): item for item in postgres_route["cases"]}
+        regressions = []
+        for case_id in sorted(sqlite_cases.keys() & postgres_cases.keys()):
+            sqlite_case = sqlite_cases[case_id]
+            postgres_case = postgres_cases[case_id]
+            case_delta = float(postgres_case["retrieval"]["recall_at_k"]) - float(
+                sqlite_case["retrieval"]["recall_at_k"]
+            )
+            if case_delta < 0.0:
+                regressions.append(
+                    {
+                        "case_id": case_id,
+                        "sqlite_failure": sqlite_case["primary_failure"],
+                        "postgres_failure": postgres_case["primary_failure"],
+                        "recall_at_k_delta": round(case_delta, 6),
+                    }
+                )
+        recall_delta = postgres_recall - sqlite_recall
+        routes[mode] = {
+            "sqlite": {
+                "recall_at_k": sqlite_recall,
+                "mrr": float(sqlite_route["ranking"]["mrr"]),
+                "ndcg_at_k": float(sqlite_route["ranking"]["ndcg_at_k"]),
+                "p50_latency_ms": float(sqlite_route["system"]["latency_ms"]["p50"]),
+                "p95_latency_ms": float(sqlite_route["system"]["latency_ms"]["p95"]),
+            },
+            "postgres": {
+                "recall_at_k": postgres_recall,
+                "mrr": float(postgres_route["ranking"]["mrr"]),
+                "ndcg_at_k": float(postgres_route["ranking"]["ndcg_at_k"]),
+                "p50_latency_ms": float(postgres_route["system"]["latency_ms"]["p50"]),
+                "p95_latency_ms": float(postgres_route["system"]["latency_ms"]["p95"]),
+            },
+            "recall_at_k_delta": round(recall_delta, 6),
+            "mrr_delta": round(
+                float(postgres_route["ranking"]["mrr"]) - float(sqlite_route["ranking"]["mrr"]),
+                6,
+            ),
+            "ndcg_at_k_delta": round(
+                float(postgres_route["ranking"]["ndcg_at_k"])
+                - float(sqlite_route["ranking"]["ndcg_at_k"]),
+                6,
+            ),
+            "recall_gate_passed": recall_delta >= -recall_tolerance,
+            "regressions": regressions,
+        }
+    return {
+        "compatible_inputs": True,
+        "recall_tolerance": recall_tolerance,
+        "overall_passed": all(route["recall_gate_passed"] for route in routes.values()),
+        "routes": routes,
+    }
 
 
 def _prepare_corpus(
@@ -850,5 +1124,7 @@ __all__ = [
     "GateCalibration",
     "GateObservation",
     "calibrate_gate",
+    "compare_layered_reports",
+    "run_postgres_layered_eval",
     "run_sqlite_layered_eval",
 ]

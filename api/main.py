@@ -48,7 +48,8 @@ from core.knowledge import (
     OpenAICompatibleEmbeddingProvider,
     load_relevance_policy,
 )
-from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.index_backend import KnowledgeIndexBackend
+from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
     KnowledgeJobService,
@@ -112,6 +113,7 @@ def create_app(
     knowledge_source_roots: Mapping[str, KnowledgeSourceRoot] | None = None,
     knowledge_embedding_provider: DenseEmbeddingProvider | None = None,
     knowledge_relevance_policy: KnowledgeRelevancePolicy | None = None,
+    knowledge_index: KnowledgeIndexBackend | None = None,
     knowledge_job_service: KnowledgeJobService | None = None,
     knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     knowledge_jobs_enabled: bool | None = None,
@@ -169,6 +171,11 @@ def create_app(
             app.state.coding_goal_followup_shutdown = True
             if isinstance(service, KnowledgeJobService):
                 await service.stop()
+            configured_store = getattr(app.state, "knowledge_store", None)
+            configured_index = getattr(configured_store, "knowledge_index", None)
+            close_index = getattr(configured_index, "close", None)
+            if callable(close_index):
+                close_index()
             owned_redis = getattr(app.state, "knowledge_job_redis_client", None)
             if owned_redis is not None:
                 await owned_redis.aclose()
@@ -435,14 +442,20 @@ def create_app(
             configured_relevance_policy = load_relevance_policy(
                 Path(settings.knowledge_relevance_policy_path).expanduser().resolve()
             )
+        configured_index = knowledge_index or build_knowledge_index(
+            backend=settings.knowledge_index_backend,
+            workspace_id=settings.knowledge_workspace_id,
+            postgres_dsn=settings.knowledge_postgres_dsn or settings.postgres_sync_dsn,
+            postgres_connect_timeout_seconds=settings.knowledge_postgres_connect_timeout_seconds,
+            postgres_pool_max_connections=settings.knowledge_postgres_pool_max_connections,
+            embedding_provider=configured_embedding,
+            relevance_policy=configured_relevance_policy,
+        )
         app.state.knowledge_store = KnowledgeStore(
             configured_knowledge_root,
             configured_knowledge_database,
             configured_source_roots or {},
-            knowledge_index=LocalKnowledgeIndex(
-                embedding_provider=configured_embedding,
-                relevance_policy=configured_relevance_policy,
-            ),
+            knowledge_index=configured_index,
         )
         app.state.knowledge_store.initialize()
         enable_jobs = (

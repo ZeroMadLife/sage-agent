@@ -4,7 +4,8 @@ Configuration is loaded from environment variables and an optional ``.env`` file
 """
 
 from functools import lru_cache
-from urllib.parse import urlparse
+from typing import Literal
+from urllib.parse import quote, urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -147,6 +148,11 @@ class Settings(BaseSettings):
     knowledge_source_label: str = "Sage Learning"
     knowledge_source_kind: str = "obsidian"
     knowledge_jobs_enabled: bool = False
+    knowledge_index_backend: Literal["sqlite", "postgres"] = "sqlite"
+    knowledge_workspace_id: str = "knowledge-local"
+    knowledge_postgres_dsn: str = Field(default="", repr=False)
+    knowledge_postgres_connect_timeout_seconds: int = Field(default=5, ge=1, le=30)
+    knowledge_postgres_pool_max_connections: int = Field(default=4, ge=1, le=16)
     knowledge_embedding_provider: str = "hashing"
     knowledge_embedding_api_key: str = Field(default="", repr=False)
     knowledge_embedding_base_url: str = ""
@@ -179,6 +185,16 @@ class Settings(BaseSettings):
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def postgres_sync_dsn(self) -> str:
+        """Return a credential-safe-to-construct sync PostgreSQL DSN."""
+        user = quote(self.postgres_user, safe="")
+        password = quote(self.postgres_password, safe="")
+        database = quote(self.postgres_db, safe="")
+        return (
+            f"postgresql://{user}:{password}@{self.postgres_host}:{self.postgres_port}/{database}"
         )
 
     @property

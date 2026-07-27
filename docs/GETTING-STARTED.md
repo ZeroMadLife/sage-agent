@@ -54,6 +54,19 @@ REDIS_HOST=localhost
 REDIS_PORT=6379
 ```
 
+Knowledge 检索投影默认使用 SQLite。完成 PostgreSQL schema migration 后，可以显式切换为
+GIN + pgvector exact backend；canonical Wiki/proposal store 仍保留在 SQLite：
+
+```bash
+KNOWLEDGE_INDEX_BACKEND=postgres
+KNOWLEDGE_WORKSPACE_ID=knowledge-local
+# 默认复用上面的 POSTGRES_*；只有独立数据库时才设置此项。
+KNOWLEDGE_POSTGRES_DSN=
+```
+
+切换前先运行 `python scripts/migrate_knowledge_index_postgres.py --force`。第一版不会创建
+HNSW/IVFFlat；若 PostgreSQL 不可用，显式配置的 postgres backend 会启动失败，不静默回退 SQLite。
+
 `.env` 已被 Git 忽略。不要提交 Provider key、OAuth secret、访问口令或用户数据。
 
 ## 4. 启动本地服务
