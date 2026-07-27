@@ -2,11 +2,13 @@
 
 > 日期：2026-07-28
 >
-> clean source：待正式报告生成后填写
+> clean source：`cc8744377c3bd526b2ba6a59c56f5df2e5d252b3`
 >
 > 报告：[knowledge_multimodal_evidence_v1_2026-07-28.json](../../evals/reports/knowledge_multimodal_evidence_v1_2026-07-28.json)
 >
-> deterministic digest：待正式报告生成后填写
+> report sha256：`927ed23eb6b5133f2fdb3e898202480368e04c866a6a4e8d7ae76dedf1a09860`
+>
+> deterministic digest：`sha256:87e492d57564cccb4131dafc034f93ecb5bc45949b1cb5deeb05e81263908fda`
 
 ## 这次解决什么
 
@@ -91,8 +93,13 @@ PR-1 的 80 条正式检索集没有 image case，不能为了 PR-7 临时修改
 | L2 | Qwen VLM structured region fixture response |
 | 门禁 | case pass、冻结 test、bbox accuracy、citation identity stability 均为 100% |
 
-正式结果将在 clean implementation commit 上生成。fixture 输入与响应都由项目自建，不联网，
-因此能证明工程合同可复现，但不能证明真实扫描件、复杂表格或视觉模型质量。
+正式报告在 clean implementation commit 上生成：12/12 case 通过，冻结 test 3/3 通过，7 个
+带 gold bbox 的 case 区域准确率 100%，重复 block 的 citation identity 保持稳定。单机合成
+fixture 的解析+投影 P50/P95 为 `0.036/27.860 ms`；这不是检索、真实 VLM 或生产 SLA。
+
+fixture 输入与响应都由项目自建且不联网，因此这些数字能证明工程合同可复现，不能证明真实
+扫描件、复杂表格或视觉模型质量。报告显式记录 `live_vlm_quality_evaluated=false` 与
+`visual_vector_retrieval_enabled=false`。
 
 ## Trade-off 与面试边界
 
