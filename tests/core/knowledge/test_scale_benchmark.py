@@ -42,7 +42,9 @@ def test_committed_scale_report_keeps_exact_without_runtime_ann() -> None:
     assert report["source"]["dirty"] is False
     assert report["config"]["dimensions"] == 384
     assert [item["scale"] for item in report["exact"]] == [1_000, 10_000, 100_000]
-    assert all(item["recall_at_10"] == 1.0 for item in report["exact"])
+    assert report["fixture_revision"] == "sage-hnsw-scale-fixture-v1"
+    assert all(item["fixture_digest"].startswith("sha256:") for item in report["exact"])
+    assert all(item["recall_at_k"] == 1.0 for item in report["exact"])
     assert all(item["p95_ms"] <= report["config"]["exact_p95_sla_ms"] for item in report["exact"])
     assert report["hnsw_build"]["ran"] is False
     assert report["hnsw"] == []

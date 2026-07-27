@@ -1,16 +1,17 @@
 # Sage RAG HNSW 规模门禁 v1
 
 > 日期：2026-07-28
-> clean source：`c4157e4624b58a0b2864a2ef795fd528a87a16a3`
+> clean source：`a60f39bebe8786c1cec70ad3627dbc77701c9e9f`
 > 报告：[knowledge_hnsw_scale_gate_v1_2026-07-28.json](../../evals/reports/knowledge_hnsw_scale_gate_v1_2026-07-28.json)
-> 报告 SHA256：`23c73e74e3fdc11bf885b054d307d05e51692f70e7f840b9cbad7c9883a79e35`
-> deterministic digest：`sha256:744b57797f9aa86fdd090fd7f27c9815e60299a3c7feefe7c965f0ba7f1caa5f`
+> 报告 SHA256：`bcd2bc9232f516d21b04b7d187810fc6e9a243e880f6d8e3ba1619aca5b73d89`
+> deterministic digest：`sha256:63a71ade4f34fd3051010561d72ba1dcedc1fa6d0e22d6abc31b96d36b0e330e`
 
 ## 结论
 
 `1k/10k/100k` chunks 的 pgvector cosine exact Top-10 均完整召回生成器金标，
 Recall@10 为 `1.000000`。热身后每档 64 次查询的 P95 为
-`0.547 / 3.485 / 53.266 ms`，100k 仍低于预先冻结的 `100 ms`。
+`1.403 / 2.838 / 93.906 ms`，100k 仍低于预先冻结的 `100 ms`，但只剩
+约 `6.1 ms` 余量。因此扩大 corpus、改变硬件或查询分布前必须重跑门禁。
 
 因此门禁结论是 `keep_exact`：`hnsw_experiment_required=false`，没有在正式
 100k 报告中创建 HNSW 实验索引，也没有修改运行时 `knowledge_index_chunks`。
@@ -34,23 +35,23 @@ ANN 复杂度的证据。
 
 | chunks | Recall@10 | P50 | P95 | COPY | scope index build | ANALYZE |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 1.000000 | 0.499 ms | 0.547 ms | 51.992 ms | 1.243 ms | 5.313 ms |
-| 10,000 | 1.000000 | 3.237 ms | 3.485 ms | 469.885 ms | 6.390 ms | 27.613 ms |
-| 100,000 | 1.000000 | 42.886 ms | 53.266 ms | 6441.078 ms | 74.220 ms | 174.108 ms |
+| 1,000 | 1.000000 | 0.585 ms | 1.403 ms | 75.130 ms | 2.588 ms | 5.191 ms |
+| 10,000 | 1.000000 | 2.190 ms | 2.838 ms | 434.513 ms | 5.258 ms | 21.659 ms |
+| 100,000 | 1.000000 | 57.411 ms | 93.906 ms | 6492.150 ms | 230.178 ms | 843.056 ms |
 
 `EXPLAIN (ANALYZE, BUFFERS, SETTINGS)` 确认三档均为
 `Limit -> Sort -> Seq Scan`，且 `enable_indexscan=off`、`enable_bitmapscan=off`、
 `max_parallel_workers_per_gather=0`，以 exact 串行扫描作为可比 oracle。100k 的 server
-execution time 为 `54.849 ms`，shared hit/read blocks 为 `5216/14816`，没有 temp
+execution time 为 `64.919 ms`，shared hit/read blocks 为 `5216/14816`，没有 temp
 read/write blocks。
 
 ## 存储与内存
 
 | chunks | table bytes | total index bytes | total relation bytes | backend retained / used |
 | ---: | ---: | ---: | ---: | ---: |
-| 1,000 | 2,097,152 | 114,688 | 2,252,800 | 2,031,624 / 1,261,752 |
-| 10,000 | 16,777,216 | 843,776 | 17,661,952 | 2,095,192 / 1,338,224 |
-| 100,000 | 164,102,144 | 8,052,736 | 172,228,608 | 2,095,192 / 1,323,264 |
+| 1,000 | 2,097,152 | 114,688 | 2,252,800 | 2,031,624 / 1,261,736 |
+| 10,000 | 16,777,216 | 843,776 | 17,661,952 | 2,095,192 / 1,338,208 |
+| 100,000 | 164,102,144 | 8,052,736 | 172,228,608 | 2,095,192 / 1,323,248 |
 
 `total index bytes` 包含基准表的 primary key 和 scope 索引，不是 HNSW 大小。
 backend memory 是查询后当前 session 的 `pg_backend_memory_contexts` retained/used，
@@ -66,6 +67,8 @@ stock PostgreSQL 没有可移植的 per-query server CPU 指标；本环境没�
 - `shared_buffers=128MB`、`effective_cache_size=4GB`、`work_mem=4MB`、
   `maintenance_work_mem=64MB`。
 - 基准只在随机命名的 `UNLOGGED` 表中写入 synthetic fixture，`finally` 删除。
+- fixture revision 为 `sage-hnsw-scale-fixture-v1`；三档数据分别带有完整内容
+  SHA256，生成器或任一行变化都会改变 deterministic digest。
 - 评测后 `sage_hnsw_scale_bench_%` 表残留为 0；运行时
   `knowledge_index_chunks` HNSW 索引为 0。
 - DSN 从环境读取，不输出到报告或日志。CLI 需显式
@@ -96,9 +99,9 @@ PostgreSQL DSN 通过 `KNOWLEDGE_POSTGRES_DSN` 或现有 `POSTGRES_*` 环境配�
 
 可讲：为 pgvector exact 与 HNSW 建立规模门禁，在 `1k/10k/100k`、384 维
 synthetic vectors 上使用 exact Top-10 作为 recall oracle；100k Recall@10 `1.0`、
-P95 `53.266 ms`，低于预先冻结的 `100 ms`，因此保持 exact，不为技术栈
-展示强行启用 HNSW。
+P95 `93.906 ms`，未超过预先冻结的 `100 ms`，因此当前保持 exact，不为
+技术栈展示强行启用 HNSW；同时因余量只有约 6.1 ms，扩容前必须重跑。
 
 不可讲：HNSW 已上线或已完成 100k `ef_search` 曲线；100k 是真实生产
-corpus/query 分布；`53.266 ms` 是线上 SLA；已测得 server CPU 或整个数据库
+corpus/query 分布；`93.906 ms` 是线上 SLA；已测得 server CPU 或整个数据库
 peak memory；HNSW 永远不需要。
