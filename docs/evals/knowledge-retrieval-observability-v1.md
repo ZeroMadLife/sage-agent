@@ -2,9 +2,9 @@
 
 > 日期：2026-07-28
 > 数据集：`sage-official-agent-fullstack-v1@2026-07-27.1`
-> clean source：`f800f6fb65a25599abd08c1258643dc06c2bbc9c`
+> clean source：`f8c3e9b7ab73dd89c53edf715f1c42cb29745625`
 > 报告：[knowledge_retrieval_observability_v1_2026-07-28.json](../../evals/reports/knowledge_retrieval_observability_v1_2026-07-28.json)
-> 报告 SHA256：`6c6eccac4571e11697e1585f36358cf57186af3ed71faf42148306da444a9c64`
+> 报告 SHA256：`3ee60ce3260e64e2f838202f1e62d6f30867df79e1dd129a825dc7bde7ca7104`
 
 ## 结论
 
