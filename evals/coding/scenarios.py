@@ -34,10 +34,10 @@ SCENARIOS: list[Scenario] = [
         name="read-readme",
         category="read_explain",
         prompt="读 README.md,告诉我项目名",
-        workspace_files={"README.md": "# TourSwarm\nA travel planning agent."},
+        workspace_files={"README.md": "# Sage\nA personal AI learning companion."},
         model_responses=[
             '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>项目名是 TourSwarm。</final>",
+            "<final>项目名是 Sage。</final>",
         ],
         expected_no_write=True,
         expected_tool_calls=["read_file"],

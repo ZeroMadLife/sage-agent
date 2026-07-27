@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, cast
 
 from langchain_core.tools import BaseTool, ToolException
 from sage_harness import (
     McpCatalogPort,
-    McpConfigSnapshot,
     McpConnectionStatus,
-    McpManager,
     McpScope,
     McpServerConfig,
     McpServerReference,
@@ -20,13 +16,11 @@ from sage_harness import (
 )
 
 from core.coding.run_coordinator import RunEvent
-from core.config.settings import Settings
 from core.harness.mcp_session_pool import McpClientSession, ScopedMcpSessionPool
-from core.mcp_client import build_config_from_settings
-from mcp_servers.registry import McpConfig
 
 McpClientFactory = Callable[[dict[str, Any]], Any]
 McpToolLoader = Callable[[McpClientSession, str], Awaitable[Sequence[BaseTool]]]
+McpConfig = Mapping[str, Mapping[str, Any]]
 
 
 class ConfiguredMcpCatalog(McpCatalogPort):
@@ -175,60 +169,6 @@ class LangChainMcpTransport:
         await self._session_pool.aclose()
 
 
-def build_configured_mcp_catalog(
-    settings: Settings,
-    *,
-    scenic_data_path: str = "data/mock/scenic_spots.json",
-) -> ConfiguredMcpCatalog:
-    """Build a sanitized catalog and distinguish configured from missing credentials."""
-    config = build_config_from_settings(settings, scenic_data_path=scenic_data_path)
-    statuses: dict[str, McpConnectionStatus] = {
-        "amap": "configured" if settings.amap_api_key.strip() else "unconfigured",
-        "weather": "configured" if settings.qweather_api_key.strip() else "unconfigured",
-        "scenic": "configured" if scenic_data_path.strip() else "unconfigured",
-    }
-    return ConfiguredMcpCatalog(config, statuses=statuses)
-
-
-def build_configured_mcp_manager(
-    settings: Settings,
-    *,
-    scenic_data_path: str = "data/mock/scenic_spots.json",
-    client_factory: McpClientFactory | None = None,
-    discovery_timeout_seconds: float = 10.0,
-    call_timeout_seconds: float = 30.0,
-) -> McpManager:
-    """Build a lazy live manager; construction never opens an MCP connection."""
-    config = build_config_from_settings(settings, scenic_data_path=scenic_data_path)
-    configured = {
-        "amap": bool(settings.amap_api_key.strip()),
-        "weather": bool(settings.qweather_api_key.strip()),
-        "scenic": bool(scenic_data_path.strip()),
-    }
-    revision = _config_revision(config, configured)
-    servers = tuple(
-        McpServerConfig(
-            name=name,
-            transport=cast(Any, spec.get("transport", "stdio")),
-            status="configured" if configured.get(name, False) else "unconfigured",
-            remote_content=name != "scenic",
-            capabilities=frozenset({"network"}) if name != "scenic" else frozenset({"local_data"}),
-        )
-        for name, spec in sorted(config.items())
-    )
-    transport = LangChainMcpTransport(
-        {name: spec for name, spec in config.items() if configured.get(name, False)},
-        revision=revision,
-        client_factory=client_factory,
-    )
-    return McpManager(
-        McpConfigSnapshot(revision=revision, servers=servers),
-        transport,
-        discovery_timeout_seconds=discovery_timeout_seconds,
-        call_timeout_seconds=call_timeout_seconds,
-    )
-
-
 async def mcp_catalog_event(
     catalog: McpCatalogPort,
     *,
@@ -291,19 +231,8 @@ def _tool_schema(tool: BaseTool) -> dict[str, object]:
     return {str(key): value for key, value in rendered.items()}
 
 
-def _config_revision(config: McpConfig, configured: Mapping[str, bool]) -> str:
-    payload = {
-        "config": config,
-        "configured": dict(sorted(configured.items())),
-    }
-    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
-    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
-
-
 __all__ = [
     "ConfiguredMcpCatalog",
     "LangChainMcpTransport",
-    "build_configured_mcp_catalog",
-    "build_configured_mcp_manager",
     "mcp_catalog_event",
 ]

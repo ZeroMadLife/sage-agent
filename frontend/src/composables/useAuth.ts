@@ -1,5 +1,5 @@
-const PASSPHRASE_KEY = 'tourswarm_passphrase'
-const USER_ID_KEY = 'tourswarm_user_id'
+const PASSPHRASE_KEY = 'sage_passphrase'
+const USER_ID_KEY = 'sage_user_id'
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
 export function useAuth() {

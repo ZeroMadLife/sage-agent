@@ -1,5 +1,5 @@
 # mypy 静态类型检查配置
-# 运行：mypy core/ mcp_servers/ agents/
+# 运行：mypy core/ api/ packages/sage_harness/
 # 目标：编译期发现类型错误，弥补Python动态类型的短板
 
 [tool.mypy]
@@ -19,8 +19,6 @@ warn_unreachable = true
 show_error_codes = true
 show_column_numbers = true
 pretty = true
-exclude = '(^|/)(api/coding 2|core/memory/mem0_factory 2)\.py$'
-
 # 第三方库无类型存根时不要报噪音
 [[tool.mypy.overrides]]
 module = [

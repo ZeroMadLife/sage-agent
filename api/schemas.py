@@ -4,24 +4,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
-from models.itinerary import Itinerary
-
 
 def _default_coding_runtime_profiles() -> list[Literal["legacy", "deerflow_v2"]]:
     return ["legacy"]
-
-
-class ChatRequest(BaseModel):
-    """Request body for starting or continuing a chat session."""
-
-    content: str = Field(min_length=1, description="User travel request")
-    user_id: str = Field(default="anonymous", description="User scope for memory and sessions")
-
-
-class ChatStartResponse(BaseModel):
-    """Response returned when a chat session is created."""
-
-    session_id: str
 
 
 class CodingSessionRequest(BaseModel):
@@ -1795,53 +1780,6 @@ class CloudWorkspaceResponse(BaseModel):
     lifecycle_state: str
 
 
-class SessionSummary(BaseModel):
-    """Historical session summary."""
-
-    session_id: str
-    title: str
-    created_at: str
-    updated_at: str
-    status: str
-
-
-class SessionListResponse(BaseModel):
-    """Historical session list response."""
-
-    sessions: list[SessionSummary]
-
-
-class HistoryMessage(BaseModel):
-    """Persisted historical chat message."""
-
-    role: str
-    content: str
-    tool_calls: list[dict[str, Any]] | None = None
-    created_at: str
-
-
-class SessionMessagesResponse(BaseModel):
-    """Historical messages for one session."""
-
-    messages: list[HistoryMessage]
-
-
-class HistoryItinerary(BaseModel):
-    """Archived itinerary response item."""
-
-    id: int
-    destination: str
-    total_cost: int
-    created_at: str
-    content: Itinerary
-
-
-class ItineraryListResponse(BaseModel):
-    """Archived itinerary list response."""
-
-    itineraries: list[HistoryItinerary]
-
-
 class HarnessOperationRef(BaseModel):
     """A bounded reference to a canonical operation owned by another store."""
 
@@ -2020,26 +1958,9 @@ class ToolCallEvent(BaseModel):
     message: str = ""
 
 
-class AgentResultEvent(BaseModel):
-    """Agent 回复事件（支持纯文字回复和行程）。"""
-
-    type: Literal["result"] = "result"
-    content: str = Field(default="", description="Agent 回复文字")
-    itinerary: Itinerary | None = Field(default=None, description="行程（如果有）")
-    tool_calls: list[dict[str, Any]] = Field(default_factory=list, description="工具调用记录")
-    metrics: dict[str, Any] = Field(default_factory=dict)
-
-
 class ErrorEvent(BaseModel):
     """Recoverable or terminal error event."""
 
     type: Literal["error"] = "error"
     message: str
     recoverable: bool = True
-
-
-class BusyEvent(BaseModel):
-    """会话正在执行中, 拒绝新请求。"""
-
-    type: Literal["busy"] = "busy"
-    message: str = "正在处理上一个请求, 请稍候"

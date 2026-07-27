@@ -414,13 +414,7 @@ def test_enabled_deerflow_profile_streams_public_answer_and_replays_history(tmp_
         catalog = next(
             payload for payload in payloads if payload.get("type") == "mcp_catalog_updated"
         )
-        assert {server["name"] for server in catalog["servers"]} == {
-            "amap",
-            "weather",
-            "scenic",
-        }
-        assert "test-amap-key" not in repr(catalog)
-        assert "test-weather-key" not in repr(catalog)
+        assert catalog["servers"] == []
         assert any(payload.get("type") == "text_delta" for payload in payloads)
         assert any(payload.get("type") == "final" for payload in payloads)
         assert events[-1]["status"] == "completed"
@@ -1101,7 +1095,7 @@ def test_create_coding_session_rejects_workspace_outside_configured_root(
 
 def test_coding_websocket_streams_engine_events(tmp_path: Path) -> None:
     """Coding WebSocket streams tool and final events from the runtime."""
-    (tmp_path / "README.md").write_text("TourSwarm API coding\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage API coding\n", encoding="utf-8")
     client = TestClient(
         create_app(
             coding_model_factory=FakeModel,
@@ -1127,7 +1121,7 @@ def test_coding_websocket_streams_engine_events(tmp_path: Path) -> None:
         "final",
     ]
     assert business_events[2]["tool"] == "read_file"
-    assert "TourSwarm API coding" in business_events[3]["content"]
+    assert "Sage API coding" in business_events[3]["content"]
     assert business_events[-1]["content"] == "README 里能看到项目内容。"
 
 
@@ -1715,7 +1709,7 @@ def test_list_coding_skills_returns_bundled_skills(tmp_path: Path) -> None:
     assert response.status_code == 200
     skills = response.json()["skills"]
     names = [skill["name"] for skill in skills]
-    assert set(names) >= {"review", "test", "commit", "travel", "travel-planning"}
+    assert set(names) >= {"review", "test", "commit"}
 
 
 def test_get_coding_skill_returns_content(tmp_path: Path) -> None:
@@ -1747,9 +1741,7 @@ def test_list_mcp_servers_returns_config(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     servers = response.json()["servers"]
-    names = [server["name"] for server in servers]
-    assert "amap" in names
-    assert "weather" in names
+    assert servers == []
 
 
 def test_coding_websocket_handles_slash_command(tmp_path: Path) -> None:
@@ -1856,7 +1848,7 @@ def test_coding_websocket_slash_command_with_args_keeps_original(tmp_path: Path)
 
         async def complete(self, prompt: str) -> str:
             self.prompts.append(prompt)
-            return "<final>我来帮你规划。</final>"
+            return "<final>我来检查这个模块。</final>"
 
     app = create_app(
         coding_model_factory=FinalModel,
@@ -1868,24 +1860,23 @@ def test_coding_websocket_slash_command_with_args_keeps_original(tmp_path: Path)
     runtime = app.state.coding_sessions[session_id]
 
     with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
-        websocket.send_json({"content": "/travel-planning 我要去莆田"})
+        websocket.send_json({"content": "/review core/coding"})
         while _receive_runtime_event(websocket)["type"] not in {"final", "step_limit", "error"}:
             pass
 
     # History keeps the original slash command including the user's arguments.
     user_messages = [item for item in runtime.session["history"] if item.get("role") == "user"]
-    assert user_messages[0]["content"] == "/travel-planning 我要去莆田"
+    assert user_messages[0]["content"] == "/review core/coding"
     # The expanded prompt body is injected into the LLM request but not history.
-    assert "你正在使用 Sage 的 travel-planning domain skill" in runtime.model.prompts[0]
+    assert "git diff" in runtime.model.prompts[0]
     assert all(
-        "你正在使用 Sage 的 travel-planning domain skill" not in str(item.get("content", ""))
-        for item in runtime.session["history"]
+        "git diff" not in str(item.get("content", "")) for item in runtime.session["history"]
     )
 
     # Replayed messages also expose only the original command text.
     messages = client.get(f"/api/v1/coding/session/{session_id}/messages").json()["messages"]
     assert messages[0]["role"] == "user"
-    assert messages[0]["content"] == "/travel-planning 我要去莆田"
+    assert messages[0]["content"] == "/review core/coding"
 
 
 def test_create_coding_session_persists_recoverable_empty_session(tmp_path: Path) -> None:

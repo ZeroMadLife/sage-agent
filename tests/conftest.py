@@ -7,19 +7,11 @@ from _pytest.monkeypatch import MonkeyPatch
 
 from core.config.settings import get_settings
 
-# A local editor backup with stale pre-v5 imports. Keep the user file intact
-# while preventing pytest from treating it as a repository test module.
-collect_ignore = ["core/coding/test_tool_executor 2.py"]
-
 
 @pytest.fixture(autouse=True)
 def set_test_env(monkeypatch: MonkeyPatch) -> Iterator[None]:
     """Inject test environment variables for all tests."""
     test_env = {
-        "AMAP_API_KEY": "test-amap-key",
-        "QWEATHER_API_KEY": "test-weather-key",
-        "QWEATHER_BASE_URL": "https://weather.test/v7",
-        "QWEATHER_GEO_URL": "https://geo.test/geoapi/v2",
         "POSTGRES_HOST": "localhost",
         "POSTGRES_PORT": "5432",
         "POSTGRES_USER": "test",

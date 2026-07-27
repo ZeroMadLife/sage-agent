@@ -3,7 +3,7 @@
 
 target-version = "py311"
 line-length = 100
-src = ["core", "mcp_servers", "agents", "tests"]
+src = ["core", "tests"]
 
 [lint]
 select = [
@@ -24,7 +24,7 @@ ignore = [
 ]
 
 [lint.isort]
-known-first-party = ["core", "mcp_servers", "agents"]
+known-first-party = ["core"]
 
 [format]
 quote-style = "double"

@@ -370,12 +370,12 @@ describe('CodingRunTrace', () => {
     const staleAudit: CodingRunAuditSummary = {
       ...audit,
       steps: [{
-        tool: 'scenic_search_scenic_spots',
+        tool: 'docs_lookup',
         status: 'completed',
-        action_summary: '调用 scenic_search_scenic_spots',
+        action_summary: '调用 docs_lookup',
         result_summary: '执行中',
         duration_ms: 180,
-        arguments_preview: '{"city":"杭州"}',
+        arguments_preview: '{"topic":"checkpoint"}',
         result_preview: '',
         arguments_truncated: false,
         result_truncated: false,
@@ -397,8 +397,8 @@ describe('CodingRunTrace', () => {
         runId: 'run-mcp-live',
         tools: [{
           id: 'tool-1',
-          tool: 'scenic_search_scenic_spots',
-          args: { city: '杭州' },
+          tool: 'docs_lookup',
+          args: { topic: 'checkpoint' },
           status: 'completed',
           result: '',
           is_error: false,

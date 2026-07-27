@@ -1,1 +1,1 @@
-"""Evaluation helpers and datasets for TourSwarm."""
+"""Evaluation helpers and datasets for Sage."""

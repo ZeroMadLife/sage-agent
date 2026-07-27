@@ -1,10 +1,10 @@
-# V7 Beta Architecture Review
+# v1.0.0 Architecture Review
 
-> Last verified against: `dev/sage-v7@7a26197` (2026-07-24)
+> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
 
 ## 评审结论
 
-V7 Beta 已形成一条可运行的本地产品主线：用户从 Assistant 进入统一 Harness，在
+v1.0.0 已形成一条可运行的本地产品主线：用户从 Assistant 进入统一 Harness，在
 Knowledge 中获得带来源的上下文，在 Practice 中用真实执行验证理解，并由 timeline、
 artifact、citation、diff 和测试留下证据。
 

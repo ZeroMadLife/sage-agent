@@ -1,8 +1,8 @@
-# Sage V7 Beta
+# Sage v1.0.0
 
-> Last verified against: `codex/harness-evidence-v2@0e21fda` (2026-07-25)
+> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
 
-这里是 V7 Beta 的稳定发布入口，也是随代码持续校正的学习索引。它不记录每小时的开发
+这里是 v1.0.0 的候选版本入口，也是随代码持续校正的学习索引。它不记录每小时的开发
 流水账，也不把计划写成已交付能力；版本事实以对应 source ref、代码和测试为准。
 
 ## 阅读顺序
@@ -10,7 +10,7 @@
 | 文档 | 适合何时阅读 | 回答的问题 |
 | --- | --- | --- |
 | [SHOWCASE](SHOWCASE.md) | 3 分钟了解项目 | Sage 是什么，技术含量在哪里 |
-| [CHANGELOG](CHANGELOG.md) | 先了解版本变化 | V7 Beta 改了什么 |
+| [CHANGELOG](CHANGELOG.md) | 先了解版本变化 | v1.0.0 改了什么 |
 | [REVIEW](REVIEW.md) | 评估架构与风险 | 为什么这样设计，边界在哪里 |
 | [TESTING](TESTING.md) | 准备运行或验收 | 如何复现和验证 |
 | [Learning Handbook](learning/00-reading-map.md) | 系统学习代码 | 从哪些模块开始读 |
@@ -20,7 +20,7 @@
 
 ## 版本主线
 
-V7 Beta 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习与实践工作台：
+v1.0.0 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习与实践工作台：
 
 1. 统一 Assistant、Knowledge 与 Practice 的 Chat Harness 和事件协议。
 2. 将 Coding 收敛为可审批、可恢复、可验证的 Practice Engine。
@@ -42,7 +42,7 @@ V7 Beta 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学�
 
 ## 发布边界
 
-- 当前仍是 Beta，`main` 只接收完成发布门禁的版本。
+- 当前仍是 release candidate；尚未合入 `main`、创建 tag 或发布 GitHub Release。
 - `docker-compose.yml` 是本地依赖编排，不是生产栈。
 - `local_workspace` 仅用于可信开发机；公网任务必须使用 Container Sandbox。
 - Container workspace 仍整体可写，生产 rootless live audit 和 image digest 尚未关闭。

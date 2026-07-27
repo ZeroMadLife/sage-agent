@@ -11,7 +11,7 @@ Benchmark v2 用当前公开学习资料验证检索层，而不是继续引用�
 ## 2. 固定输入
 
 - 数据集：`evals/knowledge_benchmark_v2.jsonl`，共 200 条；
-- 语料：`release/v7-beta/learning` 下 16 份白名单 Markdown，共 879 个 active chunks；
+- 语料：`release/v1.0.0/learning` 下 16 份白名单 Markdown，共 879 个 active chunks；
 - 清单：`evals/knowledge_benchmark_v2_manifest.json`；
 - 标注：section 级、1 到 3 级相关性；
 - 指标：Recall@10、Precision@10、MRR、NDCG@10、HitRate@10、无答案准确率、P50/P95。

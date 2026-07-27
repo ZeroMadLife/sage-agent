@@ -1,13 +1,6 @@
 """Configuration module tests."""
 
-from core.config.settings import DEFAULT_QWEATHER_BASE_URL, DEFAULT_QWEATHER_GEO_URL, Settings
-
-
-def test_settings_loads_from_env() -> None:
-    """Settings load API keys from environment variables."""
-    settings = Settings()
-    assert settings.amap_api_key == "test-amap-key"
-    assert settings.qweather_api_key == "test-weather-key"
+from core.config.settings import Settings
 
 
 def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
@@ -44,28 +37,13 @@ def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:
     assert settings.sage_web_fetch_total_timeout_seconds == 20.0
 
 
-def test_settings_has_amap_base_url() -> None:
-    """Amap API base URL has a default value."""
-    settings = Settings()
-    assert "restapi.amap.com" in settings.amap_base_url
-
-
-def test_settings_has_qweather_base_url(monkeypatch) -> None:
-    """QWeather API base URL has a valid host."""
-    monkeypatch.delenv("QWEATHER_BASE_URL", raising=False)
-    monkeypatch.delenv("QWEATHER_GEO_URL", raising=False)
-    settings = Settings(_env_file=None)
-    assert settings.qweather_base_url == DEFAULT_QWEATHER_BASE_URL
-    assert settings.qweather_geo_url == DEFAULT_QWEATHER_GEO_URL
-
-
 def test_settings_has_access_codes(monkeypatch) -> None:
     """APP_ACCESS_CODES configures lightweight passphrase access."""
-    monkeypatch.setenv("APP_ACCESS_CODES", "tour2026,friend01")
+    monkeypatch.setenv("APP_ACCESS_CODES", "sage2026,friend01")
 
     settings = Settings()
 
-    assert settings.app_access_codes == "tour2026,friend01"
+    assert settings.app_access_codes == "sage2026,friend01"
 
 
 def test_production_cloud_settings_fail_closed_without_secrets() -> None:

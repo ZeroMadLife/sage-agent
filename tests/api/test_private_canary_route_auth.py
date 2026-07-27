@@ -28,13 +28,7 @@ async def test_production_keeps_health_open_and_closes_legacy_chat(tmp_path: Pat
     assert client.get("/health").status_code == 200
     response = client.post("/api/v1/chat", json={"content": "bypass"})
     assert response.status_code == 404
-    assert response.json() == {"detail": "legacy chat is unavailable in production"}
-    with (
-        pytest.raises(WebSocketDisconnect) as exc_info,
-        client.websocket_connect("/api/v1/chat/missing/stream"),
-    ):
-        pass
-    assert exc_info.value.code == 1008
+    assert response.json() == {"detail": "Not Found"}
 
 
 async def test_production_knowledge_rejects_anonymous_requests(tmp_path: Path) -> None:

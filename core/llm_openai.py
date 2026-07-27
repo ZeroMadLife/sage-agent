@@ -1,6 +1,6 @@
 """OpenAI-compatible LLM client factory.
 
-TourSwarm uses provider:model specs so agent code can request a model tier
+Sage uses provider:model specs so agent code can request a model tier
 without knowing each vendor's environment variable names.
 
 This module only handles OpenAI-compatible providers. Anthropic-native providers

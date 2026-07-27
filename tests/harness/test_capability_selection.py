@@ -70,28 +70,28 @@ def test_exact_stable_id_selects_one_bound_tool_and_legacy_name_must_be_unique()
     registry = CapabilityRegistry(
         (
             _descriptor("local:lookup", "lookup"),
-            _descriptor("mcp:scenic:lookup", "lookup", origin="mcp"),
+            _descriptor("mcp:docs:lookup", "lookup", origin="mcp"),
         )
     )
     index = CapabilitySelectionIndex(
         registry,
         bindings=(
             CapabilityBinding("local:lookup", "local_lookup"),
-            CapabilityBinding("mcp:scenic:lookup", "scenic_lookup"),
+            CapabilityBinding("mcp:docs:lookup", "docs_lookup"),
         ),
         surface="coding",
     )
 
-    exact = index.select(("mcp:scenic:lookup",))
+    exact = index.select(("mcp:docs:lookup",))
     ambiguous = index.select(("lookup",))
 
-    assert [item.descriptor.capability_id for item in exact.selected] == ["mcp:scenic:lookup"]
-    assert exact.selected[0].tool_name == "scenic_lookup"
+    assert [item.descriptor.capability_id for item in exact.selected] == ["mcp:docs:lookup"]
+    assert exact.selected[0].tool_name == "docs_lookup"
     assert ambiguous.selected == ()
     assert ambiguous.rejected[0].code == "ambiguous"
     assert ambiguous.rejected[0].candidate_ids == (
         "local:lookup",
-        "mcp:scenic:lookup",
+        "mcp:docs:lookup",
     )
 
 
@@ -100,8 +100,8 @@ def test_unavailable_and_skill_disallowed_capabilities_fail_closed() -> None:
         (
             _descriptor("local:todo_list", "todo_list"),
             _descriptor(
-                "mcp:scenic:stale",
-                "scenic_stale",
+                "mcp:docs:stale",
+                "docs_stale",
                 origin="mcp",
                 availability="stale",
             ),
@@ -111,7 +111,7 @@ def test_unavailable_and_skill_disallowed_capabilities_fail_closed() -> None:
         registry,
         bindings=(
             CapabilityBinding("local:todo_list", "todo_list"),
-            CapabilityBinding("mcp:scenic:stale", "scenic_stale"),
+            CapabilityBinding("mcp:docs:stale", "docs_stale"),
         ),
         surface="coding",
         allowed_tool_names=frozenset({"read_file"}),
@@ -119,7 +119,7 @@ def test_unavailable_and_skill_disallowed_capabilities_fail_closed() -> None:
 
     assert index.discover("todo") == ()
     disallowed = index.select(("local:todo_list",))
-    stale = index.select(("mcp:scenic:stale",))
+    stale = index.select(("mcp:docs:stale",))
 
     assert disallowed.rejected[0].code == "disallowed"
     assert stale.rejected[0].code == "unavailable"

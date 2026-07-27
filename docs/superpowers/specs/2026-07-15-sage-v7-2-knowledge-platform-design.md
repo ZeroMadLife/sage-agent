@@ -4,7 +4,7 @@
 >
 > 基线：`dev/sage-v7@fdd7411`
 >
-> 状态：架构基线；当前交付事实以代码、测试和 `release/v7-beta/` 为准
+> 状态：架构基线；当前交付事实以代码、测试和 `release/v1.0.0/` 为准
 >
 > 架构图：`docs/assets/v7-2-knowledge-platform/sage-knowledge-platform-architecture.png`
 

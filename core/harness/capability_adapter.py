@@ -85,7 +85,6 @@ def _tool_descriptor(name: str, tool: object) -> CapabilityDescriptor:
     surfaces: tuple[CapabilitySurface, ...] = {
         "knowledge": _ALL_SURFACES,
         "memory": ("coding", "growth"),
-        "travel": ("coding", "growth"),
         "meta": _ALL_SURFACES,
     }.get(category, ("coding",))
     return CapabilityDescriptor(

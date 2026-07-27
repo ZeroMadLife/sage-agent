@@ -1,28 +1,28 @@
-# TourSwarm 开发环境编排
+# Sage 开发环境编排
 # 启动：docker compose up -d
 # 说明：MCP Server 与 Agent 在宿主机运行，此处仅编排基础设施
 
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: tourswarm-postgres
+    container_name: sage-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tourswarm}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tourswarm_dev}
-      POSTGRES_DB: ${POSTGRES_DB:-tourswarm}
+      POSTGRES_USER: ${POSTGRES_USER:-sage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sage_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-sage}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tourswarm}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sage}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7.2-alpine
-    container_name: tourswarm-redis
+    container_name: sage-redis
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction
     ports:
       - "6379:6379"

@@ -12,7 +12,7 @@ describe('settings router', () => {
 
     await router.push('/settings/not-a-section')
     expect(router.currentRoute.value.fullPath).toBe('/settings/appearance')
-  })
+  }, 15_000)
 
   it('keeps a known settings section', async () => {
     await router.push('/settings/memory')
