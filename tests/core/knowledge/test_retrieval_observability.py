@@ -8,7 +8,10 @@ from pathlib import Path
 import pytest
 
 from core.knowledge.index import LocalKnowledgeIndex
-from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
+from core.knowledge.observability import (
+    KnowledgeRetrievalObservabilityConfig,
+    build_retrieval_trace,
+)
 from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
@@ -158,6 +161,34 @@ def test_observability_requires_a_nontrivial_hmac_key() -> None:
         assert "HMAC key" in str(exc)
     else:
         raise AssertionError("enabled observability accepted a weak HMAC key")
+
+
+def test_query_fingerprint_is_workspace_scoped_and_returned_results_win_failure_label() -> None:
+    config = KnowledgeRetrievalObservabilityConfig(
+        enabled=True,
+        hmac_key=_TEST_HMAC_KEY,
+    )
+    first = config.fingerprint("same query", workspace_id="workspace-a")
+    second = config.fingerprint("same query", workspace_id="workspace-b")
+    trace = build_retrieval_trace(
+        config,
+        workspace_id="historical-workspace",
+        query="historical query",
+        retrieval_mode="sparse",
+        corpus_revision="kcorpus_empty",
+        embedding_model="test",
+        embedding_revision="v1",
+        top_k=1,
+        candidate_limit=20,
+        ranked_candidates=[("chunk-historical", 1.0, 1, 1.0, None, None)],
+        returned_chunk_ids=("chunk-historical",),
+        indexed_chunk_count=0,
+        gate_configured=False,
+        latency_ms=1.0,
+    )
+
+    assert first != second
+    assert trace.failure_type == "none"
 
 
 def test_sqlite_trace_records_only_exception_type_for_provider_failure(tmp_path: Path) -> None:

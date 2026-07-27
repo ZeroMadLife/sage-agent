@@ -43,12 +43,14 @@ class KnowledgeRetrievalObservabilityConfig:
         if isinstance(self.max_candidates, bool) or not 1 <= self.max_candidates <= 200:
             raise ValueError("Knowledge retrieval trace candidate limit must be between 1 and 200")
 
-    def fingerprint(self, value: str) -> str:
+    def fingerprint(self, value: str, *, workspace_id: str) -> str:
         if not self.enabled:
             raise RuntimeError("Knowledge retrieval observability is disabled")
+        if not workspace_id:
+            raise ValueError("Knowledge retrieval trace workspace id is required")
         digest = hmac.new(
             self.hmac_key.encode("utf-8"),
-            value.encode("utf-8"),
+            f"{workspace_id}\0{value}".encode(),
             hashlib.sha256,
         ).hexdigest()
         return f"hmac-sha256:{digest}"
@@ -83,6 +85,7 @@ class KnowledgeRetrievalTrace:
 def build_retrieval_trace(
     config: KnowledgeRetrievalObservabilityConfig,
     *,
+    workspace_id: str,
     query: str,
     retrieval_mode: str,
     corpus_revision: str,
@@ -128,6 +131,8 @@ def build_retrieval_trace(
     ]
     if error_type is not None:
         failure_type: RetrievalFailureType = "system"
+    elif returned:
+        failure_type = "none"
     elif indexed_chunk_count == 0:
         failure_type = "ingestion"
     elif not ranked_candidates:
@@ -147,10 +152,14 @@ def build_retrieval_trace(
         gate_decision = "rejected"
     return KnowledgeRetrievalTrace(
         run_id="krun_" + uuid.uuid4().hex,
-        query_hash=config.fingerprint(query),
+        query_hash=config.fingerprint(query, workspace_id=workspace_id),
         query_length=len(query),
         round_index=round_index,
-        rewrite_hash=config.fingerprint(rewrite) if rewrite is not None else None,
+        rewrite_hash=(
+            config.fingerprint(rewrite, workspace_id=workspace_id)
+            if rewrite is not None
+            else None
+        ),
         retrieval_mode=retrieval_mode,
         corpus_revision=corpus_revision,
         embedding_model=embedding_model,

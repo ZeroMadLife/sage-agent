@@ -17,7 +17,7 @@ PR-5A 在 SQLite 和 PostgreSQL 检索后端建立了默认关闭、隐私受限
 - 80 case x 3 route 共 240 个 route-case，41 个失败行全部有且只有一个 `failure_type`，trace 与
   `primary_failure` 100% 一致。
 - 运行时不保存原始 query、rewrite、chunk 正文、excerpt、source path、密钥或异常消息；query 与
-  rewrite 只保存带部署密钥的 HMAC-SHA256 指纹。
+  rewrite 只保存带部署密钥、按 workspace 隔离的 HMAC-SHA256 指纹。
 - SQLite schema 从 9 迁移到 10；PostgreSQL 记录独立 migration revision
   `20260728_rag_retrieval_trace_v1`，兼容 PR-3 已存在的空表。
 - 功能默认关闭，本 PR 没有部署、没有接飞书、没有合入 `main`。
@@ -63,7 +63,8 @@ PostgreSQL 旧字段 `failure_layer` 暂时写入与 `failure_type` 相同的值
 `KNOWLEDGE_RETRIEVAL_OBSERVABILITY_ENABLED=false` 是默认值。开启时必须提供至少 32 bytes 的
 `KNOWLEDGE_RETRIEVAL_OBSERVABILITY_HMAC_KEY`；短密钥在应用构造阶段失败，密钥字段使用
 `repr=False`。普通 SHA-256 无法抵抗低熵 query 的离线字典枚举，带密钥 HMAC 才允许在不知道
-query 原文的前提下聚合同一查询。
+query 原文的前提下聚合同一 workspace 内的相同查询；`workspace_id` 进入 HMAC 消息，避免默认产生
+跨 workspace 可链接指纹。
 
 trace 写入采用 fail-open：SQLite/PostgreSQL 写失败不会改变原检索结果，也不会覆盖原检索异常；
 日志只写异常类名，不写异常消息。单测用包含敏感标记的 query、正文、Provider 异常和 trace 写入

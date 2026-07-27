@@ -725,6 +725,7 @@ class PostgresKnowledgeIndex:
                 indexed_chunk_count = int(cursor.fetchone()[0])
             trace = build_retrieval_trace(
                 self.observability,
+                workspace_id=self.workspace_id,
                 query=query,
                 retrieval_mode=retrieval_mode,
                 corpus_revision=self.corpus_revision(connection),
