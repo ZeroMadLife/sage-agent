@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 from core.knowledge.eval_runner import (
     GateObservation,
     calibrate_gate,
     compare_layered_reports,
+    compare_semantic_provider_reports,
     run_sqlite_layered_eval,
 )
 from core.knowledge.index import LocalKnowledgeIndex
@@ -27,6 +30,14 @@ class _NonSemanticTestProvider:
         if "meaning" in normalized or "unrelated" in normalized:
             return (1.0, 0.0)
         return (0.0, 1.0)
+
+
+class _PreparedTestProvider(_NonSemanticTestProvider):
+    def __init__(self) -> None:
+        self.prepared: tuple[str, ...] = ()
+
+    def prepare(self, texts: tuple[str, ...]) -> None:
+        self.prepared = texts
 
 
 def test_search_modes_are_isolated_and_default_hybrid_behavior_is_unchanged(
@@ -116,9 +127,12 @@ def test_committed_dataset_produces_reproducible_layered_sqlite_report() -> None
         "dataset_id": "sage-official-agent-fullstack-v1",
         "dataset_revision": "2026-07-27.1",
         "case_count": 80,
+        "full_case_count": 80,
         "corpus_count": 9,
         "split_counts": {"dev": 40, "calibration": 20, "test": 20},
+        "manifest_split_counts": {"dev": 40, "calibration": 20, "test": 20},
         "frozen_test": True,
+        "frozen_test_evaluated": True,
     }
     route = first["routes"]["sparse"]
     assert route["gate"]["calibration_split"] == "calibration"
@@ -148,6 +162,64 @@ def test_committed_dataset_produces_reproducible_layered_sqlite_report() -> None
         for case in route["cases"]
     )
     assert all("answer_text" not in case for case in route["cases"])
+
+
+def test_layered_eval_can_select_dev_and_calibration_without_embedding_frozen_test() -> None:
+    provider = _PreparedTestProvider()
+    report = run_sqlite_layered_eval(
+        REPO_ROOT,
+        DATASET_PATH,
+        retrieval_modes=("sparse",),
+        provider=provider,
+        evaluation_splits=("dev", "calibration"),
+    )
+
+    frozen_test_queries = {
+        case["query"]
+        for line in (REPO_ROOT / "knowledge/eval/cases.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if (case := json.loads(line))
+        if case["dataset_split"] == "test"
+    }
+    assert report["dataset"]["case_count"] == 60
+    assert report["dataset"]["split_counts"] == {
+        "dev": 40,
+        "calibration": 20,
+        "test": 0,
+    }
+    assert report["dataset"]["frozen_test_evaluated"] is False
+    assert report["parameters"]["evaluation_splits"] == ["dev", "calibration"]
+    assert report["routes"]["sparse"]["splits"]["test"]["case_count"] == 0
+    assert frozen_test_queries.isdisjoint(provider.prepared)
+
+
+def test_layered_eval_requires_calibration_in_selected_splits() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="calibration"):
+        run_sqlite_layered_eval(
+            REPO_ROOT,
+            DATASET_PATH,
+            retrieval_modes=("sparse",),
+            evaluation_splits=("test",),
+        )
+
+
+def test_layered_eval_can_apply_frozen_gate_threshold_without_recalibration() -> None:
+    report = run_sqlite_layered_eval(
+        REPO_ROOT,
+        DATASET_PATH,
+        retrieval_modes=("sparse",),
+        evaluation_splits=("calibration", "test"),
+        gate_thresholds={"sparse": 1_000_000.0},
+    )
+
+    gate = report["routes"]["sparse"]["gate"]
+    assert gate["threshold_source"] == "fixed_policy"
+    assert gate["threshold"] == 1_000_000.0
+    assert gate["evaluation"]["true_accept"] == 0
+    assert gate["evaluation"]["false_reject"] > 0
 
 
 def test_layered_report_comparison_enforces_recall_gate_and_lists_regressions() -> None:
@@ -213,3 +285,141 @@ def test_layered_report_comparison_enforces_recall_gate_and_lists_regressions() 
             "recall_at_k_delta": -1.0,
         }
     ]
+
+
+def test_semantic_provider_comparison_freezes_activation_gates() -> None:
+    def report(
+        *,
+        semantic: bool,
+        overall_recall: float,
+        paraphrase_recall: float,
+        abstain_f1: float,
+        citation_support: float,
+        p95: float,
+        cost: float | None,
+    ) -> dict[str, object]:
+        return {
+            "dataset": {"dataset_id": "d", "dataset_revision": "r"},
+            "inputs": {"cases_sha256": "sha256:c"},
+            "provider": {"supports_semantic_recall": semantic},
+            "parameters": {
+                "top_k": 10,
+                "candidate_k": 50,
+                "evaluation_splits": ["dev", "calibration"],
+            },
+            "routes": {
+                "hybrid": {
+                    "retrieval": {"recall_at_k": overall_recall},
+                    "gate": {"evaluation": {"abstain_f1": abstain_f1}},
+                    "citation": {"support_rate": citation_support},
+                    "system": {
+                        "latency_ms": {"p95": p95},
+                        "estimated_cost_usd": cost,
+                    },
+                    "categories": {
+                        "semantic_paraphrase": {"retrieval": {"recall_at_k": paraphrase_recall}}
+                    },
+                }
+            },
+        }
+
+    comparison = compare_semantic_provider_reports(
+        report(
+            semantic=False,
+            overall_recall=0.94,
+            paraphrase_recall=0.80,
+            abstain_f1=0.50,
+            citation_support=1.0,
+            p95=8.0,
+            cost=0.0,
+        ),
+        report(
+            semantic=True,
+            overall_recall=0.95,
+            paraphrase_recall=0.90,
+            abstain_f1=0.46,
+            citation_support=1.0,
+            p95=40.0,
+            cost=0.0,
+        ),
+    )
+
+    assert comparison["overall_passed"] is True
+    assert comparison["gates"] == {
+        "semantic_paraphrase_recall": {
+            "minimum_delta": 0.05,
+            "delta": 0.1,
+            "passed": True,
+        },
+        "overall_recall": {
+            "minimum_delta": -0.01,
+            "delta": 0.01,
+            "passed": True,
+        },
+        "abstain_f1": {
+            "minimum_delta": -0.05,
+            "delta": -0.04,
+            "passed": True,
+        },
+        "citation_support": {
+            "minimum_delta": -0.001,
+            "delta": 0.0,
+            "passed": True,
+        },
+        "p95_latency_ms": {"maximum": 100.0, "actual": 40.0, "passed": True},
+        "estimated_cost_usd": {"maximum": 0.01, "actual": 0.0, "passed": True},
+    }
+
+
+def test_semantic_final_comparison_fails_closed_when_test_has_no_semantic_cases() -> None:
+    base = {
+        "dataset": {"dataset_id": "d", "dataset_revision": "r"},
+        "inputs": {"cases_sha256": "sha256:c"},
+        "provider": {"supports_semantic_recall": False},
+        "parameters": {
+            "top_k": 10,
+            "candidate_k": 50,
+            "evaluation_splits": ["calibration", "test"],
+        },
+        "routes": {
+            "hybrid": {
+                "retrieval": {"recall_at_k": 0.8},
+                "gate": {"evaluation": {"abstain_f1": 0.5}},
+                "citation": {"support_rate": 1.0},
+                "system": {"latency_ms": {"p95": 10.0}, "estimated_cost_usd": 0.0},
+                "categories": {
+                    "semantic_paraphrase": {
+                        "case_count": 2,
+                        "retrieval": {"recall_at_k": 0.8},
+                    }
+                },
+                "splits": {
+                    "test": {
+                        "retrieval": {"recall_at_k": 0.8},
+                        "gate": {"abstain_f1": 0.5},
+                        "citation": {"support_rate": 1.0},
+                    }
+                },
+                "cases": [
+                    {
+                        "dataset_split": "test",
+                        "category": "hard_negative",
+                        "answerable": True,
+                        "retrieval": {"recall_at_k": 1.0},
+                        "system": {"latency_ms": 12.0},
+                    }
+                ],
+            }
+        },
+    }
+    candidate = deepcopy(base)
+    candidate["provider"]["supports_semantic_recall"] = True
+
+    comparison = compare_semantic_provider_reports(base, candidate, evaluation_split="test")
+
+    semantic = comparison["gates"]["semantic_paraphrase_recall"]
+    assert comparison["overall_passed"] is False
+    assert semantic["case_count"] == 0
+    assert semantic["delta"] is None
+    assert semantic["passed"] is False
+    assert semantic["reason"] == "evaluation split has no semantic_paraphrase cases"

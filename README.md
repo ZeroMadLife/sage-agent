@@ -112,13 +112,14 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
-| **RAG Benchmark v2** | 上一冻结语料 revision 的 clean 实验中，真实语义双路相对 Hashing 将 Recall@10 从 0.578 提升到 0.814、NDCG@10 从 0.444 提升到 0.695 | 本轮未重新运行真实语义 Provider；generation quality 尚未评测 |
+| **RAG Semantic Gate v1** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771，citation support 保持 1.0 | test 没有 semantic-paraphrase case，激活门禁 fail closed，因此仍不默认启用；generation quality 尚未评测 |
 | **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
 | **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
-[RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
+[RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
+[历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
 [拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、
 [Sandbox 报告](docs/evals/container-sandbox-level1-v2.md) 与
 [Memory 报告](docs/evals/memory-lifecycle-v1.md)。这里的 case 数证明对应工程不变量，不把
@@ -211,7 +212,7 @@ sage-agent/
 - `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
-- RAG 已加入版本绑定的校准拒答门，但当前 Hashing test 无答案准确率只有 0.50；真实语义 Provider 仍需按当前语料重校准，回答生成质量尚未评测。
+- RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。
 - Relation retrieval 当前只扩展带原文 citation 的显式一跳链接；实体三元组、多跳路径、PPR 与 community GraphRAG 尚未实现。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - 飞书入口与自动 Canary 部署当前均已停止；`v1.0.0` tag 不代表服务器已经部署。

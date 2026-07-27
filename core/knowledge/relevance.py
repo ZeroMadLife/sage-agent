@@ -7,7 +7,7 @@ import json
 import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 
 class KnowledgeRelevancePolicyError(RuntimeError):
@@ -26,6 +26,7 @@ class KnowledgeRelevancePolicy:
     top_k: int
     min_sparse_score: float | None
     min_dense_score: float | None
+    min_hybrid_score: float | None = None
     minimum_answerable_recall_ratio: float = 0.9
     schema_version: int = 1
 
@@ -39,13 +40,19 @@ class KnowledgeRelevancePolicy:
         )
         if any(not value.strip() for value in required):
             raise ValueError("knowledge relevance policy metadata is required")
-        if isinstance(self.schema_version, bool) or self.schema_version != 1:
+        if isinstance(self.schema_version, bool) or self.schema_version not in {1, 2}:
             raise ValueError("unsupported knowledge relevance policy schema")
+        if self.schema_version == 1 and self.min_hybrid_score is not None:
+            raise ValueError("hybrid score thresholds require policy schema version 2")
         if isinstance(self.top_k, bool) or self.top_k < 1 or self.top_k > 50:
             raise ValueError("knowledge relevance policy top_k must be between 1 and 50")
-        if self.min_sparse_score is None and self.min_dense_score is None:
+        if (
+            self.min_sparse_score is None
+            and self.min_dense_score is None
+            and self.min_hybrid_score is None
+        ):
             raise ValueError("knowledge relevance policy requires a score threshold")
-        for value in (self.min_sparse_score, self.min_dense_score):
+        for value in (self.min_sparse_score, self.min_dense_score, self.min_hybrid_score):
             if value is not None and (
                 isinstance(value, bool) or not math.isfinite(value) or value < 0.0
             ):
@@ -59,8 +66,11 @@ class KnowledgeRelevancePolicy:
 
     @property
     def policy_id(self) -> str:
+        payload = asdict(self)
+        if self.schema_version == 1:
+            payload.pop("min_hybrid_score")
         encoded = json.dumps(
-            asdict(self), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
         return "krp_" + hashlib.sha256(encoded).hexdigest()[:16]
 
@@ -76,7 +86,14 @@ class KnowledgeRelevancePolicy:
                 "knowledge relevance policy does not match indexed corpus"
             )
 
-    def accepts(self, *, sparse_score: float | None, dense_score: float | None) -> bool:
+    def accepts(
+        self,
+        *,
+        sparse_score: float | None,
+        dense_score: float | None,
+        hybrid_score: float | None = None,
+        retrieval_mode: Literal["sparse", "dense", "hybrid"] | None = None,
+    ) -> bool:
         sparse_ok = (
             self.min_sparse_score is not None
             and sparse_score is not None
@@ -87,15 +104,30 @@ class KnowledgeRelevancePolicy:
             and dense_score is not None
             and dense_score >= self.min_dense_score
         )
+        hybrid_ok = (
+            self.min_hybrid_score is not None
+            and hybrid_score is not None
+            and hybrid_score >= self.min_hybrid_score
+        )
+        if retrieval_mode == "sparse":
+            return sparse_ok
+        if retrieval_mode == "dense":
+            return dense_ok
+        if retrieval_mode == "hybrid" and self.min_hybrid_score is not None:
+            return hybrid_ok
         return sparse_ok or dense_ok
 
     def to_dict(self) -> dict[str, object]:
-        return {"policy_id": self.policy_id, **asdict(self)}
+        payload = asdict(self)
+        if self.schema_version == 1:
+            payload.pop("min_hybrid_score")
+        return {"policy_id": self.policy_id, **payload}
 
     @classmethod
     def from_dict(cls, raw: Any) -> KnowledgeRelevancePolicy:
         if not isinstance(raw, dict):
             raise TypeError("knowledge relevance policy must be an object")
+        schema_version = _integer(raw.get("schema_version"), "schema_version")
         expected = {
             "policy_id",
             "benchmark_id",
@@ -109,6 +141,8 @@ class KnowledgeRelevancePolicy:
             "minimum_answerable_recall_ratio",
             "schema_version",
         }
+        if schema_version == 2:
+            expected.add("min_hybrid_score")
         if set(raw) != expected:
             raise ValueError("knowledge relevance policy fields do not match the schema")
         policy = cls(
@@ -120,11 +154,12 @@ class KnowledgeRelevancePolicy:
             top_k=_integer(raw["top_k"], "top_k"),
             min_sparse_score=_optional_float(raw["min_sparse_score"]),
             min_dense_score=_optional_float(raw["min_dense_score"]),
+            min_hybrid_score=_optional_float(raw.get("min_hybrid_score")),
             minimum_answerable_recall_ratio=_number(
                 raw["minimum_answerable_recall_ratio"],
                 "minimum_answerable_recall_ratio",
             ),
-            schema_version=_integer(raw["schema_version"], "schema_version"),
+            schema_version=schema_version,
         )
         if str(raw["policy_id"]) != policy.policy_id:
             raise ValueError("knowledge relevance policy id does not match its contents")

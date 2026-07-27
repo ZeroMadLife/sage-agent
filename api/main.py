@@ -41,6 +41,8 @@ from core.harness.sandbox_factory import (
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import (
+    FastEmbedEmbeddingConfig,
+    FastEmbedEmbeddingProvider,
     KnowledgeRelevancePolicy,
     KnowledgeSourceRoot,
     KnowledgeStore,
@@ -433,6 +435,18 @@ def create_app(
                         dimensions=settings.knowledge_embedding_dimensions,
                         batch_size=settings.knowledge_embedding_batch_size,
                         timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+                    )
+                )
+            elif provider_name == "fastembed":
+                configured_embedding = FastEmbedEmbeddingProvider(
+                    FastEmbedEmbeddingConfig(
+                        model=settings.knowledge_fastembed_model,
+                        repository=settings.knowledge_fastembed_repository,
+                        model_revision=settings.knowledge_fastembed_model_revision,
+                        dimensions=settings.knowledge_fastembed_dimensions,
+                        cache_dir=Path(settings.knowledge_fastembed_cache_dir),
+                        batch_size=settings.knowledge_fastembed_batch_size,
+                        local_files_only=settings.knowledge_fastembed_local_files_only,
                     )
                 )
             elif provider_name != "hashing":

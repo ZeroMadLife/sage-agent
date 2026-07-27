@@ -474,6 +474,8 @@ class LocalKnowledgeIndex:
                 if self.relevance_policy.accepts(
                     sparse_score=item[3],
                     dense_score=item[5],
+                    hybrid_score=item[1],
+                    retrieval_mode=retrieval_mode,
                 )
             ]
         chunk_ids = [item[0] for item in fused]
