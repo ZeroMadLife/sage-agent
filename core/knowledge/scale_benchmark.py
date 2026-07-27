@@ -79,7 +79,7 @@ class ScaleMeasurement:
     scalar_index_build_ms: float
     analyze_ms: float
     table_bytes: int
-    scalar_index_bytes: int
+    total_index_bytes: int
     total_relation_bytes: int
     explain: dict[str, Any]
     backend_memory: dict[str, Any]
@@ -505,7 +505,7 @@ def _measure_exact(
             scalar_index_build_ms=scalar_index_build_ms,
             analyze_ms=analyze_ms,
             table_bytes=table_bytes,
-            scalar_index_bytes=index_bytes,
+            total_index_bytes=index_bytes,
             total_relation_bytes=total_bytes,
             explain=explain,
             backend_memory=_backend_memory(connection),

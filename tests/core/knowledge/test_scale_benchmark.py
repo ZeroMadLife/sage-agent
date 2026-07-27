@@ -120,7 +120,7 @@ def _scale_measurement(scale: int, *, p95_ms: float) -> ScaleMeasurement:
         scalar_index_build_ms=1.0,
         analyze_ms=1.0,
         table_bytes=1,
-        scalar_index_bytes=1,
+        total_index_bytes=1,
         total_relation_bytes=2,
         explain={},
         backend_memory={},
