@@ -25,6 +25,8 @@
 
 ## 已知边界
 
+- 新安装默认使用 `sage` 数据库与本地存储 key。已有安装应保留原 `.env` 完成数据库升级；
+  不要删除 PostgreSQL volume。浏览器端旧登录状态不会迁移，需要重新验证访问口令。
 - 无答案查询的 abstention accuracy 仍为 0，检索指标不等于回答可信度。
 - Container Sandbox 的生产 rootless audit、固定 image digest 与 workspace 写边界仍需验收。
 - 云端 Knowledge tenant scope、正式 HTTPS 域名与完整恢复演练尚未关闭。
