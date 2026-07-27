@@ -83,12 +83,12 @@ def _engine(tmp_path: Path, responses: list[str], max_steps: int = 5) -> Engine:
 
 async def test_engine_yields_tool_result_then_final(tmp_path: Path) -> None:
     """Engine runs model -> tool -> final and yields streamable events."""
-    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage coding agent\n", encoding="utf-8")
     engine = _engine(
         tmp_path,
         [
             '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>项目叫 TourSwarm coding agent。</final>",
+            "<final>项目叫 Sage coding agent。</final>",
         ],
     )
 
@@ -105,8 +105,8 @@ async def test_engine_yields_tool_result_then_final(tmp_path: Path) -> None:
     ]
     assert events[2]["tool"] == "read_file"
     assert events[3]["is_error"] is False
-    assert "TourSwarm" in events[3]["content"]
-    assert events[-1]["content"] == "项目叫 TourSwarm coding agent。"
+    assert "Sage" in events[3]["content"]
+    assert events[-1]["content"] == "项目叫 Sage coding agent。"
 
 
 async def test_engine_denies_policy_violation_as_tool_result(tmp_path: Path) -> None:
@@ -138,7 +138,7 @@ async def test_engine_recovers_missing_required_tool_argument_before_execution(
     tmp_path: Path,
 ) -> None:
     """A malformed tool call receives a bounded model correction, not execution."""
-    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage coding agent\n", encoding="utf-8")
     engine = _engine(
         tmp_path,
         [
@@ -251,7 +251,7 @@ async def test_engine_preflights_workspace_boundaries_before_batch_execution(
 
 async def test_engine_emits_step_limit_when_model_never_finishes(tmp_path: Path) -> None:
     """Engine emits a step_limit event when model keeps asking for tools."""
-    (tmp_path / "README.md").write_text("TourSwarm\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage\n", encoding="utf-8")
     engine = _engine(
         tmp_path,
         ['<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>'] * 3,
@@ -330,13 +330,13 @@ async def test_engine_tool_search_activates_deferred_tools_for_next_prompt(
 
 async def test_engine_ainvoke_splits_system_and_user_messages(tmp_path: Path) -> None:
     """The ainvoke branch sends the pre-boundary prompt as a system message."""
-    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage coding agent\n", encoding="utf-8")
     workspace = WorkspaceContext(root=tmp_path)
     tools = build_tool_registry(workspace)
     model = FakeAinvokeModel(
         [
             '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-            "<final>项目叫 TourSwarm coding agent。</final>",
+            "<final>项目叫 Sage coding agent。</final>",
         ]
     )
     engine = Engine(
@@ -413,7 +413,7 @@ async def test_engine_streams_text_delta(tmp_path: Path) -> None:
 
 async def test_engine_ainvoke_fallback_emits_no_text_delta(tmp_path: Path) -> None:
     """A model with ainvoke but no astream keeps the non-streaming path."""
-    (tmp_path / "README.md").write_text("TourSwarm coding agent\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage coding agent\n", encoding="utf-8")
     workspace = WorkspaceContext(root=tmp_path)
     tools = build_tool_registry(workspace)
     model = FakeAinvokeModel(
@@ -465,7 +465,7 @@ async def test_engine_filters_thinking_blocks_and_reports_stream_usage(tmp_path:
 
 async def test_engine_detects_repeated_tool_calls(tmp_path: Path) -> None:
     """Engine stops with a final event when a tool call repeats identically too often."""
-    (tmp_path / "README.md").write_text("TourSwarm\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage\n", encoding="utf-8")
     workspace = WorkspaceContext(root=tmp_path)
     tools = build_tool_registry(workspace)
     # The model keeps returning the exact same read_file tool call forever.

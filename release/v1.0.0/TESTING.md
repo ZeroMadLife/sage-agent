@@ -1,6 +1,6 @@
-# V7 Beta Testing
+# v1.0.0 Testing
 
-> Last verified against: `dev/sage-v7@7a26197` (2026-07-24)
+> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
 
 本页提供当前可执行的验证入口。任何发布结论都应记录 source ref、命令、退出码和失败项；
 不要只复制一个会快速失真的测试数量。

@@ -1,12 +1,12 @@
-# Sage V7 Beta Showcase
+# Sage v1.0.0 Showcase
 
-> Last verified against: `dev/sage-v7@7a26197` (2026-07-24)
+> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
 
 **Sage 是一个本地优先的 Personal AI Learning Companion，把目标、知识、真实实践与可复核证据组织进同一套 Agent Harness。**
 
 ![Sage 五层架构封面](learning/assets/sage-five-layer-cover.png)
 
-> 封面展示的是下一阶段五层目标架构，不是当前完成度清单。V7 Beta 的受控公开资料 Agent
+> 封面展示的是下一阶段五层目标架构，不是当前完成度清单。v1.0.0 的受控公开资料 Agent
 > 已上线；私人 Harness 仍只适合本地使用与受控私测，生产 Sandbox 和云端 Knowledge
 > 租户隔离尚未闭合。
 
@@ -56,9 +56,9 @@ deterministic hashing baseline，不把 pgvector 依赖误写成已上线的完�
 
 | 指标 | 实测结果 | 复核口径 |
 | --- | ---: | --- |
-| 后端与 Harness Python | 63,698 行 | `api core packages agents db mcp_servers` 下的 `*.py` |
-| Vue 3 / TypeScript 前端 | 34,097 行 | `frontend/src` 下的 `*.vue` 与 `*.ts` |
-| 自动化测试资产 | 192 + 69 个文件 | 后端 `test_*.py` + 前端 `*.test.ts` / `*.spec.ts` |
+| 后端与 Harness Python | 62,302 行 | `api core packages db public_agent` 下的 `*.py` |
+| Vue 3 / TypeScript 前端 | 33,988 行 | `frontend/src` 下的 `*.vue` 与 `*.ts` |
+| 自动化测试资产 | 162 + 69 个文件 | 后端 `test_*.py` + 前端 `*.test.ts` / `*.spec.ts` |
 
 核心依赖为 Python 3.12、FastAPI 0.115.6、LangChain 1.2.15、LangGraph 1.1.9、Vue 3、
 PostgreSQL/pgvector 与 Redis。pgvector 当前属于本地依赖和生产检索契约方向；Knowledge 默认

@@ -7,51 +7,48 @@ from contextlib import AbstractAsyncContextManager
 from typing import cast
 
 from langchain_core.tools import StructuredTool
-from sage_harness import McpScope, McpServerConfig
+from sage_harness import McpConfigSnapshot, McpManager, McpScope, McpServerConfig
 
-from core.config.settings import Settings
 from core.harness.mcp_adapter import (
+    ConfiguredMcpCatalog,
     LangChainMcpTransport,
-    build_configured_mcp_catalog,
-    build_configured_mcp_manager,
     mcp_catalog_event,
 )
 from core.harness.mcp_session_pool import McpClientSession, ScopedMcpSessionPool
 
 
 def test_mcp_catalog_exposes_status_without_connection_secrets() -> None:
-    settings = Settings(
-        amap_api_key="secret-amap",
-        qweather_api_key="secret-weather",
-        qweather_base_url="https://weather.test/v7",
-        qweather_geo_url="https://geo.test/geoapi/v2",
+    catalog = ConfiguredMcpCatalog(
+        {
+            "docs": {
+                "transport": "stdio",
+                "command": "docs-server",
+                "env": {"DOCS_API_KEY": "private-docs-key"},
+            }
+        }
     )
-    catalog = build_configured_mcp_catalog(settings)
 
     servers = asyncio.run(catalog.list_servers())
     rendered = repr(servers)
 
-    assert {server.name for server in servers} == {"amap", "weather", "scenic"}
+    assert {server.name for server in servers} == {"docs"}
     assert all(server.status == "configured" for server in servers)
-    assert "secret-amap" not in rendered
-    assert "secret-weather" not in rendered
+    assert "private-docs-key" not in rendered
     assert "command" not in rendered
     assert "env" not in rendered
 
 
-def test_mcp_catalog_marks_missing_credentials_without_connecting() -> None:
-    catalog = build_configured_mcp_catalog(Settings(amap_api_key="", qweather_api_key=""))
+def test_empty_mcp_catalog_does_not_connect() -> None:
+    catalog = ConfiguredMcpCatalog({})
 
-    servers = {server.name: server for server in asyncio.run(catalog.list_servers())}
+    servers = asyncio.run(catalog.list_servers())
 
-    assert servers["amap"].status == "unconfigured"
-    assert servers["weather"].status == "unconfigured"
-    assert servers["scenic"].status == "configured"
+    assert servers == ()
 
 
 def test_mcp_catalog_event_contains_only_sanitized_metadata() -> None:
-    catalog = build_configured_mcp_catalog(
-        Settings(amap_api_key="secret-amap", qweather_api_key="secret-weather")
+    catalog = ConfiguredMcpCatalog(
+        {"docs": {"transport": "stdio", "command": "docs-server", "env": {"KEY": "secret"}}}
     )
 
     event = asyncio.run(mcp_catalog_event(catalog, session_id="s1", run_id="r1"))
@@ -59,8 +56,7 @@ def test_mcp_catalog_event_contains_only_sanitized_metadata() -> None:
     assert event.payload["type"] == "mcp_catalog_updated"
     assert event.event_id == "harness:r1:mcp-catalog"
     rendered = repr(event.payload)
-    assert "secret-amap" not in rendered
-    assert "secret-weather" not in rendered
+    assert "secret" not in rendered
     assert "command" not in rendered
     assert "args" not in rendered
     assert "env" not in rendered
@@ -69,20 +65,26 @@ def test_mcp_catalog_event_contains_only_sanitized_metadata() -> None:
 def test_live_mcp_manager_discovers_prefixed_tools_without_public_secrets() -> None:
     class FakeClient:
         async def get_tools(self, *, server_name: str):
-            assert server_name == "scenic"
+            assert server_name == "docs"
             return [
                 StructuredTool.from_function(
                     coroutine=lambda query: query,
-                    name="scenic_search",
-                    description="Search scenic records",
+                    name="docs_search",
+                    description="Search documentation",
                 )
             ]
 
-    settings = Settings(amap_api_key="private-amap", qweather_api_key="private-weather")
-    manager = build_configured_mcp_manager(
-        settings,
-        scenic_data_path="data/mock/scenic_spots.json",
+    transport = LangChainMcpTransport(
+        {"docs": {"transport": "stdio", "command": "docs-server"}},
+        revision="r1",
         client_factory=lambda connections: FakeClient(),
+    )
+    manager = McpManager(
+        McpConfigSnapshot(
+            revision="r1",
+            servers=(McpServerConfig(name="docs", transport="stdio", remote_content=True),),
+        ),
+        transport,
     )
 
     async def run():
@@ -92,11 +94,9 @@ def test_live_mcp_manager_discovers_prefixed_tools_without_public_secrets() -> N
 
     snapshot = asyncio.run(run())
 
-    assert [tool.name for tool in snapshot.tools] == ["scenic_search"]
+    assert [tool.name for tool in snapshot.tools] == ["docs_search"]
     statuses = {server.name: server.status for server in snapshot.catalog.servers}
-    assert statuses["scenic"] == "connected"
-    assert "private-amap" not in repr(snapshot)
-    assert "private-weather" not in repr(snapshot)
+    assert statuses["docs"] == "connected"
 
 
 def test_live_transport_reuses_scoped_session_and_reconnects_after_transport_failure() -> None:
@@ -130,7 +130,7 @@ def test_live_transport_reuses_scoped_session_and_reconnects_after_transport_fai
         pool = ScopedMcpSessionPool(session_factory=session_context)
 
         async def load_tools(session: McpClientSession, server_name: str):
-            assert server_name == "scenic"
+            assert server_name == "docs"
             typed = cast(Session, session)
 
             async def search(query: str) -> str:
@@ -142,19 +142,19 @@ def test_live_transport_reuses_scoped_session_and_reconnects_after_transport_fai
             return [
                 StructuredTool.from_function(
                     coroutine=search,
-                    name="scenic_search",
-                    description="Search scenic records",
+                    name="docs_search",
+                    description="Search documentation",
                 )
             ]
 
         transport = LangChainMcpTransport(
-            {"scenic": {"transport": "stdio", "command": "scenic"}},
+            {"docs": {"transport": "stdio", "command": "docs-server"}},
             revision="r1",
             session_pool=pool,
             tool_loader=load_tools,
         )
         scope = McpScope("owner", "workspace", "thread")
-        server = McpServerConfig(name="scenic", transport="stdio", remote_content=False)
+        server = McpServerConfig(name="docs", transport="stdio", remote_content=False)
         descriptors = await transport.discover(server, scope)
         assert await transport.discover(server, scope) == descriptors
         try:
@@ -172,7 +172,7 @@ def test_live_transport_reuses_scoped_session_and_reconnects_after_transport_fai
     assert len(sessions) == 2
     assert sessions[0].calls == 1
     assert sessions[1].calls == 1
-    assert descriptors[0].name == "scenic_search"
+    assert descriptors[0].name == "docs_search"
 
 
 def test_live_transport_rediscovers_a_session_evicted_by_the_lru_pool() -> None:
@@ -210,13 +210,13 @@ def test_live_transport_rediscovers_a_session_evicted_by_the_lru_pool() -> None:
             return [
                 StructuredTool.from_function(
                     coroutine=search,
-                    name="scenic_search",
-                    description="Search scenic records",
+                    name="docs_search",
+                    description="Search documentation",
                 )
             ]
 
         transport = LangChainMcpTransport(
-            {"scenic": {"transport": "stdio", "command": "scenic"}},
+            {"docs": {"transport": "stdio", "command": "docs-server"}},
             revision="r1",
             session_pool=ScopedMcpSessionPool(
                 session_factory=session_context,
@@ -224,7 +224,7 @@ def test_live_transport_rediscovers_a_session_evicted_by_the_lru_pool() -> None:
             ),
             tool_loader=load_tools,
         )
-        server = McpServerConfig(name="scenic", transport="stdio", remote_content=False)
+        server = McpServerConfig(name="docs", transport="stdio", remote_content=False)
         first_scope = McpScope("owner", "workspace", "thread-1")
         second_scope = McpScope("owner", "workspace", "thread-2")
         first_tools = await transport.discover(server, first_scope)

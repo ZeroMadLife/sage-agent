@@ -8,9 +8,9 @@ from core.auth import AuthManager
 
 def test_auth_route_returns_user_id_for_valid_passphrase() -> None:
     """POST /api/v1/auth returns an opaque user ID for valid passphrases."""
-    client = TestClient(create_app(auth=AuthManager("tour2026")))
+    client = TestClient(create_app(auth=AuthManager("sage2026")))
 
-    response = client.post("/api/v1/auth", json={"passphrase": "tour2026"})
+    response = client.post("/api/v1/auth", json={"passphrase": "sage2026"})
 
     assert response.status_code == 200
     payload = response.json()
@@ -20,7 +20,7 @@ def test_auth_route_returns_user_id_for_valid_passphrase() -> None:
 
 def test_auth_route_rejects_invalid_passphrase() -> None:
     """Invalid passphrases return valid=false without a user ID."""
-    client = TestClient(create_app(auth=AuthManager("tour2026")))
+    client = TestClient(create_app(auth=AuthManager("sage2026")))
 
     response = client.post("/api/v1/auth", json={"passphrase": "wrong"})
 

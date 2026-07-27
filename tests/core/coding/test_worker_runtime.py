@@ -25,7 +25,7 @@ def test_worker_execution_cleans_type_and_scope() -> None:
 
 async def test_worker_runtime_returns_final_answer(tmp_path: Path) -> None:
     """Worker runtime runs an isolated engine and returns its final content."""
-    (tmp_path / "README.md").write_text("TourSwarm worker runtime\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage worker runtime\n", encoding="utf-8")
     task = WorkerTask(
         id="agent_1",
         description="read README",

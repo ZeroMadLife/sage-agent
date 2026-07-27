@@ -1,14 +1,15 @@
 <h1 align="center">Sage</h1>
 
-<p align="center">
-  <strong>Personal AI Learning Companion</strong><br />
-  把目标、个人知识、真实实践与可验证证据连接成一条可恢复的学习执行链。
-</p>
+<p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的学习执行链。</strong></p>
+
+<p align="center"><strong>Recall@10 0.578 → 0.814</strong> · <strong>NDCG@10 0.444 → 0.695</strong> · <strong>Sandbox live audit 10/10</strong></p>
+
+![Sage 控制面、状态面与证据面架构](release/v1.0.0/learning/assets/01-overall-architecture.png)
 
 <p align="center">
   <a href="http://121.40.185.188/"><strong>在线体验</strong></a>
-  · <a href="release/v7-beta/SHOWCASE.md">3 分钟了解项目</a>
-  · <a href="release/v7-beta/learning/00-reading-map.md">架构学习手册</a>
+  · <a href="release/v1.0.0/SHOWCASE.md">3 分钟了解项目</a>
+  · <a href="release/v1.0.0/learning/00-reading-map.md">架构学习手册</a>
   · <a href="docs/GETTING-STARTED.md">开发指南</a>
 </p>
 
@@ -68,8 +69,6 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 
 ## 架构：让 Agent 可约束、可恢复、可验证
 
-![Sage Harness Engineering 核心框架](release/v7-beta/learning/assets/01-overall-architecture.png)
-
 一次请求从 Vue 进入 FastAPI，由 Runtime 选择执行路径，再经 Engine / LangGraph 和受控工具
 推进。模型负责提出下一步，系统负责校验、授权、执行、持久化与留下证据。
 
@@ -85,11 +84,11 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 通用 Harness 独立维护在 [`packages/sage_harness/`](packages/sage_harness/)；Sage 产品层负责把
 用户、Workspace、Knowledge、Sandbox 和前端事件协议适配到稳定端口，避免通用运行时反向
 依赖业务模块。完整请求链、模块入口和设计权衡见
-[总体架构](release/v7-beta/learning/01-overall-architecture.md)。
+[总体架构](release/v1.0.0/learning/01-overall-architecture.md)。
 
 ## 事实为什么要分层
 
-![Sage 三层事实边界](release/v7-beta/learning/assets/02-three-planes-fact-boundary.png)
+![Sage 三层事实边界](release/v1.0.0/learning/assets/02-three-planes-fact-boundary.png)
 
 - **控制面**决定下一步做什么、谁可以执行：Vue → FastAPI → Runtime → Engine → Tool。
 - **状态面**保存任务如何继续、长期事实是什么：Session、Checkpoint、Transcript、Knowledge、Memory。
@@ -98,7 +97,7 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 实时 UI 不是事实源，压缩摘要不能覆盖 canonical transcript，模型生成内容不能自动升级为
 Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id` 与 `artifact_ref`
 连接，而不是复制一份万能对象。详细边界见
-[三层架构与事实边界](release/v7-beta/learning/02-three-planes-fact-boundary.md)。
+[三层架构与事实边界](release/v1.0.0/learning/02-three-planes-fact-boundary.md)。
 
 ## 核心能力
 
@@ -188,13 +187,13 @@ git diff --check
 ```
 
 GitHub Actions 会在 PR 与集成分支上重复执行后端、前端和公开镜像隔离门禁。完整发布验收见
-[V7 Beta Testing](release/v7-beta/TESTING.md)。
+[v1.0.0 验收清单](release/v1.0.0/TESTING.md)。
 
 ## 仓库结构
 
 ```text
 sage-agent/
-├── api/                         # FastAPI routes、WebSocket 与云控制面
+├── api/                         # FastAPI routes、SSE 与云控制面
 ├── core/
 │   ├── coding/                  # Practice Engine、工具与运行协调
 │   ├── harness/                 # Sage 到通用 Harness 的适配层
@@ -203,7 +202,7 @@ sage-agent/
 ├── frontend/                    # Vue 3 产品界面与公开工程主页
 ├── public_agent/                # 只读 PublishedPackage 的受限公开 Agent
 ├── tests/                       # 后端、API、契约与集成测试
-├── release/v7-beta/             # 发布说明、架构图与持续学习手册
+├── release/v1.0.0/             # 候选版本说明、架构图与持续学习手册
 └── docs/                        # 产品、设计、开发与运维文档
 ```
 
@@ -215,16 +214,15 @@ sage-agent/
 - RAG 尚未完成可信 abstention 与回答生成评测，无答案查询可能召回相似但无关内容。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - `sagecompanion.top` 尚未完成 ICP 备案与 HTTPS 切换，当前公网 IP 只用于受控展示。
-- 原 TourSwarm 旅游规划能力作为领域 Skill 与多约束 benchmark 保留，不再是主产品入口。
 
 ## 深入阅读
 
-- [V7 Beta Showcase](release/v7-beta/SHOWCASE.md)：3 分钟理解产品与工程亮点
-- [V7 Beta 发布入口](release/v7-beta/README.md)：版本事实、可用能力与发布边界
-- [持续学习手册](release/v7-beta/learning/00-reading-map.md)：从架构边界到验证证据
-- [工具执行闭环](release/v7-beta/learning/05-tools-execution-pipeline.md)：工具如何被发现、校验、授权和执行
-- [Knowledge 与 RAG](release/v7-beta/learning/09-knowledge-rag-retrieval.md)：来源、proposal、检索与 citation
-- [安全与审计](release/v7-beta/learning/12-security-audit.md)：权限、Sandbox 与公网边界
+- [v1.0.0 Showcase](release/v1.0.0/SHOWCASE.md)：3 分钟理解产品与工程亮点
+- [v1.0.0 候选版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
+- [持续学习手册](release/v1.0.0/learning/00-reading-map.md)：从架构边界到验证证据
+- [工具执行闭环](release/v1.0.0/learning/05-tools-execution-pipeline.md)：工具如何被发现、校验、授权和执行
+- [Knowledge 与 RAG](release/v1.0.0/learning/09-knowledge-rag-retrieval.md)：来源、proposal、检索与 citation
+- [安全与审计](release/v1.0.0/learning/12-security-audit.md)：权限、Sandbox 与公网边界
 - [开发协作约定](AGENTS.md)
 
 ## 分支与贡献

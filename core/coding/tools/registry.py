@@ -33,7 +33,6 @@ TOOL_MODULES = (
     "core.coding.tools.todo_tools",
     "core.coding.tools.plan_tools",
     "core.coding.tools.agent_tools",
-    "core.coding.tools.travel_tools",
     "core.coding.tools.memory_tools",
     "core.coding.tools.knowledge_tools",
 )

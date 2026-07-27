@@ -1,1 +1,1 @@
-"""Database package for persistent TourSwarm state."""
+"""Database package for persistent Sage state."""

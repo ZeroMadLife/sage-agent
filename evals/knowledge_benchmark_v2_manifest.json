@@ -3,7 +3,7 @@
   "benchmark_revision": "2026-07-25.2",
   "dataset": "evals/knowledge_benchmark_v2.jsonl",
   "dataset_sha256": "095707c016154ebf8b7657bfc29a765aea0ceab63c375727ec70ef0359c77c0c",
-  "corpus_root": "release/v7-beta/learning",
+  "corpus_root": "release/v1.0.0/learning",
   "files": [
     {"path": "00-reading-map.md", "sha256": "08a65e435ca11f76332b1cc8d38b77ea78afa6d8ee14d8d17f052c469062444d"},
     {"path": "01-overall-architecture.md", "sha256": "9c73e47ee8a22e2addc30e63a8e5371106a32da4e30dad5b6eecdfba4da389c1"},

@@ -37,7 +37,7 @@ class ExplodingModel:
 
 
 def _runtime(tmp_path: Path, model, *, session_id: str = "s-lifecycle") -> CodingRuntime:
-    (tmp_path / "README.md").write_text("TourSwarm lifecycle\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage lifecycle\n", encoding="utf-8")
     return CodingRuntime(
         session_id=session_id,
         workspace_root=tmp_path,

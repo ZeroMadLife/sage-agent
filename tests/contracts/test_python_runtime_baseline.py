@@ -35,7 +35,7 @@ def test_python_and_agent_dependencies_match_the_harness_baseline() -> None:
 
 
 def test_release_install_excludes_abandoned_mem0_stack() -> None:
-    """The unused travel demo must not pull Mem0, Qdrant, or Torch into Sage."""
+    """The release install must not pull the abandoned Mem0 stack into Sage."""
     requirements = _requirements()
 
     assert "mem0ai" not in requirements

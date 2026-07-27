@@ -31,14 +31,11 @@ RUN sed -i \
     && apt-get -o Acquire::ForceIPv4=true install --no-install-recommends -y git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY agents ./agents
 COPY api ./api
 COPY config ./config
 COPY core ./core
 COPY data ./data
 COPY db ./db
-COPY mcp_servers ./mcp_servers
-COPY models ./models
 COPY public_agent ./public_agent
 COPY infra/docker/sage-api-entrypoint.sh /usr/local/bin/sage-api-entrypoint
 RUN chmod 0755 /usr/local/bin/sage-api-entrypoint

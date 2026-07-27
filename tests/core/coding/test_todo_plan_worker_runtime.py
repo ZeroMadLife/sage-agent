@@ -62,7 +62,7 @@ def test_plan_mode_creates_plan_path_and_restricts_runtime(tmp_path: Path) -> No
 
 def test_worker_manager_runs_worker_and_drains_notification(tmp_path: Path) -> None:
     """A worker can run a read-only task and notify the coordinator."""
-    (tmp_path / "README.md").write_text("TourSwarm worker\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage worker\n", encoding="utf-8")
     workspace = WorkspaceContext(root=tmp_path)
     manager = WorkerManager(
         workspace=workspace,
@@ -90,14 +90,14 @@ def test_worker_manager_runs_worker_and_drains_notification(tmp_path: Path) -> N
 
 async def test_runtime_persists_session_events_and_run_trace(tmp_path: Path) -> None:
     """A full runtime turn writes session JSON, session events, and run trace."""
-    (tmp_path / "README.md").write_text("TourSwarm runtime\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage runtime\n", encoding="utf-8")
     runtime = CodingRuntime(
         session_id="s-runtime",
         workspace_root=tmp_path,
         model=FakeModel(
             [
                 '<tool>{"name":"read_file","args":{"path":"README.md"}}</tool>',
-                "<final>项目是 TourSwarm runtime。</final>",
+                "<final>项目是 Sage runtime。</final>",
             ]
         ),
         storage_root=tmp_path / ".coding",
@@ -200,7 +200,7 @@ async def test_runtime_persists_activated_deferred_tools(tmp_path: Path) -> None
 
 async def test_run_turn_emits_runtime_mode_changed_on_plan_entry(tmp_path: Path) -> None:
     """Entering plan mode mid-turn yields a runtime_mode_changed event to the stream."""
-    (tmp_path / "README.md").write_text("TourSwarm plan\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("Sage plan\n", encoding="utf-8")
     runtime = CodingRuntime(
         session_id="s-plan-stream",
         workspace_root=tmp_path,

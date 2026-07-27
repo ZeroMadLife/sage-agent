@@ -217,9 +217,7 @@ def test_session_store_returns_replayable_chat_messages(tmp_path: Path) -> None:
 def test_session_store_messages_filters_old_style_skill_prompts(tmp_path: Path) -> None:
     """Old-style expanded skill prompts persisted as user messages are filtered out."""
     store = CodingSessionStore(tmp_path)
-    expanded_prompt = (
-        "你正在使用 Sage 的 travel-planning domain skill。\n\n用户需求：\n\n我要去莆田"
-    )
+    expanded_prompt = "你正在使用 Sage 的 review skill。\n\n用户需求：\n\n审查 core/coding"
     store.save(
         {
             "id": "s-skill",
@@ -235,7 +233,7 @@ def test_session_store_messages_filters_old_style_skill_prompts(tmp_path: Path) 
                 },
                 {
                     "role": "assistant",
-                    "content": "好的，我们来规划莆田行程。",
+                    "content": "好的，我们开始分析代码。",
                     "created_at": "2026-07-08T09:00:03",
                 },
             ],
@@ -248,7 +246,7 @@ def test_session_store_messages_filters_old_style_skill_prompts(tmp_path: Path) 
     assert messages == [
         {
             "role": "assistant",
-            "content": "好的，我们来规划莆田行程。",
+            "content": "好的，我们开始分析代码。",
             "created_at": "2026-07-08T09:00:03",
         }
     ]

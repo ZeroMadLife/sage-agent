@@ -1,4 +1,4 @@
-"""TourSwarm global settings.
+"""Sage global settings.
 
 Configuration is loaded from environment variables and an optional ``.env`` file.
 """
@@ -9,9 +9,6 @@ from urllib.parse import urlparse
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-DEFAULT_QWEATHER_BASE_URL = "https://your-host.re.qweatherapi.com/v7"
-DEFAULT_QWEATHER_GEO_URL = "https://your-host.re.qweatherapi.com/geoapi/v2"
-
 
 class Settings(BaseSettings):
     """Application settings loaded via pydantic-settings."""
@@ -21,15 +18,6 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
-
-    amap_api_key: str = Field(default="", description="Amap Web Service API key", repr=False)
-    amap_base_url: str = "https://restapi.amap.com/v3"
-
-    qweather_api_key: str = Field(default="", description="QWeather API key", repr=False)
-    qweather_base_url: str = DEFAULT_QWEATHER_BASE_URL
-    qweather_geo_url: str = DEFAULT_QWEATHER_GEO_URL
-
-    caiyun_api_key: str = Field(default="", repr=False)
 
     llm_provider: str = "doubao"
 
@@ -96,9 +84,9 @@ class Settings(BaseSettings):
 
     postgres_host: str = "localhost"
     postgres_port: int = 5432
-    postgres_user: str = "tourswarm"
-    postgres_password: str = "tourswarm_dev"
-    postgres_db: str = "tourswarm"
+    postgres_user: str = "sage"
+    postgres_password: str = "sage_dev"
+    postgres_db: str = "sage"
 
     redis_host: str = "localhost"
     redis_port: int = 6379
@@ -127,7 +115,6 @@ class Settings(BaseSettings):
     sage_harness_max_tool_calls: int = Field(default=64, ge=1, le=512)
     sage_harness_max_run_tokens: int = Field(default=250_000, ge=1_000, le=5_000_000)
     sage_harness_max_run_seconds: float = Field(default=1_800.0, ge=30.0, le=7_200.0)
-    sage_mcp_live_enabled: bool = False
     sage_coding_sandbox_provider: str = "local_workspace"
     sage_coding_sandbox_image: str = "python:3.11-slim"
     sage_web_search_enabled: bool = False
@@ -175,7 +162,7 @@ class Settings(BaseSettings):
     knowledge_qwen_vl_max_pages: int = Field(default=12, ge=1, le=20)
 
     langsmith_api_key: str = ""
-    langsmith_project: str = "tourswarm"
+    langsmith_project: str = "sage"
 
     @property
     def postgres_dsn(self) -> str:

@@ -228,14 +228,14 @@ async def test_compact_manager_invalidates_context_cache_after_compaction() -> N
 def test_context_manager_injects_skill_prompt_between_prefix_and_history() -> None:
     """skill_prompt is injected after the prefix and before history/current request."""
     manager = ContextManager(today=lambda: date(2026, 7, 8))
-    skill_body = "你正在使用 Sage 的 travel-planning domain skill。"
+    skill_body = "你正在使用 Sage 的 review skill。"
     history = [
         {"role": "user", "content": "earlier question"},
         {"role": "assistant", "content": "earlier answer"},
     ]
 
     prompt, metadata = manager.build(
-        user_message="/travel-planning 我要去莆田",
+        user_message="/review core/coding",
         history=history,
         tools=["read_file: read a file"],
         skill_prompt=skill_body,
@@ -248,7 +248,7 @@ def test_context_manager_injects_skill_prompt_between_prefix_and_history() -> No
     prefix_index = prompt.index("Available tools:")
     skill_index = prompt.index(skill_body)
     history_index = prompt.index("earlier question")
-    request_index = prompt.index("/travel-planning 我要去莆田")
+    request_index = prompt.index("/review core/coding")
     assert prefix_index < skill_index < history_index < request_index
     # The skill_prompt section is reported in metadata.
     assert "skill_prompt" in metadata["sections"]
@@ -335,21 +335,21 @@ async def test_skill_prompt_injected_into_llm_request_but_not_history(tmp_path: 
     events = [
         event
         async for event in runtime.run_turn(
-            "/travel-planning 我要去莆田",
-            skill_prompt="你正在使用 Sage 的 travel-planning domain skill。\n\n规划行程",
+            "/review core/coding",
+            skill_prompt="你正在使用 Sage 的 review skill。\n\n审查代码",
         )
     ]
 
     assert events[-1]["type"] == "turn_finished"
     # The skill body is in the LLM request.
-    assert "你正在使用 Sage 的 travel-planning domain skill" in model.prompts[0]
+    assert "你正在使用 Sage 的 review skill" in model.prompts[0]
     # The original command text is the persisted user message; the skill body is not.
     assert runtime.session["history"][0]["role"] == "user"
-    assert runtime.session["history"][0]["content"] == "/travel-planning 我要去莆田"
+    assert runtime.session["history"][0]["content"] == "/review core/coding"
     assert runtime.session["history"][0]["message_id"]
     assert runtime.session["history"][0]["sequence"] == 1
     assert all(
-        "你正在使用 Sage 的 travel-planning domain skill" not in str(item.get("content", ""))
+        "你正在使用 Sage 的 review skill" not in str(item.get("content", ""))
         for item in runtime.session["history"]
     )
 
