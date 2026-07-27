@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -122,6 +123,11 @@ _SOURCE_FORMATS = {
     ".htm": ("text/html", 5 * 1024 * 1024),
     ".xhtml": ("application/xhtml+xml", 5 * 1024 * 1024),
     ".pdf": ("application/pdf", 20 * 1024 * 1024),
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        20 * 1024 * 1024,
+    ),
+    ".png": ("image/png", 20 * 1024 * 1024),
 }
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -3126,6 +3132,19 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
             or not block.block_id.startswith("pblk_")
             or block.block_id in block_ids
             or not 0.0 <= block.confidence <= 1.0
+            or (
+                block.bbox is not None
+                and (
+                    block.page is None
+                    or len(block.bbox) != 4
+                    or any(
+                        not math.isfinite(value) or value < 0.0 or value > 1.0
+                        for value in block.bbox
+                    )
+                    or block.bbox[2] <= block.bbox[0]
+                    or block.bbox[3] <= block.bbox[1]
+                )
+            )
             or (
                 media_path is not None
                 and (

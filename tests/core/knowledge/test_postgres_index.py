@@ -5,14 +5,17 @@ import os
 import subprocess
 import uuid
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
 
 import psycopg2
 import pytest
+from PIL import Image, PngImagePlugin
 
 from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_MULTIMODAL_SCHEMA_REVISION,
     POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
@@ -99,6 +102,14 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
         revision_columns = {str(row[0]) for row in cursor.fetchall()}
         cursor.execute(
             """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema=current_schema()
+              AND table_name='knowledge_index_chunks'
+            """
+        )
+        chunk_columns = {str(row[0]) for row in cursor.fetchall()}
+        cursor.execute(
+            """
             SELECT COUNT(*) FROM pg_stat_activity
             WHERE application_name='sage-knowledge-index'
               AND state='idle in transaction'
@@ -111,7 +122,11 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
     assert all("ivfflat" not in definition.casefold() for _name, definition in indexes)
     assert POSTGRES_INDEX_SCHEMA_REVISION in revisions
     assert POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION in revisions
+    assert POSTGRES_MULTIMODAL_SCHEMA_REVISION in revisions
     assert "embedding_dimensions" in revision_columns
+    assert {"block_kind", "bbox", "media_ref", "confidence", "parser_id", "parser_version"} <= (
+        chunk_columns
+    )
     assert idle_in_transaction == 0
 
 
@@ -246,6 +261,33 @@ def test_postgres_exact_routes_preserve_filters_revisions_and_citations(
     assert postgres_store.citation(sparse[0].citation_id).chunk_id == sparse[0].chunk.chunk_id
     with pytest.raises(KeyError, match="stale or unknown"):
         postgres_store.citation(old_hit.citation_id)
+
+
+def test_postgres_visual_chunk_round_trip_preserves_normalized_region(
+    postgres_store: KnowledgeStore,
+    tmp_path: Path,
+) -> None:
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Description", "PostgreSQL visual exact scan P95 is 36 milliseconds")
+    payload = BytesIO()
+    Image.new("RGB", (320, 180), "white").save(payload, format="PNG", pnginfo=metadata)
+    (tmp_path / "source" / "retrieval.png").write_bytes(payload.getvalue())
+    proposal = postgres_store.ingest("official", "retrieval.png")
+    postgres_store.approve(proposal.proposal_id, proposal.revision)
+
+    hit = postgres_store.search(
+        "PostgreSQL visual exact scan P95 36 milliseconds",
+        retrieval_mode="sparse",
+    )[0]
+    citation = postgres_store.citation(hit.citation_id)
+
+    assert citation.block_kind == "media"
+    assert citation.page_number == 1
+    assert citation.bbox == (0.0, 0.0, 1.0, 1.0)
+    assert citation.media_ref == "retrieval.png"
+    assert citation.confidence == 1.0
+    assert citation.parser_id == "sage.png"
+    assert citation.parser_version == "1.0.0"
 
 
 def test_postgres_force_rebuild_is_idempotent_and_preserves_stable_ids(

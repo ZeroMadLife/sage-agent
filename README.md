@@ -76,7 +76,7 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 | **运行编排** | 推进模型、工具、多步任务、checkpoint 与可恢复终态 |
 | **工具治理** | schema 校验、能力发现、permission、policy、approval 与 Sandbox |
 | **状态与记忆** | Session、Transcript、Memory、Checkpoint、Todo 与 Subagent 各守生命周期 |
-| **知识与引用** | 来源快照、Wiki proposal、SQLite FTS5 + hashing + RRF、稳定 citation |
+| **知识与引用** | 来源快照、DOCX/PNG/PDF/Markdown 解析、Wiki proposal、SQLite FTS5 + hashing + RRF、页面/区域级 citation |
 | **证据与恢复** | Timeline、RunStore、Diff、Artifact 与 Evaluation 支撑重放和回归 |
 
 通用 Harness 独立维护在 [`packages/sage_harness/`](packages/sage_harness/)；Sage 产品层负责把
@@ -112,6 +112,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
+| **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
 | **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
 | **RAG Semantic Gate v1** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771，citation support 保持 1.0 | test 没有 semantic-paraphrase case，激活门禁 fail closed，因此仍不默认启用；generation quality 尚未评测 |
 | **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
@@ -120,6 +121,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
+[RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
 [RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
 [RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
@@ -217,6 +219,7 @@ sage-agent/
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
 - RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。
+- 多模态当前只完成 DOCX/PNG 结构化解析与 VLM 区域 citation；没有真实 VLM 质量分数，也没有视觉向量召回。
 - Relation retrieval 当前只扩展带原文 citation 的显式一跳链接；实体三元组、多跳路径、PPR 与 community GraphRAG 尚未实现。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - 飞书入口与自动 Canary 部署当前均已停止；`v1.0.0` tag 不代表服务器已经部署。

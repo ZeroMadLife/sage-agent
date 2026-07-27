@@ -23,6 +23,8 @@ _MEDIA_TYPES = {
     ".htm": "text/html",
     ".xhtml": "application/xhtml+xml",
     ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".png": "image/png",
 }
 
 

@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     title TEXT NOT NULL,
     heading_path_json TEXT NOT NULL,
     page_number INTEGER,
+    block_kind TEXT NOT NULL DEFAULT 'paragraph',
+    bbox_json TEXT,
+    media_ref TEXT,
+    confidence REAL NOT NULL DEFAULT 1.0,
+    parser_id TEXT NOT NULL DEFAULT '',
+    parser_version TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
     token_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
@@ -170,6 +176,21 @@ class LocalKnowledgeIndex:
                 "ALTER TABLE knowledge_index_revisions "
                 "ADD COLUMN embedding_revision TEXT NOT NULL DEFAULT ''"
             )
+        chunk_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(knowledge_chunks)").fetchall()
+        }
+        additions = {
+            "block_kind": "TEXT NOT NULL DEFAULT 'paragraph'",
+            "bbox_json": "TEXT",
+            "media_ref": "TEXT",
+            "confidence": "REAL NOT NULL DEFAULT 1.0",
+            "parser_id": "TEXT NOT NULL DEFAULT ''",
+            "parser_version": "TEXT NOT NULL DEFAULT ''",
+        }
+        for name, definition in additions.items():
+            if name not in chunk_columns:
+                connection.execute(f"ALTER TABLE knowledge_chunks ADD COLUMN {name} {definition}")
 
     def backfill(self, connection: sqlite3.Connection, *, force: bool = False) -> None:
         if force:
@@ -793,9 +814,10 @@ class LocalKnowledgeIndex:
                 chunk_id, workspace_id, page_id, page_revision, page_path,
                 source_id, source_revision, source_kind, source_relative_path,
                 proposal_id, artifact_id, block_id, ordinal, title,
-                heading_path_json, page_number, text, token_count, content_hash,
+                heading_path_json, page_number, block_kind, bbox_json, media_ref,
+                confidence, parser_id, parser_version, text, token_count, content_hash,
                 visibility, language, active, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 chunk.chunk_id,
@@ -814,6 +836,12 @@ class LocalKnowledgeIndex:
                 chunk.title,
                 json.dumps(chunk.heading_path, ensure_ascii=False, separators=(",", ":")),
                 chunk.page_number,
+                chunk.block_kind,
+                (json.dumps(chunk.bbox, separators=(",", ":")) if chunk.bbox is not None else None),
+                chunk.media_ref,
+                chunk.confidence,
+                chunk.parser_id,
+                chunk.parser_version,
                 chunk.text,
                 chunk.token_count,
                 chunk.content_hash,
@@ -871,6 +899,9 @@ class LocalKnowledgeIndex:
         heading_path = json.loads(str(row["heading_path_json"]))
         if not isinstance(heading_path, list):
             raise ValueError("invalid knowledge chunk heading path")
+        raw_bbox = json.loads(str(row["bbox_json"])) if row["bbox_json"] else None
+        if raw_bbox is not None and (not isinstance(raw_bbox, list) or len(raw_bbox) != 4):
+            raise ValueError("invalid knowledge chunk bbox")
         return KnowledgeChunk(
             chunk_id=str(row["chunk_id"]),
             workspace_id=str(row["workspace_id"]),
@@ -894,4 +925,10 @@ class LocalKnowledgeIndex:
             visibility=str(row["visibility"]),
             language=str(row["language"]),
             active=bool(row["active"]),
+            block_kind=str(row["block_kind"]),  # type: ignore[arg-type]
+            bbox=(tuple(float(value) for value in raw_bbox) if raw_bbox is not None else None),  # type: ignore[arg-type]
+            media_ref=str(row["media_ref"]) if row["media_ref"] else None,
+            confidence=float(row["confidence"]),
+            parser_id=str(row["parser_id"]),
+            parser_version=str(row["parser_version"]),
         )

@@ -11,6 +11,14 @@ export type KnowledgeRetrievalCitationViewModel = {
   title: string
   headingPath: string[]
   blockId?: string
+  pageNumber?: number
+  blockKind?: string
+  bbox?: [number, number, number, number]
+  bboxCoordinateSpace?: 'normalized'
+  mediaRef?: string
+  confidence?: number
+  parserId?: string
+  parserVersion?: string
   excerpt: string
   truncated: boolean
 }
@@ -70,6 +78,14 @@ function parseCitation(value: unknown, index: number): KnowledgeRetrievalCitatio
     title: clippedString(value.title, 240) || citationId,
     headingPath,
     blockId: optionalString(value.block_id, 160),
+    pageNumber: positiveInteger(value.page_number) || undefined,
+    blockKind: optionalString(value.block_kind, 40),
+    bbox: normalizedBbox(value.bbox),
+    bboxCoordinateSpace: value.bbox_coordinate_space === 'normalized' ? 'normalized' : undefined,
+    mediaRef: optionalString(value.media_ref, 500),
+    confidence: boundedConfidence(value.confidence),
+    parserId: optionalString(value.parser_id, 160),
+    parserVersion: optionalString(value.parser_version, 80),
     excerpt,
     truncated: value.truncated === true || excerptSource.length > MAX_EXCERPT_CHARS,
   }
@@ -97,4 +113,19 @@ function nonNegativeInteger(value: unknown): number {
 
 function positiveInteger(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function normalizedBbox(value: unknown): [number, number, number, number] | undefined {
+  if (!Array.isArray(value) || value.length !== 4) return undefined
+  if (!value.every((item) => typeof item === 'number' && Number.isFinite(item) && item >= 0 && item <= 1)) {
+    return undefined
+  }
+  const bbox = value as [number, number, number, number]
+  return bbox[2] > bbox[0] && bbox[3] > bbox[1] ? bbox : undefined
+}
+
+function boundedConfidence(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+    ? value
+    : undefined
 }

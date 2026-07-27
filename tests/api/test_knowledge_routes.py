@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image, PngImagePlugin
 
 from api.main import create_app
 from core.config.settings import get_settings
@@ -533,6 +535,49 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert missing.json()["status"] == "no_evidence"
     assert missing.json()["recovery"]["no_evidence_reason"] == "recovery_disabled"
     assert missing.json()["citations"] == []
+
+
+def test_png_search_returns_normalized_visual_citation(tmp_path: Path) -> None:
+    app, vault, _ = _app(tmp_path)
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Title", "Exact retrieval chart")
+    metadata.add_text("Description", "PostgreSQL exact scan P95 is 36 milliseconds")
+    payload = BytesIO()
+    Image.new("RGB", (320, 180), "white").save(payload, format="PNG", pnginfo=metadata)
+    (vault / "retrieval.png").write_bytes(payload.getvalue())
+    client = TestClient(app)
+
+    ingested = client.post(
+        "/api/v1/knowledge/ingest",
+        json={"source_root_id": "sage-learning", "relative_path": "retrieval.png"},
+    )
+    assert ingested.status_code == 201
+    ingested_body = ingested.json()
+    assert ingested_body["status"] == "pending"
+    approved = client.post(
+        f"/api/v1/knowledge/proposals/{ingested_body['proposal_id']}/approve",
+        json={"expected_revision": ingested_body["revision"]},
+    )
+    assert approved.status_code == 200
+    found = client.post(
+        "/api/v1/knowledge/search",
+        json={"query": "exact scan P95 36 milliseconds", "top_k": 4, "token_budget": 512},
+    )
+
+    assert found.status_code == 200
+    evidence = found.json()["citations"][0]
+    assert evidence["block_kind"] == "media"
+    assert evidence["page_number"] == 1
+    assert evidence["bbox"] == [0.0, 0.0, 1.0, 1.0]
+    assert evidence["bbox_coordinate_space"] == "normalized"
+    assert evidence["media_ref"] == "retrieval.png"
+    assert evidence["confidence"] == 1.0
+    assert evidence["parser_id"] == "sage.png"
+    assert evidence["parser_version"] == "1.0.0"
+
+    citation = client.get(f"/api/v1/knowledge/citations/{evidence['citation_id']}").json()
+    assert citation["bbox"] == evidence["bbox"]
+    assert citation["media_ref"] == evidence["media_ref"]
 
 
 def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) -> None:

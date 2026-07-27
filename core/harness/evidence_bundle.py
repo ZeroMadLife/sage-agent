@@ -180,6 +180,14 @@ def _knowledge_items(
                 metadata={
                     "block_id": str(citation.get("block_id", ""))[:160],
                     "source_kind": str(citation.get("source_kind", ""))[:80],
+                    "page_number": citation.get("page_number"),
+                    "block_kind": str(citation.get("block_kind", ""))[:40],
+                    "bbox": citation.get("bbox"),
+                    "bbox_coordinate_space": str(citation.get("bbox_coordinate_space", ""))[:40],
+                    "media_ref": str(citation.get("media_ref", ""))[:500],
+                    "confidence": citation.get("confidence"),
+                    "parser_id": str(citation.get("parser_id", ""))[:160],
+                    "parser_version": str(citation.get("parser_version", ""))[:80],
                 },
             )
         )

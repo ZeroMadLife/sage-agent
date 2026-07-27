@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sage.local/schemas/rag-multimodal-case-v1.json",
+  "title": "Sage RAG Multimodal Evidence Case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id", "leakage_group", "dataset_split", "fixture_id", "layer", "query",
+    "answerable", "required_text", "expected_block_kind", "gold_page", "gold_bbox",
+    "expected_media_ref", "expected_parser_id", "expected_parser_version", "provenance"
+  ],
+  "properties": {
+    "case_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"},
+    "leakage_group": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"},
+    "dataset_split": {"enum": ["dev", "calibration", "test"]},
+    "fixture_id": {"enum": ["docx_ordered", "png_metadata", "png_no_description", "qwen_region"]},
+    "layer": {"enum": ["L1", "L2"]},
+    "query": {"type": "string", "minLength": 3, "maxLength": 500},
+    "answerable": {"const": true},
+    "required_text": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "expected_block_kind": {"enum": ["frontmatter", "heading", "paragraph", "list", "code", "table", "quote", "media"]},
+    "gold_page": {"type": ["integer", "null"], "minimum": 1},
+    "gold_bbox": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "array", "prefixItems": [{"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}, {"type": "number", "minimum": 0, "maximum": 1}], "minItems": 4, "maxItems": 4}
+      ]
+    },
+    "expected_media_ref": {"type": ["string", "null"], "maxLength": 500},
+    "expected_parser_id": {"type": "string", "minLength": 1, "maxLength": 160},
+    "expected_parser_version": {"type": "string", "minLength": 1, "maxLength": 80},
+    "provenance": {"const": "project_authored_fixture"}
+  }
+}

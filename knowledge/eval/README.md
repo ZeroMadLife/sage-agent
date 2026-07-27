@@ -36,10 +36,28 @@ Generation 层当前是 deterministic extractive proxy，只衡量已检索 exce
 当前 clean baseline 的指标解释、失败案例和可写边界见
 [`docs/evals/knowledge-sqlite-layered-baseline-v1.md`](../../docs/evals/knowledge-sqlite-layered-baseline-v1.md)。
 
+## 多模态证据合同
+
+PR-7 使用独立的 `multimodal_cases.jsonl`，不修改或重算上面的冻结 80 条检索集。12 条
+项目自建 fixture case 按 `dev/calibration/test=6/3/3` 固定，覆盖 DOCX 顶层段落/表格/嵌入图、
+PNG 元数据/整图区域，以及 Qwen VLM 结构化区域响应。
+
+```bash
+PYTHONPATH=packages/sage_harness:. .venv/bin/python \
+  scripts/evaluate_knowledge_multimodal.py \
+  --output evals/reports/knowledge_multimodal_evidence_v1_2026-07-28.json
+```
+
+正式报告默认拒绝 dirty source。它验证解析、chunk 持久化字段、归一化 bbox 和 citation identity，
+不联网、不调用真实 VLM，也不衡量视觉模型准确率；详细边界见
+[`docs/evals/knowledge-multimodal-evidence-v1.md`](../../docs/evals/knowledge-multimodal-evidence-v1.md)。
+
 ## 当前边界
 
 - 80 条 case 是首批人工策划资产，不代表真实线上分布。
 - PR-1 只建立数据契约；SQLite baseline 从 PR-2 开始生成。
 - 当前 case 以 text/code/table 为主；`gold_page/gold_bbox` 是 PR-7 多模态证据链的前置合同，
   本 revision 均为 `null`。
+- 多模态 fixture 集与正式 80 条检索集分开版本化；前者只验证 PR-7 结构和引用不变量，不能与
+  真实 OCR/VLM benchmark 混用。
 - required/forbidden claims 是确定性 generation 断言的输入，不等同于 LLM judge 分数。
