@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
@@ -19,6 +20,7 @@ from core.knowledge.embeddings import (
     FastEmbedEmbeddingProvider,
 )
 from core.knowledge.eval_runner import (
+    EvalSplit,
     compare_retrieval_ablation_reports,
     run_postgres_layered_eval,
 )
@@ -33,6 +35,7 @@ from core.knowledge.retrieval import (
     KnowledgeAblationPolicy,
     KnowledgeAblationStrategy,
     KnowledgeReranker,
+    KnowledgeRetrievalMode,
 )
 
 _STRATEGIES: tuple[KnowledgeAblationStrategy, ...] = (
@@ -103,7 +106,11 @@ def main() -> int:
             "sha256": "sha256:" + hashlib.sha256(selection_path.read_bytes()).hexdigest(),
         }
 
-    splits = ("dev", "calibration") if args.stage == "selection" else ("calibration", "test")
+    splits: tuple[EvalSplit, ...] = (
+        ("dev", "calibration")
+        if args.stage == "selection"
+        else ("calibration", "test")
+    )
     baseline_threshold = None if selection is None else _threshold(selection["baseline"])
     baseline = _run(
         repo_root=repo_root,
@@ -204,7 +211,7 @@ def _run(
     embedding_cache_dir: Path,
     reranker_cache_dir: Path,
     local_files_only: bool,
-    splits: tuple[str, str],
+    splits: tuple[EvalSplit, ...],
     top_k: int,
     candidate_k: int,
     token_budget: int,
@@ -232,7 +239,9 @@ def _run(
                 local_files_only=local_files_only,
             )
         )
-    thresholds = None if gate_threshold is None else {"hybrid": gate_threshold}
+    thresholds: Mapping[KnowledgeRetrievalMode, float] | None = (
+        None if gate_threshold is None else {"hybrid": gate_threshold}
+    )
     return run_postgres_layered_eval(
         repo_root,
         dataset,
@@ -243,9 +252,9 @@ def _run(
         token_budget=token_budget,
         provider=provider,
         minimum_answerable_recall=minimum_answerable_recall,
-        evaluation_splits=cast(Any, splits),
+        evaluation_splits=splits,
         precache_queries=False,
-        gate_thresholds=cast(Any, thresholds),
+        gate_thresholds=thresholds,
         ablation_policy=policy,
         reranker=reranker,
     )
