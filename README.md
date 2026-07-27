@@ -112,6 +112,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
+| **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下的 pgvector exact Recall@10 均为 1.0，P95 为 0.547/3.485/53.266 ms；100k 未超过冻结的 100 ms，因此保持 exact、不触发 HNSW | 数据是合成向量，不代表真实生产查询分布或 SLA；stock PostgreSQL 未提供 server CPU 指标 |
 | **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
 | **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
 | **RAG Semantic Gate v1** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771，citation support 保持 1.0 | test 没有 semantic-paraphrase case，激活门禁 fail closed，因此仍不默认启用；generation quality 尚未评测 |
@@ -121,6 +122,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
+[RAG HNSW 规模门禁报告](docs/evals/knowledge-hnsw-scale-gate-v1.md)、
 [RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
 [RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、

@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "sage-postgres-hnsw-scale-gate-v1",
+  "config": {
+    "scales": [
+      1000,
+      10000,
+      100000
+    ],
+    "dimensions": 384,
+    "top_k": 10,
+    "query_count": 32,
+    "warmup_passes": 1,
+    "measured_passes": 2,
+    "exact_p95_sla_ms": 100.0,
+    "ef_search_values": [
+      40,
+      80,
+      120,
+      200
+    ],
+    "hnsw_m": 16,
+    "hnsw_ef_construction": 64,
+    "minimum_hnsw_recall": 0.98,
+    "minimum_hnsw_latency_reduction": 0.2,
+    "distance": "cosine",
+    "operator": "<=>"
+  },
+  "environment": {
+    "postgres_version": "16.14 (Debian 16.14-1.pgdg12+1)",
+    "pgvector_version": "0.8.4",
+    "settings": {
+      "shared_buffers": "128MB",
+      "effective_cache_size": "4GB",
+      "maintenance_work_mem": "64MB",
+      "work_mem": "4MB",
+      "max_parallel_workers_per_gather": "2"
+    }
+  },
+  "resource_measurement": {
+    "server_cpu": {
+      "available": false,
+      "reason": "stock PostgreSQL exposes no portable per-query server CPU metric; pg_stat_kcache and privileged container telemetry are not required"
+    },
+    "server_execution": "EXPLAIN ANALYZE BUFFERS SETTINGS",
+    "backend_memory": "pg_backend_memory_contexts when permitted"
+  },
+  "exact": [
+    {
+      "scale": 1000,
+      "recall_at_10": 1.0,
+      "p50_ms": 0.4985413979738951,
+      "p95_ms": 0.5468062241561711,
+      "measured_queries": 64,
+      "data_load_ms": 51.992082968354225,
+      "scalar_index_build_ms": 1.2426248285919428,
+      "analyze_ms": 5.312750115990639,
+      "table_bytes": 2097152,
+      "total_index_bytes": 114688,
+      "total_relation_bytes": 2252800,
+      "explain": {
+        "planning_time_ms": 0.011,
+        "execution_time_ms": 0.266,
+        "plan_node_types": [
+          "Limit",
+          "Sort",
+          "Seq Scan"
+        ],
+        "shared_hit_blocks": 256,
+        "shared_read_blocks": 0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+        "settings": {
+          "max_parallel_workers_per_gather": "0",
+          "enable_indexscan": "off",
+          "enable_bitmapscan": "off"
+        }
+      },
+      "backend_memory": {
+        "available": true,
+        "retained_bytes": 2031624,
+        "used_bytes": 1261752,
+        "scope": "current PostgreSQL backend session after query"
+      }
+    },
+    {
+      "scale": 10000,
+      "recall_at_10": 1.0,
+      "p50_ms": 3.2372080022469163,
+      "p95_ms": 3.4845340298488736,
+      "measured_queries": 64,
+      "data_load_ms": 469.8854580055922,
+      "scalar_index_build_ms": 6.389749934896827,
+      "analyze_ms": 27.61329198256135,
+      "table_bytes": 16777216,
+      "total_index_bytes": 843776,
+      "total_relation_bytes": 17661952,
+      "explain": {
+        "planning_time_ms": 0.02,
+        "execution_time_ms": 3.5,
+        "plan_node_types": [
+          "Limit",
+          "Sort",
+          "Seq Scan"
+        ],
+        "shared_hit_blocks": 2048,
+        "shared_read_blocks": 0,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+        "settings": {
+          "max_parallel_workers_per_gather": "0",
+          "enable_indexscan": "off",
+          "enable_bitmapscan": "off"
+        }
+      },
+      "backend_memory": {
+        "available": true,
+        "retained_bytes": 2095192,
+        "used_bytes": 1338224,
+        "scope": "current PostgreSQL backend session after query"
+      }
+    },
+    {
+      "scale": 100000,
+      "recall_at_10": 1.0,
+      "p50_ms": 42.88635402917862,
+      "p95_ms": 53.26637672260403,
+      "measured_queries": 64,
+      "data_load_ms": 6441.0777918528765,
+      "scalar_index_build_ms": 74.219916947186,
+      "analyze_ms": 174.1077909246087,
+      "table_bytes": 164102144,
+      "total_index_bytes": 8052736,
+      "total_relation_bytes": 172228608,
+      "explain": {
+        "planning_time_ms": 0.057,
+        "execution_time_ms": 54.849,
+        "plan_node_types": [
+          "Limit",
+          "Sort",
+          "Seq Scan"
+        ],
+        "shared_hit_blocks": 5216,
+        "shared_read_blocks": 14816,
+        "temp_read_blocks": 0,
+        "temp_written_blocks": 0,
+        "settings": {
+          "max_parallel_workers_per_gather": "0",
+          "enable_indexscan": "off",
+          "enable_bitmapscan": "off"
+        }
+      },
+      "backend_memory": {
+        "available": true,
+        "retained_bytes": 2095192,
+        "used_bytes": 1323264,
+        "scope": "current PostgreSQL backend session after query"
+      }
+    }
+  ],
+  "hnsw_build": {
+    "ran": false,
+    "m": 16,
+    "ef_construction": 64,
+    "build_ms": null,
+    "index_bytes": null
+  },
+  "hnsw": [],
+  "decision": {
+    "triggered_scales": [],
+    "hnsw_experiment_required": false,
+    "eligible_ef_search": [],
+    "runtime_recommendation": "keep_exact",
+    "runtime_index_enabled": false
+  },
+  "deterministic_digest": "sha256:744b57797f9aa86fdd090fd7f27c9815e60299a3c7feefe7c965f0ba7f1caa5f",
+  "ephemeral_cleanup_completed": true,
+  "source": {
+    "commit": "c4157e4624b58a0b2864a2ef795fd528a87a16a3",
+    "dirty": false
+  },
+  "evidence_boundaries": {
+    "synthetic_fixture": true,
+    "production_traffic": false,
+    "production_sla_claim": false,
+    "runtime_hnsw_enabled": false,
+    "deployment_performed": false
+  }
+}

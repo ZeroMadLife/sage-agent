@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 import pytest
 
@@ -17,6 +19,9 @@ from core.knowledge.scale_benchmark import (
     query_vector,
 )
 
+ROOT = Path(__file__).resolve().parents[3]
+REPORT = ROOT / "evals/reports/knowledge_hnsw_scale_gate_v1_2026-07-28.json"
+
 
 def test_default_scale_contract_is_frozen() -> None:
     config = DEFAULT_SCALE_BENCHMARK_CONFIG
@@ -29,6 +34,27 @@ def test_default_scale_contract_is_frozen() -> None:
     assert config.measured_passes == 2
     assert config.exact_p95_sla_ms == 100.0
     assert config.ef_search_values == (40, 80, 120, 200)
+
+
+def test_committed_scale_report_keeps_exact_without_runtime_ann() -> None:
+    report = json.loads(REPORT.read_text(encoding="utf-8"))
+
+    assert report["source"]["dirty"] is False
+    assert report["config"]["dimensions"] == 384
+    assert [item["scale"] for item in report["exact"]] == [1_000, 10_000, 100_000]
+    assert all(item["recall_at_10"] == 1.0 for item in report["exact"])
+    assert all(item["p95_ms"] <= report["config"]["exact_p95_sla_ms"] for item in report["exact"])
+    assert report["hnsw_build"]["ran"] is False
+    assert report["hnsw"] == []
+    assert report["decision"] == {
+        "triggered_scales": [],
+        "hnsw_experiment_required": False,
+        "eligible_ef_search": [],
+        "runtime_recommendation": "keep_exact",
+        "runtime_index_enabled": False,
+    }
+    assert report["ephemeral_cleanup_completed"] is True
+    assert report["deterministic_digest"].startswith("sha256:")
 
 
 def test_scale_contract_rejects_ambiguous_or_unsafe_values() -> None:
