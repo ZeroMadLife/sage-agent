@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from itertools import pairwise
 from typing import Literal, Protocol
 
-from core.knowledge.parsing import ParsedDocument
+from core.knowledge.parsing import BlockKind, ParsedDocument
 from core.knowledge.recovery import (
     KnowledgeNoEvidenceReason,
     KnowledgeRecoveryAttempt,
@@ -96,6 +96,12 @@ class KnowledgeChunk:
     visibility: str
     language: str
     active: bool
+    block_kind: BlockKind = "paragraph"
+    bbox: tuple[float, float, float, float] | None = None
+    media_ref: str | None = None
+    confidence: float = 1.0
+    parser_id: str = ""
+    parser_version: str = ""
     retrieval_text: str | None = None
 
 
@@ -248,24 +254,28 @@ def chunk_document(
             content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
             retrieval_hash = hashlib.sha256((retrieval_value or text).encode("utf-8")).hexdigest()
             ordinal = len(chunks)
-            chunk_id = (
-                _stable_id(
-                    "kchunk",
-                    page_revision,
-                    block.block_id,
-                    str(part_index),
-                    content_hash,
-                    retrieval_hash,
+            identity_parts = [
+                "kchunk",
+                page_revision,
+                block.block_id,
+                str(part_index),
+                content_hash,
+            ]
+            if retrieval_value is not None:
+                identity_parts.append(retrieval_hash)
+            if block.bbox is not None or block.media_ref is not None:
+                identity_parts.extend(
+                    [
+                        block.kind,
+                        str(block.page or ""),
+                        json.dumps(block.bbox, separators=(",", ":")),
+                        block.media_ref or "",
+                        format(block.confidence, ".12g"),
+                        document.provenance.parser_id,
+                        document.provenance.parser_version,
+                    ]
                 )
-                if retrieval_value is not None
-                else _stable_id(
-                    "kchunk",
-                    page_revision,
-                    block.block_id,
-                    str(part_index),
-                    content_hash,
-                )
-            )
+            chunk_id = _stable_id(*identity_parts)
             chunks.append(
                 KnowledgeChunk(
                     chunk_id=chunk_id,
@@ -290,6 +300,12 @@ def chunk_document(
                     visibility=visibility,
                     language=document.language,
                     active=active,
+                    block_kind=block.kind,
+                    bbox=block.bbox,
+                    media_ref=block.media_ref,
+                    confidence=block.confidence,
+                    parser_id=document.provenance.parser_id,
+                    parser_version=document.provenance.parser_version,
                     retrieval_text=retrieval_value,
                 )
             )
@@ -323,6 +339,8 @@ def chunk_document(
             visibility=visibility,
             language=document.language,
             active=active,
+            parser_id=document.provenance.parser_id,
+            parser_version=document.provenance.parser_version,
         ),
     )
 

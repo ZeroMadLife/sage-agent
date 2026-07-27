@@ -249,6 +249,15 @@ class KnowledgeEvidenceResponse(BaseModel):
     title: str
     heading_path: list[str]
     page_number: int | None = Field(default=None, ge=1)
+    block_kind: Literal[
+        "frontmatter", "heading", "paragraph", "list", "code", "table", "quote", "media"
+    ]
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    bbox_coordinate_space: Literal["normalized"] | None = None
+    media_ref: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    parser_id: str
+    parser_version: str
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool
@@ -313,6 +322,15 @@ class KnowledgeCitationResponse(BaseModel):
     title: str
     heading_path: list[str]
     page_number: int | None = Field(default=None, ge=1)
+    block_kind: Literal[
+        "frontmatter", "heading", "paragraph", "list", "code", "table", "quote", "media"
+    ]
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    bbox_coordinate_space: Literal["normalized"] | None = None
+    media_ref: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    parser_id: str
+    parser_version: str
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool

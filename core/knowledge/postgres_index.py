@@ -41,6 +41,7 @@ from core.knowledge.retrieval import (
 
 POSTGRES_INDEX_SCHEMA_REVISION = "20260727_rag_postgres_exact_v1"
 POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION = "20260728_rag_retrieval_trace_v1"
+POSTGRES_MULTIMODAL_SCHEMA_REVISION = "20260728_rag_multimodal_evidence_v1"
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,12 @@ CREATE TABLE IF NOT EXISTS knowledge_index_chunks (
     title TEXT NOT NULL,
     heading_path JSONB NOT NULL,
     page_number INTEGER,
+    block_kind TEXT NOT NULL DEFAULT 'paragraph',
+    bbox JSONB,
+    media_ref TEXT,
+    confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    parser_id TEXT NOT NULL DEFAULT '',
+    parser_version TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
     token_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
@@ -278,6 +285,17 @@ class PostgresKnowledgeIndex:
                 )
                 cursor.execute(
                     """
+                    ALTER TABLE knowledge_index_chunks
+                    ADD COLUMN IF NOT EXISTS block_kind TEXT NOT NULL DEFAULT 'paragraph',
+                    ADD COLUMN IF NOT EXISTS bbox JSONB,
+                    ADD COLUMN IF NOT EXISTS media_ref TEXT,
+                    ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                    ADD COLUMN IF NOT EXISTS parser_id TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS parser_version TEXT NOT NULL DEFAULT ''
+                    """
+                )
+                cursor.execute(
+                    """
                     INSERT INTO knowledge_index_schema_migrations (revision)
                     VALUES (%s) ON CONFLICT (revision) DO NOTHING
                     """,
@@ -289,6 +307,13 @@ class PostgresKnowledgeIndex:
                     VALUES (%s) ON CONFLICT (revision) DO NOTHING
                     """,
                     (POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO knowledge_index_schema_migrations (revision)
+                    VALUES (%s) ON CONFLICT (revision) DO NOTHING
+                    """,
+                    (POSTGRES_MULTIMODAL_SCHEMA_REVISION,),
                 )
             postgres.commit()
 
@@ -1090,13 +1115,15 @@ class PostgresKnowledgeIndex:
                 workspace_id, chunk_id, page_id, page_revision, page_path,
                 source_id, source_revision, source_kind, source_relative_path,
                 proposal_id, artifact_id, block_id, ordinal, title, heading_path,
-                page_number, text, token_count, content_hash, visibility, language,
+                page_number, block_kind, bbox, media_ref, confidence, parser_id,
+                parser_version, text, token_count, content_hash, visibility, language,
                 active, search_text, embedding, embedding_model, embedding_revision,
                 embedding_dimensions, embedding_input_hash, created_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
             )
             """,
             (
@@ -1116,6 +1143,12 @@ class PostgresKnowledgeIndex:
                 chunk.title,
                 json.dumps(chunk.heading_path, ensure_ascii=False),
                 chunk.page_number,
+                chunk.block_kind,
+                json.dumps(chunk.bbox) if chunk.bbox is not None else None,
+                chunk.media_ref,
+                chunk.confidence,
+                chunk.parser_id,
+                chunk.parser_version,
                 chunk.text,
                 chunk.token_count,
                 chunk.content_hash,
@@ -1229,6 +1262,9 @@ class PostgresKnowledgeIndex:
         heading_path = row["heading_path"]
         if not isinstance(heading_path, list):
             raise ValueError("invalid Knowledge PostgreSQL chunk heading path")
+        raw_bbox = row["bbox"]
+        if raw_bbox is not None and (not isinstance(raw_bbox, list) or len(raw_bbox) != 4):
+            raise ValueError("invalid Knowledge PostgreSQL chunk bbox")
         return KnowledgeChunk(
             chunk_id=str(row["chunk_id"]),
             workspace_id=str(row["workspace_id"]),
@@ -1252,6 +1288,12 @@ class PostgresKnowledgeIndex:
             visibility=str(row["visibility"]),
             language=str(row["language"]),
             active=bool(row["active"]),
+            block_kind=str(row["block_kind"]),  # type: ignore[arg-type]
+            bbox=(tuple(float(value) for value in raw_bbox) if raw_bbox is not None else None),  # type: ignore[arg-type]
+            media_ref=str(row["media_ref"]) if row["media_ref"] else None,
+            confidence=float(row["confidence"]),
+            parser_id=str(row["parser_id"]),
+            parser_version=str(row["parser_version"]),
         )
 
     @contextmanager

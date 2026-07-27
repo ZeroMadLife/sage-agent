@@ -97,6 +97,43 @@ def test_relevance_policy_rejects_search_above_calibrated_top_k(tmp_path: Path) 
         index.search(connection, "evidence", top_k=5)
 
 
+def test_local_index_migrates_existing_chunks_to_multimodal_contract() -> None:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.execute(
+        """
+        CREATE TABLE knowledge_chunks (
+            chunk_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, page_id TEXT NOT NULL,
+            page_revision TEXT NOT NULL, page_path TEXT NOT NULL, source_id TEXT NOT NULL,
+            source_revision TEXT NOT NULL, source_kind TEXT NOT NULL,
+            source_relative_path TEXT NOT NULL, proposal_id TEXT NOT NULL, artifact_id TEXT,
+            block_id TEXT NOT NULL, ordinal INTEGER NOT NULL, title TEXT NOT NULL,
+            heading_path_json TEXT NOT NULL, page_number INTEGER, text TEXT NOT NULL,
+            token_count INTEGER NOT NULL, content_hash TEXT NOT NULL, visibility TEXT NOT NULL,
+            language TEXT NOT NULL, active INTEGER NOT NULL, created_at TEXT NOT NULL,
+            UNIQUE(page_revision, ordinal)
+        )
+        """
+    )
+
+    LocalKnowledgeIndex().ensure_schema(connection)
+
+    columns = {
+        str(row["name"]): str(row["dflt_value"])
+        for row in connection.execute("PRAGMA table_info(knowledge_chunks)")
+    }
+    assert {
+        "block_kind",
+        "bbox_json",
+        "media_ref",
+        "confidence",
+        "parser_id",
+        "parser_version",
+    } <= (columns.keys())
+    assert columns["block_kind"] == "'paragraph'"
+    assert columns["confidence"] == "1.0"
+
+
 def test_relevance_policy_rejects_tampered_policy_id() -> None:
     raw = _policy().to_dict()
     raw["policy_id"] = "krp_tampered"

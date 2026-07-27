@@ -69,6 +69,7 @@ from core.knowledge.migration import (
 from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_MULTIMODAL_SCHEMA_REVISION,
     POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
@@ -139,6 +140,7 @@ __all__ = [
     "DEFAULT_FASTEMBED_REPOSITORY",
     "FASTEMBED_RERANK_RUNTIME_REVISION",
     "POSTGRES_INDEX_SCHEMA_REVISION",
+    "POSTGRES_MULTIMODAL_SCHEMA_REVISION",
     "POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION",
     "CorpusManifestEntry",
     "EvalCase",

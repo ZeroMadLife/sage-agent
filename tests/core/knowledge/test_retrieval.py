@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from core.knowledge.parsing import MarkdownParser, ParseRequest
 from core.knowledge.retrieval import (
     HashingEmbeddingProvider,
@@ -55,6 +57,60 @@ def test_heading_aware_chunks_keep_stable_revision_and_block_evidence() -> None:
     assert first[0].page_revision == "krev_test"
     assert first[0].source_revision == "sha256:test"
     assert first[0].content_hash.startswith("sha256:")
+
+
+def test_visual_block_metadata_survives_chunk_and_changes_citation_identity() -> None:
+    document = _document("# Diagram\n\nExact scan P95 is 36 ms.\n")
+    paragraph = document.blocks[-1]
+    visual = replace(
+        document,
+        provenance=replace(
+            document.provenance,
+            parser_id="qwen3-vl",
+            parser_version="2.0.0",
+            media_type="image/png",
+        ),
+        blocks=(
+            replace(
+                paragraph,
+                kind="table",
+                page=1,
+                bbox=(0.1, 0.2, 0.9, 0.8),
+                media_ref="charts/retrieval.png",
+                confidence=0.93,
+            ),
+        ),
+    )
+    kwargs = {
+        "workspace_id": "knowledge-local",
+        "page_id": "page_visual",
+        "page_revision": "krev_visual",
+        "page_path": "wiki/sources/retrieval.md",
+        "source_id": "src_visual",
+        "source_revision": "sha256:visual",
+        "source_kind": "obsidian",
+        "source_relative_path": "charts/retrieval.png",
+        "proposal_id": "kprop_visual",
+        "artifact_id": "part_visual",
+        "title": "Retrieval chart",
+        "visibility": "private",
+        "active": True,
+    }
+
+    chunk = chunk_document(visual, **kwargs)[0]
+    changed_region = chunk_document(
+        replace(visual, blocks=(replace(visual.blocks[0], bbox=(0.2, 0.2, 0.9, 0.8)),)),
+        **kwargs,
+    )[0]
+
+    assert chunk.block_kind == "table"
+    assert chunk.page_number == 1
+    assert chunk.bbox == (0.1, 0.2, 0.9, 0.8)
+    assert chunk.media_ref == "charts/retrieval.png"
+    assert chunk.confidence == 0.93
+    assert chunk.parser_id == "qwen3-vl"
+    assert chunk.parser_version == "2.0.0"
+    assert changed_region.chunk_id != chunk.chunk_id
 
 
 def test_chinese_lexical_projection_and_hashing_embedding_are_deterministic() -> None:

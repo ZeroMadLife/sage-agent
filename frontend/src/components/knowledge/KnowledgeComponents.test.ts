@@ -89,7 +89,10 @@ beforeEach(() => {
     page_revision: 'krev-page', page_path: 'wiki/sources/harness.md',
     source_id: 'source-1', source_revision: 'sha256:source', source_kind: 'obsidian',
     source_relative_path: 'notes/harness.md', block_id: 'block-1', ordinal: 0,
-    title: 'Agent Harness', heading_path: ['Harness', 'Recovery'], page_number: null,
+    title: 'Agent Harness', heading_path: ['Harness', 'Recovery'], page_number: 2,
+    block_kind: 'table', bbox: [0.1, 0.2, 0.9, 0.8], bbox_coordinate_space: 'normalized',
+    media_ref: 'charts/retrieval.png', confidence: 0.93,
+    parser_id: 'qwen3-vl', parser_version: '2.0.0',
     excerpt: 'Harness 使用可恢复的状态机保存执行证据。', token_count: 12, truncated: false,
   })
   vi.mocked(fetchKnowledgePage).mockResolvedValue({
@@ -269,6 +272,9 @@ it('shows revision evidence and one-hop relations in the inspector', async () =>
   expect(fetchKnowledgeCitation).toHaveBeenCalledWith('kcite-1')
   expect(wrapper.text()).toContain('Harness 使用可恢复的状态机保存执行证据。')
   expect(wrapper.text()).toContain('Harness / Recovery')
+  expect(wrapper.text()).toContain('第 2 页')
+  expect(wrapper.text()).toContain('区域 0.10, 0.20, 0.90, 0.80')
+  expect(wrapper.text()).toContain('qwen3-vl@2.0.0')
   await wrapper.findAll('.inspector-tabs button')[3].trigger('click')
   await wrapper.get('.relation-list button').trigger('click')
   expect(wrapper.emitted('select')).toEqual([['source-1']])

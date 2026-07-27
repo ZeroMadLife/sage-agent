@@ -1,0 +1,290 @@
+{
+  "schema_version": 1,
+  "evaluation_id": "sage-knowledge-multimodal-evidence-v1",
+  "inputs": {
+    "cases": "knowledge/eval/multimodal_cases.jsonl",
+    "cases_sha256": "sha256:4bc39869d487a42a2fc3e52357cb4eb22032166bc8ae236c506e4482d24b4722",
+    "case_count": 12,
+    "split_counts": {
+      "dev": 6,
+      "calibration": 3,
+      "test": 3
+    }
+  },
+  "source": {
+    "commit": "cc8744377c3bd526b2ba6a59c56f5df2e5d252b3",
+    "dirty": false
+  },
+  "scope": {
+    "l1_local_parsers": [
+      "sage.docx@1.0.0",
+      "sage.png@1.0.0"
+    ],
+    "l2_vlm_contract": "qwen3-vl@2.0.0 fixture response",
+    "live_vlm_quality_evaluated": false,
+    "visual_vector_retrieval_enabled": false,
+    "fixture_origin": "project-authored synthetic documents and responses"
+  },
+  "metrics": {
+    "case_pass_rate": 1.0,
+    "test_case_pass_rate": 1.0,
+    "visual_bbox_accuracy": 1.0,
+    "citation_identity_stable": true,
+    "latency_ms": {
+      "p50": 0.036,
+      "p95": 27.86
+    }
+  },
+  "gates": {
+    "case_pass_rate": {
+      "minimum": 1.0,
+      "actual": 1.0,
+      "passed": true
+    },
+    "frozen_test_pass_rate": {
+      "minimum": 1.0,
+      "actual": 1.0,
+      "passed": true
+    },
+    "visual_bbox_accuracy": {
+      "minimum": 1.0,
+      "actual": 1.0,
+      "passed": true
+    },
+    "citation_identity_stable": {
+      "passed": true
+    },
+    "overall_passed": true
+  },
+  "cases": [
+    {
+      "case_id": "ragmm-dev-01",
+      "dataset_split": "dev",
+      "fixture_id": "docx_ordered",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_0c7faad7c7122efa50e5e4abb1c00a83",
+      "latency_ms": 27.86
+    },
+    {
+      "case_id": "ragmm-dev-02",
+      "dataset_split": "dev",
+      "fixture_id": "docx_ordered",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_20d5446d742ca66c356e3e383aabb0d2",
+      "latency_ms": 0.042
+    },
+    {
+      "case_id": "ragmm-dev-03",
+      "dataset_split": "dev",
+      "fixture_id": "docx_ordered",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_cb43a11e01a1a1ee2e02f68db428635d",
+      "latency_ms": 0.031
+    },
+    {
+      "case_id": "ragmm-dev-04",
+      "dataset_split": "dev",
+      "fixture_id": "png_metadata",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_17773f160cfa7eb2a17978ea580f9043",
+      "latency_ms": 1.228
+    },
+    {
+      "case_id": "ragmm-dev-05",
+      "dataset_split": "dev",
+      "fixture_id": "png_metadata",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_17773f160cfa7eb2a17978ea580f9043",
+      "latency_ms": 0.02
+    },
+    {
+      "case_id": "ragmm-dev-06",
+      "dataset_split": "dev",
+      "fixture_id": "qwen_region",
+      "layer": "L2",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_b19df2beeca86f9d377369663f79474d",
+      "latency_ms": 3.574
+    },
+    {
+      "case_id": "ragmm-cal-01",
+      "dataset_split": "calibration",
+      "fixture_id": "docx_ordered",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_0c7faad7c7122efa50e5e4abb1c00a83",
+      "latency_ms": 0.041
+    },
+    {
+      "case_id": "ragmm-cal-02",
+      "dataset_split": "calibration",
+      "fixture_id": "png_metadata",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_17773f160cfa7eb2a17978ea580f9043",
+      "latency_ms": 0.021
+    },
+    {
+      "case_id": "ragmm-cal-03",
+      "dataset_split": "calibration",
+      "fixture_id": "qwen_region",
+      "layer": "L2",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_b19df2beeca86f9d377369663f79474d",
+      "latency_ms": 0.017
+    },
+    {
+      "case_id": "ragmm-test-01",
+      "dataset_split": "test",
+      "fixture_id": "docx_ordered",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_20d5446d742ca66c356e3e383aabb0d2",
+      "latency_ms": 0.028
+    },
+    {
+      "case_id": "ragmm-test-02",
+      "dataset_split": "test",
+      "fixture_id": "png_no_description",
+      "layer": "L1",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_e39c2cab2bd4751d3f20d4c4a585383f",
+      "latency_ms": 0.547
+    },
+    {
+      "case_id": "ragmm-test-03",
+      "dataset_split": "test",
+      "fixture_id": "qwen_region",
+      "layer": "L2",
+      "passed": true,
+      "checks": {
+        "required_block": true,
+        "parser": true,
+        "chunk_projection": true,
+        "page": true,
+        "bbox": true,
+        "media_ref": true,
+        "confidence": true,
+        "citation_projection": true
+      },
+      "citation_id": "kcite_b19df2beeca86f9d377369663f79474d",
+      "latency_ms": 0.018
+    }
+  ],
+  "deterministic_digest": "sha256:87e492d57564cccb4131dafc034f93ecb5bc45949b1cb5deeb05e81263908fda"
+}

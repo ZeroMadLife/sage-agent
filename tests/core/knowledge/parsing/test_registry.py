@@ -82,4 +82,10 @@ def test_default_registry_is_fresh_and_contains_markdown() -> None:
 
     assert first is not second
     assert first.resolve(_request()).parser_id == "sage.markdown"
-    assert first.parser_ids() == ("sage.html", "sage.markdown", "sage.pdf.text")
+    assert first.parser_ids() == (
+        "sage.docx",
+        "sage.html",
+        "sage.markdown",
+        "sage.pdf.text",
+        "sage.png",
+    )

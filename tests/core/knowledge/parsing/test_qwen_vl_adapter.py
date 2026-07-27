@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 
 import httpx
 import pytest
@@ -60,6 +61,104 @@ async def test_qwen_vl_rasterizes_each_page_without_exposing_key_in_result() -> 
     await client.aclose()
 
 
+async def test_qwen_vl_preserves_normalized_regions_for_png_citations() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["response_format"] == {"type": "json_object"}
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "title": "Retrieval chart",
+                                    "regions": [
+                                        {
+                                            "kind": "table",
+                                            "text": "exact P95 36 ms; cross encoder P95 1436 ms",
+                                            "bbox": [0.1, 0.2, 0.9, 0.8],
+                                            "confidence": 0.93,
+                                        }
+                                    ],
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    png = _png_bytes()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    adapter = QwenVlAdapter(
+        QwenVlConfig(api_key="test-key"),
+        client=client,
+    )
+    request = ParseRequest(
+        source_id="src_png",
+        relative_path="charts/retrieval.png",
+        source_revision="sha256:png",
+        media_type="image/png",
+        payload=png,
+    )
+
+    document = await adapter.parse(request, progress=_ignore)
+
+    assert document.title == "Retrieval chart"
+    assert document.provenance.parser_id == "qwen3-vl"
+    assert document.provenance.parser_version == "2.0.0"
+    assert len(document.blocks) == 1
+    block = document.blocks[0]
+    assert block.kind == "table"
+    assert block.page == 1
+    assert block.bbox == (0.1, 0.2, 0.9, 0.8)
+    assert block.media_ref == "charts/retrieval.png"
+    assert block.confidence == 0.93
+    assert "cross encoder P95 1436 ms" in document.rendered_markdown
+    await client.aclose()
+
+
+async def test_qwen_vl_rejects_boolean_bbox_values() -> None:
+    result = {
+        "title": "Invalid region",
+        "regions": [
+            {
+                "kind": "table",
+                "text": "must not be accepted",
+                "bbox": [True, 0.2, 0.9, 0.8],
+                "confidence": 0.9,
+            }
+        ],
+    }
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps(result)}}]},
+            )
+        )
+    )
+    adapter = QwenVlAdapter(QwenVlConfig(api_key="test-key"), client=client)
+
+    with pytest.raises(ExternalAdapterError) as captured:
+        await adapter.parse(
+            ParseRequest(
+                source_id="src_png",
+                relative_path="charts/invalid.png",
+                source_revision="sha256:invalid",
+                media_type="image/png",
+                payload=_png_bytes(),
+            ),
+            progress=_ignore,
+        )
+
+    assert captured.value.code == "invalid_result"
+    assert captured.value.retryable is False
+    await client.aclose()
+
+
 async def test_qwen_vl_rate_limit_is_retryable() -> None:
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(429)))
     adapter = QwenVlAdapter(
@@ -93,3 +192,11 @@ def test_default_pdf_rasterizer_enforces_page_limit() -> None:
 
 async def _ignore(_: ExternalParseProgress) -> None:
     return None
+
+
+def _png_bytes() -> bytes:
+    from PIL import Image
+
+    output = BytesIO()
+    Image.new("RGB", (64, 32), "white").save(output, format="PNG")
+    return output.getvalue()

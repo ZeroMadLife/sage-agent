@@ -332,6 +332,13 @@ export type KnowledgeEvidence = {
   title: string
   heading_path: string[]
   page_number: number | null
+  block_kind: 'frontmatter' | 'heading' | 'paragraph' | 'list' | 'code' | 'table' | 'quote' | 'media'
+  bbox: [number, number, number, number] | null
+  bbox_coordinate_space: 'normalized' | null
+  media_ref: string | null
+  confidence: number
+  parser_id: string
+  parser_version: string
   excerpt: string
   token_count: number
   truncated: boolean
@@ -378,6 +385,13 @@ export type KnowledgeCitation = {
   title: string
   heading_path: string[]
   page_number: number | null
+  block_kind: 'frontmatter' | 'heading' | 'paragraph' | 'list' | 'code' | 'table' | 'quote' | 'media'
+  bbox: [number, number, number, number] | null
+  bbox_coordinate_space: 'normalized' | null
+  media_ref: string | null
+  confidence: number
+  parser_id: string
+  parser_version: string
   excerpt: string
   token_count: number
   truncated: boolean
