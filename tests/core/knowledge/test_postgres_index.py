@@ -17,6 +17,7 @@ from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
+from core.knowledge.recovery import KnowledgeRecoveryPolicy
 from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
 
@@ -155,6 +156,50 @@ def test_postgres_retrieval_trace_excludes_query_and_chunk_text(
     assert row[7:] == ("not_configured", "none", None)
     assert "POSTGRES_TRACE_SECRET" not in serialized
     assert source_text not in serialized
+
+
+def test_postgres_recovery_trace_links_both_rounds_without_raw_queries(
+    postgres_store: KnowledgeStore,
+    tmp_path: Path,
+) -> None:
+    index = postgres_store.knowledge_index
+    assert isinstance(index, PostgresKnowledgeIndex)
+    index.observability = KnowledgeRetrievalObservabilityConfig(
+        enabled=True,
+        hmac_key="test-only-postgres-observability-key-v1",
+    )
+    postgres_store.recovery_policy = KnowledgeRecoveryPolicy(enabled=True, min_results=4)
+    source_text = (
+        "# Filtering\n\nWith approximate indexes, filtering can produce fewer matching rows. "
+        "Iterative scans continue until enough rows are found.\n"
+    )
+    (tmp_path / "source" / "pgvector.md").write_text(source_text, encoding="utf-8")
+    proposal = postgres_store.ingest("official", "pgvector.md")
+    postgres_store.approve(proposal.proposal_id, proposal.revision)
+    query = "为什么 HNSW 加过滤条件后可能返回不足 top-k？"
+
+    bundle = postgres_store.retrieve(query, top_k=8)
+
+    assert bundle.recovery_status == "recovered"
+    with psycopg2.connect(index.config.dsn) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT query_hash, round_index, rewrite_hash
+            FROM knowledge_retrieval_runs
+            WHERE workspace_id=%s
+            ORDER BY created_at, run_id
+            """,
+            (index.workspace_id,),
+        )
+        rows = cursor.fetchall()
+
+    assert [row[1] for row in rows] == [1, 2]
+    assert rows[0][0] == rows[1][0]
+    assert rows[0][2] is None
+    assert str(rows[1][2]).startswith("hmac-sha256:")
+    serialized = json.dumps(rows, ensure_ascii=False, default=str)
+    assert query not in serialized
+    assert "iterative scans" not in serialized
 
 
 def test_postgres_exact_routes_preserve_filters_revisions_and_citations(
