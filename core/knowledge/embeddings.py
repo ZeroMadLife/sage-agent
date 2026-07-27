@@ -8,6 +8,7 @@ import warnings
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
+from threading import RLock
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -70,9 +71,12 @@ class FastEmbedEmbeddingProvider:
         self.dimensions = config.dimensions
         self._cache: dict[str, tuple[float, ...]] = {}
         self._model: Any | None = None
+        self._model_lock = RLock()
 
     def prepare(self, texts: tuple[str, ...]) -> None:
         pending = tuple(text for text in dict.fromkeys(texts) if text not in self._cache)
+        if not pending:
+            return
         model = self._load_model()
         for offset in range(0, len(pending), self.config.batch_size):
             batch = pending[offset : offset + self.config.batch_size]
@@ -95,32 +99,33 @@ class FastEmbedEmbeddingProvider:
         return self._cache[text]
 
     def _load_model(self) -> Any:
-        if self._model is not None:
-            return self._model
-        try:
-            fastembed = import_module("fastembed")
-            if str(fastembed.__version__) != "0.8.0":
-                raise RuntimeError("unsupported FastEmbed runtime version")
-            huggingface_hub = import_module("huggingface_hub")
-            snapshot_path = huggingface_hub.snapshot_download(
-                repo_id=self.config.repository,
-                revision=self.config.model_revision,
-                cache_dir=str(self.config.cache_dir),
-                local_files_only=self.config.local_files_only,
-            )
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore",
-                    message=r"The model .* now uses mean pooling instead of CLS embedding.*",
-                    category=UserWarning,
-                )
-                self._model = fastembed.TextEmbedding(
-                    model_name=self.config.model,
+        with self._model_lock:
+            if self._model is not None:
+                return self._model
+            try:
+                fastembed = import_module("fastembed")
+                if str(fastembed.__version__) != "0.8.0":
+                    raise RuntimeError("unsupported FastEmbed runtime version")
+                huggingface_hub = import_module("huggingface_hub")
+                snapshot_path = huggingface_hub.snapshot_download(
+                    repo_id=self.config.repository,
+                    revision=self.config.model_revision,
                     cache_dir=str(self.config.cache_dir),
-                    specific_model_path=str(snapshot_path),
+                    local_files_only=self.config.local_files_only,
                 )
-        except Exception as exc:
-            raise RuntimeError("FastEmbed initialization failed") from exc
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r"The model .* now uses mean pooling instead of CLS embedding.*",
+                        category=UserWarning,
+                    )
+                    self._model = fastembed.TextEmbedding(
+                        model_name=self.config.model,
+                        cache_dir=str(self.config.cache_dir),
+                        specific_model_path=str(snapshot_path),
+                    )
+            except Exception as exc:
+                raise RuntimeError("FastEmbed initialization failed") from exc
         return self._model
 
 

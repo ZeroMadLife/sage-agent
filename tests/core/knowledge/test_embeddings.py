@@ -161,6 +161,8 @@ def test_fastembed_provider_pins_snapshot_batches_normalizes_and_caches(
         )
     )
 
+    provider.prepare(())
+    assert downloads == []
     provider.prepare(("first", "second", "third", "first"))
 
     assert provider.embed("first") == pytest.approx((0.6, 0.8))
