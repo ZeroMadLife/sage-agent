@@ -1,10 +1,10 @@
 # Sage Knowledge 真实语义 Provider 与 Gate v1
 
-> 日期：2026-07-28  
-> 数据集：`sage-official-agent-fullstack-v1@2026-07-27.1`  
-> source commit：`cbeb08e417ef4d9b1a37bd19649a882df7a5efbf`  
-> selection：[knowledge_semantic_postgres_selection_v1_2026-07-28.json](../../evals/reports/knowledge_semantic_postgres_selection_v1_2026-07-28.json)  
-> final：[knowledge_semantic_postgres_final_v1_2026-07-28.json](../../evals/reports/knowledge_semantic_postgres_final_v1_2026-07-28.json)  
+> 日期：2026-07-28
+> 数据集：`sage-official-agent-fullstack-v1@2026-07-27.1`
+> source commit：`cbeb08e417ef4d9b1a37bd19649a882df7a5efbf`
+> selection：[knowledge_semantic_postgres_selection_v1_2026-07-28.json](../../evals/reports/knowledge_semantic_postgres_selection_v1_2026-07-28.json)
+> final：[knowledge_semantic_postgres_final_v1_2026-07-28.json](../../evals/reports/knowledge_semantic_postgres_final_v1_2026-07-28.json)
 > candidate policy：`krp_eeaef9ce9dfa08b1`
 
 ## 结论
