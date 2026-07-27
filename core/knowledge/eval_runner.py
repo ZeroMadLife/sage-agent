@@ -735,9 +735,7 @@ def compare_retrieval_ablation_reports(
         candidate_route["ranking"]["ndcg_at_k"],
         baseline_route["ranking"]["ndcg_at_k"],
     )
-    mrr_delta = _rounded_delta(
-        candidate_route["ranking"]["mrr"], baseline_route["ranking"]["mrr"]
-    )
+    mrr_delta = _rounded_delta(candidate_route["ranking"]["mrr"], baseline_route["ranking"]["mrr"])
     claim_delta = _rounded_delta(
         candidate_route["generation"]["required_claim_token_recall"],
         baseline_route["generation"]["required_claim_token_recall"],
@@ -762,9 +760,9 @@ def compare_retrieval_ablation_reports(
         "passed": target_delta >= minimum_target_delta,
     }
 
-    false_acceptance_delta = int(
-        candidate_route["failures"]["false_acceptance"]
-    ) - int(baseline_route["failures"]["false_acceptance"])
+    false_acceptance_delta = int(candidate_route["failures"]["false_acceptance"]) - int(
+        baseline_route["failures"]["false_acceptance"]
+    )
     p95_latency_ms = float(candidate_route["system"]["latency_ms"]["p95"])
     raw_cost = candidate_route["system"]["estimated_cost_usd"]
     estimated_cost_usd = None if raw_cost is None else float(raw_cost)
@@ -775,9 +773,7 @@ def compare_retrieval_ablation_reports(
     candidate_storage = int(candidate_report["storage"]["workspace_row_bytes"])
     storage_multiplier = candidate_storage / baseline_storage if baseline_storage else math.inf
     eligible_semantic_blocks = int(
-        candidate_report["ablation"]["corpus_profile"][
-            "semantic_boundary_eligible_block_count"
-        ]
+        candidate_report["ablation"]["corpus_profile"]["semantic_boundary_eligible_block_count"]
     )
     strategy_exercised = eligible_semantic_blocks if strategy == "semantic_boundary" else 1
     gates: dict[str, dict[str, str | float | int | bool | None]] = {
@@ -1202,9 +1198,7 @@ def _estimated_cost(
         reranker_cost = 0.0
     else:
         raw_reranker_cost = reranker.estimated_cost_usd
-        reranker_cost = (
-            None if raw_reranker_cost is None else float(raw_reranker_cost)
-        )
+        reranker_cost = None if raw_reranker_cost is None else float(raw_reranker_cost)
     if provider_cost is None or reranker_cost is None:
         return None
     return provider_cost + reranker_cost
@@ -1314,9 +1308,7 @@ def _prepare_provider(
             ablation_policy=ablation_policy,
             semantic_provider=provider,
         )
-        texts.extend(
-            embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks
-        )
+        texts.extend(embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks)
     texts.extend(case.query for case in cases)
     prepare(tuple(dict.fromkeys(texts)))
 

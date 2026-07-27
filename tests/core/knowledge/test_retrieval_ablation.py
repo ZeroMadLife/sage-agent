@@ -166,26 +166,29 @@ def test_semantic_boundary_uses_embedding_breakpoint_only_for_oversized_blocks()
     assert chunks[1].text.startswith("部署阶段")
 
     baseline_sized = replace(policy, semantic_min_chars=len(text) + 1)
-    assert len(
-        chunk_document(
-            _document(f"# Sage\n\n## Boundary\n\n{text}\n"),
-            workspace_id="knowledge-local",
-            page_id="page_test",
-            page_revision="krev_test",
-            page_path="wiki/sources/guide.md",
-            source_id="src_test",
-            source_revision="sha256:test",
-            source_kind="official",
-            source_relative_path="guide.md",
-            proposal_id="kprop_test",
-            artifact_id="part_test",
-            title="Sage Guide",
-            visibility="private",
-            active=True,
-            ablation_policy=baseline_sized,
-            semantic_provider=_SemanticProvider(),
+    assert (
+        len(
+            chunk_document(
+                _document(f"# Sage\n\n## Boundary\n\n{text}\n"),
+                workspace_id="knowledge-local",
+                page_id="page_test",
+                page_revision="krev_test",
+                page_path="wiki/sources/guide.md",
+                source_id="src_test",
+                source_revision="sha256:test",
+                source_kind="official",
+                source_relative_path="guide.md",
+                proposal_id="kprop_test",
+                artifact_id="part_test",
+                title="Sage Guide",
+                visibility="private",
+                active=True,
+                ablation_policy=baseline_sized,
+                semantic_provider=_SemanticProvider(),
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 class _Reranker:

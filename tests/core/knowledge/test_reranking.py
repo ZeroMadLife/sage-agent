@@ -34,9 +34,7 @@ def test_fastembed_cross_encoder_pins_snapshot_and_validates_scores(
 
     modules = {
         "fastembed": SimpleNamespace(__version__="0.8.0"),
-        "fastembed.rerank.cross_encoder": SimpleNamespace(
-            TextCrossEncoder=FakeTextCrossEncoder
-        ),
+        "fastembed.rerank.cross_encoder": SimpleNamespace(TextCrossEncoder=FakeTextCrossEncoder),
         "huggingface_hub": SimpleNamespace(snapshot_download=snapshot_download),
     }
     monkeypatch.setattr("core.knowledge.reranking.import_module", lambda name: modules[name])
@@ -51,9 +49,7 @@ def test_fastembed_cross_encoder_pins_snapshot_and_validates_scores(
         )
     )
 
-    assert provider.rerank("query", ("first", "second")) == pytest.approx(
-        (0.5, 0.7310585786)
-    )
+    assert provider.rerank("query", ("first", "second")) == pytest.approx((0.5, 0.7310585786))
     assert provider.model_revision == f"{revision}+{FASTEMBED_RERANK_RUNTIME_REVISION}"
     assert downloads == [
         {

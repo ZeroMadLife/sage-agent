@@ -107,9 +107,7 @@ def main() -> int:
         }
 
     splits: tuple[EvalSplit, ...] = (
-        ("dev", "calibration")
-        if args.stage == "selection"
-        else ("calibration", "test")
+        ("dev", "calibration") if args.stage == "selection" else ("calibration", "test")
     )
     baseline_threshold = None if selection is None else _threshold(selection["baseline"])
     baseline = _run(
@@ -132,9 +130,7 @@ def main() -> int:
     comparisons: dict[str, dict[str, Any]] = {}
     decisions: dict[str, dict[str, Any]] = {}
     for strategy in _STRATEGIES:
-        threshold = (
-            None if selection is None else _threshold(selection["candidates"][strategy])
-        )
+        threshold = None if selection is None else _threshold(selection["candidates"][strategy])
         candidate = _run(
             repo_root=repo_root,
             dataset=args.dataset.resolve(),

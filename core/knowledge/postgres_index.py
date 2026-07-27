@@ -326,8 +326,7 @@ class PostgresKnowledgeIndex:
         if callable(prepare):
             prepare(
                 tuple(
-                    embedding_text(chunk, ablation_policy=self.ablation_policy)
-                    for chunk in chunks
+                    embedding_text(chunk, ablation_policy=self.ablation_policy) for chunk in chunks
                 )
             )
         prepared: list[tuple[KnowledgeChunk, tuple[float, ...], str]] = []

@@ -15,9 +15,7 @@ DATASET_PATH = REPO_ROOT / "knowledge" / "eval" / "dataset.json"
 def test_parent_child_policy_is_shared_by_index_and_store(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
-    parent = "".join(
-        f"父块保留完整证据，第 {index} 个子块只负责检索。" for index in range(12)
-    )
+    parent = "".join(f"父块保留完整证据，第 {index} 个子块只负责检索。" for index in range(12))
     (source / "note.md").write_text(
         f"# Sage\n\n## Parent Child\n\n{parent}\n",
         encoding="utf-8",

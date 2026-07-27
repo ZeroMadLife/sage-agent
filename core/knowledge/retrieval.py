@@ -246,9 +246,7 @@ def chunk_document(
         )
         for part_index, (text, retrieval_value) in enumerate(parts):
             content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
-            retrieval_hash = hashlib.sha256(
-                (retrieval_value or text).encode("utf-8")
-            ).hexdigest()
+            retrieval_hash = hashlib.sha256((retrieval_value or text).encode("utf-8")).hexdigest()
             ordinal = len(chunks)
             chunk_id = (
                 _stable_id(
@@ -662,14 +660,9 @@ def _split_semantic_block(
     vectors = tuple(provider.embed(sentence) for sentence in sentences)
     if any(len(vector) != provider.dimensions for vector in vectors):
         raise ValueError("semantic boundary embedding dimensions changed")
-    distances = tuple(
-        1.0 - cosine_similarity(left, right)
-        for left, right in pairwise(vectors)
-    )
+    distances = tuple(1.0 - cosine_similarity(left, right) for left, right in pairwise(vectors))
     threshold = _percentile(distances, breakpoint_percentile)
-    boundaries = {
-        index + 1 for index, distance in enumerate(distances) if distance > threshold
-    }
+    boundaries = {index + 1 for index, distance in enumerate(distances) if distance > threshold}
     pieces: list[str] = []
     current: list[str] = []
     for index, sentence in enumerate(sentences, start=1):

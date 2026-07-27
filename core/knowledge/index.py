@@ -275,8 +275,7 @@ class LocalKnowledgeIndex:
         if callable(prepare):
             prepare(
                 tuple(
-                    embedding_text(chunk, ablation_policy=self.ablation_policy)
-                    for chunk in chunks
+                    embedding_text(chunk, ablation_policy=self.ablation_policy) for chunk in chunks
                 )
             )
         old_ids = [

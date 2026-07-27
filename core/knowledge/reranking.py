@@ -55,9 +55,7 @@ class FastEmbedCrossEncoderProvider:
     def __init__(self, config: FastEmbedCrossEncoderConfig) -> None:
         self.config = config
         self.model_id = f"fastembed-rerank.{config.model}"
-        self.model_revision = (
-            f"{config.model_revision}+{FASTEMBED_RERANK_RUNTIME_REVISION}"
-        )
+        self.model_revision = f"{config.model_revision}+{FASTEMBED_RERANK_RUNTIME_REVISION}"
         self._model: Any | None = None
         self._lock = RLock()
 
