@@ -71,7 +71,7 @@ def main() -> int:
         "exact": [
             {
                 "scale": item["scale"],
-                "recall_at_10": item["recall_at_10"],
+                "recall_at_k": item["recall_at_k"],
                 "p95_ms": item["p95_ms"],
             }
             for item in report["exact"]

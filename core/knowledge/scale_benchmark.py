@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Any
 
+FIXTURE_REVISION = "sage-hnsw-scale-fixture-v1"
+
 
 @dataclass(frozen=True, slots=True)
 class ScaleBenchmarkConfig:
@@ -71,7 +73,8 @@ DEFAULT_SCALE_BENCHMARK_CONFIG = ScaleBenchmarkConfig()
 @dataclass(frozen=True, slots=True)
 class ScaleMeasurement:
     scale: int
-    recall_at_10: float
+    fixture_digest: str
+    recall_at_k: float
     p50_ms: float
     p95_ms: float
     measured_queries: int
@@ -88,7 +91,7 @@ class ScaleMeasurement:
 @dataclass(frozen=True, slots=True)
 class HnswMeasurement:
     ef_search: int
-    recall_at_10: float
+    recall_at_k: float
     p50_ms: float
     p95_ms: float
     measured_queries: int
@@ -153,6 +156,8 @@ def distractor_vector(row_index: int, config: ScaleBenchmarkConfig) -> tuple[flo
         % available
     )
     step = 17
+    while math.gcd(step, available) != 1:
+        step += 1
     while len(indexes) < min(8, available):
         absolute = reserved + candidate
         if absolute not in indexes:
@@ -192,7 +197,7 @@ def decide_hnsw_gate(
     eligible = tuple(
         measurement.ef_search
         for measurement in hnsw
-        if measurement.recall_at_10 >= config.minimum_hnsw_recall
+        if measurement.recall_at_k >= config.minimum_hnsw_recall
         and measurement.p95_ms <= config.exact_p95_sla_ms
         and measurement.p95_ms <= maximum_hnsw_p95
     )
@@ -235,7 +240,7 @@ def run_scale_benchmark(
         for scale in config.scales:
             _drop_benchmark_table(connection, sql, table_name)
             _create_benchmark_table(connection, sql, table_name, config.dimensions)
-            load_ms = _load_fixture(connection, sql, table_name, scale, config)
+            load_ms, fixture_digest = _load_fixture(connection, sql, table_name, scale, config)
             index_ms = _create_scalar_index(
                 connection,
                 sql,
@@ -251,6 +256,7 @@ def run_scale_benchmark(
                 scalar_index_name,
                 scale,
                 config,
+                fixture_digest=fixture_digest,
                 data_load_ms=load_ms,
                 scalar_index_build_ms=index_ms,
                 analyze_ms=analyze_ms,
@@ -313,7 +319,9 @@ def run_scale_benchmark(
             hnsw=tuple(hnsw_measurements),
         )
         deterministic_contract = {
+            "fixture_revision": FIXTURE_REVISION,
             "config": _config_payload(config),
+            "fixture_digests": [item.fixture_digest for item in exact_measurements],
             "gold": {
                 str(index): list(gold_chunk_ids(index, config))
                 for index in range(config.query_count)
@@ -322,6 +330,7 @@ def run_scale_benchmark(
         report = {
             "schema_version": 1,
             "benchmark_id": "sage-postgres-hnsw-scale-gate-v1",
+            "fixture_revision": FIXTURE_REVISION,
             "config": _config_payload(config),
             "environment": environment,
             "resource_measurement": {
@@ -391,27 +400,28 @@ def _load_fixture(
     table_name: str,
     scale: int,
     config: ScaleBenchmarkConfig,
-) -> float:
+) -> tuple[float, str]:
     started = time.perf_counter()
+    digest = hashlib.sha256()
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="") as fixture:
         for query_index in range(config.query_count):
             for rank, chunk_id in enumerate(gold_chunk_ids(query_index, config)):
-                fixture.write(
-                    _copy_row(
-                        chunk_id,
-                        positive_vector(query_index, rank, config),
-                        config.dimensions,
-                    )
-                )
-        gold_count = config.query_count * config.top_k
-        for row_index in range(scale - gold_count):
-            fixture.write(
-                _copy_row(
-                    f"distractor-{row_index:09d}",
-                    distractor_vector(row_index, config),
+                row = _copy_row(
+                    chunk_id,
+                    positive_vector(query_index, rank, config),
                     config.dimensions,
                 )
+                fixture.write(row)
+                digest.update(row.encode())
+        gold_count = config.query_count * config.top_k
+        for row_index in range(scale - gold_count):
+            row = _copy_row(
+                f"distractor-{row_index:09d}",
+                distractor_vector(row_index, config),
+                config.dimensions,
             )
+            fixture.write(row)
+            digest.update(row.encode())
         fixture.seek(0)
         copy_statement = sql.SQL(
             "COPY {} (chunk_id, workspace_id, visibility, active, "
@@ -419,7 +429,7 @@ def _load_fixture(
         ).format(sql.Identifier(table_name))
         with connection.cursor() as cursor:
             cursor.copy_expert(copy_statement.as_string(connection), fixture)
-    return (time.perf_counter() - started) * 1_000
+    return (time.perf_counter() - started) * 1_000, "sha256:" + digest.hexdigest()
 
 
 def _copy_row(chunk_id: str, vector: tuple[float, ...], dimensions: int) -> str:
@@ -462,6 +472,7 @@ def _measure_exact(
     scale: int,
     config: ScaleBenchmarkConfig,
     *,
+    fixture_digest: str,
     data_load_ms: float,
     scalar_index_build_ms: float,
     analyze_ms: float,
@@ -497,7 +508,8 @@ def _measure_exact(
     return (
         ScaleMeasurement(
             scale=scale,
-            recall_at_10=recall,
+            fixture_digest=fixture_digest,
+            recall_at_k=recall,
             p50_ms=percentile(tuple(latencies), 0.50),
             p95_ms=percentile(tuple(latencies), 0.95),
             measured_queries=len(latencies),
@@ -546,7 +558,7 @@ def _measure_hnsw(
     )
     return HnswMeasurement(
         ef_search=ef_search,
-        recall_at_10=recall,
+        recall_at_k=recall,
         p50_ms=percentile(tuple(latencies), 0.50),
         p95_ms=percentile(tuple(latencies), 0.95),
         measured_queries=len(latencies),
@@ -748,6 +760,7 @@ def _postgres_environment(connection: Any) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_SCALE_BENCHMARK_CONFIG",
+    "FIXTURE_REVISION",
     "HnswGateDecision",
     "HnswMeasurement",
     "ScaleBenchmarkConfig",

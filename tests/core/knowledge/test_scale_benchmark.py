@@ -99,6 +99,21 @@ def test_synthetic_vectors_have_stable_gold_and_disjoint_distractors() -> None:
     )
 
 
+def test_distractor_generation_terminates_when_default_step_is_not_coprime() -> None:
+    config = ScaleBenchmarkConfig(
+        scales=(128,),
+        dimensions=32,
+        top_k=7,
+        query_count=8,
+        measured_passes=1,
+    )
+
+    vector = distractor_vector(17, config)
+
+    assert len(vector) == 32
+    assert sum(value != 0.0 for value in vector) == 8
+
+
 def test_percentile_uses_linear_interpolation() -> None:
     assert percentile((1.0, 2.0, 3.0, 4.0), 0.5) == 2.5
     assert percentile((1.0, 2.0, 3.0, 4.0), 0.95) == pytest.approx(3.85)
@@ -138,7 +153,8 @@ def test_gate_requires_recall_latency_and_material_speedup() -> None:
 def _scale_measurement(scale: int, *, p95_ms: float) -> ScaleMeasurement:
     return ScaleMeasurement(
         scale=scale,
-        recall_at_10=1.0,
+        fixture_digest="sha256:test",
+        recall_at_k=1.0,
         p50_ms=p95_ms * 0.8,
         p95_ms=p95_ms,
         measured_queries=64,
@@ -161,7 +177,7 @@ def _hnsw_measurement(
 ) -> HnswMeasurement:
     return HnswMeasurement(
         ef_search=ef_search,
-        recall_at_10=recall,
+        recall_at_k=recall,
         p50_ms=p95_ms * 0.8,
         p95_ms=p95_ms,
         measured_queries=64,

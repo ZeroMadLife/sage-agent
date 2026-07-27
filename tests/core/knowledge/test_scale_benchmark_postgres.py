@@ -35,7 +35,7 @@ def test_postgres_scale_benchmark_keeps_exact_and_cleans_ephemeral_table(
     report = run_scale_benchmark(postgres_dsn, config=config)
 
     assert [item["scale"] for item in report["exact"]] == [128, 512]
-    assert all(item["recall_at_10"] == 1.0 for item in report["exact"])
+    assert all(item["recall_at_k"] == 1.0 for item in report["exact"])
     assert report["decision"]["runtime_recommendation"] == "keep_exact"
     assert report["hnsw"] == []
     _assert_no_ephemeral_tables(postgres_dsn)
@@ -59,7 +59,7 @@ def test_postgres_scale_benchmark_runs_conditional_hnsw_curve(
 
     assert report["decision"]["hnsw_experiment_required"] is True
     assert [item["ef_search"] for item in report["hnsw"]] == [20, 40]
-    assert all(item["recall_at_10"] >= 0.0 for item in report["hnsw"])
+    assert all(item["recall_at_k"] >= 0.0 for item in report["hnsw"])
     assert "Index Scan" in report["hnsw"][0]["explain"]["plan_node_types"]
     _assert_no_ephemeral_tables(postgres_dsn)
 
