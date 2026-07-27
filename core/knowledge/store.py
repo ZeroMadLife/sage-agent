@@ -82,6 +82,7 @@ from core.knowledge.retrieval import (
     KnowledgeChunk,
     KnowledgeIndexSummary,
     KnowledgeRetrievalBundle,
+    KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
     citation_id,
@@ -2002,6 +2003,7 @@ class KnowledgeStore:
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
         relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
     ) -> tuple[KnowledgeSearchHit, ...]:
         self.initialize()
         with self._connect() as connection:
@@ -2012,6 +2014,7 @@ class KnowledgeStore:
                 visibility=visibility,
                 source_ids=source_ids,
                 page_revisions=page_revisions,
+                retrieval_mode=retrieval_mode,
             )
             if not relation_expand or not hits:
                 return hits
@@ -2095,6 +2098,7 @@ class KnowledgeStore:
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
         relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
     ) -> KnowledgeRetrievalBundle:
         """Return one bounded evidence bundle for API and Agent consumers."""
 
@@ -2105,6 +2109,7 @@ class KnowledgeStore:
             source_ids=source_ids,
             page_revisions=page_revisions,
             relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
         )
         return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
 

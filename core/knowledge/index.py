@@ -14,6 +14,7 @@ from core.knowledge.retrieval import (
     HashingEmbeddingProvider,
     KnowledgeChunk,
     KnowledgeIndexSummary,
+    KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     chunk_document,
     citation_id,
@@ -357,17 +358,22 @@ class LocalKnowledgeIndex:
         visibility: str = "private",
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
     ) -> tuple[KnowledgeSearchHit, ...]:
         if top_k < 1 or top_k > 50:
             raise ValueError("knowledge search top_k must be between 1 and 50")
         if self.relevance_policy is not None and top_k > self.relevance_policy.top_k:
             raise ValueError("knowledge search top_k exceeds calibrated relevance policy")
         if self.relevance_policy is not None:
+            if retrieval_mode != "hybrid":
+                raise ValueError("calibrated relevance policy only supports hybrid retrieval")
             self.relevance_policy.assert_corpus(corpus_revision=self.corpus_revision(connection))
         if len(source_ids) > 100 or len(page_revisions) > 100:
             raise ValueError("knowledge search filters are too large")
         if visibility not in {"private", "public"}:
             raise ValueError("invalid knowledge visibility")
+        if retrieval_mode not in {"sparse", "dense", "hybrid"}:
+            raise ValueError("invalid knowledge retrieval mode")
         normalized = query.strip()
         if not normalized or len(normalized) > 2_000:
             raise ValueError("knowledge query must be between 1 and 2000 characters")
@@ -377,33 +383,50 @@ class LocalKnowledgeIndex:
             source_ids=source_ids,
             page_revisions=page_revisions,
         )
-        sparse_rows = connection.execute(
-            f"""
-            SELECT fts.chunk_id, bm25(knowledge_chunks_fts) AS score
-            FROM knowledge_chunks_fts AS fts
-            JOIN knowledge_chunks AS chunk ON chunk.chunk_id = fts.chunk_id
-            WHERE knowledge_chunks_fts MATCH ? AND {where}
-            ORDER BY score, fts.chunk_id
-            LIMIT ?
-            """,
-            (fts_query(normalized), *filter_params, candidate_limit),
-        ).fetchall()
+        sparse_rows = (
+            connection.execute(
+                f"""
+                SELECT fts.chunk_id, bm25(knowledge_chunks_fts) AS score,
+                       chunk.source_relative_path, chunk.source_revision,
+                       chunk.ordinal, chunk.content_hash
+                FROM knowledge_chunks_fts AS fts
+                JOIN knowledge_chunks AS chunk ON chunk.chunk_id = fts.chunk_id
+                WHERE knowledge_chunks_fts MATCH ? AND {where}
+                ORDER BY score, chunk.source_relative_path, chunk.source_revision,
+                         chunk.ordinal, chunk.content_hash, fts.chunk_id
+                LIMIT ?
+                """,
+                (fts_query(normalized), *filter_params, candidate_limit),
+            ).fetchall()
+            if retrieval_mode in {"sparse", "hybrid"}
+            else ()
+        )
         sparse = [(str(row["chunk_id"]), -float(row["score"])) for row in sparse_rows]
-        query_vector = self.embedding_provider.embed(normalized)
-        dense_rows = connection.execute(
-            f"""
-            SELECT embedding.chunk_id, embedding.dimensions, embedding.vector_json
-            FROM knowledge_chunk_embeddings AS embedding
-            JOIN knowledge_chunks AS chunk ON chunk.chunk_id = embedding.chunk_id
-            WHERE embedding.model_id=? AND embedding.model_revision=? AND {where}
-            """,
-            (
-                self.embedding_provider.model_id,
-                self.embedding_provider.model_revision,
-                *filter_params,
-            ),
-        ).fetchall()
-        dense = sorted(
+        query_vector = (
+            self.embedding_provider.embed(normalized)
+            if retrieval_mode in {"dense", "hybrid"}
+            else ()
+        )
+        dense_rows = (
+            connection.execute(
+                f"""
+                SELECT embedding.chunk_id, embedding.dimensions, embedding.vector_json,
+                       chunk.source_relative_path, chunk.source_revision,
+                       chunk.ordinal, chunk.content_hash
+                FROM knowledge_chunk_embeddings AS embedding
+                JOIN knowledge_chunks AS chunk ON chunk.chunk_id = embedding.chunk_id
+                WHERE embedding.model_id=? AND embedding.model_revision=? AND {where}
+                """,
+                (
+                    self.embedding_provider.model_id,
+                    self.embedding_provider.model_revision,
+                    *filter_params,
+                ),
+            ).fetchall()
+            if retrieval_mode in {"dense", "hybrid"}
+            else ()
+        )
+        dense_ranked = sorted(
             (
                 (
                     str(row["chunk_id"]),
@@ -414,16 +437,36 @@ class LocalKnowledgeIndex:
                             dimensions=int(row["dimensions"]),
                         ),
                     ),
+                    (
+                        str(row["source_relative_path"]),
+                        str(row["source_revision"]),
+                        int(row["ordinal"]),
+                        str(row["content_hash"]),
+                    ),
                 )
                 for row in dense_rows
             ),
-            key=lambda item: (-item[1], item[0]),
+            key=lambda item: (-item[1], item[2], item[0]),
         )
-        dense = [item for item in dense if item[1] > 0.0][:candidate_limit]
-        if not self.embedding_provider.supports_semantic_recall:
+        dense = [(chunk_id, score) for chunk_id, score, _stable_key in dense_ranked if score > 0.0][
+            :candidate_limit
+        ]
+        if retrieval_mode == "hybrid" and not self.embedding_provider.supports_semantic_recall:
             sparse_ids = {chunk_id for chunk_id, _score in sparse}
             dense = [item for item in dense if item[0] in sparse_ids]
-        fused = reciprocal_rank_fusion(sparse, dense)[:top_k]
+        stable_rows = (*sparse_rows, *dense_rows)
+        tie_breakers = {
+            str(row["chunk_id"]): "\0".join(
+                (
+                    str(row["source_relative_path"]),
+                    str(row["source_revision"]),
+                    f"{int(row['ordinal']):08d}",
+                    str(row["content_hash"]),
+                )
+            )
+            for row in stable_rows
+        }
+        fused = reciprocal_rank_fusion(sparse, dense, tie_breakers=tie_breakers)[:top_k]
         if self.relevance_policy is not None:
             fused = [
                 item
@@ -452,6 +495,7 @@ class LocalKnowledgeIndex:
                 sparse_score=sparse_score,
                 dense_rank=dense_rank,
                 dense_score=dense_score,
+                retrieval_route=retrieval_mode,
             )
             for rank, (
                 chunk_id,

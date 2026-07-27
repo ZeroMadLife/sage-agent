@@ -13,6 +13,12 @@ from core.knowledge.embeddings import (
     OpenAICompatibleEmbeddingConfig,
     OpenAICompatibleEmbeddingProvider,
 )
+from core.knowledge.eval_runner import (
+    GateCalibration,
+    GateObservation,
+    calibrate_gate,
+    run_sqlite_layered_eval,
+)
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
 from core.knowledge.goals import (
     LearningCapability,
@@ -58,6 +64,7 @@ from core.knowledge.retrieval import (
     KnowledgeEvidence,
     KnowledgeIndexSummary,
     KnowledgeRetrievalBundle,
+    KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
 )
@@ -91,6 +98,8 @@ __all__ = [
     "EvalPassage",
     "EvidenceLearning",
     "EvidenceLearningCitation",
+    "GateCalibration",
+    "GateObservation",
     "HashingEmbeddingProvider",
     "KnowledgeChunk",
     "KnowledgeConflictError",
@@ -126,6 +135,7 @@ __all__ = [
     "KnowledgeRelevancePolicy",
     "KnowledgeRelevancePolicyError",
     "KnowledgeRetrievalBundle",
+    "KnowledgeRetrievalMode",
     "KnowledgeSearchHit",
     "KnowledgeSourceRoot",
     "KnowledgeStore",
@@ -147,7 +157,9 @@ __all__ = [
     "WorkspaceSourceEvidence",
     "WorkspaceSynthesis",
     "assemble_retrieval_bundle",
+    "calibrate_gate",
     "load_relevance_policy",
     "load_versioned_dataset",
+    "run_sqlite_layered_eval",
     "validate_eval_dataset",
 ]
