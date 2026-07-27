@@ -397,6 +397,9 @@ class LocalKnowledgeIndex:
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
         retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
     ) -> tuple[KnowledgeSearchHit, ...]:
         if top_k < 1 or top_k > 50:
             raise ValueError("knowledge search top_k must be between 1 and 50")
@@ -413,6 +416,9 @@ class LocalKnowledgeIndex:
         if retrieval_mode not in {"sparse", "dense", "hybrid"}:
             raise ValueError("invalid knowledge retrieval mode")
         normalized = query.strip()
+        trace_source = normalized if trace_query is None else trace_query.strip()
+        if not trace_source or len(trace_source) > 2_000:
+            raise ValueError("knowledge trace query must be between 1 and 2000 characters")
         if not normalized or len(normalized) > 2_000:
             raise ValueError("knowledge query must be between 1 and 2000 characters")
         candidate_limit = min(200, max(20, top_k * 5))
@@ -450,7 +456,7 @@ class LocalKnowledgeIndex:
         except Exception as exc:
             self._record_retrieval_trace(
                 connection,
-                query=normalized,
+                query=trace_source,
                 retrieval_mode=retrieval_mode,
                 top_k=top_k,
                 candidate_limit=candidate_limit,
@@ -458,6 +464,8 @@ class LocalKnowledgeIndex:
                 returned_chunk_ids=(),
                 latency_ms=(time.perf_counter() - started) * 1_000,
                 error_type=type(exc).__name__,
+                round_index=round_index,
+                rewrite=rewrite,
             )
             raise
         dense_rows = (
@@ -536,13 +544,15 @@ class LocalKnowledgeIndex:
         if not chunk_ids:
             self._record_retrieval_trace(
                 connection,
-                query=normalized,
+                query=trace_source,
                 retrieval_mode=retrieval_mode,
                 top_k=top_k,
                 candidate_limit=candidate_limit,
                 ranked_candidates=ranked,
                 returned_chunk_ids=(),
                 latency_ms=(time.perf_counter() - started) * 1_000,
+                round_index=round_index,
+                rewrite=rewrite,
             )
             return ()
         placeholders = ",".join("?" for _ in chunk_ids)
@@ -575,13 +585,15 @@ class LocalKnowledgeIndex:
         )
         self._record_retrieval_trace(
             connection,
-            query=normalized,
+            query=trace_source,
             retrieval_mode=retrieval_mode,
             top_k=top_k,
             candidate_limit=candidate_limit,
             ranked_candidates=ranked,
             returned_chunk_ids=tuple(hit.chunk.chunk_id for hit in hits),
             latency_ms=(time.perf_counter() - started) * 1_000,
+            round_index=round_index,
+            rewrite=rewrite,
         )
         return hits
 
@@ -597,6 +609,8 @@ class LocalKnowledgeIndex:
         returned_chunk_ids: tuple[str, ...],
         latency_ms: float,
         error_type: str | None = None,
+        round_index: int = 1,
+        rewrite: str | None = None,
     ) -> None:
         if not self.observability.enabled:
             return
@@ -622,6 +636,8 @@ class LocalKnowledgeIndex:
                 indexed_chunk_count=indexed_chunk_count,
                 gate_configured=self.relevance_policy is not None,
                 latency_ms=latency_ms,
+                round_index=round_index,
+                rewrite=rewrite,
                 error_type=error_type,
             )
             self._insert_retrieval_trace(connection, trace)

@@ -79,6 +79,13 @@ from core.knowledge.policy import (
     evaluate_knowledge_policy,
     is_trusted_local_parser,
 )
+from core.knowledge.recovery import (
+    KnowledgeQueryRewriter,
+    KnowledgeRecoveryAttempt,
+    KnowledgeRecoveryOutcome,
+    KnowledgeRecoveryPolicy,
+    TechnicalGlossaryQueryRewriter,
+)
 from core.knowledge.retrieval import (
     KnowledgeChunk,
     KnowledgeIndexSummary,
@@ -430,6 +437,8 @@ class KnowledgeStore:
         knowledge_index: KnowledgeIndexBackend | None = None,
         knowledge_graph: LocalKnowledgeGraph | None = None,
         knowledge_graph_analyzer: LocalKnowledgeGraphAnalyzer | None = None,
+        recovery_policy: KnowledgeRecoveryPolicy | None = None,
+        query_rewriter: KnowledgeQueryRewriter | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
@@ -442,6 +451,8 @@ class KnowledgeStore:
         self.knowledge_graph_analyzer = knowledge_graph_analyzer or LocalKnowledgeGraphAnalyzer(
             workspace_id=self.knowledge_index.workspace_id
         )
+        self.recovery_policy = recovery_policy or KnowledgeRecoveryPolicy()
+        self.query_rewriter = query_rewriter or TechnicalGlossaryQueryRewriter()
         self._lock = RLock()
         self._initialized = False
 
@@ -2005,6 +2016,9 @@ class KnowledgeStore:
         page_revisions: tuple[str, ...] = (),
         relation_expand: bool = False,
         retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
     ) -> tuple[KnowledgeSearchHit, ...]:
         self.initialize()
         with self._connect() as connection:
@@ -2016,6 +2030,9 @@ class KnowledgeStore:
                 source_ids=source_ids,
                 page_revisions=page_revisions,
                 retrieval_mode=retrieval_mode,
+                round_index=round_index,
+                trace_query=trace_query,
+                rewrite=rewrite,
             )
             if not relation_expand or not hits:
                 return hits
@@ -2074,6 +2091,121 @@ class KnowledgeStore:
                     break
             return tuple(selected)
 
+    def search_with_recovery(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        visibility: str = "private",
+        source_ids: tuple[str, ...] = (),
+        page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+    ) -> KnowledgeRecoveryOutcome:
+        """Run one retrieval plus at most one bounded terminology retry."""
+
+        original_query = query.strip()
+        initial_hits = self.search(
+            original_query,
+            top_k=top_k,
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+            relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
+            round_index=1,
+            trace_query=original_query,
+            rewrite=None,
+        )
+        attempts = [
+            KnowledgeRecoveryAttempt(
+                round_index=1,
+                trigger_reason="initial",
+                retrieval_mode=retrieval_mode,
+                top_k=top_k,
+                result_count=len(initial_hits),
+                query_rewritten=False,
+            )
+        ]
+        policy = self.recovery_policy
+        if not policy.enabled:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="disabled",
+                attempts=tuple(attempts),
+                no_evidence_reason="recovery_disabled" if not initial_hits else None,
+            )
+        required_results = min(policy.min_results, top_k)
+        if len(initial_hits) >= required_results:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="not_needed",
+                attempts=tuple(attempts),
+            )
+        if policy.max_rounds == 1:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="exhausted",
+                attempts=tuple(attempts),
+                no_evidence_reason="bounded_recovery_exhausted" if not initial_hits else None,
+            )
+        rewritten = self.query_rewriter.rewrite(original_query)
+        if rewritten is None:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="not_available",
+                attempts=tuple(attempts),
+                no_evidence_reason="no_rewrite_available" if not initial_hits else None,
+            )
+        policy_top_k = (
+            self.knowledge_index.relevance_policy.top_k
+            if self.knowledge_index.relevance_policy is not None
+            else policy.max_top_k
+        )
+        expanded_top_k = max(
+            top_k,
+            min(
+                policy.max_top_k,
+                policy_top_k,
+                top_k * policy.top_k_multiplier,
+            ),
+        )
+        retry_hits = self.search(
+            rewritten.query,
+            top_k=expanded_top_k,
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+            relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
+            round_index=2,
+            trace_query=original_query,
+            rewrite=rewritten.query,
+        )
+        attempts.append(
+            KnowledgeRecoveryAttempt(
+                round_index=2,
+                trigger_reason="insufficient_results",
+                retrieval_mode=retrieval_mode,
+                top_k=expanded_top_k,
+                result_count=len(retry_hits),
+                query_rewritten=True,
+            )
+        )
+        final_hits = retry_hits if len(retry_hits) >= len(initial_hits) else initial_hits
+        if not final_hits:
+            return KnowledgeRecoveryOutcome(
+                hits=(),
+                status="exhausted",
+                attempts=tuple(attempts),
+                no_evidence_reason="bounded_recovery_exhausted",
+            )
+        return KnowledgeRecoveryOutcome(
+            hits=final_hits,
+            status="recovered" if final_hits is retry_hits else "not_improved",
+            attempts=tuple(attempts),
+        )
+
     def expand_relations(
         self,
         query: str,
@@ -2103,7 +2235,7 @@ class KnowledgeStore:
     ) -> KnowledgeRetrievalBundle:
         """Return one bounded evidence bundle for API and Agent consumers."""
 
-        hits = self.search(
+        outcome = self.search_with_recovery(
             query,
             top_k=top_k,
             visibility=visibility,
@@ -2112,7 +2244,14 @@ class KnowledgeStore:
             relation_expand=relation_expand,
             retrieval_mode=retrieval_mode,
         )
-        return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
+        return assemble_retrieval_bundle(
+            query,
+            outcome.hits,
+            token_budget=token_budget,
+            recovery_status=outcome.status,
+            recovery_attempts=outcome.attempts,
+            no_evidence_reason=outcome.no_evidence_reason,
+        )
 
     def citation(
         self,

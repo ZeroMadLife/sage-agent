@@ -8,11 +8,13 @@ from pathlib import Path
 from core.knowledge.eval_runner import (
     GateObservation,
     calibrate_gate,
+    compare_bounded_recovery_reports,
     compare_layered_reports,
     compare_semantic_provider_reports,
     run_sqlite_layered_eval,
 )
 from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.recovery import KnowledgeRecoveryPolicy
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -223,6 +225,37 @@ def test_layered_eval_can_apply_frozen_gate_threshold_without_recalibration() ->
     assert gate["threshold"] == 1_000_000.0
     assert gate["evaluation"]["true_accept"] == 0
     assert gate["evaluation"]["false_reject"] > 0
+
+
+def test_bounded_recovery_improves_selection_failures_without_lowering_gate() -> None:
+    common = {
+        "retrieval_modes": ("hybrid",),
+        "evaluation_splits": ("dev", "calibration"),
+        "precache_queries": False,
+    }
+    baseline = run_sqlite_layered_eval(REPO_ROOT, DATASET_PATH, **common)
+    threshold = baseline["routes"]["hybrid"]["gate"]["threshold"]
+    candidate = run_sqlite_layered_eval(
+        REPO_ROOT,
+        DATASET_PATH,
+        recovery_policy=KnowledgeRecoveryPolicy(enabled=True),
+        gate_thresholds={"hybrid": threshold},
+        **common,
+    )
+
+    baseline_cases = {case["case_id"]: case for case in baseline["routes"]["hybrid"]["cases"]}
+    candidate_cases = {case["case_id"]: case for case in candidate["routes"]["hybrid"]["cases"]}
+    for case_id in ("ragv1-dev-16a", "ragv1-calibration-07b"):
+        assert baseline_cases[case_id]["primary_failure"] == "retrieval"
+        assert candidate_cases[case_id]["retrieval"]["recall_at_k"] == 1.0
+        assert candidate_cases[case_id]["trace"]["recovery"]["round_count"] == 2
+    assert candidate["routes"]["hybrid"]["gate"]["threshold"] == threshold
+
+    comparison = compare_bounded_recovery_reports(baseline, candidate)
+    assert comparison["overall_passed"] is True
+    assert comparison["gates"]["retrieval_failure_subset_recall"]["baseline"] == 0.0
+    assert comparison["gates"]["retrieval_failure_subset_recall"]["candidate"] == 1.0
+    assert comparison["gates"]["false_acceptance"]["delta"] <= 0
 
 
 def test_layered_report_comparison_enforces_recall_gate_and_lists_regressions() -> None:

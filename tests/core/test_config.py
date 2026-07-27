@@ -23,6 +23,15 @@ def test_retrieval_observability_is_fail_closed_and_hides_key() -> None:
     assert "private-observability-key-material" not in repr(settings)
 
 
+def test_bounded_recovery_is_fail_closed_with_hard_limits() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.knowledge_recovery_enabled is False
+    assert settings.knowledge_recovery_min_results == 4
+    assert settings.knowledge_recovery_top_k_multiplier == 2
+    assert settings.knowledge_recovery_max_top_k == 20
+
+
 def test_sandbox_configuration_defaults_to_local_development() -> None:
     settings = Settings(_env_file=None)
 

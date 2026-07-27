@@ -247,6 +247,9 @@ def test_knowledge_search_returns_revision_bound_evidence(tmp_path: Path) -> Non
 
     assert result.is_error is False
     assert payload["status"] == "evidence_found"
+    assert payload["recovery"]["status"] == "disabled"
+    assert payload["recovery"]["round_count"] == 1
+    assert "query" not in payload["recovery"]
     assert payload["citations"][0]["citation_id"].startswith("kcite_")
     assert payload["citations"][0]["page_revision"].startswith("krev_")
     assert payload["citations"][0]["source_relative_path"] == "memory.md"

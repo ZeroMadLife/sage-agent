@@ -471,6 +471,9 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert found.headers["cache-control"] == "no-store"
     body = found.json()
     assert body["status"] == "evidence_found"
+    assert body["recovery"]["status"] == "disabled"
+    assert body["recovery"]["round_count"] == 1
+    assert "query" not in body["recovery"]
     assert body["used_tokens"] <= 512
     assert body["citations"][0]["citation_id"].startswith("kcite_")
     assert body["citations"][0]["page_revision"].startswith("krev_")
@@ -528,6 +531,7 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     )
     assert missing.status_code == 200
     assert missing.json()["status"] == "no_evidence"
+    assert missing.json()["recovery"]["no_evidence_reason"] == "recovery_disabled"
     assert missing.json()["citations"] == []
 
 

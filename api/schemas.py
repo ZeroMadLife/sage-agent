@@ -254,6 +254,36 @@ class KnowledgeEvidenceResponse(BaseModel):
     truncated: bool
 
 
+class KnowledgeRecoveryAttemptResponse(BaseModel):
+    round_index: int = Field(ge=1, le=2)
+    trigger_reason: Literal["initial", "insufficient_results"]
+    retrieval_mode: Literal["sparse", "dense", "hybrid"]
+    top_k: int = Field(ge=1, le=50)
+    result_count: int = Field(ge=0)
+    query_rewritten: bool
+
+
+class KnowledgeRecoveryResponse(BaseModel):
+    status: Literal[
+        "disabled",
+        "not_needed",
+        "not_available",
+        "recovered",
+        "not_improved",
+        "exhausted",
+    ]
+    round_count: int = Field(ge=0, le=2)
+    no_evidence_reason: (
+        Literal[
+            "recovery_disabled",
+            "no_rewrite_available",
+            "bounded_recovery_exhausted",
+        ]
+        | None
+    ) = None
+    attempts: list[KnowledgeRecoveryAttemptResponse] = Field(max_length=2)
+
+
 class KnowledgeRetrievalResponse(BaseModel):
     """Evidence-only retrieval response; it never synthesizes an uncited answer."""
 
@@ -262,6 +292,7 @@ class KnowledgeRetrievalResponse(BaseModel):
     token_budget: int = Field(ge=256)
     used_tokens: int = Field(ge=0)
     omitted_count: int = Field(ge=0)
+    recovery: KnowledgeRecoveryResponse
     citations: list[KnowledgeEvidenceResponse]
 
 

@@ -43,6 +43,7 @@ from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import (
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
+    KnowledgeRecoveryPolicy,
     KnowledgeRelevancePolicy,
     KnowledgeRetrievalObservabilityConfig,
     KnowledgeSourceRoot,
@@ -476,6 +477,12 @@ def create_app(
             configured_knowledge_database,
             configured_source_roots or {},
             knowledge_index=configured_index,
+            recovery_policy=KnowledgeRecoveryPolicy(
+                enabled=settings.knowledge_recovery_enabled,
+                min_results=settings.knowledge_recovery_min_results,
+                top_k_multiplier=settings.knowledge_recovery_top_k_multiplier,
+                max_top_k=settings.knowledge_recovery_max_top_k,
+            ),
         )
         app.state.knowledge_store.initialize()
         enable_jobs = (
