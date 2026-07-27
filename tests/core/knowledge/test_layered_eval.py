@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from copy import deepcopy
 from pathlib import Path
 
 from core.knowledge.eval_runner import (
@@ -368,3 +369,57 @@ def test_semantic_provider_comparison_freezes_activation_gates() -> None:
         "p95_latency_ms": {"maximum": 100.0, "actual": 40.0, "passed": True},
         "estimated_cost_usd": {"maximum": 0.01, "actual": 0.0, "passed": True},
     }
+
+
+def test_semantic_final_comparison_fails_closed_when_test_has_no_semantic_cases() -> None:
+    base = {
+        "dataset": {"dataset_id": "d", "dataset_revision": "r"},
+        "inputs": {"cases_sha256": "sha256:c"},
+        "provider": {"supports_semantic_recall": False},
+        "parameters": {
+            "top_k": 10,
+            "candidate_k": 50,
+            "evaluation_splits": ["calibration", "test"],
+        },
+        "routes": {
+            "hybrid": {
+                "retrieval": {"recall_at_k": 0.8},
+                "gate": {"evaluation": {"abstain_f1": 0.5}},
+                "citation": {"support_rate": 1.0},
+                "system": {"latency_ms": {"p95": 10.0}, "estimated_cost_usd": 0.0},
+                "categories": {
+                    "semantic_paraphrase": {
+                        "case_count": 2,
+                        "retrieval": {"recall_at_k": 0.8},
+                    }
+                },
+                "splits": {
+                    "test": {
+                        "retrieval": {"recall_at_k": 0.8},
+                        "gate": {"abstain_f1": 0.5},
+                        "citation": {"support_rate": 1.0},
+                    }
+                },
+                "cases": [
+                    {
+                        "dataset_split": "test",
+                        "category": "hard_negative",
+                        "answerable": True,
+                        "retrieval": {"recall_at_k": 1.0},
+                        "system": {"latency_ms": 12.0},
+                    }
+                ],
+            }
+        },
+    }
+    candidate = deepcopy(base)
+    candidate["provider"]["supports_semantic_recall"] = True
+
+    comparison = compare_semantic_provider_reports(base, candidate, evaluation_split="test")
+
+    semantic = comparison["gates"]["semantic_paraphrase_recall"]
+    assert comparison["overall_passed"] is False
+    assert semantic["case_count"] == 0
+    assert semantic["delta"] is None
+    assert semantic["passed"] is False
+    assert semantic["reason"] == "evaluation split has no semantic_paraphrase cases"

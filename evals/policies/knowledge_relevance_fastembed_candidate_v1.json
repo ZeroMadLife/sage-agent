@@ -1,0 +1,14 @@
+{
+  "policy_id": "krp_eeaef9ce9dfa08b1",
+  "benchmark_id": "sage-official-agent-fullstack-v1",
+  "benchmark_revision": "2026-07-27.1",
+  "corpus_revision": "kcorpus_c4a81137ab1a333e83758481797fcd30",
+  "embedding_model": "fastembed.sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+  "embedding_revision": "faf4aa4225822f3bc6376869cb1164e8e3feedd0+fastembed-0.8.0-mean-pooling",
+  "top_k": 10,
+  "min_sparse_score": 0.10041373,
+  "min_dense_score": 0.49292439222335815,
+  "min_hybrid_score": 0.0315136476426799,
+  "minimum_answerable_recall_ratio": 0.9,
+  "schema_version": 2
+}

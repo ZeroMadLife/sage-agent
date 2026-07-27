@@ -148,7 +148,11 @@ def main() -> int:
             **common,
         )
 
-    comparison = compare_semantic_provider_reports(baseline, candidate)
+    comparison = compare_semantic_provider_reports(
+        baseline,
+        candidate,
+        evaluation_split="test" if args.stage == "final" else None,
+    )
     policy_source = candidate if selection_candidate is None else selection_candidate
     policy = _policy(policy_source, args.minimum_answerable_recall)
     result = {

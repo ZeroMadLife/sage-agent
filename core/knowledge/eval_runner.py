@@ -602,6 +602,7 @@ def compare_semantic_provider_reports(
     minimum_citation_support_delta: float = -0.001,
     maximum_p95_latency_ms: float = 100.0,
     maximum_estimated_cost_usd: float = 0.01,
+    evaluation_split: EvalSplit | None = None,
 ) -> dict[str, Any]:
     """Apply the frozen PR-4 activation gates to one semantic candidate."""
 
@@ -645,31 +646,90 @@ def compare_semantic_provider_reports(
 
     baseline_route = baseline_report["routes"][route]
     candidate_route = candidate_report["routes"][route]
-    semantic_delta = _rounded_delta(
-        candidate_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"],
-        baseline_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"],
+    baseline_metrics = (
+        baseline_route if evaluation_split is None else baseline_route["splits"][evaluation_split]
+    )
+    candidate_metrics = (
+        candidate_route if evaluation_split is None else candidate_route["splits"][evaluation_split]
+    )
+    baseline_semantic_recall: float | None
+    candidate_semantic_recall: float | None
+    if evaluation_split is None:
+        baseline_semantic_recall = float(
+            baseline_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"]
+        )
+        candidate_semantic_recall = float(
+            candidate_route["categories"]["semantic_paraphrase"]["retrieval"]["recall_at_k"]
+        )
+        semantic_case_count = int(
+            candidate_route["categories"]["semantic_paraphrase"].get("case_count", 0)
+        )
+    else:
+        baseline_semantic_recall, baseline_count = _category_recall(
+            baseline_route, evaluation_split, "semantic_paraphrase"
+        )
+        candidate_semantic_recall, semantic_case_count = _category_recall(
+            candidate_route, evaluation_split, "semantic_paraphrase"
+        )
+        if baseline_count != semantic_case_count:
+            raise ValueError("semantic eval reports have different category coverage")
+    semantic_delta = (
+        None
+        if baseline_semantic_recall is None or candidate_semantic_recall is None
+        else _rounded_delta(candidate_semantic_recall, baseline_semantic_recall)
     )
     overall_delta = _rounded_delta(
-        candidate_route["retrieval"]["recall_at_k"],
-        baseline_route["retrieval"]["recall_at_k"],
+        candidate_metrics["retrieval"]["recall_at_k"],
+        baseline_metrics["retrieval"]["recall_at_k"],
     )
     abstain_delta = _rounded_delta(
-        candidate_route["gate"]["evaluation"]["abstain_f1"],
-        baseline_route["gate"]["evaluation"]["abstain_f1"],
+        (
+            candidate_route["gate"]["evaluation"]["abstain_f1"]
+            if evaluation_split is None
+            else candidate_metrics["gate"]["abstain_f1"]
+        ),
+        (
+            baseline_route["gate"]["evaluation"]["abstain_f1"]
+            if evaluation_split is None
+            else baseline_metrics["gate"]["abstain_f1"]
+        ),
     )
     citation_delta = _rounded_delta(
-        candidate_route["citation"]["support_rate"],
-        baseline_route["citation"]["support_rate"],
+        candidate_metrics["citation"]["support_rate"],
+        baseline_metrics["citation"]["support_rate"],
     )
-    p95_latency_ms = float(candidate_route["system"]["latency_ms"]["p95"])
+    p95_latency_ms = (
+        float(candidate_route["system"]["latency_ms"]["p95"])
+        if evaluation_split is None
+        else _percentile(
+            [
+                float(case["system"]["latency_ms"])
+                for case in candidate_route["cases"]
+                if case["dataset_split"] == evaluation_split
+            ],
+            0.95,
+        )
+    )
     raw_cost = candidate_route["system"]["estimated_cost_usd"]
     estimated_cost_usd = None if raw_cost is None else float(raw_cost)
-    gates: dict[str, dict[str, float | bool | None]] = {
-        "semantic_paraphrase_recall": {
-            "minimum_delta": minimum_semantic_paraphrase_recall_delta,
-            "delta": semantic_delta,
-            "passed": semantic_delta >= minimum_semantic_paraphrase_recall_delta,
-        },
+    semantic_gate: dict[str, float | int | bool | str | None] = {
+        "minimum_delta": minimum_semantic_paraphrase_recall_delta,
+        "delta": semantic_delta,
+        "passed": semantic_delta is not None
+        and semantic_delta >= minimum_semantic_paraphrase_recall_delta,
+    }
+    if evaluation_split is not None:
+        semantic_gate.update(
+            {
+                "case_count": semantic_case_count,
+                "baseline": baseline_semantic_recall,
+                "candidate": candidate_semantic_recall,
+            }
+        )
+        if semantic_case_count == 0:
+            semantic_gate["reason"] = "evaluation split has no semantic_paraphrase cases"
+    gates: dict[str, dict[str, float | int | bool | str | None]] = {
+        "semantic_paraphrase_recall": semantic_gate,
         "overall_recall": {
             "minimum_delta": minimum_overall_recall_delta,
             "delta": overall_delta,
@@ -700,6 +760,7 @@ def compare_semantic_provider_reports(
     return {
         "compatible_inputs": True,
         "route": route,
+        "evaluation_split": evaluation_split,
         "overall_passed": all(gate.get("passed") is True for gate in gates.values()),
         "gates": gates,
     }
@@ -707,6 +768,24 @@ def compare_semantic_provider_reports(
 
 def _rounded_delta(candidate: str | int | float, baseline: str | int | float) -> float:
     return round(float(candidate) - float(baseline), 6)
+
+
+def _category_recall(
+    route: dict[str, Any], split: EvalSplit, category: str
+) -> tuple[float | None, int]:
+    cases = [
+        case
+        for case in route["cases"]
+        if case["dataset_split"] == split
+        and case["category"] == category
+        and bool(case["answerable"])
+    ]
+    if not cases:
+        return None, 0
+    return (
+        sum(float(case["retrieval"]["recall_at_k"]) for case in cases) / len(cases),
+        len(cases),
+    )
 
 
 def _select_evaluation_splits(
