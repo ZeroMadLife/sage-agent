@@ -112,6 +112,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
+| **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
 | **RAG Semantic Gate v1** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771，citation support 保持 1.0 | test 没有 semantic-paraphrase case，激活门禁 fail closed，因此仍不默认启用；generation quality 尚未评测 |
 | **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
 | **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
@@ -120,6 +121,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 评测协议、复现命令和 clean source commit 见
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
+[RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
 [RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
 [历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
 [拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、

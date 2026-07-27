@@ -87,13 +87,16 @@ from core.knowledge.recovery import (
     TechnicalGlossaryQueryRewriter,
 )
 from core.knowledge.retrieval import (
+    KnowledgeAblationPolicy,
     KnowledgeChunk,
     KnowledgeIndexSummary,
+    KnowledgeReranker,
     KnowledgeRetrievalBundle,
     KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
     citation_id,
+    postprocess_search_hits,
 )
 from core.knowledge.synthesis import (
     WorkspaceSynthesis,
@@ -439,6 +442,8 @@ class KnowledgeStore:
         knowledge_graph_analyzer: LocalKnowledgeGraphAnalyzer | None = None,
         recovery_policy: KnowledgeRecoveryPolicy | None = None,
         query_rewriter: KnowledgeQueryRewriter | None = None,
+        ablation_policy: KnowledgeAblationPolicy | None = None,
+        reranker: KnowledgeReranker | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
@@ -453,6 +458,12 @@ class KnowledgeStore:
         )
         self.recovery_policy = recovery_policy or KnowledgeRecoveryPolicy()
         self.query_rewriter = query_rewriter or TechnicalGlossaryQueryRewriter()
+        self.ablation_policy = ablation_policy or KnowledgeAblationPolicy()
+        if self.ablation_policy.strategy == "cross_encoder" and reranker is None:
+            raise ValueError("cross-encoder reranker is required")
+        if self.ablation_policy.strategy != "cross_encoder" and reranker is not None:
+            raise ValueError("reranker is only valid for the cross_encoder strategy")
+        self.reranker = reranker
         self._lock = RLock()
         self._initialized = False
 
@@ -2033,6 +2044,12 @@ class KnowledgeStore:
                 round_index=round_index,
                 trace_query=trace_query,
                 rewrite=rewrite,
+            )
+            hits = postprocess_search_hits(
+                query,
+                hits,
+                policy=self.ablation_policy,
+                reranker=self.reranker,
             )
             if not relation_expand or not hits:
                 return hits

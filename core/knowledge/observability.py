@@ -156,9 +156,7 @@ def build_retrieval_trace(
         query_length=len(query),
         round_index=round_index,
         rewrite_hash=(
-            config.fingerprint(rewrite, workspace_id=workspace_id)
-            if rewrite is not None
-            else None
+            config.fingerprint(rewrite, workspace_id=workspace_id) if rewrite is not None else None
         ),
         retrieval_mode=retrieval_mode,
         corpus_revision=corpus_revision,

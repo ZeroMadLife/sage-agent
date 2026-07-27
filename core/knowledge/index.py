@@ -20,6 +20,7 @@ from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
+    KnowledgeAblationPolicy,
     KnowledgeChunk,
     KnowledgeIndexSummary,
     KnowledgeRetrievalMode,
@@ -134,6 +135,7 @@ class LocalKnowledgeIndex:
         embedding_provider: DenseEmbeddingProvider | None = None,
         relevance_policy: KnowledgeRelevancePolicy | None = None,
         observability: KnowledgeRetrievalObservabilityConfig | None = None,
+        ablation_policy: KnowledgeAblationPolicy | None = None,
     ) -> None:
         self.workspace_id = workspace_id
         self.embedding_provider = embedding_provider or HashingEmbeddingProvider()
@@ -144,6 +146,7 @@ class LocalKnowledgeIndex:
             )
         self.relevance_policy = relevance_policy
         self.observability = observability or KnowledgeRetrievalObservabilityConfig()
+        self.ablation_policy = ablation_policy or KnowledgeAblationPolicy()
         self._markdown_parser = MarkdownParser()
 
     @property
@@ -265,10 +268,16 @@ class LocalKnowledgeIndex:
             title=str(row["title"]),
             visibility="private",
             active=is_active,
+            ablation_policy=self.ablation_policy,
+            semantic_provider=self.embedding_provider,
         )
         prepare = getattr(self.embedding_provider, "prepare", None)
         if callable(prepare):
-            prepare(tuple(embedding_text(chunk) for chunk in chunks))
+            prepare(
+                tuple(
+                    embedding_text(chunk, ablation_policy=self.ablation_policy) for chunk in chunks
+                )
+            )
         old_ids = [
             str(item["chunk_id"])
             for item in connection.execute(
@@ -816,9 +825,9 @@ class LocalKnowledgeIndex:
         )
         connection.execute(
             "INSERT INTO knowledge_chunks_fts (chunk_id, terms) VALUES (?, ?)",
-            (chunk.chunk_id, index_text(chunk)),
+            (chunk.chunk_id, index_text(chunk, ablation_policy=self.ablation_policy)),
         )
-        value = embedding_text(chunk)
+        value = embedding_text(chunk, ablation_policy=self.ablation_policy)
         vector = self.embedding_provider.embed(value)
         connection.execute(
             """
