@@ -1,5 +1,14 @@
 """Auditable personal knowledge workspace primitives."""
 
+from core.knowledge.datasets import (
+    CorpusManifestEntry,
+    EvalCase,
+    EvalDatasetManifest,
+    EvalPassage,
+    VersionedKnowledgeDataset,
+    load_versioned_dataset,
+    validate_eval_dataset,
+)
 from core.knowledge.embeddings import (
     OpenAICompatibleEmbeddingConfig,
     OpenAICompatibleEmbeddingProvider,
@@ -76,6 +85,10 @@ from core.knowledge.understanding import (
 )
 
 __all__ = [
+    "CorpusManifestEntry",
+    "EvalCase",
+    "EvalDatasetManifest",
+    "EvalPassage",
     "EvidenceLearning",
     "EvidenceLearningCitation",
     "HashingEmbeddingProvider",
@@ -130,8 +143,11 @@ __all__ = [
     "SourceSection",
     "SourceUnderstanding",
     "UnderstandingCitation",
+    "VersionedKnowledgeDataset",
     "WorkspaceSourceEvidence",
     "WorkspaceSynthesis",
     "assemble_retrieval_bundle",
     "load_relevance_policy",
+    "load_versioned_dataset",
+    "validate_eval_dataset",
 ]

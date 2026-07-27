@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sage.local/schemas/rag-eval-case-v1.json",
+  "title": "Sage RAG Eval Case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id", "leakage_group", "query", "category", "dataset_split", "answerable",
+    "modality", "required_sources", "required_passages", "required_claims",
+    "forbidden_claims", "gold_page", "gold_bbox", "provenance"
+  ],
+  "properties": {
+    "case_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"},
+    "leakage_group": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,79}$"},
+    "query": {"type": "string", "minLength": 3, "maxLength": 1000},
+    "category": {"enum": ["exact_api", "semantic_paraphrase", "multi_document", "version_conflict", "unanswerable", "hard_negative", "code_table"]},
+    "dataset_split": {"enum": ["dev", "calibration", "test"]},
+    "answerable": {"type": "boolean"},
+    "modality": {"enum": ["text", "code", "table", "image", "mixed"]},
+    "required_sources": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "required_passages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["corpus_id", "anchor", "relevance"],
+        "properties": {
+          "corpus_id": {"type": "string"},
+          "anchor": {"type": "string", "minLength": 1},
+          "relevance": {"type": "integer", "minimum": 1, "maximum": 3}
+        }
+      }
+    },
+    "required_claims": {"type": "array", "items": {"type": "string"}},
+    "forbidden_claims": {"type": "array", "items": {"type": "string"}},
+    "gold_page": {"type": ["integer", "null"], "minimum": 1},
+    "gold_bbox": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "array", "prefixItems": [{"type": "number"}, {"type": "number"}, {"type": "number"}, {"type": "number"}], "minItems": 4, "maxItems": 4}
+      ]
+    },
+    "provenance": {"const": "human_curated"}
+  }
+}
