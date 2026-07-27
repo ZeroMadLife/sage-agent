@@ -32,6 +32,8 @@ from core.knowledge.recovery import KnowledgeRecoveryOutcome, KnowledgeRecoveryP
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
+    KnowledgeAblationPolicy,
+    KnowledgeReranker,
     KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
@@ -153,6 +155,8 @@ def run_sqlite_layered_eval(
     precache_queries: bool = True,
     gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
     recovery_policy: KnowledgeRecoveryPolicy | None = None,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
+    reranker: KnowledgeReranker | None = None,
 ) -> dict[str, Any]:
     """Run the same frozen corpus through isolated SQLite retrieval routes."""
 
@@ -171,6 +175,8 @@ def run_sqlite_layered_eval(
     full_dataset = load_versioned_dataset(root, dataset_file)
     dataset = _select_evaluation_splits(full_dataset, evaluation_splits)
     embedding_provider = provider or HashingEmbeddingProvider()
+    experiment = ablation_policy or KnowledgeAblationPolicy()
+    _validate_ablation(experiment, reranker)
     source_commit = _git_value(root, "rev-parse", "HEAD")
     source_dirty = bool(_git_value(root, "status", "--porcelain"))
     snapshot_root = root / "knowledge" / "corpus" / "snapshots"
@@ -191,8 +197,11 @@ def run_sqlite_layered_eval(
             knowledge_index=LocalKnowledgeIndex(
                 workspace_id="sage-official-agent-fullstack-v1",
                 embedding_provider=embedding_provider,
+                ablation_policy=experiment,
             ),
             recovery_policy=recovery_policy,
+            ablation_policy=experiment,
+            reranker=reranker,
         )
         prepared = _prepare_corpus(store, root, snapshot_root, dataset)
         embedding_started = time.perf_counter()
@@ -200,8 +209,10 @@ def run_sqlite_layered_eval(
             embedding_provider,
             prepared,
             dataset.cases if precache_queries else (),
+            ablation_policy=experiment,
         )
         embedding_preparation_latency_ms = (time.perf_counter() - embedding_started) * 1_000
+        reranker_preparation_latency_ms = _prepare_reranker(reranker)
         ingestion_started = time.perf_counter()
         for entry, source in prepared:
             try:
@@ -227,13 +238,14 @@ def run_sqlite_layered_eval(
                 candidate_k=candidate_k,
                 token_budget=token_budget,
                 minimum_answerable_recall=minimum_answerable_recall,
-                estimated_cost_usd=_estimated_cost(embedding_provider),
+                estimated_cost_usd=_estimated_cost(embedding_provider, reranker),
                 gate_threshold=None if gate_thresholds is None else gate_thresholds[mode],
                 semantic_provider=embedding_provider.supports_semantic_recall,
             )
             for mode in retrieval_modes
         }
         index = asdict(store.index_summary())
+        ablation = _ablation_metadata(experiment, prepared, reranker)
 
     result: dict[str, Any] = {
         "schema_version": 1,
@@ -271,6 +283,7 @@ def run_sqlite_layered_eval(
                 else "semantic embedding provider"
             ),
         },
+        "ablation": ablation,
         "parameters": {
             "top_k": top_k,
             "candidate_k": candidate_k,
@@ -285,6 +298,10 @@ def run_sqlite_layered_eval(
         "embedding_preparation": {
             "latency_ms": round(embedding_preparation_latency_ms, 3),
             "queries_included": precache_queries,
+        },
+        "reranker_preparation": {
+            "latency_ms": round(reranker_preparation_latency_ms, 3),
+            "included_in_query_latency": False,
         },
         "ingestion": {
             "approved_source_count": len(dataset.corpus),
@@ -313,6 +330,8 @@ def run_postgres_layered_eval(
     precache_queries: bool = True,
     gate_thresholds: Mapping[KnowledgeRetrievalMode, float] | None = None,
     recovery_policy: KnowledgeRecoveryPolicy | None = None,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
+    reranker: KnowledgeReranker | None = None,
 ) -> dict[str, Any]:
     """Run the frozen corpus through GIN and pgvector exact retrieval routes."""
 
@@ -331,6 +350,8 @@ def run_postgres_layered_eval(
     full_dataset = load_versioned_dataset(root, dataset_file)
     dataset = _select_evaluation_splits(full_dataset, evaluation_splits)
     embedding_provider = provider or HashingEmbeddingProvider()
+    experiment = ablation_policy or KnowledgeAblationPolicy()
+    _validate_ablation(experiment, reranker)
     source_commit = _git_value(root, "rev-parse", "HEAD")
     source_dirty = bool(_git_value(root, "status", "--porcelain"))
     snapshot_root = root / "knowledge" / "corpus" / "snapshots"
@@ -339,6 +360,7 @@ def run_postgres_layered_eval(
         PostgresKnowledgeIndexConfig(dsn=postgres_dsn),
         workspace_id=workspace_id,
         embedding_provider=embedding_provider,
+        ablation_policy=experiment,
     )
     try:
         with tempfile.TemporaryDirectory(prefix="sage-rag-postgres-eval-") as temp:
@@ -356,6 +378,8 @@ def run_postgres_layered_eval(
                 },
                 knowledge_index=postgres_index,
                 recovery_policy=recovery_policy,
+                ablation_policy=experiment,
+                reranker=reranker,
             )
             prepared = _prepare_corpus(store, root, snapshot_root, dataset)
             embedding_started = time.perf_counter()
@@ -363,8 +387,10 @@ def run_postgres_layered_eval(
                 embedding_provider,
                 prepared,
                 dataset.cases if precache_queries else (),
+                ablation_policy=experiment,
             )
             embedding_preparation_latency_ms = (time.perf_counter() - embedding_started) * 1_000
+            reranker_preparation_latency_ms = _prepare_reranker(reranker)
             ingestion_started = time.perf_counter()
             for entry, source in prepared:
                 try:
@@ -391,7 +417,7 @@ def run_postgres_layered_eval(
                     candidate_k=candidate_k,
                     token_budget=token_budget,
                     minimum_answerable_recall=minimum_answerable_recall,
-                    estimated_cost_usd=_estimated_cost(embedding_provider),
+                    estimated_cost_usd=_estimated_cost(embedding_provider, reranker),
                     gate_threshold=None if gate_thresholds is None else gate_thresholds[mode],
                     semantic_provider=embedding_provider.supports_semantic_recall,
                 )
@@ -414,6 +440,7 @@ def run_postgres_layered_eval(
                 route["label"] = route_labels[mode]
             index = asdict(store.index_summary())
             storage = postgres_index.storage_summary()
+            ablation = _ablation_metadata(experiment, prepared, reranker)
 
         result: dict[str, Any] = {
             "schema_version": 1,
@@ -452,6 +479,7 @@ def run_postgres_layered_eval(
                     else "semantic embedding provider"
                 ),
             },
+            "ablation": ablation,
             "parameters": {
                 "top_k": top_k,
                 "candidate_k": candidate_k,
@@ -467,6 +495,10 @@ def run_postgres_layered_eval(
             "embedding_preparation": {
                 "latency_ms": round(embedding_preparation_latency_ms, 3),
                 "queries_included": precache_queries,
+            },
+            "reranker_preparation": {
+                "latency_ms": round(reranker_preparation_latency_ms, 3),
+                "included_in_query_latency": False,
             },
             "ingestion": {
                 "approved_source_count": len(dataset.corpus),
@@ -610,6 +642,202 @@ def compare_bounded_recovery_reports(
         "compatible_inputs": True,
         "route": route,
         "overall_passed": all(item["passed"] for item in gates.values()),
+        "gates": gates,
+    }
+
+
+def compare_retrieval_ablation_reports(
+    baseline_report: dict[str, Any],
+    candidate_report: dict[str, Any],
+    *,
+    route: KnowledgeRetrievalMode = "hybrid",
+    minimum_target_delta: float = 0.01,
+    minimum_recall_delta: float = -0.001,
+    minimum_citation_support_delta: float = -0.001,
+    maximum_p95_latency_ms: float = 250.0,
+    maximum_estimated_cost_usd: float = 0.01,
+    maximum_chunk_multiplier: float = 4.0,
+    maximum_storage_multiplier: float = 4.0,
+) -> dict[str, Any]:
+    """Gate one PR-6 strategy without allowing combined-candidate attribution."""
+
+    compatibility_fields = (
+        (
+            "dataset_id",
+            baseline_report["dataset"]["dataset_id"],
+            candidate_report["dataset"]["dataset_id"],
+        ),
+        (
+            "dataset_revision",
+            baseline_report["dataset"]["dataset_revision"],
+            candidate_report["dataset"]["dataset_revision"],
+        ),
+        (
+            "cases_sha256",
+            baseline_report["inputs"]["cases_sha256"],
+            candidate_report["inputs"]["cases_sha256"],
+        ),
+        ("backend", baseline_report["backend"], candidate_report["backend"]),
+        (
+            "provider_model",
+            baseline_report["provider"]["model_id"],
+            candidate_report["provider"]["model_id"],
+        ),
+        (
+            "provider_revision",
+            baseline_report["provider"]["model_revision"],
+            candidate_report["provider"]["model_revision"],
+        ),
+        (
+            "top_k",
+            baseline_report["parameters"]["top_k"],
+            candidate_report["parameters"]["top_k"],
+        ),
+        (
+            "candidate_k",
+            baseline_report["parameters"]["candidate_k"],
+            candidate_report["parameters"]["candidate_k"],
+        ),
+        (
+            "token_budget",
+            baseline_report["parameters"]["token_budget"],
+            candidate_report["parameters"]["token_budget"],
+        ),
+        (
+            "evaluation_splits",
+            baseline_report["parameters"]["evaluation_splits"],
+            candidate_report["parameters"]["evaluation_splits"],
+        ),
+    )
+    mismatches = [
+        name for name, baseline, candidate in compatibility_fields if baseline != candidate
+    ]
+    if mismatches:
+        raise ValueError("incompatible ablation eval inputs: " + ", ".join(mismatches))
+    if baseline_report["ablation"]["strategy"] != "baseline":
+        raise ValueError("ablation comparison baseline must use the baseline strategy")
+    strategy = str(candidate_report["ablation"]["strategy"])
+    if strategy not in {
+        "contextual_chunk",
+        "parent_child",
+        "semantic_boundary",
+        "cross_encoder",
+    }:
+        raise ValueError("ablation comparison requires one named candidate strategy")
+
+    baseline_route = baseline_report["routes"][route]
+    candidate_route = candidate_report["routes"][route]
+    recall_delta = _rounded_delta(
+        candidate_route["retrieval"]["recall_at_k"],
+        baseline_route["retrieval"]["recall_at_k"],
+    )
+    ndcg_delta = _rounded_delta(
+        candidate_route["ranking"]["ndcg_at_k"],
+        baseline_route["ranking"]["ndcg_at_k"],
+    )
+    mrr_delta = _rounded_delta(
+        candidate_route["ranking"]["mrr"], baseline_route["ranking"]["mrr"]
+    )
+    claim_delta = _rounded_delta(
+        candidate_route["generation"]["required_claim_token_recall"],
+        baseline_route["generation"]["required_claim_token_recall"],
+    )
+    citation_delta = _rounded_delta(
+        candidate_route["citation"]["support_rate"],
+        baseline_route["citation"]["support_rate"],
+    )
+    if strategy == "cross_encoder":
+        target_name = "ndcg_delta"
+        target_delta = ndcg_delta
+    elif strategy == "parent_child":
+        target_name = "max_recall_ndcg_or_claim_delta"
+        target_delta = max(recall_delta, ndcg_delta, claim_delta)
+    else:
+        target_name = "max_recall_or_ndcg_delta"
+        target_delta = max(recall_delta, ndcg_delta)
+    target_metric: dict[str, str | float | int | bool | None] = {
+        "name": target_name,
+        "minimum_delta": minimum_target_delta,
+        "delta": target_delta,
+        "passed": target_delta >= minimum_target_delta,
+    }
+
+    false_acceptance_delta = int(
+        candidate_route["failures"]["false_acceptance"]
+    ) - int(baseline_route["failures"]["false_acceptance"])
+    p95_latency_ms = float(candidate_route["system"]["latency_ms"]["p95"])
+    raw_cost = candidate_route["system"]["estimated_cost_usd"]
+    estimated_cost_usd = None if raw_cost is None else float(raw_cost)
+    baseline_chunks = int(baseline_report["index"]["active_chunk_count"])
+    candidate_chunks = int(candidate_report["index"]["active_chunk_count"])
+    chunk_multiplier = candidate_chunks / baseline_chunks if baseline_chunks else math.inf
+    baseline_storage = int(baseline_report["storage"]["workspace_row_bytes"])
+    candidate_storage = int(candidate_report["storage"]["workspace_row_bytes"])
+    storage_multiplier = candidate_storage / baseline_storage if baseline_storage else math.inf
+    eligible_semantic_blocks = int(
+        candidate_report["ablation"]["corpus_profile"][
+            "semantic_boundary_eligible_block_count"
+        ]
+    )
+    strategy_exercised = eligible_semantic_blocks if strategy == "semantic_boundary" else 1
+    gates: dict[str, dict[str, str | float | int | bool | None]] = {
+        "target_gain": target_metric,
+        "recall_no_regression": {
+            "minimum_delta": minimum_recall_delta,
+            "delta": recall_delta,
+            "passed": recall_delta >= minimum_recall_delta,
+        },
+        "citation_support": {
+            "minimum_delta": minimum_citation_support_delta,
+            "delta": citation_delta,
+            "passed": citation_delta >= minimum_citation_support_delta,
+        },
+        "false_acceptance": {
+            "maximum_delta": 0,
+            "delta": false_acceptance_delta,
+            "passed": false_acceptance_delta <= 0,
+        },
+        "p95_latency_ms": {
+            "maximum": maximum_p95_latency_ms,
+            "actual": p95_latency_ms,
+            "passed": p95_latency_ms <= maximum_p95_latency_ms,
+        },
+        "estimated_cost_usd": {
+            "maximum": maximum_estimated_cost_usd,
+            "actual": estimated_cost_usd,
+            "passed": estimated_cost_usd is not None
+            and estimated_cost_usd <= maximum_estimated_cost_usd,
+        },
+        "chunk_multiplier": {
+            "maximum": maximum_chunk_multiplier,
+            "actual": round(chunk_multiplier, 6),
+            "passed": chunk_multiplier <= maximum_chunk_multiplier,
+        },
+        "storage_multiplier": {
+            "maximum": maximum_storage_multiplier,
+            "actual": round(storage_multiplier, 6),
+            "passed": storage_multiplier <= maximum_storage_multiplier,
+        },
+        "strategy_exercised": {
+            "minimum": 1,
+            "actual": strategy_exercised,
+            "passed": strategy_exercised >= 1,
+        },
+    }
+    return {
+        "compatible_inputs": True,
+        "strategy": strategy,
+        "route": route,
+        "overall_passed": all(gate["passed"] is True for gate in gates.values()),
+        "target_metric": target_metric,
+        "deltas": {
+            "recall_at_k": recall_delta,
+            "mrr": mrr_delta,
+            "ndcg_at_k": ndcg_delta,
+            "required_claim_token_recall": claim_delta,
+            "citation_support": citation_delta,
+            "false_acceptance": false_acceptance_delta,
+        },
         "gates": gates,
     }
 
@@ -957,13 +1185,86 @@ def _validate_gate_thresholds(
         raise ValueError("fixed gate thresholds must be finite and non-negative")
 
 
-def _estimated_cost(provider: DenseEmbeddingProvider) -> float | None:
+def _estimated_cost(
+    provider: DenseEmbeddingProvider,
+    reranker: KnowledgeReranker | None = None,
+) -> float | None:
     value = getattr(provider, "estimated_cost_usd", None)
-    if value is not None:
-        return float(value)
-    if provider.model_id == HashingEmbeddingProvider.model_id:
+    provider_cost = (
+        float(value)
+        if value is not None
+        else 0.0
+        if provider.model_id == HashingEmbeddingProvider.model_id
+        else None
+    )
+    reranker_cost: float | None
+    if reranker is None:
+        reranker_cost = 0.0
+    else:
+        raw_reranker_cost = reranker.estimated_cost_usd
+        reranker_cost = (
+            None if raw_reranker_cost is None else float(raw_reranker_cost)
+        )
+    if provider_cost is None or reranker_cost is None:
+        return None
+    return provider_cost + reranker_cost
+
+
+def _validate_ablation(
+    policy: KnowledgeAblationPolicy,
+    reranker: KnowledgeReranker | None,
+) -> None:
+    if policy.strategy == "cross_encoder" and reranker is None:
+        raise ValueError("cross-encoder reranker is required")
+    if policy.strategy != "cross_encoder" and reranker is not None:
+        raise ValueError("reranker is only valid for the cross_encoder strategy")
+
+
+def _prepare_reranker(reranker: KnowledgeReranker | None) -> float:
+    if reranker is None:
         return 0.0
-    return None
+    started = time.perf_counter()
+    prepare = getattr(reranker, "prepare", None)
+    if callable(prepare):
+        prepare()
+    return (time.perf_counter() - started) * 1_000
+
+
+def _ablation_metadata(
+    policy: KnowledgeAblationPolicy,
+    prepared: list[tuple[CorpusManifestEntry, PreparedKnowledgeSource]],
+    reranker: KnowledgeReranker | None,
+) -> dict[str, Any]:
+    policy_values = asdict(policy)
+    strategy = str(policy_values.pop("strategy"))
+    block_lengths = [
+        len(block.text.strip())
+        for _entry, source in prepared
+        for block in source.document.blocks
+        if block.kind not in {"frontmatter", "heading"} and block.text.strip()
+    ]
+    return {
+        "strategy": strategy,
+        "parameters": policy_values,
+        "reranker": (
+            {
+                "model_id": reranker.model_id,
+                "model_revision": reranker.model_revision,
+                "estimated_cost_usd": reranker.estimated_cost_usd,
+            }
+            if reranker is not None
+            else None
+        ),
+        "corpus_profile": {
+            "block_count": len(block_lengths),
+            "parent_child_eligible_block_count": sum(
+                length > policy.parent_child_max_chars for length in block_lengths
+            ),
+            "semantic_boundary_eligible_block_count": sum(
+                length > policy.semantic_min_chars for length in block_lengths
+            ),
+        },
+    }
 
 
 def _prepare_corpus(
@@ -987,6 +1288,8 @@ def _prepare_provider(
     provider: DenseEmbeddingProvider,
     prepared: list[tuple[CorpusManifestEntry, PreparedKnowledgeSource]],
     cases: tuple[EvalCase, ...],
+    *,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
 ) -> None:
     prepare = getattr(provider, "prepare", None)
     if not callable(prepare):
@@ -1008,8 +1311,12 @@ def _prepare_provider(
             title=source.document.title or entry.corpus_id,
             visibility="private",
             active=True,
+            ablation_policy=ablation_policy,
+            semantic_provider=provider,
         )
-        texts.extend(embedding_text(chunk) for chunk in chunks)
+        texts.extend(
+            embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks
+        )
     texts.extend(case.query for case in cases)
     prepare(tuple(dict.fromkeys(texts)))
 
@@ -1316,6 +1623,7 @@ def _evaluate_case(
                 "sparse_score": hit.sparse_score,
                 "dense_rank": hit.dense_rank,
                 "dense_score": hit.dense_score,
+                "rerank_score": hit.rerank_score,
             }
             for hit in top_hits
         ],
@@ -1500,6 +1808,8 @@ def _route_score(
         return first.sparse_score
     if retrieval_mode == "dense":
         return first.dense_score
+    if first.rerank_score is not None:
+        return first.rerank_score
     return first.rrf_score
 
 

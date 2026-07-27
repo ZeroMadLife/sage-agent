@@ -26,6 +26,7 @@ from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
+    KnowledgeAblationPolicy,
     KnowledgeChunk,
     KnowledgeIndexSummary,
     KnowledgeRetrievalMode,
@@ -212,6 +213,7 @@ class PostgresKnowledgeIndex:
         embedding_provider: DenseEmbeddingProvider | None = None,
         relevance_policy: KnowledgeRelevancePolicy | None = None,
         observability: KnowledgeRetrievalObservabilityConfig | None = None,
+        ablation_policy: KnowledgeAblationPolicy | None = None,
     ) -> None:
         if not workspace_id.strip() or len(workspace_id) > 128:
             raise ValueError("invalid Knowledge PostgreSQL workspace id")
@@ -225,6 +227,7 @@ class PostgresKnowledgeIndex:
             )
         self.relevance_policy = relevance_policy
         self.observability = observability or KnowledgeRetrievalObservabilityConfig()
+        self.ablation_policy = ablation_policy or KnowledgeAblationPolicy()
         self._markdown_parser = MarkdownParser()
         self._pool: Any | None = None
         self._pool_lock = RLock()
@@ -321,10 +324,15 @@ class PostgresKnowledgeIndex:
         row, chunks, current_revision, created_at = self._revision_chunks(connection, revision_id)
         prepare = getattr(self.embedding_provider, "prepare", None)
         if callable(prepare):
-            prepare(tuple(embedding_text(chunk) for chunk in chunks))
+            prepare(
+                tuple(
+                    embedding_text(chunk, ablation_policy=self.ablation_policy)
+                    for chunk in chunks
+                )
+            )
         prepared: list[tuple[KnowledgeChunk, tuple[float, ...], str]] = []
         for chunk in chunks:
-            value = embedding_text(chunk)
+            value = embedding_text(chunk, ablation_policy=self.ablation_policy)
             vector = tuple(float(item) for item in self.embedding_provider.embed(value))
             if len(vector) != self.embedding_provider.dimensions or any(
                 not math.isfinite(item) for item in vector
@@ -1034,6 +1042,8 @@ class PostgresKnowledgeIndex:
             title=str(row["title"]),
             visibility="private",
             active=revision_id == current_revision,
+            ablation_policy=self.ablation_policy,
+            semantic_provider=self.embedding_provider,
         )
         return row, chunks, current_revision, str(row["created_at"])
 
@@ -1113,7 +1123,7 @@ class PostgresKnowledgeIndex:
                 chunk.visibility,
                 chunk.language,
                 chunk.active,
-                index_text(chunk),
+                index_text(chunk, ablation_policy=self.ablation_policy),
                 self._database_vector(vector),
                 self.embedding_provider.model_id,
                 self.embedding_provider.model_revision,

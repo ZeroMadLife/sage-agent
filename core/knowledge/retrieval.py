@@ -8,8 +8,9 @@ import math
 import re
 import unicodedata
 from collections import Counter
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from itertools import pairwise
 from typing import Literal, Protocol
 
 from core.knowledge.parsing import ParsedDocument
@@ -27,6 +28,48 @@ _MAX_CHUNKS_PER_REVISION = 2_000
 _MAX_QUERY_TERMS = 64
 
 KnowledgeRetrievalMode = Literal["sparse", "dense", "hybrid"]
+KnowledgeAblationStrategy = Literal[
+    "baseline",
+    "contextual_chunk",
+    "parent_child",
+    "semantic_boundary",
+    "cross_encoder",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeAblationPolicy:
+    """One mutually exclusive PR-6 retrieval experiment."""
+
+    strategy: KnowledgeAblationStrategy = "baseline"
+    parent_child_max_chars: int = 180
+    parent_child_overlap_chars: int = 24
+    semantic_min_chars: int = _MAX_CHUNK_CHARS
+    semantic_min_chunk_chars: int = 800
+    semantic_breakpoint_percentile: float = 95.0
+    rerank_top_n: int = 20
+
+    def __post_init__(self) -> None:
+        if self.strategy not in {
+            "baseline",
+            "contextual_chunk",
+            "parent_child",
+            "semantic_boundary",
+            "cross_encoder",
+        }:
+            raise ValueError("unsupported Knowledge ablation strategy")
+        if not 64 <= self.parent_child_max_chars <= 2_000:
+            raise ValueError("parent-child max chars must be between 64 and 2000")
+        if not 0 <= self.parent_child_overlap_chars < self.parent_child_max_chars // 2:
+            raise ValueError("parent-child overlap must be less than half the child size")
+        if not 40 <= self.semantic_min_chars <= 20_000:
+            raise ValueError("semantic minimum chars must be between 40 and 20000")
+        if not 20 <= self.semantic_min_chunk_chars <= self.semantic_min_chars:
+            raise ValueError("semantic minimum chunk chars are invalid")
+        if not 0.0 <= self.semantic_breakpoint_percentile <= 100.0:
+            raise ValueError("semantic breakpoint percentile must be between zero and 100")
+        if not 2 <= self.rerank_top_n <= 50:
+            raise ValueError("cross-encoder rerank top-n must be between 2 and 50")
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +96,7 @@ class KnowledgeChunk:
     visibility: str
     language: str
     active: bool
+    retrieval_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +115,7 @@ class KnowledgeSearchHit:
     graph_seed_page_id: str | None = None
     graph_direction: Literal["outbound", "inbound"] | None = None
     graph_score: float | None = None
+    rerank_score: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +177,15 @@ class DenseEmbeddingProvider(Protocol):
         """Return one normalized vector for deterministic persistence and scoring."""
 
 
+class KnowledgeReranker(Protocol):
+    model_id: str
+    model_revision: str
+    estimated_cost_usd: float | None
+
+    def rerank(self, query: str, documents: tuple[str, ...]) -> tuple[float, ...]:
+        """Score a bounded candidate list in its original order."""
+
+
 class HashingEmbeddingProvider:
     """Dependency-free local baseline; production can replace this with pgvector embeddings."""
 
@@ -174,22 +228,45 @@ def chunk_document(
     title: str,
     visibility: str,
     active: bool,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
+    semantic_provider: DenseEmbeddingProvider | None = None,
 ) -> tuple[KnowledgeChunk, ...]:
     """Preserve parser blocks first and split only oversized semantic blocks."""
 
+    policy = ablation_policy or KnowledgeAblationPolicy()
     chunks: list[KnowledgeChunk] = []
     for block in document.blocks:
         if block.kind in {"frontmatter", "heading"} or not block.text.strip():
             continue
-        for part_index, text in enumerate(_split_oversized_block(block.text.strip())):
+        parent_text = block.text.strip()
+        parts = _ablation_parts(
+            parent_text,
+            policy=policy,
+            semantic_provider=semantic_provider,
+        )
+        for part_index, (text, retrieval_value) in enumerate(parts):
             content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+            retrieval_hash = hashlib.sha256(
+                (retrieval_value or text).encode("utf-8")
+            ).hexdigest()
             ordinal = len(chunks)
-            chunk_id = _stable_id(
-                "kchunk",
-                page_revision,
-                block.block_id,
-                str(part_index),
-                content_hash,
+            chunk_id = (
+                _stable_id(
+                    "kchunk",
+                    page_revision,
+                    block.block_id,
+                    str(part_index),
+                    content_hash,
+                    retrieval_hash,
+                )
+                if retrieval_value is not None
+                else _stable_id(
+                    "kchunk",
+                    page_revision,
+                    block.block_id,
+                    str(part_index),
+                    content_hash,
+                )
             )
             chunks.append(
                 KnowledgeChunk(
@@ -215,6 +292,7 @@ def chunk_document(
                     visibility=visibility,
                     language=document.language,
                     active=active,
+                    retrieval_text=retrieval_value,
                 )
             )
             if len(chunks) >= _MAX_CHUNKS_PER_REVISION:
@@ -282,13 +360,94 @@ def _query_terms(text: str) -> tuple[str, ...]:
     return tuple(terms)
 
 
-def index_text(chunk: KnowledgeChunk) -> str:
-    values = (chunk.title, *chunk.heading_path, chunk.text)
+def contextual_retrieval_text(chunk: KnowledgeChunk) -> str:
+    section = " / ".join(chunk.heading_path) or chunk.title
+    return "\n".join(
+        (
+            f"Source: {chunk.source_relative_path}",
+            f"Title: {chunk.title}",
+            f"Section: {section}",
+            "Content:",
+            chunk.retrieval_text or chunk.text,
+        )
+    ).strip()
+
+
+def index_text(
+    chunk: KnowledgeChunk,
+    *,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
+) -> str:
+    policy = ablation_policy or KnowledgeAblationPolicy()
+    if policy.strategy == "contextual_chunk":
+        return " ".join(lexical_terms(contextual_retrieval_text(chunk)))
+    values = (chunk.title, *chunk.heading_path, chunk.retrieval_text or chunk.text)
     return " ".join(lexical_terms("\n".join(values)))
 
 
-def embedding_text(chunk: KnowledgeChunk) -> str:
-    return "\n".join((chunk.title, " / ".join(chunk.heading_path), chunk.text)).strip()
+def embedding_text(
+    chunk: KnowledgeChunk,
+    *,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
+) -> str:
+    policy = ablation_policy or KnowledgeAblationPolicy()
+    if policy.strategy == "contextual_chunk":
+        return contextual_retrieval_text(chunk)
+    return "\n".join(
+        (chunk.title, " / ".join(chunk.heading_path), chunk.retrieval_text or chunk.text)
+    ).strip()
+
+
+def postprocess_search_hits(
+    query: str,
+    hits: tuple[KnowledgeSearchHit, ...],
+    *,
+    policy: KnowledgeAblationPolicy,
+    reranker: KnowledgeReranker | None = None,
+) -> tuple[KnowledgeSearchHit, ...]:
+    """Apply exactly one bounded experiment after base retrieval."""
+
+    if policy.strategy == "parent_child":
+        selected: list[KnowledgeSearchHit] = []
+        seen_parents: set[tuple[str, str]] = set()
+        for hit in hits:
+            parent = (hit.chunk.page_revision, hit.chunk.block_id)
+            if parent in seen_parents:
+                continue
+            seen_parents.add(parent)
+            selected.append(replace(hit, rank=len(selected) + 1))
+        return tuple(selected)
+    if policy.strategy != "cross_encoder":
+        if reranker is not None:
+            raise ValueError("reranker is only valid for the cross_encoder strategy")
+        return hits
+    if reranker is None:
+        raise ValueError("cross-encoder reranker is required")
+    bounded = hits[: policy.rerank_top_n]
+    if not bounded:
+        return hits
+    scores = tuple(
+        float(value)
+        for value in reranker.rerank(
+            query,
+            tuple(hit.chunk.text for hit in bounded),
+        )
+    )
+    if len(scores) != len(bounded) or any(not math.isfinite(value) for value in scores):
+        raise ValueError("cross-encoder returned invalid scores")
+    rescored = sorted(
+        zip(bounded, scores, strict=True),
+        key=lambda item: (-item[1], item[0].rank, item[0].chunk.chunk_id),
+    )
+    ordered = [
+        replace(hit, rank=index, rerank_score=score)
+        for index, (hit, score) in enumerate(rescored, start=1)
+    ]
+    ordered.extend(
+        replace(hit, rank=index)
+        for index, hit in enumerate(hits[policy.rerank_top_n :], start=len(ordered) + 1)
+    )
+    return tuple(ordered)
 
 
 def serialize_vector(vector: tuple[float, ...]) -> str:
@@ -418,24 +577,154 @@ def assemble_retrieval_bundle(
     )
 
 
+def _ablation_parts(
+    text: str,
+    *,
+    policy: KnowledgeAblationPolicy,
+    semantic_provider: DenseEmbeddingProvider | None,
+) -> tuple[tuple[str, str | None], ...]:
+    if policy.strategy == "parent_child":
+        return tuple(
+            (text, child)
+            for child in _split_bounded_block(
+                text,
+                max_chars=policy.parent_child_max_chars,
+                overlap_chars=policy.parent_child_overlap_chars,
+            )
+        )
+    if policy.strategy == "semantic_boundary" and len(text) > policy.semantic_min_chars:
+        if semantic_provider is None or not semantic_provider.supports_semantic_recall:
+            raise ValueError("semantic boundary chunking requires a semantic embedding provider")
+        return tuple(
+            (part, None)
+            for part in _split_semantic_block(
+                text,
+                provider=semantic_provider,
+                minimum_chunk_chars=policy.semantic_min_chunk_chars,
+                breakpoint_percentile=policy.semantic_breakpoint_percentile,
+            )
+        )
+    return tuple((part, None) for part in _split_oversized_block(text))
+
+
 def _split_oversized_block(text: str) -> tuple[str, ...]:
-    if len(text) <= _MAX_CHUNK_CHARS:
+    return _split_bounded_block(
+        text,
+        max_chars=_MAX_CHUNK_CHARS,
+        overlap_chars=_CHUNK_OVERLAP_CHARS,
+    )
+
+
+def _split_bounded_block(
+    text: str,
+    *,
+    max_chars: int,
+    overlap_chars: int,
+) -> tuple[str, ...]:
+    if len(text) <= max_chars:
         return (text,)
     pieces: list[str] = []
     cursor = 0
     while cursor < len(text):
-        end = min(len(text), cursor + _MAX_CHUNK_CHARS)
+        end = min(len(text), cursor + max_chars)
         if end < len(text):
-            boundary = max(text.rfind("\n", cursor, end), text.rfind("。", cursor, end))
-            if boundary > cursor + _MAX_CHUNK_CHARS // 2:
+            boundary = max(
+                text.rfind("\n", cursor, end),
+                text.rfind("。", cursor, end),
+                text.rfind("！", cursor, end),
+                text.rfind("？", cursor, end),
+                text.rfind(". ", cursor, end),
+            )
+            if boundary > cursor + max_chars // 2:
                 end = boundary + 1
         part = text[cursor:end].strip()
         if part:
             pieces.append(part)
         if end >= len(text):
             break
-        cursor = max(cursor + 1, end - _CHUNK_OVERLAP_CHARS)
+        cursor = max(cursor + 1, end - overlap_chars)
     return tuple(pieces)
+
+
+def _split_semantic_block(
+    text: str,
+    *,
+    provider: DenseEmbeddingProvider,
+    minimum_chunk_chars: int,
+    breakpoint_percentile: float,
+) -> tuple[str, ...]:
+    sentences = _sentence_units(text)
+    if len(sentences) < 3:
+        return _split_oversized_block(text)
+    prepare = getattr(provider, "prepare", None)
+    if callable(prepare):
+        prepare(sentences)
+    vectors = tuple(provider.embed(sentence) for sentence in sentences)
+    if any(len(vector) != provider.dimensions for vector in vectors):
+        raise ValueError("semantic boundary embedding dimensions changed")
+    distances = tuple(
+        1.0 - cosine_similarity(left, right)
+        for left, right in pairwise(vectors)
+    )
+    threshold = _percentile(distances, breakpoint_percentile)
+    boundaries = {
+        index + 1 for index, distance in enumerate(distances) if distance > threshold
+    }
+    pieces: list[str] = []
+    current: list[str] = []
+    for index, sentence in enumerate(sentences, start=1):
+        current.append(sentence)
+        candidate = " ".join(current).strip()
+        if index in boundaries and len(candidate) >= minimum_chunk_chars:
+            pieces.append(candidate)
+            current = []
+    if current:
+        tail = " ".join(current).strip()
+        if pieces and len(tail) < minimum_chunk_chars:
+            pieces[-1] = f"{pieces[-1]} {tail}".strip()
+        elif tail:
+            pieces.append(tail)
+    bounded = tuple(
+        child
+        for piece in pieces
+        for child in _split_bounded_block(
+            piece,
+            max_chars=_MAX_CHUNK_CHARS,
+            overlap_chars=_CHUNK_OVERLAP_CHARS,
+        )
+    )
+    return bounded or _split_oversized_block(text)
+
+
+def _sentence_units(text: str) -> tuple[str, ...]:
+    units: list[str] = []
+    start = 0
+    for index, character in enumerate(text):
+        if character not in {"。", "！", "？", "!", "?", "\n"} and not (
+            character == "." and (index + 1 == len(text) or text[index + 1].isspace())
+        ):
+            continue
+        value = text[start : index + 1].strip()
+        if value:
+            units.append(value)
+        start = index + 1
+    tail = text[start:].strip()
+    if tail:
+        units.append(tail)
+    return tuple(units)
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(float(value) for value in values)
+    position = (len(ordered) - 1) * percentile / 100.0
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
 def _truncate_excerpt(text: str, source_tokens: int, token_budget: int) -> str:
