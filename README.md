@@ -2,7 +2,7 @@
 
 <p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的学习执行链。</strong></p>
 
-<p align="center"><strong>Recall@10 0.578 → 0.814</strong> · <strong>NDCG@10 0.444 → 0.695</strong> · <strong>Sandbox live audit 10/10</strong></p>
+<p align="center"><strong>80-case versioned RAG Eval</strong> · <strong>100k synthetic exact P95 93.906 ms</strong> · <strong>Sandbox live audit 10/10</strong></p>
 
 ![Sage 控制面、状态面与证据面架构](release/v1.0.0/learning/assets/01-overall-architecture.png)
 
@@ -76,7 +76,7 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 | **运行编排** | 推进模型、工具、多步任务、checkpoint 与可恢复终态 |
 | **工具治理** | schema 校验、能力发现、permission、policy、approval 与 Sandbox |
 | **状态与记忆** | Session、Transcript、Memory、Checkpoint、Todo 与 Subagent 各守生命周期 |
-| **知识与引用** | 来源快照、DOCX/PNG/PDF/Markdown 解析、Wiki proposal、SQLite FTS5 + hashing + RRF、页面/区域级 citation |
+| **知识与引用** | 来源快照、DOCX/PNG/PDF/Markdown 解析、Wiki proposal、SQLite baseline / PostgreSQL GIN + pgvector exact + RRF、页面/区域级 citation |
 | **证据与恢复** | Timeline、RunStore、Diff、Artifact 与 Evaluation 支撑重放和回归 |
 
 通用 Harness 独立维护在 [`packages/sage_harness/`](packages/sage_harness/)；Sage 产品层负责把
@@ -103,7 +103,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | --- | --- |
 | **Chat Harness** | SSE / WebSocket 流式事件、durable timeline、checkpoint、context budget 与 usage |
 | **Practice Engine** | 文件、搜索、Shell、Patch、Diff、Git、审批、测试与运行工件 |
-| **Knowledge Platform** | 来源 revision、Wiki proposal、可插拔 Embedding、RRF、校准拒答、显式一跳关系检索与 citation |
+| **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL exact 后端、可插拔 Embedding、RRF、校准拒答、失败 trace、显式一跳关系检索与 citation |
 | **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
 | **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
 | **Release Engineering** | 前后端质量门禁、不可变镜像、同 SHA Canary、公开/私有隔离与共同回滚 |
@@ -122,6 +122,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
+[RAG 工程化总复盘](docs/evals/sage-rag-engineering-retrospective-v1.md)、
 [RAG HNSW 规模门禁报告](docs/evals/knowledge-hnsw-scale-gate-v1.md)、
 [RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
@@ -141,8 +142,9 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 - **协议与扩展**：REST、WebSocket、SSE、MCP、Skills
 - **部署与质量**：Docker Compose、GitHub Actions、Ruff、mypy、Canary controller
 
-> PostgreSQL/pgvector 是本地基础设施与可替换检索方向；Knowledge 当前默认检索仍是
-> SQLite FTS5 + deterministic hashing + RRF，不把路线图写成已上线能力。
+> PostgreSQL GIN + pgvector exact 已实现为可选检索后端；Knowledge 当前默认检索仍是
+> SQLite FTS5 + deterministic hashing + RRF。真实语义 Provider 与 bounded recovery 保持
+> opt-in，运行时未创建 HNSW，不把评测候选写成默认能力。
 
 ## 快速开始
 
