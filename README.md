@@ -202,7 +202,7 @@ sage-agent/
 ├── frontend/                    # Vue 3 产品界面与公开工程主页
 ├── public_agent/                # 只读 PublishedPackage 的受限公开 Agent
 ├── tests/                       # 后端、API、契约与集成测试
-├── release/v1.0.0/             # 候选版本说明、架构图与持续学习手册
+├── release/v1.0.0/             # 正式版本说明、架构图与持续学习手册
 └── docs/                        # 产品、设计、开发与运维文档
 ```
 
@@ -218,7 +218,7 @@ sage-agent/
 ## 深入阅读
 
 - [v1.0.0 Showcase](release/v1.0.0/SHOWCASE.md)：3 分钟理解产品与工程亮点
-- [v1.0.0 候选版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
+- [v1.0.0 正式版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
 - [持续学习手册](release/v1.0.0/learning/00-reading-map.md)：从架构边界到验证证据
 - [工具执行闭环](release/v1.0.0/learning/05-tools-execution-pipeline.md)：工具如何被发现、校验、授权和执行
 - [Knowledge 与 RAG](release/v1.0.0/learning/09-knowledge-rag-retrieval.md)：来源、proposal、检索与 citation

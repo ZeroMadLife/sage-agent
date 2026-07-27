@@ -1,6 +1,6 @@
 # Sage v1.0.0 Showcase
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 **Sage 是一个本地优先的 Personal AI Learning Companion，把目标、知识、真实实践与可复核证据组织进同一套 Agent Harness。**
 

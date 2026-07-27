@@ -107,7 +107,7 @@ flowchart LR
 前端 -> API -> Runtime/Engine -> Tools/Memory/Knowledge
 ```
 
-这适合解释“代码怎么跑”。  
+这适合解释“代码怎么跑”。
 但团队 Harness Engineering 更需要的是：
 
 ```text
@@ -252,7 +252,7 @@ Sage 比 CodeBuddy 多强调两件事：
 
 ## 6. 一句话目标
 
-> Sage 要成为：  
+> Sage 要成为：
 > **规范可输入、约束可执行、数据可验证、能力可扩展、结果可反馈** 的个人 AI 学习与工程协作系统。
 
 不是只生成代码，而是持续把结果回写到规则、技能、记忆与知识资产里。

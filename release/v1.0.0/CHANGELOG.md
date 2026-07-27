@@ -1,6 +1,6 @@
 # v1.0.0 Changelog
 
-> 状态：候选版本，尚未创建 `v1.0.0` tag 或 GitHub Release。
+> 发布日期：2026-07-27 · Release ref：`v1.0.0`
 
 ## 主要能力
 
@@ -30,4 +30,4 @@
 - 无答案查询的 abstention accuracy 仍为 0，检索指标不等于回答可信度。
 - Container Sandbox 的生产 rootless audit、固定 image digest 与 workspace 写边界仍需验收。
 - 云端 Knowledge tenant scope、正式 HTTPS 域名与完整恢复演练尚未关闭。
-- 合入 `main`、tag 和 GitHub Release 以候选 SHA 的完整门禁结果为准。
+- `v1.0.0` 固定本次已完成的能力；上述已知边界继续作为后续版本门禁。

@@ -1,6 +1,6 @@
 # v1.0.0 Testing
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 本页提供当前可执行的验证入口。任何发布结论都应记录 source ref、命令、退出码和失败项；
 不要只复制一个会快速失真的测试数量。
@@ -124,3 +124,17 @@ git diff --check
 
 不要将 `.env`、Provider key、OAuth secret、邀请 token、用户文件内容或私有 timeline 附到
 公开 issue、PR 或发布记录中。
+
+## 6. v1.0.0 发布记录
+
+- Source ref：`v1.0.0`；候选基线 `dev/sage-v7@887263d3`。
+- 后端质量：Ruff、format、mypy 193 个 source files、pytest `1619 passed`。
+- 前端质量：Vitest `69` 个文件、`504 passed`；私有与公开生产构建通过。
+- 容器与差异：Compose config、API Dockerfile check、相对 `main` 的累计 `git diff --check` 通过。
+- 检索评测：manifest `2026-07-27.1` 契约通过；200 条离线 hashing benchmark 的 Recall@10
+  `0.578`、MRR `0.409`、NDCG@10 `0.444` 与历史基线一致。
+- 公开场景：`1440`、`1728`、`390` 视口与 Ask Sage citation/receipt 通过；私有 API 公网为 `404`。
+- 私有匿名边界：health `200`，Coding/Knowledge `401`，遗留 Chat `404`；Canary 状态 `HEALTHY`。
+- 私有登录态场景：等待项目维护者在受控 Chrome 中完成一次性邀请码登录后复核。
+- 当前决策：**继续发布验收**；私有登录态 Chat、WebSocket、文件读取与 Sandbox smoke 通过后，
+  才允许把 release ref 快进到 `main` 并创建 tag。

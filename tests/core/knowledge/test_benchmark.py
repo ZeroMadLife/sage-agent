@@ -156,7 +156,7 @@ def test_committed_v2_manifest_matches_dataset_and_corpus() -> None:
     )
 
     assert manifest.benchmark_id == "sage-knowledge-v2"
-    assert manifest.benchmark_revision == "2026-07-25.2"
+    assert manifest.benchmark_revision == "2026-07-27.1"
     assert len(manifest.files) == 16
 
 

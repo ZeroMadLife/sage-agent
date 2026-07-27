@@ -1,6 +1,6 @@
 {
   "benchmark_id": "sage-knowledge-v2",
-  "benchmark_revision": "2026-07-25.2",
+  "benchmark_revision": "2026-07-27.1",
   "dataset": "evals/knowledge_benchmark_v2.jsonl",
   "dataset_sha256": "095707c016154ebf8b7657bfc29a765aea0ceab63c375727ec70ef0359c77c0c",
   "corpus_root": "release/v1.0.0/learning",
@@ -20,6 +20,6 @@
     {"path": "12-security-audit.md", "sha256": "6c9f5fa56503133311664f7adfc1cadd8455d88893e811879c5e4f8cd7818a40"},
     {"path": "13-module-map.md", "sha256": "e307bd3e5407fa6a99dc7ff8a722ff072ae6214c236ebee779b3e2aa96bc138b"},
     {"path": "14-create-agent-langgraph.md", "sha256": "d1b8e25c134ba526bd7ad00d135362aeae02fcb5f2abac2de869c7b777196e21"},
-    {"path": "15-sage-five-layer-target-architecture.md", "sha256": "0b8c9cb170583a71669d7393b64667a4cd4107fadc9ea34d6f6fcfd89bc93c48"}
+    {"path": "15-sage-five-layer-target-architecture.md", "sha256": "d6353b4e79f6b9805834dc0e6aeba74ccd7d3411c746d7a26db87e5a368ae056"}
   ]
 }

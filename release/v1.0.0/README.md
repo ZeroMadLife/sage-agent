@@ -1,8 +1,8 @@
 # Sage v1.0.0
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
-这里是 v1.0.0 的候选版本入口，也是随代码持续校正的学习索引。它不记录每小时的开发
+这里是 v1.0.0 的正式版本入口，也是随代码持续校正的学习索引。它不记录每小时的开发
 流水账，也不把计划写成已交付能力；版本事实以对应 source ref、代码和测试为准。
 
 ## 阅读顺序
@@ -42,7 +42,7 @@ v1.0.0 将 Sage 从领域型聊天应用推进为本地优先的个人 AI 学习
 
 ## 发布边界
 
-- 当前仍是 release candidate；尚未合入 `main`、创建 tag 或发布 GitHub Release。
+- `v1.0.0` 固定在 `main` 的正式发布提交；后续开发继续进入 `dev/sage-v7`。
 - `docker-compose.yml` 是本地依赖编排，不是生产栈。
 - `local_workspace` 仅用于可信开发机；公网任务必须使用 Container Sandbox。
 - Container workspace 仍整体可写，生产 rootless live audit 和 image digest 尚未关闭。

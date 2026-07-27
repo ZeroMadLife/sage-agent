@@ -1,6 +1,6 @@
 # v1.0.0 Architecture Review
 
-> Candidate source: `codex/chore-release-cleanup-v1` (2026-07-27，最终 SHA 待门禁后记录)
+> Release ref: `v1.0.0` (2026-07-27)
 
 ## 评审结论
 
@@ -104,4 +104,4 @@ Harness、Knowledge、Memory、Workspace 或工具；限流、预算和审计记
 - **本地开发与受控私测**：可继续。
 - **受控公开资料 Agent**：可继续；ICP备案前使用临时 HTTP IP，并保持独立公开数据边界。
 - **公网开放私有 Harness**：暂缓，直到 Critical/High 发布门禁关闭。
-- **合入 `main`**：必须以当次 release candidate 的完整 CI、迁移和人工场景为准。
+- **正式版本**：`v1.0.0` 只固定本次已完成门禁的范围；未关闭边界不随 tag 自动升级为已交付能力。
