@@ -51,6 +51,7 @@ from core.knowledge.graph_analysis import (
     LocalKnowledgeGraphAnalyzer,
 )
 from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.index_backend import KnowledgeIndexBackend
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
     KnowledgeMigrationPlan,
@@ -426,7 +427,7 @@ class KnowledgeStore:
         database_path: str | Path,
         source_roots: Mapping[str, KnowledgeSourceRoot],
         parser_registry: ParserRegistry | None = None,
-        knowledge_index: LocalKnowledgeIndex | None = None,
+        knowledge_index: KnowledgeIndexBackend | None = None,
         knowledge_graph: LocalKnowledgeGraph | None = None,
         knowledge_graph_analyzer: LocalKnowledgeGraphAnalyzer | None = None,
     ) -> None:

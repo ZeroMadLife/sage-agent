@@ -17,6 +17,8 @@ from core.knowledge.eval_runner import (
     GateCalibration,
     GateObservation,
     calibrate_gate,
+    compare_layered_reports,
+    run_postgres_layered_eval,
     run_sqlite_layered_eval,
 )
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
@@ -47,11 +49,18 @@ from core.knowledge.graph_analysis import (
     KnowledgeGraphNodeMetric,
     LocalKnowledgeGraphAnalyzer,
 )
+from core.knowledge.index_backend import KnowledgeIndexBackend
+from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
     KnowledgeMigrationPlan,
     KnowledgeMigrationResult,
     KnowledgeMigrationResultItem,
+)
+from core.knowledge.postgres_index import (
+    POSTGRES_INDEX_SCHEMA_REVISION,
+    PostgresKnowledgeIndex,
+    PostgresKnowledgeIndexConfig,
 )
 from core.knowledge.relevance import (
     KnowledgeRelevancePolicy,
@@ -92,6 +101,7 @@ from core.knowledge.understanding import (
 )
 
 __all__ = [
+    "POSTGRES_INDEX_SCHEMA_REVISION",
     "CorpusManifestEntry",
     "EvalCase",
     "EvalDatasetManifest",
@@ -121,6 +131,7 @@ __all__ = [
     "KnowledgeGraphOverview",
     "KnowledgeGraphRelationPath",
     "KnowledgeGraphSnapshot",
+    "KnowledgeIndexBackend",
     "KnowledgeIndexSummary",
     "KnowledgeMigrationItem",
     "KnowledgeMigrationPlan",
@@ -149,6 +160,8 @@ __all__ = [
     "LocalKnowledgeGraphAnalyzer",
     "OpenAICompatibleEmbeddingConfig",
     "OpenAICompatibleEmbeddingProvider",
+    "PostgresKnowledgeIndex",
+    "PostgresKnowledgeIndexConfig",
     "PreparedKnowledgeSource",
     "SourceSection",
     "SourceUnderstanding",
@@ -157,9 +170,12 @@ __all__ = [
     "WorkspaceSourceEvidence",
     "WorkspaceSynthesis",
     "assemble_retrieval_bundle",
+    "build_knowledge_index",
     "calibrate_gate",
+    "compare_layered_reports",
     "load_relevance_policy",
     "load_versioned_dataset",
+    "run_postgres_layered_eval",
     "run_sqlite_layered_eval",
     "validate_eval_dataset",
 ]
