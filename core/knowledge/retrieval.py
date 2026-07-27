@@ -8,6 +8,7 @@ import math
 import re
 import unicodedata
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -19,6 +20,8 @@ _MAX_CHUNK_CHARS = 4_000
 _CHUNK_OVERLAP_CHARS = 160
 _MAX_CHUNKS_PER_REVISION = 2_000
 _MAX_QUERY_TERMS = 64
+
+KnowledgeRetrievalMode = Literal["sparse", "dense", "hybrid"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +60,7 @@ class KnowledgeSearchHit:
     sparse_score: float | None
     dense_rank: int | None
     dense_score: float | None
-    retrieval_route: Literal["hybrid", "graph"] = "hybrid"
+    retrieval_route: Literal["sparse", "dense", "hybrid", "graph"] = "hybrid"
     graph_edge_id: str | None = None
     graph_evidence_citation_id: str | None = None
     graph_seed_page_id: str | None = None
@@ -305,6 +308,7 @@ def reciprocal_rank_fusion(
     dense: list[tuple[str, float]],
     *,
     rank_constant: int = 60,
+    tie_breakers: Mapping[str, str] | None = None,
 ) -> list[tuple[str, float, int | None, float | None, int | None, float | None]]:
     if rank_constant < 1:
         raise ValueError("RRF rank constant must be positive")
@@ -320,7 +324,11 @@ def reciprocal_rank_fusion(
         state.score += 1.0 / (rank_constant + rank)
         state.dense_rank = rank
         state.dense_score = score
-    ordered = sorted(combined.items(), key=lambda item: (-item[1].score, item[0]))
+    stable = tie_breakers or {}
+    ordered = sorted(
+        combined.items(),
+        key=lambda item: (-item[1].score, stable.get(item[0], item[0]), item[0]),
+    )
     return [
         (
             chunk_id,

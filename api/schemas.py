@@ -228,7 +228,7 @@ class KnowledgeEvidenceResponse(BaseModel):
     sparse_score: float | None = None
     dense_rank: int | None = Field(default=None, ge=1)
     dense_score: float | None = None
-    retrieval_route: Literal["hybrid", "graph"]
+    retrieval_route: Literal["sparse", "dense", "hybrid", "graph"]
     graph_edge_id: str | None = None
     graph_evidence_citation_id: str | None = None
     graph_seed_page_id: str | None = None

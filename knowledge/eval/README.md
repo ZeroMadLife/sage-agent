@@ -17,6 +17,25 @@ PYTHONPATH=packages/sage_harness:. .venv/bin/python scripts/validate_knowledge_d
 
 该命令只做合同、路径、hash、anchor 和 split 校验，输出机器可读摘要，不联网也不运行检索。
 
+## SQLite 分层 baseline
+
+```bash
+PYTHONPATH=packages/sage_harness:. .venv/bin/python \
+  scripts/evaluate_knowledge_sqlite_baseline.py \
+  --output evals/reports/knowledge_sqlite_layered_v1_2026-07-27.json
+```
+
+命令在同一版本化 corpus 上运行 `sparse`、Hashing `dense` 和 `hybrid RRF`。Gate 阈值只从
+calibration split 选择；test 只作冻结验收。默认拒绝从 dirty source 输出正式报告，开发态诊断
+必须显式加 `--allow-dirty`。
+
+Generation 层当前是 deterministic extractive proxy，只衡量已检索 excerpt 对 required claim token
+的覆盖和 forbidden claim 精确命中。中英跨语言 token recall 只作 completeness 下界，不设通过
+阈值；它不使用 LLM judge，也不能写成真实生成质量。
+
+当前 clean baseline 的指标解释、失败案例和可写边界见
+[`docs/evals/knowledge-sqlite-layered-baseline-v1.md`](../../docs/evals/knowledge-sqlite-layered-baseline-v1.md)。
+
 ## 当前边界
 
 - 80 条 case 是首批人工策划资产，不代表真实线上分布。

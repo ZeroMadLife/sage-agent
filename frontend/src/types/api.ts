@@ -311,7 +311,7 @@ export type KnowledgeEvidence = {
   sparse_score: number | null
   dense_rank: number | null
   dense_score: number | null
-  retrieval_route: 'hybrid' | 'graph'
+  retrieval_route: 'sparse' | 'dense' | 'hybrid' | 'graph'
   graph_edge_id: string | null
   graph_evidence_citation_id: string | null
   graph_seed_page_id: string | null
