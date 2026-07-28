@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import math
 import re
+import time
 import warnings
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from threading import RLock
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import httpx
@@ -153,6 +154,8 @@ class DashScopeEmbeddingConfig:
     query_instruct: str = ""
     batch_size: int = 10
     timeout_seconds: float = 30.0
+    max_attempts: int = 3
+    retry_backoff_seconds: float = 0.25
     cost_per_1k_tokens_usd: float | None = None
 
     def __post_init__(self) -> None:
@@ -173,6 +176,10 @@ class DashScopeEmbeddingConfig:
             raise ValueError("DashScope embedding batch size must be between 1 and 10")
         if not 1.0 <= self.timeout_seconds <= 120.0:
             raise ValueError("embedding timeout must be between 1 and 120 seconds")
+        if not 1 <= self.max_attempts <= 5:
+            raise ValueError("embedding max attempts must be between 1 and 5")
+        if not 0.0 <= self.retry_backoff_seconds <= 10.0:
+            raise ValueError("embedding retry backoff must be between 0 and 10 seconds")
         if len(query_instruct) > 1_000:
             raise ValueError("DashScope query instruct must not exceed 1000 characters")
         if self.cost_per_1k_tokens_usd is not None and not (
@@ -275,9 +282,9 @@ class DashScopeEmbeddingProvider:
         if role == "query" and self.config.query_instruct:
             parameters["instruct"] = self.config.query_instruct
         try:
-            response = httpx.post(
+            payload = _post_embedding_json(
                 endpoint,
-                json={
+                request_json={
                     "model": self.config.model,
                     "input": {"texts": list(texts)},
                     "parameters": parameters,
@@ -286,10 +293,11 @@ class DashScopeEmbeddingProvider:
                     "Authorization": f"Bearer {self.config.api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=self.config.timeout_seconds,
+                timeout_seconds=self.config.timeout_seconds,
+                max_attempts=self.config.max_attempts,
+                retry_backoff_seconds=self.config.retry_backoff_seconds,
+                error_message="DashScope embedding request failed",
             )
-            response.raise_for_status()
-            payload = response.json()
             rows = payload["output"]["embeddings"]
             if not isinstance(rows, list):
                 raise TypeError("DashScope embedding data must be a list")
@@ -306,7 +314,7 @@ class DashScopeEmbeddingProvider:
                 raw_tokens = usage.get("total_tokens", usage.get("input_tokens", 0))
                 if isinstance(raw_tokens, int) and raw_tokens >= 0:
                     self._total_tokens += raw_tokens
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("DashScope embedding request failed") from exc
         return vectors
 
@@ -320,6 +328,8 @@ class OpenAICompatibleEmbeddingConfig:
     model_revision: str = "api-v1"
     batch_size: int = 32
     timeout_seconds: float = 30.0
+    max_attempts: int = 3
+    retry_backoff_seconds: float = 0.25
     cost_per_1k_tokens_usd: float | None = None
 
     def __post_init__(self) -> None:
@@ -339,6 +349,10 @@ class OpenAICompatibleEmbeddingConfig:
             raise ValueError("embedding batch size must be between 1 and 256")
         if not 1.0 <= self.timeout_seconds <= 120.0:
             raise ValueError("embedding timeout must be between 1 and 120 seconds")
+        if not 1 <= self.max_attempts <= 5:
+            raise ValueError("embedding max attempts must be between 1 and 5")
+        if not 0.0 <= self.retry_backoff_seconds <= 10.0:
+            raise ValueError("embedding retry backoff must be between 0 and 10 seconds")
         if self.cost_per_1k_tokens_usd is not None and not (
             0.0 <= self.cost_per_1k_tokens_usd <= 100.0
         ):
@@ -413,9 +427,9 @@ class OpenAICompatibleEmbeddingProvider:
             else f"{self.config.base_url}/embeddings"
         )
         try:
-            response = httpx.post(
+            payload = _post_embedding_json(
                 endpoint,
-                json={
+                request_json={
                     "model": self.config.model,
                     "input": list(texts),
                     "dimensions": self.dimensions,
@@ -424,10 +438,11 @@ class OpenAICompatibleEmbeddingProvider:
                     "Authorization": f"Bearer {self.config.api_key}",
                     "Content-Type": "application/json",
                 },
-                timeout=self.config.timeout_seconds,
+                timeout_seconds=self.config.timeout_seconds,
+                max_attempts=self.config.max_attempts,
+                retry_backoff_seconds=self.config.retry_backoff_seconds,
+                error_message="embedding request failed",
             )
-            response.raise_for_status()
-            payload = response.json()
             rows = payload["data"]
             if not isinstance(rows, list):
                 raise TypeError("embedding data must be a list")
@@ -447,9 +462,48 @@ class OpenAICompatibleEmbeddingProvider:
                 )
                 if isinstance(raw_tokens, int) and raw_tokens >= 0:
                     self._total_tokens += raw_tokens
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("embedding request failed") from exc
         return vectors
+
+
+def _post_embedding_json(
+    endpoint: str,
+    *,
+    request_json: dict[str, object],
+    headers: dict[str, str],
+    timeout_seconds: float,
+    max_attempts: int,
+    retry_backoff_seconds: float,
+    error_message: str,
+) -> dict[str, Any]:
+    for attempt in range(max_attempts):
+        try:
+            response = httpx.post(
+                endpoint,
+                json=request_json,
+                headers=headers,
+                timeout=timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise TypeError("embedding response must be an object")
+            return cast(dict[str, Any], payload)
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code != 429 and status_code < 500:
+                raise RuntimeError(error_message) from exc
+            failure: Exception = exc
+        except httpx.TransportError as exc:
+            failure = exc
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(error_message) from exc
+        if attempt + 1 >= max_attempts:
+            raise RuntimeError(error_message) from failure
+        if retry_backoff_seconds:
+            time.sleep(retry_backoff_seconds * (2**attempt))
+    raise RuntimeError(error_message)
 
 
 def _normalized_vector(raw: object, dimensions: int) -> tuple[float, ...]:

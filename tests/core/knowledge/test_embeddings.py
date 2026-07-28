@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 
 from core.knowledge.embeddings import (
@@ -70,6 +71,34 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
     ]
     assert all(call["headers"]["Authorization"] == "Bearer secret" for call in calls)
     assert provider.estimated_cost_usd == pytest.approx(0.000015)
+
+
+def test_openai_compatible_provider_retries_transient_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("transient disconnect")
+        return _Response({"data": [{"index": 0, "embedding": [3.0, 4.0]}]})
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = OpenAICompatibleEmbeddingProvider(
+        OpenAICompatibleEmbeddingConfig(
+            api_key="secret",
+            base_url="https://embedding.example/v1",
+            model="embedding-model",
+            dimensions=2,
+            max_attempts=3,
+            retry_backoff_seconds=0.0,
+        )
+    )
+
+    assert provider.embed_query("retry") == pytest.approx((0.6, 0.8))
+    assert calls == 2
 
 
 @pytest.mark.parametrize("indexes", ([0, 0], [0, 2]))
@@ -189,6 +218,96 @@ def test_dashscope_provider_separates_document_and_query_roles(
     assert calls[0]["json"]["input"] == {"texts": ["same", "document-two"]}
     assert calls[1]["json"]["input"] == {"texts": ["same"]}
     assert provider.estimated_cost_usd == pytest.approx(0.000003)
+
+
+def test_dashscope_provider_retries_transient_transport_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_post(*_args: Any, **_kwargs: Any) -> _Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.RemoteProtocolError("transient disconnect")
+        return _Response({"output": {"embeddings": [{"text_index": 0, "embedding": [3.0, 4.0]}]}})
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DashScopeEmbeddingProvider(
+        DashScopeEmbeddingConfig(
+            api_key="secret",
+            base_url="https://workspace.example/api/v1",
+            model="text-embedding-v4",
+            model_revision="text-embedding-v4@2026-07-28",
+            dimensions=2,
+            max_attempts=3,
+            retry_backoff_seconds=0.0,
+        )
+    )
+
+    assert provider.embed_query("retry") == pytest.approx((0.6, 0.8))
+    assert calls == 2
+
+
+@pytest.mark.parametrize("status_code", (429, 503))
+def test_dashscope_provider_retries_retryable_http_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+    status_code: int,
+) -> None:
+    calls = 0
+
+    def fake_post(*_args: Any, **_kwargs: Any) -> _Response | httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            request = httpx.Request("POST", "https://workspace.example/api/v1")
+            return httpx.Response(status_code, request=request)
+        return _Response({"output": {"embeddings": [{"text_index": 0, "embedding": [3.0, 4.0]}]}})
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DashScopeEmbeddingProvider(
+        DashScopeEmbeddingConfig(
+            api_key="secret",
+            base_url="https://workspace.example/api/v1",
+            model="text-embedding-v4",
+            model_revision="text-embedding-v4@2026-07-28",
+            dimensions=2,
+            max_attempts=3,
+            retry_backoff_seconds=0.0,
+        )
+    )
+
+    assert provider.embed_query("retry-status") == pytest.approx((0.6, 0.8))
+    assert calls == 2
+
+
+def test_dashscope_provider_does_not_retry_authentication_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_post(*_args: Any, **_kwargs: Any) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        request = httpx.Request("POST", "https://workspace.example/api/v1")
+        return httpx.Response(401, request=request)
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DashScopeEmbeddingProvider(
+        DashScopeEmbeddingConfig(
+            api_key="secret",
+            base_url="https://workspace.example/api/v1",
+            model="text-embedding-v4",
+            model_revision="text-embedding-v4@2026-07-28",
+            dimensions=2,
+            max_attempts=3,
+            retry_backoff_seconds=0.0,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="DashScope embedding request failed"):
+        provider.embed_query("do-not-retry")
+    assert calls == 1
 
 
 def test_dashscope_provider_rejects_invalid_response_indexes(
