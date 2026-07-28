@@ -41,19 +41,14 @@ from core.harness.sandbox_factory import (
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import (
-    DashScopeEmbeddingConfig,
-    DashScopeEmbeddingProvider,
-    FastEmbedEmbeddingConfig,
-    FastEmbedEmbeddingProvider,
     KnowledgeRecoveryPolicy,
     KnowledgeRelevancePolicy,
     KnowledgeRetrievalObservabilityConfig,
     KnowledgeSourceRoot,
     KnowledgeStore,
-    OpenAICompatibleEmbeddingConfig,
-    OpenAICompatibleEmbeddingProvider,
     load_relevance_policy,
 )
+from core.knowledge.embedding_factory import build_knowledge_embedding_provider
 from core.knowledge.index_backend import KnowledgeIndexBackend
 from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.jobs import (
@@ -428,52 +423,7 @@ def create_app(
         )
         configured_embedding = knowledge_embedding_provider
         if configured_embedding is None:
-            provider_name = settings.knowledge_embedding_provider.strip().casefold()
-            if provider_name == "dashscope":
-                configured_embedding = DashScopeEmbeddingProvider(
-                    DashScopeEmbeddingConfig(
-                        api_key=settings.knowledge_embedding_api_key,
-                        base_url=settings.knowledge_embedding_base_url,
-                        model=settings.knowledge_embedding_model,
-                        model_revision=settings.knowledge_embedding_model_revision,
-                        dimensions=settings.knowledge_embedding_dimensions,
-                        query_instruct=settings.knowledge_embedding_query_instruct,
-                        batch_size=settings.knowledge_dashscope_batch_size,
-                        timeout_seconds=settings.knowledge_embedding_timeout_seconds,
-                        cost_per_1k_tokens_usd=(
-                            settings.knowledge_embedding_cost_per_1k_tokens_usd
-                        ),
-                    )
-                )
-            elif provider_name == "openai_compatible":
-                configured_embedding = OpenAICompatibleEmbeddingProvider(
-                    OpenAICompatibleEmbeddingConfig(
-                        api_key=settings.knowledge_embedding_api_key,
-                        base_url=settings.knowledge_embedding_base_url,
-                        model=settings.knowledge_embedding_model,
-                        model_revision=settings.knowledge_embedding_model_revision,
-                        dimensions=settings.knowledge_embedding_dimensions,
-                        batch_size=settings.knowledge_embedding_batch_size,
-                        timeout_seconds=settings.knowledge_embedding_timeout_seconds,
-                        cost_per_1k_tokens_usd=(
-                            settings.knowledge_embedding_cost_per_1k_tokens_usd
-                        ),
-                    )
-                )
-            elif provider_name == "fastembed":
-                configured_embedding = FastEmbedEmbeddingProvider(
-                    FastEmbedEmbeddingConfig(
-                        model=settings.knowledge_fastembed_model,
-                        repository=settings.knowledge_fastembed_repository,
-                        model_revision=settings.knowledge_fastembed_model_revision,
-                        dimensions=settings.knowledge_fastembed_dimensions,
-                        cache_dir=Path(settings.knowledge_fastembed_cache_dir),
-                        batch_size=settings.knowledge_fastembed_batch_size,
-                        local_files_only=settings.knowledge_fastembed_local_files_only,
-                    )
-                )
-            elif provider_name != "hashing":
-                raise ValueError("unknown Knowledge embedding provider")
+            configured_embedding = build_knowledge_embedding_provider(settings)
         configured_relevance_policy = knowledge_relevance_policy
         if configured_relevance_policy is None and settings.knowledge_relevance_policy_path.strip():
             configured_relevance_policy = load_relevance_policy(

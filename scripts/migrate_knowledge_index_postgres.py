@@ -8,12 +8,12 @@ import time
 from dataclasses import asdict
 
 from core.config.settings import get_settings
+from core.knowledge.embedding_factory import build_knowledge_embedding_provider
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
-from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeStore
 
 
@@ -41,7 +41,10 @@ def main() -> int:
             pool_max_connections=settings.knowledge_postgres_pool_max_connections,
         ),
         workspace_id=args.workspace_id,
-        embedding_provider=HashingEmbeddingProvider(dimensions=args.dimensions),
+        embedding_provider=build_knowledge_embedding_provider(
+            settings,
+            hashing_dimensions=args.dimensions,
+        ),
     )
     started = time.perf_counter()
     try:
