@@ -2,11 +2,11 @@
 
 > 日期：2026-07-28
 >
-> 集成基线：`dev/sage-v7@3875383730a47246c7ad18ad374c1ad1d1cd5aaf`
+> 指标基线：`dev/sage-v7@40c2a1769f5bc4fd02165ee9922bb77a663ff80e`
 >
-> 范围：PR #112、#115 - #123
+> 范围：PR #112、#115 - #126
 >
-> 发布边界：未部署、未接飞书、未合入 `main`
+> 发布边界：本轮指标产生时未部署、未接飞书；后续主干收口不代表部署或线上验证
 
 ## 结论
 
@@ -29,9 +29,13 @@ Corpus/Eval、PostgreSQL exact hybrid、真实语义 Provider 候选、分层失
 
 - LangGraph、PostgreSQL、pgvector、FastAPI 四个官方项目；
 - 9 个审批快照：7 份官方文档/README、2 份官方仓库核心源码；
-- 80 条人工案例，`dev/calibration/test = 40/20/20`，test frozen；
+- 80 条 AI/Codex 辅助构造案例，`dev/calibration/test = 40/20/20`，test frozen；
 - 49 个 parser blocks；
 - URL、version/commit、license、content hash、parser revision 的完整绑定。
+
+Gold 通过冻结官方快照、source anchor、Schema、Hash 与 `leakage_group` 自动校验，没有独立人工
+逐条审核。冻结数据里的 `provenance=human_curated` 是 v1 legacy 机器标签，不能写成
+human-reviewed 或独立人工 Gold。
 
 历史 release Benchmark v2 的 16 文件 / 879 chunks / 200 queries 仍是独立历史证据，
 不能与这套 official Eval 的指标拼接。历史 `0.578 -> 0.814` 比较的是 Hashing hybrid
@@ -72,6 +76,9 @@ exact scan；RRF 融合 rank，避免强行统一 full-text 与 vector 的分数
 | PR-6 | #121 / `a033504` | 四种分块/重排策略单变量消融，均不默认开启 |
 | PR-7 | #122 / `800aad7` | DOCX/PNG/L2 region 多模态 evidence contract |
 | PR-8 | #123 / `3875383` | 1k/10k/100k exact/HNSW 条件规模门禁 |
+| 收口 | #124 / `85187ea` | 固化工程复盘与简历证据 |
+| Provider v2 | #125 / `62d9c10` | FastEmbed/百炼/豆包同协议选型与运行时装配 |
+| Provider retry | #126 / `40c2a17` | 云 Embedding 有界重试与错误边界 |
 
 ## 关键指标
 
@@ -89,17 +96,19 @@ exact scan；RRF 融合 rank，避免强行统一 full-text 与 vector 的分数
 
 ### 真实语义 Provider
 
-selection 的 58 个可回答样本上，PostgreSQL hybrid Recall@10 `0.940 -> 1.000`、
-MRR `0.687 -> 0.791`。frozen test 的 18 个可回答样本上：
+selection 的 58 个可回答样本上，FastEmbed 384、百炼 1024 与豆包 2048 的 PostgreSQL
+hybrid Recall@10 均为 `1.000`；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final。
+frozen test 的 18 个可回答样本上：
 
 | metric | Hashing hybrid | Semantic hybrid |
 | --- | ---: | ---: |
-| Recall@10 | 0.889 | 0.944 |
-| MRR | 0.683 | 0.771 |
-| NDCG@10 | 0.701 | 0.782 |
-| citation support | 1.000 | 1.000 |
+| Recall@10 | 0.889 | 1.000 |
+| MRR | 0.683 | 0.806 |
+| NDCG@10 | 0.701 | 0.852 |
+| false rejection | 2 | 0 |
+| false acceptance | 0 | 0 |
 
-false rejection 从 2 降到 1，没有新增 false acceptance；但 frozen test 的
+false rejection 从 2 降到 0，没有新增 false acceptance；但 frozen test 的
 `semantic_paraphrase` case 数为 0，专项启用门槛不可评估，因此 fail closed。
 
 ### 失败 trace 与恢复
@@ -160,9 +169,9 @@ Round 1，仍不足就拒答。它不是无限 ReAct，也不解决 ingestion/ra
 可写：
 
 > 构建 9 份官方快照、80 条分层 Eval 的 PostgreSQL hybrid RAG，使用
-> `GIN + ts_rank_cd + pgvector exact + RRF`；真实语义模型在 frozen test 将 Recall@10
-> `0.889 -> 0.944`、MRR `0.683 -> 0.771`，citation support 保持 1.0，并以 selection/test
-> 门禁决定语义 Provider、Cross-Encoder 与 HNSW 均不默认启用。
+> `GIN + ts_rank_cd + pgvector exact + RRF`；对比 FastEmbed、百炼、豆包后，百炼在 frozen
+> test 相对 Hashing hybrid 将 Recall@10 `0.889 -> 1.000`、MRR `0.683 -> 0.806`，并以
+> selection/test 门禁决定语义 Provider、Cross-Encoder 与 HNSW 均不默认启用。
 
 不可写：
 

@@ -54,7 +54,11 @@ PYTHONPATH=packages/sage_harness:. .venv/bin/python \
 
 ## 当前边界
 
-- 80 条 case 是首批人工策划资产，不代表真实线上分布。
+- 80 条 case 由 AI/Codex 辅助构造，并以冻结官方快照、source anchor、Schema、Hash 与
+  `leakage_group` 做自动校验；没有独立人工逐条审核，不代表真实线上分布。
+- case 中的 `provenance=human_curated` 是 v1 冻结数据保留的 legacy 机器标签，只表示案例
+  经过项目侧选取与编排，不能解释为 human-reviewed 或独立人工 Gold。为避免改变冻结数据 Hash，
+  本 revision 不重写该字段。
 - PR-1 只建立数据契约；SQLite baseline 从 PR-2 开始生成。
 - 当前 case 以 text/code/table 为主；`gold_page/gold_bbox` 是 PR-7 多模态证据链的前置合同，
   本 revision 均为 `null`。

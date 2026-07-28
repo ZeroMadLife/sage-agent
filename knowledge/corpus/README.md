@@ -1,6 +1,7 @@
 # Versioned Corpus v1
 
-该目录保存经过人工审阅、可复现的 RAG 语料资产，而不是搜索缓存。
+该目录保存从官方来源筛选并冻结、可复现的 RAG 语料资产，而不是搜索缓存。筛选与快照整理
+由 AI/Codex 辅助完成，没有独立人工逐条审核。
 
 - `manifest.jsonl`：每行一个官方来源快照；同时绑定 upstream raw hash 与本地 snapshot hash。
 - `manifest.schema.json`：交换格式；运行时最终约束由 `core.knowledge.datasets` 执行。
@@ -8,8 +9,9 @@
 
 首批只冻结 LangGraph、PostgreSQL/pgvector 和 FastAPI 的 9 个核心主题，其中包括 7 份官方
 文档/README 与 2 份官方源码模块。每个条目必须使用
-固定 commit URL、明确许可证和 `review_status=approved`。网页搜索结果、博客、CSDN 或未审阅
-下载不得直接加入该 manifest。
+固定 commit URL、明确许可证和 `review_status=approved`。这里的 `approved` 表示通过项目的
+来源、Schema、Hash 与许可证门禁，不表示经过独立人工审阅。网页搜索结果、博客、CSDN 或
+未通过这些门禁的下载不得直接加入该 manifest。
 
 | 项目 | 官方上游 | 固定 commit | 许可证 | 快照数 |
 | --- | --- | --- | --- | ---: |
