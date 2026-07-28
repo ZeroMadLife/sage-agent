@@ -196,6 +196,9 @@ class KnowledgeIndexResponse(BaseModel):
     backend: str
     embedding_model: str
     embedding_revision: str
+    corpus_revision: str
+    relevance_policy_id: str | None
+    abstention_enabled: bool
     revision_count: int = Field(ge=0)
     indexed_revision_count: int = Field(ge=0)
     active_chunk_count: int = Field(ge=0)
@@ -212,6 +215,7 @@ class KnowledgeSearchRequest(BaseModel):
     visibility: Literal["private", "public"] = "private"
     source_ids: list[str] = Field(default_factory=list, max_length=100)
     page_revisions: list[str] = Field(default_factory=list, max_length=100)
+    relation_expand: bool = False
 
 
 class KnowledgeEvidenceResponse(BaseModel):
@@ -224,6 +228,12 @@ class KnowledgeEvidenceResponse(BaseModel):
     sparse_score: float | None = None
     dense_rank: int | None = Field(default=None, ge=1)
     dense_score: float | None = None
+    retrieval_route: Literal["sparse", "dense", "hybrid", "graph"]
+    graph_edge_id: str | None = None
+    graph_evidence_citation_id: str | None = None
+    graph_seed_page_id: str | None = None
+    graph_direction: Literal["outbound", "inbound"] | None = None
+    graph_score: float | None = Field(default=None, ge=0)
     chunk_id: str
     page_id: str
     page_revision: str
@@ -239,9 +249,48 @@ class KnowledgeEvidenceResponse(BaseModel):
     title: str
     heading_path: list[str]
     page_number: int | None = Field(default=None, ge=1)
+    block_kind: Literal[
+        "frontmatter", "heading", "paragraph", "list", "code", "table", "quote", "media"
+    ]
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    bbox_coordinate_space: Literal["normalized"] | None = None
+    media_ref: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    parser_id: str
+    parser_version: str
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool
+
+
+class KnowledgeRecoveryAttemptResponse(BaseModel):
+    round_index: int = Field(ge=1, le=2)
+    trigger_reason: Literal["initial", "insufficient_results"]
+    retrieval_mode: Literal["sparse", "dense", "hybrid"]
+    top_k: int = Field(ge=1, le=50)
+    result_count: int = Field(ge=0)
+    query_rewritten: bool
+
+
+class KnowledgeRecoveryResponse(BaseModel):
+    status: Literal[
+        "disabled",
+        "not_needed",
+        "not_available",
+        "recovered",
+        "not_improved",
+        "exhausted",
+    ]
+    round_count: int = Field(ge=0, le=2)
+    no_evidence_reason: (
+        Literal[
+            "recovery_disabled",
+            "no_rewrite_available",
+            "bounded_recovery_exhausted",
+        ]
+        | None
+    ) = None
+    attempts: list[KnowledgeRecoveryAttemptResponse] = Field(max_length=2)
 
 
 class KnowledgeRetrievalResponse(BaseModel):
@@ -252,6 +301,7 @@ class KnowledgeRetrievalResponse(BaseModel):
     token_budget: int = Field(ge=256)
     used_tokens: int = Field(ge=0)
     omitted_count: int = Field(ge=0)
+    recovery: KnowledgeRecoveryResponse
     citations: list[KnowledgeEvidenceResponse]
 
 
@@ -272,6 +322,15 @@ class KnowledgeCitationResponse(BaseModel):
     title: str
     heading_path: list[str]
     page_number: int | None = Field(default=None, ge=1)
+    block_kind: Literal[
+        "frontmatter", "heading", "paragraph", "list", "code", "table", "quote", "media"
+    ]
+    bbox: list[float] | None = Field(default=None, min_length=4, max_length=4)
+    bbox_coordinate_space: Literal["normalized"] | None = None
+    media_ref: str | None = None
+    confidence: float = Field(ge=0, le=1)
+    parser_id: str
+    parser_version: str
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool

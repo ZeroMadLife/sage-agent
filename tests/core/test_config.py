@@ -12,6 +12,26 @@ def test_external_knowledge_parsing_is_fail_closed_by_default() -> None:
     assert settings.knowledge_qwen_vl_enabled is False
 
 
+def test_retrieval_observability_is_fail_closed_and_hides_key() -> None:
+    settings = Settings(
+        _env_file=None,
+        knowledge_retrieval_observability_hmac_key="private-observability-key-material",
+    )
+
+    assert settings.knowledge_retrieval_observability_enabled is False
+    assert settings.knowledge_retrieval_observability_candidate_limit == 50
+    assert "private-observability-key-material" not in repr(settings)
+
+
+def test_bounded_recovery_is_fail_closed_with_hard_limits() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.knowledge_recovery_enabled is False
+    assert settings.knowledge_recovery_min_results == 4
+    assert settings.knowledge_recovery_top_k_multiplier == 2
+    assert settings.knowledge_recovery_max_top_k == 20
+
+
 def test_sandbox_configuration_defaults_to_local_development() -> None:
     settings = Settings(_env_file=None)
 

@@ -1,5 +1,37 @@
 """Auditable personal knowledge workspace primitives."""
 
+from core.knowledge.datasets import (
+    CorpusManifestEntry,
+    EvalCase,
+    EvalDatasetManifest,
+    EvalPassage,
+    VersionedKnowledgeDataset,
+    load_versioned_dataset,
+    validate_eval_dataset,
+)
+from core.knowledge.embeddings import (
+    DEFAULT_FASTEMBED_DIMENSIONS,
+    DEFAULT_FASTEMBED_MODEL,
+    DEFAULT_FASTEMBED_MODEL_REVISION,
+    DEFAULT_FASTEMBED_REPOSITORY,
+    DashScopeEmbeddingConfig,
+    DashScopeEmbeddingProvider,
+    FastEmbedEmbeddingConfig,
+    FastEmbedEmbeddingProvider,
+    OpenAICompatibleEmbeddingConfig,
+    OpenAICompatibleEmbeddingProvider,
+)
+from core.knowledge.eval_runner import (
+    GateCalibration,
+    GateObservation,
+    calibrate_gate,
+    compare_bounded_recovery_reports,
+    compare_layered_reports,
+    compare_retrieval_ablation_reports,
+    compare_semantic_provider_reports,
+    run_postgres_layered_eval,
+    run_sqlite_layered_eval,
+)
 from core.knowledge.evolution import EvidenceLearning, EvidenceLearningCitation
 from core.knowledge.goals import (
     LearningCapability,
@@ -14,6 +46,7 @@ from core.knowledge.graph import (
     KnowledgeGraphNeighborhood,
     KnowledgeGraphNode,
     KnowledgeGraphOverview,
+    KnowledgeGraphRelationPath,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
 )
@@ -27,18 +60,52 @@ from core.knowledge.graph_analysis import (
     KnowledgeGraphNodeMetric,
     LocalKnowledgeGraphAnalyzer,
 )
+from core.knowledge.index_backend import KnowledgeIndexBackend
+from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
     KnowledgeMigrationPlan,
     KnowledgeMigrationResult,
     KnowledgeMigrationResultItem,
 )
+from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
+from core.knowledge.postgres_index import (
+    POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_MULTIMODAL_SCHEMA_REVISION,
+    POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
+    PostgresKnowledgeIndex,
+    PostgresKnowledgeIndexConfig,
+)
+from core.knowledge.recovery import (
+    KnowledgeQueryRewrite,
+    KnowledgeQueryRewriter,
+    KnowledgeRecoveryAttempt,
+    KnowledgeRecoveryOutcome,
+    KnowledgeRecoveryPolicy,
+    TechnicalGlossaryQueryRewriter,
+)
+from core.knowledge.relevance import (
+    KnowledgeRelevancePolicy,
+    KnowledgeRelevancePolicyError,
+    load_relevance_policy,
+)
+from core.knowledge.reranking import (
+    DEFAULT_CROSS_ENCODER_MODEL,
+    DEFAULT_CROSS_ENCODER_MODEL_REVISION,
+    DEFAULT_CROSS_ENCODER_REPOSITORY,
+    FASTEMBED_RERANK_RUNTIME_REVISION,
+    FastEmbedCrossEncoderConfig,
+    FastEmbedCrossEncoderProvider,
+)
 from core.knowledge.retrieval import (
     HashingEmbeddingProvider,
+    KnowledgeAblationPolicy,
+    KnowledgeAblationStrategy,
     KnowledgeChunk,
     KnowledgeEvidence,
     KnowledgeIndexSummary,
     KnowledgeRetrievalBundle,
+    KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
 )
@@ -66,9 +133,34 @@ from core.knowledge.understanding import (
 )
 
 __all__ = [
+    "DEFAULT_CROSS_ENCODER_MODEL",
+    "DEFAULT_CROSS_ENCODER_MODEL_REVISION",
+    "DEFAULT_CROSS_ENCODER_REPOSITORY",
+    "DEFAULT_FASTEMBED_DIMENSIONS",
+    "DEFAULT_FASTEMBED_MODEL",
+    "DEFAULT_FASTEMBED_MODEL_REVISION",
+    "DEFAULT_FASTEMBED_REPOSITORY",
+    "FASTEMBED_RERANK_RUNTIME_REVISION",
+    "POSTGRES_INDEX_SCHEMA_REVISION",
+    "POSTGRES_MULTIMODAL_SCHEMA_REVISION",
+    "POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION",
+    "CorpusManifestEntry",
+    "DashScopeEmbeddingConfig",
+    "DashScopeEmbeddingProvider",
+    "EvalCase",
+    "EvalDatasetManifest",
+    "EvalPassage",
     "EvidenceLearning",
     "EvidenceLearningCitation",
+    "FastEmbedCrossEncoderConfig",
+    "FastEmbedCrossEncoderProvider",
+    "FastEmbedEmbeddingConfig",
+    "FastEmbedEmbeddingProvider",
+    "GateCalibration",
+    "GateObservation",
     "HashingEmbeddingProvider",
+    "KnowledgeAblationPolicy",
+    "KnowledgeAblationStrategy",
     "KnowledgeChunk",
     "KnowledgeConflictError",
     "KnowledgeEvent",
@@ -87,7 +179,9 @@ __all__ = [
     "KnowledgeGraphNode",
     "KnowledgeGraphNodeMetric",
     "KnowledgeGraphOverview",
+    "KnowledgeGraphRelationPath",
     "KnowledgeGraphSnapshot",
+    "KnowledgeIndexBackend",
     "KnowledgeIndexSummary",
     "KnowledgeMigrationItem",
     "KnowledgeMigrationPlan",
@@ -99,7 +193,16 @@ __all__ = [
     "KnowledgePolicyDecision",
     "KnowledgeProjectionError",
     "KnowledgeProposal",
+    "KnowledgeQueryRewrite",
+    "KnowledgeQueryRewriter",
+    "KnowledgeRecoveryAttempt",
+    "KnowledgeRecoveryOutcome",
+    "KnowledgeRecoveryPolicy",
+    "KnowledgeRelevancePolicy",
+    "KnowledgeRelevancePolicyError",
     "KnowledgeRetrievalBundle",
+    "KnowledgeRetrievalMode",
+    "KnowledgeRetrievalObservabilityConfig",
     "KnowledgeSearchHit",
     "KnowledgeSourceRoot",
     "KnowledgeStore",
@@ -111,11 +214,28 @@ __all__ = [
     "LoadedKnowledgeSource",
     "LocalKnowledgeGraph",
     "LocalKnowledgeGraphAnalyzer",
+    "OpenAICompatibleEmbeddingConfig",
+    "OpenAICompatibleEmbeddingProvider",
+    "PostgresKnowledgeIndex",
+    "PostgresKnowledgeIndexConfig",
     "PreparedKnowledgeSource",
     "SourceSection",
     "SourceUnderstanding",
+    "TechnicalGlossaryQueryRewriter",
     "UnderstandingCitation",
+    "VersionedKnowledgeDataset",
     "WorkspaceSourceEvidence",
     "WorkspaceSynthesis",
     "assemble_retrieval_bundle",
+    "build_knowledge_index",
+    "calibrate_gate",
+    "compare_bounded_recovery_reports",
+    "compare_layered_reports",
+    "compare_retrieval_ablation_reports",
+    "compare_semantic_provider_reports",
+    "load_relevance_policy",
+    "load_versioned_dataset",
+    "run_postgres_layered_eval",
+    "run_sqlite_layered_eval",
+    "validate_eval_dataset",
 ]

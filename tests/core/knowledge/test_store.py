@@ -172,14 +172,19 @@ def test_v1_metadata_database_migrates_to_v6_without_rewriting_existing_rows(
             "SELECT name FROM sqlite_master WHERE type='table' "
             "AND name='knowledge_policy_decisions'"
         ).fetchone()
+        retrieval_runs_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='knowledge_retrieval_runs'"
+        ).fetchone()
         legacy = connection.execute(
             "SELECT proposal_id, parse_artifact_id FROM knowledge_proposals "
             "WHERE proposal_id='legacy'"
         ).fetchone()
-    assert version == 9
+    assert version == 10
     assert "parse_artifact_id" in columns
     assert artifact_table is not None
     assert policy_table is not None
+    assert retrieval_runs_table is not None
     assert legacy == ("legacy", None)
 
 
@@ -206,7 +211,7 @@ def test_v2_parse_artifacts_backfill_source_understanding(tmp_path: Path) -> Non
     assert understanding is not None
     assert "可追溯的旧解析产物" in understanding.summary
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 9
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 10
         assert (
             connection.execute("SELECT COUNT(*) FROM knowledge_source_understandings").fetchone()[0]
             == 1
@@ -457,6 +462,130 @@ def test_failed_index_projection_is_atomic_and_rebuildable(tmp_path: Path) -> No
     rebuilt = store.rebuild_index()
     assert rebuilt.error_count == 0
     assert rebuilt.active_chunk_count == 2
+
+
+def test_embedding_provider_revision_change_rebuilds_ready_revisions(tmp_path: Path) -> None:
+    class VersionedHashingProvider(HashingEmbeddingProvider):
+        supports_semantic_recall = True
+
+        def __init__(self, revision: str) -> None:
+            super().__init__(dimensions=64)
+            self.model_id = "test.semantic"
+            self.model_revision = revision
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    repository = tmp_path / "knowledge"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    database = tmp_path / "state" / "knowledge.sqlite3"
+    roots = {
+        "sage-learning": KnowledgeSourceRoot(
+            root_id="sage-learning",
+            kind="obsidian",
+            label="Sage Learning",
+            path=vault,
+        )
+    }
+    (vault / "retrieval.md").write_text(
+        "# Retrieval\n\n关系检索连接实体与证据。\n",
+        encoding="utf-8",
+    )
+    first = KnowledgeStore(
+        repository,
+        database,
+        roots,
+        knowledge_index=LocalKnowledgeIndex(embedding_provider=VersionedHashingProvider("v1")),
+    )
+    first.initialize()
+    first.evaluate_and_apply_policy(first.ingest("sage-learning", "retrieval.md").proposal_id)
+    assert first.index_summary().embedding_revision == "v1"
+
+    restarted = KnowledgeStore(
+        repository,
+        database,
+        roots,
+        knowledge_index=LocalKnowledgeIndex(embedding_provider=VersionedHashingProvider("v2")),
+    )
+    restarted.initialize()
+
+    summary = restarted.index_summary()
+    assert summary.embedding_revision == "v2"
+    assert summary.indexed_revision_count == summary.revision_count == 1
+    assert restarted.search("实体关系")
+    with sqlite3.connect(database) as connection:
+        row = connection.execute(
+            "SELECT embedding_model, embedding_revision FROM knowledge_index_revisions"
+        ).fetchone()
+    assert row == ("test.semantic", "v2")
+
+
+def test_embedding_provider_distinguishes_document_and_query_roles(tmp_path: Path) -> None:
+    class RoleAwareProvider(HashingEmbeddingProvider):
+        supports_semantic_recall = True
+
+        def __init__(self) -> None:
+            super().__init__(dimensions=64)
+            self.model_id = "test.role-aware"
+            self.model_revision = "v1"
+            self.document_inputs: list[str] = []
+            self.query_inputs: list[str] = []
+
+        def embed_document(self, text: str) -> tuple[float, ...]:
+            self.document_inputs.append(text)
+            return super().embed(text)
+
+        def embed_query(self, text: str) -> tuple[float, ...]:
+            self.query_inputs.append(text)
+            return super().embed(text)
+
+        def embed(self, text: str) -> tuple[float, ...]:
+            raise AssertionError("role-aware callers must not use the compatibility embed method")
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    repository = tmp_path / "knowledge"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    provider = RoleAwareProvider()
+    store = KnowledgeStore(
+        repository,
+        tmp_path / "state" / "knowledge.sqlite3",
+        {
+            "sage-learning": KnowledgeSourceRoot(
+                root_id="sage-learning",
+                kind="obsidian",
+                label="Sage Learning",
+                path=vault,
+            )
+        },
+        knowledge_index=LocalKnowledgeIndex(embedding_provider=provider),
+    )
+    store.initialize()
+    (vault / "retrieval.md").write_text(
+        "# Retrieval\n\nPostgreSQL 使用 GIN 与 pgvector 形成双路召回。\n",
+        encoding="utf-8",
+    )
+
+    proposal = store.ingest("sage-learning", "retrieval.md")
+    store.approve(proposal.proposal_id, proposal.revision)
+    hits = store.search("PostgreSQL 双路召回", retrieval_mode="dense")
+
+    assert hits
+    assert provider.document_inputs
+    assert provider.query_inputs == ["PostgreSQL 双路召回"]
 
 
 def test_ingest_rejects_traversal_and_symlink_sources(tmp_path: Path) -> None:

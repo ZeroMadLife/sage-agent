@@ -47,6 +47,11 @@ const evidenceErrors = ref<Record<string, string>>({})
 let evidenceRequestVersion = 0
 let pageRequestVersion = 0
 const { render } = useMarkdown()
+
+function formatBbox(bbox: [number, number, number, number]) {
+  return bbox.map((value) => value.toFixed(2)).join(', ')
+}
+
 watch([() => props.node?.node_id, () => props.page?.page_id], () => {
   tab.value = 'overview'
   pageDocument.value = null
@@ -311,6 +316,8 @@ onMounted(() => {
               <small>
                 {{ evidenceDetails[item.citation_id].heading_path.join(' / ') || evidenceDetails[item.citation_id].title }}
                 <template v-if="evidenceDetails[item.citation_id].page_number"> · 第 {{ evidenceDetails[item.citation_id].page_number }} 页</template>
+                <template v-if="evidenceDetails[item.citation_id].bbox"> · 区域 {{ formatBbox(evidenceDetails[item.citation_id].bbox!) }}</template>
+                <template v-if="evidenceDetails[item.citation_id].parser_id"> · {{ evidenceDetails[item.citation_id].parser_id }}@{{ evidenceDetails[item.citation_id].parser_version }}</template>
               </small>
               <pre>{{ evidenceDetails[item.citation_id].excerpt }}</pre>
               <span v-if="evidenceDetails[item.citation_id].truncated">片段已按浏览器展示上限截断。</span>

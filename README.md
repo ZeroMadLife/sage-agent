@@ -2,7 +2,7 @@
 
 <p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的学习执行链。</strong></p>
 
-<p align="center"><strong>Recall@10 0.578 → 0.814</strong> · <strong>NDCG@10 0.444 → 0.695</strong> · <strong>Sandbox live audit 10/10</strong></p>
+<p align="center"><strong>80-case versioned RAG Eval</strong> · <strong>100k synthetic exact P95 93.906 ms</strong> · <strong>Sandbox live audit 10/10</strong></p>
 
 ![Sage 控制面、状态面与证据面架构](release/v1.0.0/learning/assets/01-overall-architecture.png)
 
@@ -76,7 +76,7 @@ Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approva
 | **运行编排** | 推进模型、工具、多步任务、checkpoint 与可恢复终态 |
 | **工具治理** | schema 校验、能力发现、permission、policy、approval 与 Sandbox |
 | **状态与记忆** | Session、Transcript、Memory、Checkpoint、Todo 与 Subagent 各守生命周期 |
-| **知识与引用** | 来源快照、Wiki proposal、SQLite FTS5 + hashing + RRF、稳定 citation |
+| **知识与引用** | 来源快照、DOCX/PNG/PDF/Markdown 解析、Wiki proposal、SQLite baseline / PostgreSQL GIN + pgvector exact + RRF、页面/区域级 citation |
 | **证据与恢复** | Timeline、RunStore、Diff、Artifact 与 Evaluation 支撑重放和回归 |
 
 通用 Harness 独立维护在 [`packages/sage_harness/`](packages/sage_harness/)；Sage 产品层负责把
@@ -103,7 +103,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | --- | --- |
 | **Chat Harness** | SSE / WebSocket 流式事件、durable timeline、checkpoint、context budget 与 usage |
 | **Practice Engine** | 文件、搜索、Shell、Patch、Diff、Git、审批、测试与运行工件 |
-| **Knowledge Platform** | 来源 revision、异步摄取、Wiki proposal、本地混合检索、RRF 与 citation |
+| **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL exact 后端、可插拔 Embedding、RRF、校准拒答、失败 trace、显式一跳关系检索与 citation |
 | **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
 | **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
 | **Release Engineering** | 前后端质量门禁、不可变镜像、同 SHA Canary、公开/私有隔离与共同回滚 |
@@ -112,12 +112,26 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
-| **RAG Benchmark v2** | 固定 200 条分层查询、16 份语料与 879 chunks；真实语义双路相对 Hashing 基线将 Recall@10 从 0.578 提升到 0.814，NDCG@10 从 0.444 提升到 0.695 | 20 条无答案题的 abstention accuracy 仍为 0 |
+| **RAG Cloud Embedding Selection v2** | 同一 PostgreSQL selection 上，FastEmbed 384、百炼 v4 1024、豆包 vision 2048 的 Recall@10 均为 1.0；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final，并在 frozen test 将 Recall@10 0.889→1.000、MRR 0.683→0.806 | frozen test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；豆包逐 token 成本未知；这些不是线上指标 |
+| **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下的 pgvector exact Recall@10 均为 1.0，P95 为 1.403/2.838/93.906 ms；100k 未超过冻结的 100 ms，因此保持 exact、不触发 HNSW | 100k 已接近门限，扩容前必须在目标硬件重跑；合成向量不代表真实生产查询分布或 SLA |
+| **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
+| **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
+| **RAG Local Semantic Gate v1（历史候选）** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771 | 已由 Cloud Embedding Selection v2 接续；test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；generation quality 尚未评测 |
+| **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
+| **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
 | **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
 | **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
 
 评测协议、复现命令和 clean source commit 见
-[RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
+[RAG 工程化总复盘](docs/evals/sage-rag-engineering-retrospective-v1.md)、
+[多 Embedding Provider Selection v2](docs/evals/knowledge-embedding-provider-selection-v2.md)、
+[RAG HNSW 规模门禁报告](docs/evals/knowledge-hnsw-scale-gate-v1.md)、
+[RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
+[RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
+[RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
+[RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
+[历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
+[拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、
 [Sandbox 报告](docs/evals/container-sandbox-level1-v2.md) 与
 [Memory 报告](docs/evals/memory-lifecycle-v1.md)。这里的 case 数证明对应工程不变量，不把
 确定性回归包装成真实用户准确率。
@@ -126,12 +140,14 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 - **前端**：Vue 3、TypeScript、Pinia、Vite、Vitest
 - **后端与 Agent**：Python 3.12、FastAPI、LangChain、LangGraph、Pydantic、pytest
-- **状态与检索**：PostgreSQL、Redis、SQLite FTS5、deterministic hashing、RRF
+- **状态与检索**：PostgreSQL、Redis、SQLite FTS5、可插拔 Embedding、RRF、evidence graph
 - **协议与扩展**：REST、WebSocket、SSE、MCP、Skills
 - **部署与质量**：Docker Compose、GitHub Actions、Ruff、mypy、Canary controller
 
-> PostgreSQL/pgvector 是本地基础设施与可替换检索方向；Knowledge 当前默认检索仍是
-> SQLite FTS5 + deterministic hashing + RRF，不把路线图写成已上线能力。
+> 仓库的可移植默认仍是 SQLite FTS5 + deterministic hashing，便于离线启动与确定性回归；
+> 日常自用可以显式启用 PostgreSQL GIN + pgvector exact、百炼/豆包/FastEmbed 与对应 Gate。
+> 云 Provider 仍是 config-revision-bound opt-in，供应商 alias 不等同不可变权重 commit；运行时未创建
+> HNSW，也不把评测候选写成线上能力。
 
 ## 快速开始
 
@@ -209,7 +225,9 @@ sage-agent/
 - `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
-- RAG 尚未完成可信 abstention 与回答生成评测，无答案查询可能召回相似但无关内容。
+- RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。
+- 多模态当前只完成 DOCX/PNG 结构化解析与 VLM 区域 citation；没有真实 VLM 质量分数，也没有视觉向量召回。
+- Relation retrieval 当前只扩展带原文 citation 的显式一跳链接；实体三元组、多跳路径、PPR 与 community GraphRAG 尚未实现。
 - 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
 - 飞书入口与自动 Canary 部署当前均已停止；`v1.0.0` tag 不代表服务器已经部署。
 

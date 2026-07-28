@@ -1,0 +1,67 @@
+# Sage Official Agent/Fullstack Eval v1
+
+本数据集用于固定 RAG 优化的比较尺子。它不与 worktree 一一对应，也不把 test split 当调参集。
+
+## 分层
+
+- `dev=40`：实现与失败分析可见。
+- `calibration=20`：只用于 Gate、阈值或受控参数选择。
+- `test=20`：冻结，只在阶段验收时运行；`dataset.json` 记录 `frozen_test=true`。
+
+同一问题的改写通过 `leakage_group` 绑定，整个 group 必须位于同一 split。运行时还拒绝重复
+query、未知 corpus ID、answerable/evidence 矛盾和 hash 漂移。
+
+```bash
+PYTHONPATH=packages/sage_harness:. .venv/bin/python scripts/validate_knowledge_dataset.py
+```
+
+该命令只做合同、路径、hash、anchor 和 split 校验，输出机器可读摘要，不联网也不运行检索。
+
+## SQLite 分层 baseline
+
+```bash
+PYTHONPATH=packages/sage_harness:. .venv/bin/python \
+  scripts/evaluate_knowledge_sqlite_baseline.py \
+  --output evals/reports/knowledge_sqlite_layered_v1_2026-07-27.json
+```
+
+命令在同一版本化 corpus 上运行 `sparse`、Hashing `dense` 和 `hybrid RRF`。Gate 阈值只从
+calibration split 选择；test 只作冻结验收。默认拒绝从 dirty source 输出正式报告，开发态诊断
+必须显式加 `--allow-dirty`。
+
+Generation 层当前是 deterministic extractive proxy，只衡量已检索 excerpt 对 required claim token
+的覆盖和 forbidden claim 精确命中。中英跨语言 token recall 只作 completeness 下界，不设通过
+阈值；它不使用 LLM judge，也不能写成真实生成质量。
+
+当前 clean baseline 的指标解释、失败案例和可写边界见
+[`docs/evals/knowledge-sqlite-layered-baseline-v1.md`](../../docs/evals/knowledge-sqlite-layered-baseline-v1.md)。
+
+## 多模态证据合同
+
+PR-7 使用独立的 `multimodal_cases.jsonl`，不修改或重算上面的冻结 80 条检索集。12 条
+项目自建 fixture case 按 `dev/calibration/test=6/3/3` 固定，覆盖 DOCX 顶层段落/表格/嵌入图、
+PNG 元数据/整图区域，以及 Qwen VLM 结构化区域响应。
+
+```bash
+PYTHONPATH=packages/sage_harness:. .venv/bin/python \
+  scripts/evaluate_knowledge_multimodal.py \
+  --output evals/reports/knowledge_multimodal_evidence_v1_2026-07-28.json
+```
+
+正式报告默认拒绝 dirty source。它验证解析、chunk 持久化字段、归一化 bbox 和 citation identity，
+不联网、不调用真实 VLM，也不衡量视觉模型准确率；详细边界见
+[`docs/evals/knowledge-multimodal-evidence-v1.md`](../../docs/evals/knowledge-multimodal-evidence-v1.md)。
+
+## 当前边界
+
+- 80 条 case 由 AI/Codex 辅助构造，并以冻结官方快照、source anchor、Schema、Hash 与
+  `leakage_group` 做自动校验；没有独立人工逐条审核，不代表真实线上分布。
+- case 中的 `provenance=human_curated` 是 v1 冻结数据保留的 legacy 机器标签，只表示案例
+  经过项目侧选取与编排，不能解释为 human-reviewed 或独立人工 Gold。为避免改变冻结数据 Hash，
+  本 revision 不重写该字段。
+- PR-1 只建立数据契约；SQLite baseline 从 PR-2 开始生成。
+- 当前 case 以 text/code/table 为主；`gold_page/gold_bbox` 是 PR-7 多模态证据链的前置合同，
+  本 revision 均为 `null`。
+- 多模态 fixture 集与正式 80 条检索集分开版本化；前者只验证 PR-7 结构和引用不变量，不能与
+  真实 OCR/VLM benchmark 混用。
+- required/forbidden claims 是确定性 generation 断言的输入，不等同于 LLM judge 分数。

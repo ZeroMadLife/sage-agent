@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from core.knowledge import KnowledgeGraphError, KnowledgeSourceRoot, KnowledgeStore
+from core.knowledge import (
+    KnowledgeGraphError,
+    KnowledgeRelevancePolicy,
+    KnowledgeSourceRoot,
+    KnowledgeStore,
+)
+from core.knowledge.index import LocalKnowledgeIndex
 
 
 def _store(tmp_path: Path) -> tuple[KnowledgeStore, Path]:
@@ -72,7 +78,7 @@ def test_graph_projection_is_deterministic_and_evidence_bound(tmp_path: Path) ->
     assert len(wikilinks) == 2
     for edge in first.edges:
         assert edge.extractor_id == "sage.local-knowledge-graph"
-        assert edge.extractor_version == "1.0.0"
+        assert edge.extractor_version == "1.2.0"
         assert edge.confidence == 1.0
         assert edge.evidence
         for evidence in edge.evidence:
@@ -136,6 +142,86 @@ def test_graph_filter_pagination_node_and_bounded_neighborhood(tmp_path: Path) -
     assert neighborhood.center == center
     assert len(neighborhood.edges) == 1
     assert 1 <= len(neighborhood.nodes) <= 2
+
+
+def test_graph_projects_standard_markdown_links_and_expands_retrieval(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    repository = tmp_path / "knowledge"
+    repository.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    store = KnowledgeStore(
+        repository,
+        tmp_path / "knowledge.sqlite3",
+        {
+            "learning": KnowledgeSourceRoot(
+                root_id="learning", kind="obsidian", label="Learning", path=vault
+            )
+        },
+    )
+    store.initialize()
+    (vault / "guide.md").write_text(
+        "# Harness Guide\n\n这是不包含关系的背景段落。\n\n"
+        "编排线索连接到 [混合检索](retrieval.md)。\n",
+        encoding="utf-8",
+    )
+    (vault / "retrieval.md").write_text(
+        "# Hybrid Retrieval\n\nRRF 融合 BM25 与 dense route。\n",
+        encoding="utf-8",
+    )
+    _apply(store, "guide.md")
+    _apply(store, "retrieval.md")
+    policy = KnowledgeRelevancePolicy(
+        benchmark_id="test",
+        benchmark_revision="test-v1",
+        corpus_revision=store.index_summary().corpus_revision,
+        embedding_model="sage.hashing",
+        embedding_revision="1.0.0",
+        top_k=8,
+        min_sparse_score=0.0,
+        min_dense_score=None,
+    )
+    store.knowledge_index = LocalKnowledgeIndex(relevance_policy=policy)
+
+    baseline = store.search("编排线索", top_k=4)
+    expanded = store.search("编排线索", top_k=4, relation_expand=True)
+
+    assert all(hit.chunk.source_relative_path != "retrieval.md" for hit in baseline)
+    graph_hit = next(hit for hit in expanded if hit.retrieval_route == "graph")
+    assert graph_hit.chunk.source_relative_path == "retrieval.md"
+    assert graph_hit.graph_edge_id is not None
+    assert graph_hit.graph_seed_page_id == baseline[0].chunk.page_id
+    assert graph_hit.graph_direction == "outbound"
+    assert graph_hit.graph_score is not None and graph_hit.graph_score > 0.0
+    link = next(
+        edge for edge in store.graph_overview().edges if edge.edge_id == graph_hit.graph_edge_id
+    )
+    assert graph_hit.graph_evidence_citation_id == link.evidence[0].citation_id
+    assert link.properties["anchors"] == ["混合检索"]
+    assert link.properties["syntaxes"] == ["markdown_internal"]
+    with sqlite3.connect(store.database_path) as connection:
+        ordinal = connection.execute(
+            "SELECT ordinal FROM knowledge_chunks WHERE chunk_id=?",
+            (link.evidence[0].chunk_id,),
+        ).fetchone()[0]
+    assert ordinal == 1
+
+
+def test_relation_expansion_requires_a_calibrated_gate(tmp_path: Path) -> None:
+    store, vault = _store(tmp_path)
+    (vault / "a.md").write_text("# A\n\nSeed [[B]].\n", encoding="utf-8")
+    (vault / "b.md").write_text("# B\n\nTarget.\n", encoding="utf-8")
+    _apply(store, "a.md")
+    _apply(store, "b.md")
+
+    with pytest.raises(ValueError, match="requires a calibrated relevance policy"):
+        store.search("Seed", relation_expand=True)
 
 
 def test_failed_graph_rebuild_is_recorded_without_partial_projection(

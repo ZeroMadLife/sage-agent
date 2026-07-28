@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image, PngImagePlugin
 
 from core.coding.runtime import CodingRuntime
 from core.harness.knowledge_adapter import CodingKnowledgePort
@@ -89,6 +91,34 @@ def test_knowledge_port_returns_revision_bound_evidence_and_rejects_other_worksp
                 token_budget=512,
             )
         )
+
+
+def test_knowledge_port_preserves_visual_region_metadata(tmp_path: Path) -> None:
+    store, vault = _knowledge_store(tmp_path)
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Description", "PostgreSQL exact scan uses bounded evidence")
+    payload = BytesIO()
+    Image.new("RGB", (160, 90), "white").save(payload, format="PNG", pnginfo=metadata)
+    (vault / "retrieval.png").write_bytes(payload.getvalue())
+    proposal = store.ingest("notes", "retrieval.png")
+    store.approve(proposal.proposal_id, expected_revision=0)
+    port = CodingKnowledgePort(_runtime(tmp_path, store))
+
+    result = asyncio.run(
+        port.search(
+            "PostgreSQL exact scan bounded evidence",
+            workspace_id=port.workspace_id,
+            token_budget=512,
+        )
+    )
+
+    evidence = result.evidence[0]
+    assert evidence.metadata["block_kind"] == "media"
+    assert evidence.metadata["page_number"] == 1
+    assert evidence.metadata["bbox"] == (0.0, 0.0, 1.0, 1.0)
+    assert evidence.metadata["bbox_coordinate_space"] == "normalized"
+    assert evidence.metadata["media_ref"] == "retrieval.png"
+    assert evidence.metadata["parser_id"] == "sage.png"
 
 
 def test_knowledge_port_replaces_stale_revision_citation(tmp_path: Path) -> None:

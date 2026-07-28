@@ -1,6 +1,6 @@
 # Sage 项目经历简历稿
 
-> 证据更新时间：2026-07-27。当前仅提供源码，不开放在线演示。
+> 证据更新时间：2026-07-28。当前仅提供源码，不开放在线演示。
 
 ## 建议版
 
@@ -9,7 +9,7 @@
 **项目简介**：面向开发者的本地优先 AI 学习与实践工作台，在统一 Agent Harness 中组织
 个人知识检索、受控工具调用与代码实践，并将任务过程沉淀为可恢复、可复核的运行证据。
 
-**技术栈**：Python、FastAPI、LangGraph、LangChain、Pydantic、SQLite FTS5、PostgreSQL、
+**技术栈**：Python、FastAPI、LangGraph、LangChain、Pydantic、SQLite FTS5、PostgreSQL/pgvector、
 Redis、Vue 3、TypeScript、Docker
 
 **项目链接**：[源码](https://github.com/ZeroMadLife/sage-agent)｜
@@ -17,11 +17,11 @@ Redis、Vue 3、TypeScript、Docker
 
 **核心设计与实现**：
 
-- **混合检索与可复现评测**：针对旧 50 条文档级查询无法映射当前语料的问题，重建 200 条
-  分层 Benchmark 与 section 级 graded qrels，以 SHA-256 固定 16 份语料和 879 个 chunks；
-  通过 FTS5 BM25 + `text-embedding-v4` 双路召回与 RRF 融合，使 Recall@10 从 0.578 提升至
-  0.814（+40.9%）、NDCG@10 从 0.444 提升至 0.695（+56.3%），并用 20 条无答案题识别出
-  abstention accuracy 为 0 的真实缺口。
+- **RAG 评测与精确混合检索**：基于 LangGraph、PostgreSQL、pgvector、FastAPI 的 9 份官方
+  快照建立 80 条 `dev/calibration/frozen-test` 版本化评测集，将 SQLite 原型迁移为 PostgreSQL
+  `GIN + ts_rank_cd + pgvector exact + RRF`；在同一 Corpus/Eval 上比较 FastEmbed 384、百炼
+  1024、豆包 2048 维 Embedding，依据 selection 排序与成本证据选择百炼进入 frozen final，
+  相对 Hashing hybrid 将 Recall@10 从 0.889 提升至 1.000、MRR 从 0.683 提升至 0.806。
 - **上下文预算与 Artifact 按需装载**：针对 Shell、Fetch 等大工具结果反复进入 prompt 导致
   上下文膨胀，将超过 16 KiB 的完整结果 offload 到 session/run scoped Artifact Store，模型
   仅保留最多 200 行、12,000 字符预览与 `artifact_ref`；结合六级压力控制、turn-boundary
@@ -41,9 +41,11 @@ Redis、Vue 3、TypeScript、Docker
 
 ## 更短的四条版
 
-- 构建 FTS5 BM25 + 语义 Embedding + RRF 混合检索，重建 200 条 section 级 Benchmark；在
-  16 份语料/879 chunks 上将 Recall@10 从 0.578 提升至 0.814，NDCG@10 从 0.444 提升至
-  0.695，并以无答案集显式暴露 abstention 缺口。
+- 构建 9 份官方快照、80 条分层 Eval 的 PostgreSQL hybrid RAG，使用
+  `GIN + ts_rank_cd + pgvector exact + RRF`；对比 FastEmbed、百炼、豆包三类 Embedding 后，
+  百炼在 frozen test 相对 Hashing hybrid 将 Recall@10 `0.889 -> 1.000`、MRR
+  `0.683 -> 0.806`，并以 selection/test 门禁决定语义 Provider、Cross-Encoder 与 HNSW
+  均不默认启用。
 - 面向 Shell/Fetch 大结果导致的 prompt 膨胀，设计六级上下文压力控制与 Artifact offload：
   超过 16 KiB 的全文按 session/run 保存，模型仅消费 200 行/12,000 字符预览和稳定引用，
   授权宿主路径可 scoped read，配合 turn-boundary compaction 与 emergency 阻断。
@@ -55,7 +57,13 @@ Redis、Vue 3、TypeScript、Docker
 
 ## 投递边界
 
-- `+40.9%` 与 `+56.3%` 是真实语义 Provider 相对 Hashing 离线基线，不是相对上一生产版本；
+- `0.889 -> 1.000` 与 `0.683 -> 0.806` 是 20 条 frozen test（18 条可回答）上百炼
+  `text-embedding-v4` 相对 Hashing hybrid 的离线结果；test 没有 `semantic_paraphrase` case，
+  candidate 因此保持 opt-in；
+- Eval/Gold 由 AI/Codex 辅助构造，通过冻结官方快照、source anchor、Schema、Hash 与
+  `leakage_group` 自动校验，没有独立人工逐条审核；
+- 100k exact P95 `93.906 ms` 来自 384 维 synthetic fixture 的本机规模门禁，不是生产 SLA；
+  正式结果没有触发 HNSW；
 - `10/10` 是 Docker Desktop Level 1 live audit，不等同于内核级逃逸证明；
 - `40/40` 是确定性 Memory 生命周期场景，不是自然对话记忆准确率；
 - 当前不开放在线演示，正式投递只提供源码与技术博客；

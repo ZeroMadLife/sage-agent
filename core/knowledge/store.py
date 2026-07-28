@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -13,7 +14,7 @@ import tempfile
 import uuid
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,7 @@ from core.knowledge.graph import (
     KnowledgeGraphNeighborhood,
     KnowledgeGraphNode,
     KnowledgeGraphOverview,
+    KnowledgeGraphRelationPath,
     KnowledgeGraphSnapshot,
     LocalKnowledgeGraph,
 )
@@ -50,6 +52,7 @@ from core.knowledge.graph_analysis import (
     LocalKnowledgeGraphAnalyzer,
 )
 from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.index_backend import KnowledgeIndexBackend
 from core.knowledge.migration import (
     KnowledgeMigrationItem,
     KnowledgeMigrationPlan,
@@ -77,12 +80,24 @@ from core.knowledge.policy import (
     evaluate_knowledge_policy,
     is_trusted_local_parser,
 )
+from core.knowledge.recovery import (
+    KnowledgeQueryRewriter,
+    KnowledgeRecoveryAttempt,
+    KnowledgeRecoveryOutcome,
+    KnowledgeRecoveryPolicy,
+    TechnicalGlossaryQueryRewriter,
+)
 from core.knowledge.retrieval import (
+    KnowledgeAblationPolicy,
     KnowledgeChunk,
     KnowledgeIndexSummary,
+    KnowledgeReranker,
     KnowledgeRetrievalBundle,
+    KnowledgeRetrievalMode,
     KnowledgeSearchHit,
     assemble_retrieval_bundle,
+    citation_id,
+    postprocess_search_hits,
 )
 from core.knowledge.synthesis import (
     WorkspaceSynthesis,
@@ -100,7 +115,7 @@ from core.knowledge.understanding import (
 
 _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
-_SCHEMA_VERSION = 9
+_SCHEMA_VERSION = 10
 _SOURCE_FORMATS = {
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
@@ -108,6 +123,11 @@ _SOURCE_FORMATS = {
     ".htm": ("text/html", 5 * 1024 * 1024),
     ".xhtml": ("application/xhtml+xml", 5 * 1024 * 1024),
     ".pdf": ("application/pdf", 20 * 1024 * 1024),
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        20 * 1024 * 1024,
+    ),
+    ".png": ("image/png", 20 * 1024 * 1024),
 }
 _SECRET_PATTERNS = (
     re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
@@ -423,9 +443,13 @@ class KnowledgeStore:
         database_path: str | Path,
         source_roots: Mapping[str, KnowledgeSourceRoot],
         parser_registry: ParserRegistry | None = None,
-        knowledge_index: LocalKnowledgeIndex | None = None,
+        knowledge_index: KnowledgeIndexBackend | None = None,
         knowledge_graph: LocalKnowledgeGraph | None = None,
         knowledge_graph_analyzer: LocalKnowledgeGraphAnalyzer | None = None,
+        recovery_policy: KnowledgeRecoveryPolicy | None = None,
+        query_rewriter: KnowledgeQueryRewriter | None = None,
+        ablation_policy: KnowledgeAblationPolicy | None = None,
+        reranker: KnowledgeReranker | None = None,
     ) -> None:
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self.database_path = Path(database_path).expanduser().resolve()
@@ -438,6 +462,14 @@ class KnowledgeStore:
         self.knowledge_graph_analyzer = knowledge_graph_analyzer or LocalKnowledgeGraphAnalyzer(
             workspace_id=self.knowledge_index.workspace_id
         )
+        self.recovery_policy = recovery_policy or KnowledgeRecoveryPolicy()
+        self.query_rewriter = query_rewriter or TechnicalGlossaryQueryRewriter()
+        self.ablation_policy = ablation_policy or KnowledgeAblationPolicy()
+        if self.ablation_policy.strategy == "cross_encoder" and reranker is None:
+            raise ValueError("cross-encoder reranker is required")
+        if self.ablation_policy.strategy != "cross_encoder" and reranker is not None:
+            raise ValueError("reranker is only valid for the cross_encoder strategy")
+        self.reranker = reranker
         self._lock = RLock()
         self._initialized = False
 
@@ -1999,16 +2031,217 @@ class KnowledgeStore:
         visibility: str = "private",
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
     ) -> tuple[KnowledgeSearchHit, ...]:
         self.initialize()
         with self._connect() as connection:
-            return self.knowledge_index.search(
+            hits = self.knowledge_index.search(
                 connection,
                 query,
                 top_k=top_k,
                 visibility=visibility,
                 source_ids=source_ids,
                 page_revisions=page_revisions,
+                retrieval_mode=retrieval_mode,
+                round_index=round_index,
+                trace_query=trace_query,
+                rewrite=rewrite,
+            )
+            hits = postprocess_search_hits(
+                query,
+                hits,
+                policy=self.ablation_policy,
+                reranker=self.reranker,
+            )
+            if not relation_expand or not hits:
+                return hits
+            if page_revisions:
+                raise ValueError("knowledge relation expansion cannot widen a revision filter")
+            if self.knowledge_index.relevance_policy is None:
+                raise ValueError(
+                    "knowledge relation expansion requires a calibrated relevance policy"
+                )
+            seed_count = min(len(hits), max(1, min(4, (top_k + 1) // 2)))
+            seeds = hits[:seed_count]
+            paths = self.knowledge_graph.expand_page_relations(
+                connection,
+                tuple(dict.fromkeys(hit.chunk.page_id for hit in seeds)),
+                query=query,
+                limit=min(4, top_k),
+            )
+            if not paths:
+                return hits
+            chunks = self.knowledge_index.representative_chunks(
+                connection,
+                tuple(path.target_page_revision for path in paths),
+                visibility=visibility,
+                source_ids=source_ids,
+            )
+            chunks_by_revision = {chunk.page_revision: chunk for chunk in chunks}
+            graph_hits = tuple(
+                KnowledgeSearchHit(
+                    chunk=chunks_by_revision[path.target_page_revision],
+                    citation_id=citation_id(chunks_by_revision[path.target_page_revision]),
+                    rank=0,
+                    rrf_score=0.0,
+                    sparse_rank=None,
+                    sparse_score=None,
+                    dense_rank=None,
+                    dense_score=None,
+                    retrieval_route="graph",
+                    graph_edge_id=path.edge.edge_id,
+                    graph_evidence_citation_id=path.edge.evidence[0].citation_id,
+                    graph_seed_page_id=path.seed_page_id,
+                    graph_direction=path.direction,
+                    graph_score=path.score,
+                )
+                for path in paths
+                if path.target_page_revision in chunks_by_revision
+            )
+            ordered = (*seeds, *graph_hits, *hits[seed_count:])
+            selected: list[KnowledgeSearchHit] = []
+            seen_chunks: set[str] = set()
+            for hit in ordered:
+                if hit.chunk.chunk_id in seen_chunks:
+                    continue
+                seen_chunks.add(hit.chunk.chunk_id)
+                selected.append(replace(hit, rank=len(selected) + 1))
+                if len(selected) >= top_k:
+                    break
+            return tuple(selected)
+
+    def search_with_recovery(
+        self,
+        query: str,
+        *,
+        top_k: int = 8,
+        visibility: str = "private",
+        source_ids: tuple[str, ...] = (),
+        page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+    ) -> KnowledgeRecoveryOutcome:
+        """Run one retrieval plus at most one bounded terminology retry."""
+
+        original_query = query.strip()
+        initial_hits = self.search(
+            original_query,
+            top_k=top_k,
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+            relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
+            round_index=1,
+            trace_query=original_query,
+            rewrite=None,
+        )
+        attempts = [
+            KnowledgeRecoveryAttempt(
+                round_index=1,
+                trigger_reason="initial",
+                retrieval_mode=retrieval_mode,
+                top_k=top_k,
+                result_count=len(initial_hits),
+                query_rewritten=False,
+            )
+        ]
+        policy = self.recovery_policy
+        if not policy.enabled:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="disabled",
+                attempts=tuple(attempts),
+                no_evidence_reason="recovery_disabled" if not initial_hits else None,
+            )
+        required_results = min(policy.min_results, top_k)
+        if len(initial_hits) >= required_results:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="not_needed",
+                attempts=tuple(attempts),
+            )
+        if policy.max_rounds == 1:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="exhausted",
+                attempts=tuple(attempts),
+                no_evidence_reason="bounded_recovery_exhausted" if not initial_hits else None,
+            )
+        rewritten = self.query_rewriter.rewrite(original_query)
+        if rewritten is None:
+            return KnowledgeRecoveryOutcome(
+                hits=initial_hits,
+                status="not_available",
+                attempts=tuple(attempts),
+                no_evidence_reason="no_rewrite_available" if not initial_hits else None,
+            )
+        policy_top_k = (
+            self.knowledge_index.relevance_policy.top_k
+            if self.knowledge_index.relevance_policy is not None
+            else policy.max_top_k
+        )
+        expanded_top_k = max(
+            top_k,
+            min(
+                policy.max_top_k,
+                policy_top_k,
+                top_k * policy.top_k_multiplier,
+            ),
+        )
+        retry_hits = self.search(
+            rewritten.query,
+            top_k=expanded_top_k,
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+            relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
+            round_index=2,
+            trace_query=original_query,
+            rewrite=rewritten.query,
+        )
+        attempts.append(
+            KnowledgeRecoveryAttempt(
+                round_index=2,
+                trigger_reason="insufficient_results",
+                retrieval_mode=retrieval_mode,
+                top_k=expanded_top_k,
+                result_count=len(retry_hits),
+                query_rewritten=True,
+            )
+        )
+        final_hits = retry_hits if len(retry_hits) >= len(initial_hits) else initial_hits
+        if not final_hits:
+            return KnowledgeRecoveryOutcome(
+                hits=(),
+                status="exhausted",
+                attempts=tuple(attempts),
+                no_evidence_reason="bounded_recovery_exhausted",
+            )
+        return KnowledgeRecoveryOutcome(
+            hits=final_hits,
+            status="recovered" if final_hits is retry_hits else "not_improved",
+            attempts=tuple(attempts),
+        )
+
+    def expand_relations(
+        self,
+        query: str,
+        seed_page_ids: tuple[str, ...],
+        *,
+        limit: int = 20,
+    ) -> tuple[KnowledgeGraphRelationPath, ...]:
+        """Expose bounded relation paths for evaluation and inspector projections."""
+
+        self.initialize()
+        with self._connect() as connection:
+            return self.knowledge_graph.expand_page_relations(
+                connection, seed_page_ids, query=query, limit=limit
             )
 
     def retrieve(
@@ -2020,17 +2253,28 @@ class KnowledgeStore:
         visibility: str = "private",
         source_ids: tuple[str, ...] = (),
         page_revisions: tuple[str, ...] = (),
+        relation_expand: bool = False,
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
     ) -> KnowledgeRetrievalBundle:
         """Return one bounded evidence bundle for API and Agent consumers."""
 
-        hits = self.search(
+        outcome = self.search_with_recovery(
             query,
             top_k=top_k,
             visibility=visibility,
             source_ids=source_ids,
             page_revisions=page_revisions,
+            relation_expand=relation_expand,
+            retrieval_mode=retrieval_mode,
         )
-        return assemble_retrieval_bundle(query, hits, token_budget=token_budget)
+        return assemble_retrieval_bundle(
+            query,
+            outcome.hits,
+            token_budget=token_budget,
+            recovery_status=outcome.status,
+            recovery_attempts=outcome.attempts,
+            no_evidence_reason=outcome.no_evidence_reason,
+        )
 
     def citation(
         self,
@@ -2474,7 +2718,7 @@ class KnowledgeStore:
             raise ValueError("knowledge database directory must not be a symbolic link")
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, _SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, _SCHEMA_VERSION}:
                 raise KnowledgeStoreError(f"unsupported knowledge schema version {version}")
             connection.executescript(_SCHEMA)
             proposal_columns = {
@@ -2888,6 +3132,19 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
             or not block.block_id.startswith("pblk_")
             or block.block_id in block_ids
             or not 0.0 <= block.confidence <= 1.0
+            or (
+                block.bbox is not None
+                and (
+                    block.page is None
+                    or len(block.bbox) != 4
+                    or any(
+                        not math.isfinite(value) or value < 0.0 or value > 1.0
+                        for value in block.bbox
+                    )
+                    or block.bbox[2] <= block.bbox[0]
+                    or block.bbox[3] <= block.bbox[1]
+                )
+            )
             or (
                 media_path is not None
                 and (

@@ -32,5 +32,7 @@
 
 - [私有 Canary 部署](runbooks/09-Sage私有Canary部署.md)
 - [本地 CI/CD 与 Canary 可用性](runbooks/10-Sage本地CI-CD与Canary可用性.md)
+- [v1.1.0 RAG 工程化版本入口](../release/v1.1.0/README.md)
+- [v1.1.0 发布验收](../release/v1.1.0/TESTING.md)
 - [v1.0.0 候选版本入口](../release/v1.0.0/README.md)
 - [v1.0.0 发布验收](../release/v1.0.0/TESTING.md)

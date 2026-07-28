@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 from pypdf import PdfWriter
 
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
@@ -489,6 +490,81 @@ async def test_scanned_pdf_uses_authorized_external_parser_and_persists_progress
         "completed",
     ]
     assert parser_events[1].detail["completed_units"] == 1
+
+
+async def test_png_job_prefers_authorized_l2_region_parser_and_projects_citation(
+    knowledge_store: tuple[KnowledgeStore, Path],
+    job_infrastructure: tuple[KnowledgeJobRepository, RedisKnowledgeJobQueue, Any],
+) -> None:
+    class VisualRegionAdapter:
+        adapter_id = "test.vlm"
+        adapter_version = "2.0.0"
+        media_types = frozenset({"image/png"})
+
+        async def parse(
+            self,
+            request: ParseRequest,
+            *,
+            progress: Any,
+        ) -> ParsedDocument:
+            return ParsedDocument(
+                document_id="pdoc_external_png",
+                source_id=request.source_id,
+                relative_path=request.relative_path,
+                source_revision=request.source_revision,
+                title="Retrieval chart",
+                language="en",
+                rendered_markdown="# Retrieval chart\n\nExact scan P95 is 36 ms.\n",
+                blocks=(
+                    ParsedBlock(
+                        block_id="pblk_external_png",
+                        ordinal=0,
+                        kind="table",
+                        text="Exact scan P95 is 36 ms.",
+                        heading_path=("Retrieval chart",),
+                        page=1,
+                        bbox=(0.1, 0.2, 0.9, 0.8),
+                        media_ref=request.relative_path,
+                        confidence=0.93,
+                    ),
+                ),
+                provenance=ParseProvenance(
+                    parser_id=self.adapter_id,
+                    parser_version=self.adapter_version,
+                    input_revision=request.source_revision,
+                    media_type=request.media_type,
+                ),
+            )
+
+    _, vault = knowledge_store
+    payload = BytesIO()
+    Image.new("RGB", (320, 180), "white").save(payload, format="PNG")
+    (vault / "retrieval.png").write_bytes(payload.getvalue())
+    service = await _service(knowledge_store, job_infrastructure)
+    service.external_parser = ExternalParseCoordinator(
+        ExternalParsePolicy(enabled=True, allowed_source_ids=frozenset({"vault"})),
+        [VisualRegionAdapter()],
+    )
+
+    job = await service.create_batch("vault")
+
+    assert await _finish(service, job.job_id) == "completed"
+    [completed] = await service.repository.list_items(job.job_id)
+    assert completed.proposal_id is not None
+    artifact = service.store.get_parse_artifact(completed.proposal_id)
+    proposal = service.store.get_proposal(completed.proposal_id)
+    assert artifact is not None
+    assert artifact.document.provenance.parser_id == "test.vlm"
+    assert artifact.document.blocks[0].bbox == (0.1, 0.2, 0.9, 0.8)
+    assert proposal.status == "pending"
+
+    service.store.approve(proposal.proposal_id, proposal.revision)
+    citation = service.store.search("Exact scan P95 36 ms", retrieval_mode="sparse")[0].chunk
+    assert citation.block_kind == "table"
+    assert citation.page_number == 1
+    assert citation.bbox == (0.1, 0.2, 0.9, 0.8)
+    assert citation.media_ref == "retrieval.png"
+    assert citation.parser_id == "test.vlm"
 
 
 async def test_external_pdf_wait_releases_worker_and_resumes_after_restart(

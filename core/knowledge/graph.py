@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import posixpath
 import re
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
+from urllib.parse import unquote, urlsplit
 
 _PROJECTOR_ID = "sage.local-knowledge-graph"
-_PROJECTOR_VERSION = "1.0.0"
+_PROJECTOR_VERSION = "1.2.0"
 _GRAPH_CONFIG = {
     "edge_kinds": ["EVIDENCED_BY", "SHARES_SOURCE", "WIKILINK"],
+    "link_syntax": ["wikilink", "markdown_internal"],
     "unresolved_wikilinks": "concept",
 }
 _GRAPH_SCHEMA = """
@@ -84,6 +87,8 @@ CREATE INDEX IF NOT EXISTS knowledge_graph_evidence_citation_idx
     ON knowledge_graph_edge_evidence(graph_revision, citation_id);
 """
 _WIKILINK = re.compile(r"(?<!!)\[\[([^\]\n]{1,512})\]\]")
+_MARKDOWN_LINK = re.compile(r"(?<!!)\[([^\]\n]{1,512})\]\(([^)\n]{1,1024})\)")
+_MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 
 
 class KnowledgeGraphError(RuntimeError):
@@ -164,6 +169,21 @@ class KnowledgeGraphNeighborhood:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeGraphRelationPath:
+    """One evidence-bound, one-hop path between current Knowledge pages."""
+
+    graph_revision: str
+    seed_page_id: str
+    seed_source_relative_path: str
+    target_page_id: str
+    target_page_revision: str
+    target_source_relative_path: str
+    direction: Literal["outbound", "inbound"]
+    score: float
+    edge: KnowledgeGraphEdge
+
+
+@dataclass(frozen=True, slots=True)
 class _PageInput:
     page_id: str
     path: str
@@ -174,13 +194,28 @@ class _PageInput:
     source_revision: str
     source_kind: str
     source_relative_path: str
-    chunk_id: str | None
-    citation_id: str | None
+    chunks: tuple[_PageChunkInput, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PageChunkInput:
+    text: str
+    evidence: KnowledgeGraphEvidence
 
 
 @dataclass(frozen=True, slots=True)
 class _ProjectedEdge:
     edge: KnowledgeGraphEdge
+
+
+@dataclass(frozen=True, slots=True)
+class _PageLink:
+    target: str
+    count: int
+    anchors: tuple[str, ...]
+    contexts: tuple[str, ...]
+    lines: tuple[str, ...]
+    syntaxes: tuple[str, ...]
 
 
 class LocalKnowledgeGraph:
@@ -407,6 +442,111 @@ class LocalKnowledgeGraph:
             edges=edges,
         )
 
+    def expand_page_relations(
+        self,
+        connection: sqlite3.Connection,
+        seed_page_ids: tuple[str, ...],
+        *,
+        query: str,
+        limit: int = 20,
+    ) -> tuple[KnowledgeGraphRelationPath, ...]:
+        """Expand explicit page links only; weak source-coincidence edges stay excluded."""
+
+        if not seed_page_ids:
+            return ()
+        normalized_query = " ".join(query.split())
+        if not normalized_query or len(normalized_query) > 2_000:
+            raise ValueError("knowledge relation query must be between 1 and 2000 characters")
+        if len(seed_page_ids) > 20 or len(set(seed_page_ids)) != len(seed_page_ids):
+            raise ValueError("knowledge relation seeds must contain 1 to 20 unique pages")
+        if limit < 1 or limit > 50:
+            raise ValueError("knowledge relation expansion limit must be between 1 and 50")
+        snapshot = self.ensure_current(connection)
+        placeholders = ",".join("?" for _ in seed_page_ids)
+        rows = connection.execute(
+            f"""
+            SELECT edge.*, source.page_id AS source_page_id,
+                   source.page_revision AS source_page_revision,
+                   source.label AS source_label,
+                   source.properties_json AS source_properties_json,
+                   target.page_id AS target_page_id,
+                   target.page_revision AS target_page_revision,
+                   target.label AS target_label,
+                   target.properties_json AS target_properties_json
+            FROM knowledge_graph_edges AS edge
+            JOIN knowledge_graph_nodes AS source
+              ON source.graph_revision=edge.graph_revision
+             AND source.node_id=edge.source_node_id
+            JOIN knowledge_graph_nodes AS target
+              ON target.graph_revision=edge.graph_revision
+             AND target.node_id=edge.target_node_id
+            WHERE edge.graph_revision=? AND edge.kind='WIKILINK'
+              AND (source.page_id IN ({placeholders}) OR target.page_id IN ({placeholders}))
+              AND source.page_id IS NOT NULL AND target.page_id IS NOT NULL
+            ORDER BY edge.weight DESC, edge.edge_id
+            LIMIT ?
+            """,
+            (
+                snapshot.graph_revision,
+                *seed_page_ids,
+                *seed_page_ids,
+                min(200, max(20, limit * 10)),
+            ),
+        ).fetchall()
+        seed_order = {page_id: rank for rank, page_id in enumerate(seed_page_ids)}
+
+        def path_from_row(row: sqlite3.Row) -> KnowledgeGraphRelationPath:
+            outbound = str(row["source_page_id"]) in seed_order
+            source_properties = json.loads(str(row["source_properties_json"]))
+            target_properties = json.loads(str(row["target_properties_json"]))
+            edge = self._edge(connection, row)
+            return KnowledgeGraphRelationPath(
+                graph_revision=snapshot.graph_revision,
+                seed_page_id=str(row["source_page_id"] if outbound else row["target_page_id"]),
+                seed_source_relative_path=str(
+                    source_properties["source_relative_path"]
+                    if outbound
+                    else target_properties["source_relative_path"]
+                ),
+                target_page_id=str(row["target_page_id"] if outbound else row["source_page_id"]),
+                target_page_revision=str(
+                    row["target_page_revision"] if outbound else row["source_page_revision"]
+                ),
+                target_source_relative_path=str(
+                    target_properties["source_relative_path"]
+                    if outbound
+                    else source_properties["source_relative_path"]
+                ),
+                direction="outbound" if outbound else "inbound",
+                score=_relation_score(
+                    normalized_query,
+                    edge,
+                    str(row["target_label"] if outbound else row["source_label"]),
+                ),
+                edge=edge,
+            )
+
+        paths = sorted(
+            (path_from_row(row) for row in rows),
+            key=lambda item: (
+                -item.score,
+                seed_order[item.seed_page_id],
+                item.direction != "outbound",
+                -item.edge.weight,
+                item.target_page_id,
+            ),
+        )
+        selected: list[KnowledgeGraphRelationPath] = []
+        seen_targets: set[str] = set()
+        for path in paths:
+            if path.target_page_id in seed_order or path.target_page_id in seen_targets:
+                continue
+            selected.append(path)
+            seen_targets.add(path.target_page_id)
+            if len(selected) >= limit:
+                break
+        return tuple(selected)
+
     def _ready_snapshot(
         self, connection: sqlite3.Connection, graph_revision: str | None
     ) -> KnowledgeGraphSnapshot:
@@ -467,7 +607,11 @@ class LocalKnowledgeGraph:
                 page_revision=page.page_revision,
                 source_id=page.source_id,
                 source_revision=page.source_revision,
-                properties={"path": page.path, "missing": False},
+                properties={
+                    "path": page.path,
+                    "source_relative_path": page.source_relative_path,
+                    "missing": False,
+                },
             )
             for alias in _page_aliases(page):
                 aliases.setdefault(alias, node_id)
@@ -506,24 +650,24 @@ class LocalKnowledgeGraph:
 
         for page in pages:
             source_node_id = _page_node_id(page.page_id)
-            evidence = _page_evidence(page)
-            for target, count in _wikilinks(page.content).items():
-                target_node_id = aliases.get(_normalize_alias(target))
+            for link in _page_links(page):
+                target_node_id = aliases.get(_normalize_alias(link.target))
                 if target_node_id is None:
-                    target_node_id = _concept_node_id(target)
+                    target_node_id = _concept_node_id(link.target)
                     nodes.setdefault(
                         target_node_id,
                         KnowledgeGraphNode(
                             node_id=target_node_id,
                             kind="concept",
-                            label=target,
+                            label=link.target,
                             page_id=None,
                             page_revision=None,
                             source_id=None,
                             source_revision=None,
-                            properties={"missing": True, "wikilink": target},
+                            properties={"missing": True, "wikilink": link.target},
                         ),
                     )
+                evidence = _link_evidence(page, link)
                 if evidence is None:
                     warning_count += 1
                     continue
@@ -532,9 +676,14 @@ class LocalKnowledgeGraph:
                     target_node_id=target_node_id,
                     kind="WIKILINK",
                     directed=True,
-                    weight=float(count),
+                    weight=float(link.count),
                     confidence=1.0,
                     evidence=(evidence,),
+                    properties={
+                        "anchors": list(link.anchors),
+                        "contexts": list(link.contexts),
+                        "syntaxes": list(link.syntaxes),
+                    },
                 )
                 edges[projected.edge.edge_id] = projected
 
@@ -571,41 +720,49 @@ class LocalKnowledgeGraph:
             SELECT page.page_id, page.path, page.title,
                    revision.revision_id AS page_revision, revision.content,
                    revision.source_revision, proposal.source_id,
-                   proposal.source_kind, proposal.source_relative_path,
-                   chunk.chunk_id
+                   proposal.source_kind, proposal.source_relative_path
             FROM knowledge_pages AS page
             JOIN knowledge_page_revisions AS revision
               ON revision.revision_id=page.current_revision
             JOIN knowledge_proposals AS proposal
               ON proposal.proposal_id=revision.proposal_id
-            LEFT JOIN knowledge_chunks AS chunk
-              ON chunk.chunk_id=(
-                  SELECT current_chunk.chunk_id FROM knowledge_chunks AS current_chunk
-                  WHERE current_chunk.workspace_id=?
-                    AND current_chunk.page_id=page.page_id
-                    AND current_chunk.page_revision=page.current_revision
-                    AND current_chunk.active=1
-                  ORDER BY current_chunk.ordinal, current_chunk.chunk_id LIMIT 1
-              )
             ORDER BY page.page_id
+            """,
+        ).fetchall()
+        chunk_rows = connection.execute(
+            """
+            SELECT chunk_id, page_id, page_revision, source_id, source_revision, text
+            FROM knowledge_chunks
+            WHERE workspace_id=? AND active=1
+            ORDER BY page_id, ordinal, chunk_id
             """,
             (self.workspace_id,),
         ).fetchall()
+        chunks_by_page: dict[str, list[_PageChunkInput]] = {}
+        for row in chunk_rows:
+            chunk_id = str(row["chunk_id"])
+            chunks_by_page.setdefault(str(row["page_id"]), []).append(
+                _PageChunkInput(
+                    text=str(row["text"]),
+                    evidence=KnowledgeGraphEvidence(
+                        citation_id=_stable_id(
+                            "kcite",
+                            self.workspace_id,
+                            str(row["page_id"]),
+                            str(row["page_revision"]),
+                            str(row["source_revision"]),
+                            chunk_id,
+                        ),
+                        chunk_id=chunk_id,
+                        page_id=str(row["page_id"]),
+                        page_revision=str(row["page_revision"]),
+                        source_id=str(row["source_id"]),
+                        source_revision=str(row["source_revision"]),
+                    ),
+                )
+            )
         pages: list[_PageInput] = []
         for row in rows:
-            chunk_id = str(row["chunk_id"]) if row["chunk_id"] else None
-            citation = (
-                _stable_id(
-                    "kcite",
-                    self.workspace_id,
-                    str(row["page_id"]),
-                    str(row["page_revision"]),
-                    str(row["source_revision"]),
-                    chunk_id,
-                )
-                if chunk_id
-                else None
-            )
             pages.append(
                 _PageInput(
                     page_id=str(row["page_id"]),
@@ -617,8 +774,7 @@ class LocalKnowledgeGraph:
                     source_revision=str(row["source_revision"]),
                     source_kind=str(row["source_kind"]),
                     source_relative_path=str(row["source_relative_path"]),
-                    chunk_id=chunk_id,
-                    citation_id=citation,
+                    chunks=tuple(chunks_by_page.get(str(row["page_id"]), ())),
                 )
             )
         return tuple(pages)
@@ -753,22 +909,27 @@ def _page_kind(path: str) -> str:
 def _page_aliases(page: _PageInput) -> set[str]:
     path = page.path.removesuffix(".md")
     stem = path.rsplit("/", 1)[-1]
-    source_stem = page.source_relative_path.rsplit("/", 1)[-1]
+    source_path = page.source_relative_path.replace("\\", "/")
+    source_without_extension = source_path.rsplit(".", 1)[0] if "." in source_path else source_path
+    source_stem = source_path.rsplit("/", 1)[-1]
     if "." in source_stem:
         source_stem = source_stem.rsplit(".", 1)[0]
     return {
         _normalize_alias(page.title),
         _normalize_alias(path),
         _normalize_alias(stem),
+        _normalize_alias(source_path),
+        _normalize_alias(source_without_extension),
         _normalize_alias(source_stem),
     }
 
 
-def _wikilinks(content: str) -> dict[str, int]:
-    links: dict[str, int] = {}
+def _page_links(page: _PageInput) -> tuple[_PageLink, ...]:
+    links: dict[str, dict[str, Any]] = {}
     in_fence = False
     fence_marker = ""
-    for line in content.splitlines():
+    heading = ""
+    for line in page.content.splitlines():
         stripped = line.lstrip()
         if stripped.startswith(("```", "~~~")):
             marker = stripped[:3]
@@ -782,12 +943,84 @@ def _wikilinks(content: str) -> dict[str, int]:
         if in_fence:
             continue
         visible = _remove_inline_code(line)
+        heading_match = _MARKDOWN_HEADING.match(visible.strip())
+        if heading_match:
+            heading = heading_match.group(1).strip()
         for match in _WIKILINK.finditer(visible):
-            raw = match.group(1).split("|", 1)[0].split("#", 1)[0].strip()
-            if not raw:
+            raw_parts = match.group(1).split("|", 1)
+            target = raw_parts[0].split("#", 1)[0].strip()
+            if not target:
                 continue
-            links[raw] = links.get(raw, 0) + 1
-    return links
+            anchor = raw_parts[1].strip() if len(raw_parts) == 2 else target
+            _record_link(links, target, anchor, heading, visible, "wikilink")
+        for match in _MARKDOWN_LINK.finditer(visible):
+            target = _markdown_target(page.source_relative_path, match.group(2))
+            if target is None:
+                continue
+            _record_link(
+                links,
+                target,
+                match.group(1).strip(),
+                heading,
+                visible,
+                "markdown_internal",
+            )
+    return tuple(
+        _PageLink(
+            target=target,
+            count=int(value["count"]),
+            anchors=tuple(sorted(value["anchors"])),
+            contexts=tuple(sorted(value["contexts"])),
+            lines=tuple(sorted(value["lines"])),
+            syntaxes=tuple(sorted(value["syntaxes"])),
+        )
+        for target, value in sorted(links.items())
+    )
+
+
+def _record_link(
+    links: dict[str, dict[str, Any]],
+    target: str,
+    anchor: str,
+    heading: str,
+    line: str,
+    syntax: str,
+) -> None:
+    value = links.setdefault(
+        target,
+        {
+            "count": 0,
+            "anchors": set(),
+            "contexts": set(),
+            "lines": set(),
+            "syntaxes": set(),
+        },
+    )
+    value["count"] += 1
+    value["anchors"].add(anchor[:512])
+    value["contexts"].add("\n".join(item for item in (heading, line.strip()) if item)[:2_000])
+    value["lines"].add(line.strip()[:2_000])
+    value["syntaxes"].add(syntax)
+
+
+def _markdown_target(source_relative_path: str, raw_destination: str) -> str | None:
+    destination = raw_destination.strip()
+    if destination.startswith("<") and ">" in destination:
+        destination = destination[1 : destination.index(">")]
+    else:
+        destination = destination.split(maxsplit=1)[0]
+    parsed = urlsplit(destination)
+    if parsed.scheme or parsed.netloc or not parsed.path:
+        return None
+    decoded = unquote(parsed.path).replace("\\", "/")
+    if decoded.startswith("/"):
+        normalized = posixpath.normpath(decoded.lstrip("/"))
+    else:
+        parent = posixpath.dirname(source_relative_path.replace("\\", "/"))
+        normalized = posixpath.normpath(posixpath.join(parent, decoded))
+    if normalized.startswith("../") or normalized in {"", ".", ".."}:
+        return None
+    return normalized.removesuffix(".md").removesuffix(".markdown")
 
 
 def _remove_inline_code(line: str) -> str:
@@ -809,16 +1042,14 @@ def _remove_inline_code(line: str) -> str:
 
 
 def _page_evidence(page: _PageInput) -> KnowledgeGraphEvidence | None:
-    if page.chunk_id is None or page.citation_id is None:
-        return None
-    return KnowledgeGraphEvidence(
-        citation_id=page.citation_id,
-        chunk_id=page.chunk_id,
-        page_id=page.page_id,
-        page_revision=page.page_revision,
-        source_id=page.source_id,
-        source_revision=page.source_revision,
-    )
+    return page.chunks[0].evidence if page.chunks else None
+
+
+def _link_evidence(page: _PageInput, link: _PageLink) -> KnowledgeGraphEvidence | None:
+    for chunk in page.chunks:
+        if any(line and line in chunk.text for line in link.lines):
+            return chunk.evidence
+    return None
 
 
 def _edge(
@@ -830,6 +1061,7 @@ def _edge(
     weight: float,
     confidence: float,
     evidence: tuple[KnowledgeGraphEvidence, ...],
+    properties: dict[str, Any] | None = None,
 ) -> _ProjectedEdge:
     left, right = source_node_id, target_node_id
     if not directed and right < left:
@@ -846,7 +1078,7 @@ def _edge(
             confidence=confidence,
             extractor_id=_PROJECTOR_ID,
             extractor_version=_PROJECTOR_VERSION,
-            properties={},
+            properties=properties or {},
             evidence=evidence,
         )
     )
@@ -913,6 +1145,21 @@ def _snapshot(row: sqlite3.Row, *, stale: bool) -> KnowledgeGraphSnapshot:
 
 def _normalize_alias(value: str) -> str:
     return " ".join(value.strip().replace("\\", "/").casefold().split())
+
+
+def _relation_score(query: str, edge: KnowledgeGraphEdge, target_label: str) -> float:
+    from core.knowledge.retrieval import lexical_terms
+
+    query_terms = set(lexical_terms(query))
+    relation_text = "\n".join(
+        (
+            target_label,
+            *(str(value) for value in edge.properties.get("anchors", ())),
+            *(str(value) for value in edge.properties.get("contexts", ())),
+        )
+    )
+    relation_terms = set(lexical_terms(relation_text))
+    return len(query_terms.intersection(relation_terms)) / max(1, len(query_terms))
 
 
 def _page_node_id(page_id: str) -> str:

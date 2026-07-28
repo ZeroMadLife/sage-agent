@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from PIL import Image, PngImagePlugin
 
 from api.main import create_app
-from core.knowledge import KnowledgeSourceRoot
+from core.config.settings import get_settings
+from core.knowledge import (
+    DashScopeEmbeddingProvider,
+    FastEmbedEmbeddingProvider,
+    KnowledgeSourceRoot,
+)
 from core.learning import MasteryEvidenceInput
 
 
@@ -59,6 +67,55 @@ def test_unconfigured_knowledge_is_explicitly_unavailable(tmp_path: Path) -> Non
 
     assert response.status_code == 503
     assert response.json() == {"detail": "knowledge workspace is not configured"}
+
+
+def test_fastembed_runtime_configuration_is_lazy_and_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "fastembed")
+    monkeypatch.setenv("KNOWLEDGE_FASTEMBED_CACHE_DIR", str(tmp_path / "model-cache"))
+    get_settings.cache_clear()
+
+    app, _vault, _knowledge = _app(tmp_path)
+
+    provider = app.state.knowledge_store.knowledge_index.embedding_provider
+    assert isinstance(provider, FastEmbedEmbeddingProvider)
+    assert provider._model is None
+    assert provider.config.cache_dir == (tmp_path / "model-cache").resolve()
+
+
+def test_dashscope_runtime_configuration_preserves_role_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "dashscope")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_API_KEY", "test-only")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_BASE_URL",
+        "https://workspace.example/api/v1",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "text-embedding-v4")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_MODEL_REVISION",
+        "text-embedding-v4@2026-07-28",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "1024")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_QUERY_INSTRUCT",
+        "Given a technical documentation query, retrieve relevant official documentation",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_COST_PER_1K_TOKENS_USD", "0.0001")
+    get_settings.cache_clear()
+
+    app, _vault, _knowledge = _app(tmp_path)
+
+    provider = app.state.knowledge_store.knowledge_index.embedding_provider
+    assert isinstance(provider, DashScopeEmbeddingProvider)
+    assert provider.dimensions == 1024
+    assert provider.config.query_instruct.startswith("Given a technical documentation query")
+    assert provider.config.cost_per_1k_tokens_usd == pytest.approx(0.0001)
+    assert "asymmetric-query-document" in provider.model_revision
 
 
 def test_mastery_projection_and_invalidation_use_current_learning_goal(tmp_path: Path) -> None:
@@ -419,6 +476,9 @@ def test_index_status_and_rebuild_api_contract(tmp_path: Path) -> None:
     status_body = status_response.json()
     assert status_body["status"] == "ready"
     assert status_body["backend"] == "sqlite-fts5+hashing"
+    assert status_body["corpus_revision"].startswith("kcorpus_")
+    assert status_body["relevance_policy_id"] is None
+    assert status_body["abstention_enabled"] is False
     assert status_body["revision_count"] == 1
     assert status_body["indexed_revision_count"] == 1
     assert status_body["active_chunk_count"] == 1
@@ -450,10 +510,15 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     assert found.headers["cache-control"] == "no-store"
     body = found.json()
     assert body["status"] == "evidence_found"
+    assert body["recovery"]["status"] == "disabled"
+    assert body["recovery"]["round_count"] == 1
+    assert "query" not in body["recovery"]
     assert body["used_tokens"] <= 512
     assert body["citations"][0]["citation_id"].startswith("kcite_")
     assert body["citations"][0]["page_revision"].startswith("krev_")
     assert body["citations"][0]["source_relative_path"] == "memory.md"
+    assert body["citations"][0]["retrieval_route"] == "hybrid"
+    assert body["citations"][0]["graph_edge_id"] is None
     assert str(vault) not in found.text
 
     citation = client.get(f"/api/v1/knowledge/citations/{body['citations'][0]['citation_id']}")
@@ -505,7 +570,51 @@ def test_search_api_returns_bounded_revision_citations_and_no_evidence(tmp_path:
     )
     assert missing.status_code == 200
     assert missing.json()["status"] == "no_evidence"
+    assert missing.json()["recovery"]["no_evidence_reason"] == "recovery_disabled"
     assert missing.json()["citations"] == []
+
+
+def test_png_search_returns_normalized_visual_citation(tmp_path: Path) -> None:
+    app, vault, _ = _app(tmp_path)
+    metadata = PngImagePlugin.PngInfo()
+    metadata.add_text("Title", "Exact retrieval chart")
+    metadata.add_text("Description", "PostgreSQL exact scan P95 is 36 milliseconds")
+    payload = BytesIO()
+    Image.new("RGB", (320, 180), "white").save(payload, format="PNG", pnginfo=metadata)
+    (vault / "retrieval.png").write_bytes(payload.getvalue())
+    client = TestClient(app)
+
+    ingested = client.post(
+        "/api/v1/knowledge/ingest",
+        json={"source_root_id": "sage-learning", "relative_path": "retrieval.png"},
+    )
+    assert ingested.status_code == 201
+    ingested_body = ingested.json()
+    assert ingested_body["status"] == "pending"
+    approved = client.post(
+        f"/api/v1/knowledge/proposals/{ingested_body['proposal_id']}/approve",
+        json={"expected_revision": ingested_body["revision"]},
+    )
+    assert approved.status_code == 200
+    found = client.post(
+        "/api/v1/knowledge/search",
+        json={"query": "exact scan P95 36 milliseconds", "top_k": 4, "token_budget": 512},
+    )
+
+    assert found.status_code == 200
+    evidence = found.json()["citations"][0]
+    assert evidence["block_kind"] == "media"
+    assert evidence["page_number"] == 1
+    assert evidence["bbox"] == [0.0, 0.0, 1.0, 1.0]
+    assert evidence["bbox_coordinate_space"] == "normalized"
+    assert evidence["media_ref"] == "retrieval.png"
+    assert evidence["confidence"] == 1.0
+    assert evidence["parser_id"] == "sage.png"
+    assert evidence["parser_version"] == "1.0.0"
+
+    citation = client.get(f"/api/v1/knowledge/citations/{evidence['citation_id']}").json()
+    assert citation["bbox"] == evidence["bbox"]
+    assert citation["media_ref"] == evidence["media_ref"]
 
 
 def test_knowledge_api_rejects_unsafe_paths_and_stale_revisions(tmp_path: Path) -> None:

@@ -51,6 +51,7 @@ def knowledge_search(
         str(args["query"]),
         top_k=int(args["top_k"]),
         token_budget=int(args["token_budget"]),
+        relation_expand=store.knowledge_index.relevance_policy is not None,
     )
     payload = {
         "status": bundle.status,
@@ -58,6 +59,22 @@ def knowledge_search(
         "used_tokens": bundle.used_tokens,
         "token_budget": bundle.token_budget,
         "omitted_count": bundle.omitted_count,
+        "recovery": {
+            "status": bundle.recovery_status,
+            "round_count": len(bundle.recovery_attempts),
+            "no_evidence_reason": bundle.no_evidence_reason,
+            "attempts": [
+                {
+                    "round_index": attempt.round_index,
+                    "trigger_reason": attempt.trigger_reason,
+                    "retrieval_mode": attempt.retrieval_mode,
+                    "top_k": attempt.top_k,
+                    "result_count": attempt.result_count,
+                    "query_rewritten": attempt.query_rewritten,
+                }
+                for attempt in bundle.recovery_attempts
+            ],
+        },
         "instruction": (
             "Use only the cited excerpts for knowledge-base claims. After a useful "
             "investigation, ask the user whether these citation IDs should be persisted. "
@@ -77,6 +94,22 @@ def knowledge_search(
                 "title": evidence.hit.chunk.title,
                 "heading_path": list(evidence.hit.chunk.heading_path),
                 "block_id": evidence.hit.chunk.block_id,
+                "page_number": evidence.hit.chunk.page_number,
+                "block_kind": evidence.hit.chunk.block_kind,
+                "bbox": evidence.hit.chunk.bbox,
+                "bbox_coordinate_space": (
+                    "normalized" if evidence.hit.chunk.bbox is not None else None
+                ),
+                "media_ref": evidence.hit.chunk.media_ref,
+                "confidence": evidence.hit.chunk.confidence,
+                "parser_id": evidence.hit.chunk.parser_id,
+                "parser_version": evidence.hit.chunk.parser_version,
+                "retrieval_route": evidence.hit.retrieval_route,
+                "graph_edge_id": evidence.hit.graph_edge_id,
+                "graph_evidence_citation_id": evidence.hit.graph_evidence_citation_id,
+                "graph_seed_page_id": evidence.hit.graph_seed_page_id,
+                "graph_direction": evidence.hit.graph_direction,
+                "graph_score": evidence.hit.graph_score,
                 "excerpt": evidence.excerpt,
                 "truncated": evidence.truncated,
             }

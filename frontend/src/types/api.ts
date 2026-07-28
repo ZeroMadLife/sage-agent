@@ -121,6 +121,9 @@ export type KnowledgeIndexSummary = {
   backend: string
   embedding_model: string
   embedding_revision: string
+  corpus_revision: string
+  relevance_policy_id: string | null
+  abstention_enabled: boolean
   revision_count: number
   indexed_revision_count: number
   active_chunk_count: number
@@ -308,6 +311,12 @@ export type KnowledgeEvidence = {
   sparse_score: number | null
   dense_rank: number | null
   dense_score: number | null
+  retrieval_route: 'sparse' | 'dense' | 'hybrid' | 'graph'
+  graph_edge_id: string | null
+  graph_evidence_citation_id: string | null
+  graph_seed_page_id: string | null
+  graph_direction: 'outbound' | 'inbound' | null
+  graph_score: number | null
   chunk_id: string
   page_id: string
   page_revision: string
@@ -323,6 +332,13 @@ export type KnowledgeEvidence = {
   title: string
   heading_path: string[]
   page_number: number | null
+  block_kind: 'frontmatter' | 'heading' | 'paragraph' | 'list' | 'code' | 'table' | 'quote' | 'media'
+  bbox: [number, number, number, number] | null
+  bbox_coordinate_space: 'normalized' | null
+  media_ref: string | null
+  confidence: number
+  parser_id: string
+  parser_version: string
   excerpt: string
   token_count: number
   truncated: boolean
@@ -334,6 +350,23 @@ export type KnowledgeRetrieval = {
   token_budget: number
   used_tokens: number
   omitted_count: number
+  recovery: {
+    status: 'disabled' | 'not_needed' | 'not_available' | 'recovered' | 'not_improved' | 'exhausted'
+    round_count: number
+    no_evidence_reason:
+      | 'recovery_disabled'
+      | 'no_rewrite_available'
+      | 'bounded_recovery_exhausted'
+      | null
+    attempts: Array<{
+      round_index: 1 | 2
+      trigger_reason: 'initial' | 'insufficient_results'
+      retrieval_mode: 'sparse' | 'dense' | 'hybrid'
+      top_k: number
+      result_count: number
+      query_rewritten: boolean
+    }>
+  }
   citations: KnowledgeEvidence[]
 }
 
@@ -352,6 +385,13 @@ export type KnowledgeCitation = {
   title: string
   heading_path: string[]
   page_number: number | null
+  block_kind: 'frontmatter' | 'heading' | 'paragraph' | 'list' | 'code' | 'table' | 'quote' | 'media'
+  bbox: [number, number, number, number] | null
+  bbox_coordinate_space: 'normalized' | null
+  media_ref: string | null
+  confidence: number
+  parser_id: string
+  parser_version: string
   excerpt: string
   token_count: number
   truncated: boolean

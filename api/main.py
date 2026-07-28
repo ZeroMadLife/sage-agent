@@ -40,13 +40,24 @@ from core.harness.sandbox_factory import (
 )
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
-from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
+from core.knowledge import (
+    KnowledgeRecoveryPolicy,
+    KnowledgeRelevancePolicy,
+    KnowledgeRetrievalObservabilityConfig,
+    KnowledgeSourceRoot,
+    KnowledgeStore,
+    load_relevance_policy,
+)
+from core.knowledge.embedding_factory import build_knowledge_embedding_provider
+from core.knowledge.index_backend import KnowledgeIndexBackend
+from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.jobs import (
     KnowledgeJobRepository,
     KnowledgeJobService,
     RedisKnowledgeJobQueue,
 )
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
+from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
 from core.learning import MasteryLedger
 from core.llm import create_llm
@@ -101,6 +112,9 @@ def create_app(
     knowledge_workspace_root: str | Path | None = None,
     knowledge_database_path: str | Path | None = None,
     knowledge_source_roots: Mapping[str, KnowledgeSourceRoot] | None = None,
+    knowledge_embedding_provider: DenseEmbeddingProvider | None = None,
+    knowledge_relevance_policy: KnowledgeRelevancePolicy | None = None,
+    knowledge_index: KnowledgeIndexBackend | None = None,
     knowledge_job_service: KnowledgeJobService | None = None,
     knowledge_source_proposal_service: CodingKnowledgeSourceProposalService | None = None,
     knowledge_jobs_enabled: bool | None = None,
@@ -158,6 +172,11 @@ def create_app(
             app.state.coding_goal_followup_shutdown = True
             if isinstance(service, KnowledgeJobService):
                 await service.stop()
+            configured_store = getattr(app.state, "knowledge_store", None)
+            configured_index = getattr(configured_store, "knowledge_index", None)
+            close_index = getattr(configured_index, "close", None)
+            if callable(close_index):
+                close_index()
             owned_redis = getattr(app.state, "knowledge_job_redis_client", None)
             if owned_redis is not None:
                 await owned_redis.aclose()
@@ -402,10 +421,39 @@ def create_app(
             if settings.knowledge_database_path.strip()
             else configured_knowledge_root / ".sage" / "knowledge.sqlite3"
         )
+        configured_embedding = knowledge_embedding_provider
+        if configured_embedding is None:
+            configured_embedding = build_knowledge_embedding_provider(settings)
+        configured_relevance_policy = knowledge_relevance_policy
+        if configured_relevance_policy is None and settings.knowledge_relevance_policy_path.strip():
+            configured_relevance_policy = load_relevance_policy(
+                Path(settings.knowledge_relevance_policy_path).expanduser().resolve()
+            )
+        configured_index = knowledge_index or build_knowledge_index(
+            backend=settings.knowledge_index_backend,
+            workspace_id=settings.knowledge_workspace_id,
+            postgres_dsn=settings.knowledge_postgres_dsn or settings.postgres_sync_dsn,
+            postgres_connect_timeout_seconds=settings.knowledge_postgres_connect_timeout_seconds,
+            postgres_pool_max_connections=settings.knowledge_postgres_pool_max_connections,
+            embedding_provider=configured_embedding,
+            relevance_policy=configured_relevance_policy,
+            observability=KnowledgeRetrievalObservabilityConfig(
+                enabled=settings.knowledge_retrieval_observability_enabled,
+                hmac_key=settings.knowledge_retrieval_observability_hmac_key,
+                max_candidates=settings.knowledge_retrieval_observability_candidate_limit,
+            ),
+        )
         app.state.knowledge_store = KnowledgeStore(
             configured_knowledge_root,
             configured_knowledge_database,
             configured_source_roots or {},
+            knowledge_index=configured_index,
+            recovery_policy=KnowledgeRecoveryPolicy(
+                enabled=settings.knowledge_recovery_enabled,
+                min_results=settings.knowledge_recovery_min_results,
+                top_k_multiplier=settings.knowledge_recovery_top_k_multiplier,
+                max_top_k=settings.knowledge_recovery_max_top_k,
+            ),
         )
         app.state.knowledge_store.initialize()
         enable_jobs = (

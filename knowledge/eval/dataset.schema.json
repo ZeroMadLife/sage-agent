@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sage.local/schemas/rag-eval-dataset-v1.json",
+  "title": "Sage RAG Eval Dataset Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dataset_id", "dataset_revision", "corpus_manifest", "corpus_manifest_sha256", "cases", "cases_sha256", "split_counts", "frozen_test", "reviewed_at"],
+  "properties": {
+    "dataset_id": {"type": "string"},
+    "dataset_revision": {"type": "string"},
+    "corpus_manifest": {"type": "string"},
+    "corpus_manifest_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "cases": {"type": "string"},
+    "cases_sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "split_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dev", "calibration", "test"],
+      "properties": {"dev": {"type": "integer", "minimum": 1}, "calibration": {"type": "integer", "minimum": 1}, "test": {"type": "integer", "minimum": 1}}
+    },
+    "frozen_test": {"const": true},
+    "reviewed_at": {"type": "string", "format": "date-time"}
+  }
+}

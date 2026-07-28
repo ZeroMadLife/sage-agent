@@ -4,7 +4,8 @@ Configuration is loaded from environment variables and an optional ``.env`` file
 """
 
 from functools import lru_cache
-from urllib.parse import urlparse
+from typing import Literal
+from urllib.parse import quote, urlparse
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -147,6 +148,41 @@ class Settings(BaseSettings):
     knowledge_source_label: str = "Sage Learning"
     knowledge_source_kind: str = "obsidian"
     knowledge_jobs_enabled: bool = False
+    knowledge_index_backend: Literal["sqlite", "postgres"] = "sqlite"
+    knowledge_workspace_id: str = "knowledge-local"
+    knowledge_postgres_dsn: str = Field(default="", repr=False)
+    knowledge_postgres_connect_timeout_seconds: int = Field(default=5, ge=1, le=30)
+    knowledge_postgres_pool_max_connections: int = Field(default=4, ge=1, le=16)
+    knowledge_embedding_provider: str = "hashing"
+    knowledge_embedding_api_key: str = Field(default="", repr=False)
+    knowledge_embedding_base_url: str = ""
+    knowledge_embedding_model: str = ""
+    knowledge_embedding_model_revision: str = "api-v1"
+    knowledge_embedding_dimensions: int = Field(default=1_024, ge=1, le=8_192)
+    knowledge_embedding_batch_size: int = Field(default=32, ge=1, le=256)
+    knowledge_embedding_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    knowledge_embedding_query_instruct: str = ""
+    knowledge_embedding_cost_per_1k_tokens_usd: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+    )
+    knowledge_dashscope_batch_size: int = Field(default=10, ge=1, le=10)
+    knowledge_fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    knowledge_fastembed_repository: str = "qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q"
+    knowledge_fastembed_model_revision: str = "faf4aa4225822f3bc6376869cb1164e8e3feedd0"
+    knowledge_fastembed_dimensions: int = Field(default=384, ge=1, le=8_192)
+    knowledge_fastembed_cache_dir: str = "~/.cache/sage/fastembed"
+    knowledge_fastembed_batch_size: int = Field(default=32, ge=1, le=256)
+    knowledge_fastembed_local_files_only: bool = False
+    knowledge_relevance_policy_path: str = ""
+    knowledge_retrieval_observability_enabled: bool = False
+    knowledge_retrieval_observability_hmac_key: str = Field(default="", repr=False)
+    knowledge_retrieval_observability_candidate_limit: int = Field(default=50, ge=1, le=200)
+    knowledge_recovery_enabled: bool = False
+    knowledge_recovery_min_results: int = Field(default=4, ge=1, le=20)
+    knowledge_recovery_top_k_multiplier: int = Field(default=2, ge=1, le=4)
+    knowledge_recovery_max_top_k: int = Field(default=20, ge=1, le=50)
     # External parsing is a separate trust boundary. It stays disabled until
     # both a source-root allowlist and at least one adapter are configured.
     knowledge_external_parsing_enabled: bool = False
@@ -170,6 +206,16 @@ class Settings(BaseSettings):
         return (
             f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        )
+
+    @property
+    def postgres_sync_dsn(self) -> str:
+        """Return a credential-safe-to-construct sync PostgreSQL DSN."""
+        user = quote(self.postgres_user, safe="")
+        password = quote(self.postgres_password, safe="")
+        database = quote(self.postgres_db, safe="")
+        return (
+            f"postgresql://{user}:{password}@{self.postgres_host}:{self.postgres_port}/{database}"
         )
 
     @property
