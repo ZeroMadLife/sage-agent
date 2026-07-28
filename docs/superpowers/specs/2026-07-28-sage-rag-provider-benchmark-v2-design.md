@@ -64,7 +64,8 @@ PostgreSQL 17/18 和 `shared_preload_libraries`，因此先在独立容器对同
 
 - 旧 Provider 的 `embed(text)` 在迁移期保留兼容入口，内部调用 document 语义；所有检索查询
   改用 `embed_query`。
-- 云 Provider 初始化、超时、响应数量、响应顺序或维度变化均显式失败，不静默回退 Hashing。
+- 云 Provider 对传输异常、429 和 5xx 最多执行 3 次指数退避重试；认证/请求 4xx、响应数量、响应顺序
+  或维度变化立即显式失败，不静默回退 Hashing。
 - API 错误只保留异常类型与有界摘要，不保存请求正文、响应向量或凭据。
 - 需要禁止外发时，由运行配置显式选择 FastEmbed；本阶段未新增 workspace 级外发策略开关。
   FastEmbed 是不出网回退，不是云调用失败后的静默降级。
