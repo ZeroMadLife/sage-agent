@@ -2,7 +2,8 @@
 
 > 日期：2026-07-28
 > 基线：`dev/sage-v7@85187ea`
-> 状态：已批准，进入实现
+> 状态：已完成，保留为历史设计记录
+> 实现范围：PR #125、#126；最终发布边界见 `release/v1.1.0/`
 
 ## 1. 问题
 
@@ -14,8 +15,9 @@ OpenAI-compatible 适配器又只有对称 `embed(text)`，不能表达百炼推
 
 ## 2. 结果
 
-- 日常自用配置以 PostgreSQL exact hybrid 为检索主链路；SQLite 保留为离线回归、首次启动和
-  canonical Knowledge/Wiki 状态，不再代表产品检索选型。
+- 运行时已装配 PostgreSQL exact hybrid 与三类语义 Provider，可由显式配置启用；本阶段没有
+  修改用户本机 `.env`。默认 SQLite + Hashing 保留为离线回归、首次启动和 canonical
+  Knowledge/Wiki 状态，不再作为语义质量候选。
 - 同一版本化 Corpus/Eval 下比较 FastEmbed、百炼 `text-embedding-v4` 和豆包
   `doubao-embedding-vision`，报告同时记录模型身份、维度、协议角色、质量、延迟和可得成本。
 - 百炼使用原生 DashScope query/document 协议；豆包使用其 OpenAI-compatible Embeddings
@@ -73,5 +75,6 @@ PostgreSQL 17/18 和 `shared_preload_libraries`，因此先在独立容器对同
 ## 7. 非目标
 
 - 本阶段不开发 Dataset v2、RAGAS、真实生成质量、视觉向量或 HNSW。
-- 不迁移 Knowledge canonical truth，不部署，不恢复飞书，也不合入 `main`。
+- 本阶段不迁移 Knowledge canonical truth，不部署，不恢复飞书；实现先经 `dev/sage-v7`
+  集成验证，随后只按本地自用版本门禁合入 `main`。
 - 不根据 frozen test 在多个 Provider 之间二次选优。
