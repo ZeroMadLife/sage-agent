@@ -33,9 +33,12 @@ from core.knowledge.retrieval import (
     KnowledgeSearchHit,
     chunk_document,
     citation_id,
+    embed_document_text,
+    embed_query_text,
     embedding_text,
     fts_query,
     index_text,
+    prepare_document_embeddings,
     reciprocal_rank_fusion,
 )
 
@@ -347,17 +350,14 @@ class PostgresKnowledgeIndex:
 
     def sync_revision(self, connection: sqlite3.Connection, revision_id: str) -> int:
         row, chunks, current_revision, created_at = self._revision_chunks(connection, revision_id)
-        prepare = getattr(self.embedding_provider, "prepare", None)
-        if callable(prepare):
-            prepare(
-                tuple(
-                    embedding_text(chunk, ablation_policy=self.ablation_policy) for chunk in chunks
-                )
-            )
+        prepare_document_embeddings(
+            self.embedding_provider,
+            tuple(embedding_text(chunk, ablation_policy=self.ablation_policy) for chunk in chunks),
+        )
         prepared: list[tuple[KnowledgeChunk, tuple[float, ...], str]] = []
         for chunk in chunks:
             value = embedding_text(chunk, ablation_policy=self.ablation_policy)
-            vector = tuple(float(item) for item in self.embedding_provider.embed(value))
+            vector = embed_document_text(self.embedding_provider, value)
             if len(vector) != self.embedding_provider.dimensions or any(
                 not math.isfinite(item) for item in vector
             ):
@@ -603,7 +603,8 @@ class PostgresKnowledgeIndex:
             if retrieval_mode in {"dense", "hybrid"}:
                 try:
                     query_vector = tuple(
-                        float(item) for item in self.embedding_provider.embed(normalized)
+                        float(item)
+                        for item in embed_query_text(self.embedding_provider, normalized)
                     )
                 except Exception as exc:
                     self._record_retrieval_trace(

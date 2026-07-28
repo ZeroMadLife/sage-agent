@@ -355,6 +355,49 @@ def test_postgres_dimension_change_rebuilds_matching_provider_revision(
         resized.close()
 
 
+def test_postgres_embedding_provider_distinguishes_document_and_query_roles(
+    postgres_store: KnowledgeStore,
+    tmp_path: Path,
+) -> None:
+    class RoleAwareProvider(HashingEmbeddingProvider):
+        supports_semantic_recall = True
+
+        def __init__(self) -> None:
+            super().__init__(dimensions=64)
+            self.model_id = "test.postgres-role-aware"
+            self.model_revision = "v1"
+            self.document_inputs: list[str] = []
+            self.query_inputs: list[str] = []
+
+        def embed_document(self, text: str) -> tuple[float, ...]:
+            self.document_inputs.append(text)
+            return super().embed(text)
+
+        def embed_query(self, text: str) -> tuple[float, ...]:
+            self.query_inputs.append(text)
+            return super().embed(text)
+
+        def embed(self, text: str) -> tuple[float, ...]:
+            raise AssertionError("role-aware callers must not use the compatibility embed method")
+
+    provider = RoleAwareProvider()
+    index = postgres_store.knowledge_index
+    assert isinstance(index, PostgresKnowledgeIndex)
+    index.embedding_provider = provider
+    (tmp_path / "source" / "roles.md").write_text(
+        "# Roles\n\nPostgreSQL 使用 GIN 与 pgvector 形成双路召回。\n",
+        encoding="utf-8",
+    )
+
+    proposal = postgres_store.ingest("official", "roles.md")
+    postgres_store.approve(proposal.proposal_id, proposal.revision)
+    hits = postgres_store.search("PostgreSQL 双路召回", retrieval_mode="dense")
+
+    assert hits
+    assert provider.document_inputs
+    assert provider.query_inputs == ["PostgreSQL 双路召回"]
+
+
 def test_postgres_failed_revision_is_atomic_and_rebuildable(
     tmp_path: Path,
     postgres_dsn: str,

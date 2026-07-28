@@ -13,7 +13,11 @@ from PIL import Image, PngImagePlugin
 
 from api.main import create_app
 from core.config.settings import get_settings
-from core.knowledge import FastEmbedEmbeddingProvider, KnowledgeSourceRoot
+from core.knowledge import (
+    DashScopeEmbeddingProvider,
+    FastEmbedEmbeddingProvider,
+    KnowledgeSourceRoot,
+)
 from core.learning import MasteryEvidenceInput
 
 
@@ -79,6 +83,39 @@ def test_fastembed_runtime_configuration_is_lazy_and_explicit(
     assert isinstance(provider, FastEmbedEmbeddingProvider)
     assert provider._model is None
     assert provider.config.cache_dir == (tmp_path / "model-cache").resolve()
+
+
+def test_dashscope_runtime_configuration_preserves_role_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "dashscope")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_API_KEY", "test-only")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_BASE_URL",
+        "https://workspace.example/api/v1",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "text-embedding-v4")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_MODEL_REVISION",
+        "text-embedding-v4@2026-07-28",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "1024")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_QUERY_INSTRUCT",
+        "Given a technical documentation query, retrieve relevant official documentation",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_COST_PER_1K_TOKENS_USD", "0.0001")
+    get_settings.cache_clear()
+
+    app, _vault, _knowledge = _app(tmp_path)
+
+    provider = app.state.knowledge_store.knowledge_index.embedding_provider
+    assert isinstance(provider, DashScopeEmbeddingProvider)
+    assert provider.dimensions == 1024
+    assert provider.config.query_instruct.startswith("Given a technical documentation query")
+    assert provider.config.cost_per_1k_tokens_usd == pytest.approx(0.0001)
+    assert "asymmetric-query-document" in provider.model_revision
 
 
 def test_mastery_projection_and_invalidation_use_current_learning_goal(tmp_path: Path) -> None:

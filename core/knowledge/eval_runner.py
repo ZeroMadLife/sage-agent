@@ -40,6 +40,8 @@ from core.knowledge.retrieval import (
     chunk_document,
     embedding_text,
     lexical_terms,
+    prepare_document_embeddings,
+    prepare_query_embeddings,
 )
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore, PreparedKnowledgeSource
 
@@ -1285,10 +1287,7 @@ def _prepare_provider(
     *,
     ablation_policy: KnowledgeAblationPolicy | None = None,
 ) -> None:
-    prepare = getattr(provider, "prepare", None)
-    if not callable(prepare):
-        return
-    texts: list[str] = []
+    document_texts: list[str] = []
     for entry, source in prepared:
         chunks = chunk_document(
             source.document,
@@ -1308,9 +1307,11 @@ def _prepare_provider(
             ablation_policy=ablation_policy,
             semantic_provider=provider,
         )
-        texts.extend(embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks)
-    texts.extend(case.query for case in cases)
-    prepare(tuple(dict.fromkeys(texts)))
+        document_texts.extend(
+            embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks
+        )
+    prepare_document_embeddings(provider, tuple(dict.fromkeys(document_texts)))
+    prepare_query_embeddings(provider, tuple(dict.fromkeys(case.query for case in cases)))
 
 
 def _run_route(

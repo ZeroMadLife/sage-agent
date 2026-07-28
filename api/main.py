@@ -41,6 +41,8 @@ from core.harness.sandbox_factory import (
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import (
+    DashScopeEmbeddingConfig,
+    DashScopeEmbeddingProvider,
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
     KnowledgeRecoveryPolicy,
@@ -427,7 +429,23 @@ def create_app(
         configured_embedding = knowledge_embedding_provider
         if configured_embedding is None:
             provider_name = settings.knowledge_embedding_provider.strip().casefold()
-            if provider_name == "openai_compatible":
+            if provider_name == "dashscope":
+                configured_embedding = DashScopeEmbeddingProvider(
+                    DashScopeEmbeddingConfig(
+                        api_key=settings.knowledge_embedding_api_key,
+                        base_url=settings.knowledge_embedding_base_url,
+                        model=settings.knowledge_embedding_model,
+                        model_revision=settings.knowledge_embedding_model_revision,
+                        dimensions=settings.knowledge_embedding_dimensions,
+                        query_instruct=settings.knowledge_embedding_query_instruct,
+                        batch_size=settings.knowledge_dashscope_batch_size,
+                        timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+                        cost_per_1k_tokens_usd=(
+                            settings.knowledge_embedding_cost_per_1k_tokens_usd
+                        ),
+                    )
+                )
+            elif provider_name == "openai_compatible":
                 configured_embedding = OpenAICompatibleEmbeddingProvider(
                     OpenAICompatibleEmbeddingConfig(
                         api_key=settings.knowledge_embedding_api_key,
@@ -437,6 +455,9 @@ def create_app(
                         dimensions=settings.knowledge_embedding_dimensions,
                         batch_size=settings.knowledge_embedding_batch_size,
                         timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+                        cost_per_1k_tokens_usd=(
+                            settings.knowledge_embedding_cost_per_1k_tokens_usd
+                        ),
                     )
                 )
             elif provider_name == "fastembed":

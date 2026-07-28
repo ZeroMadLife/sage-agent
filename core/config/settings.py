@@ -161,6 +161,13 @@ class Settings(BaseSettings):
     knowledge_embedding_dimensions: int = Field(default=1_024, ge=1, le=8_192)
     knowledge_embedding_batch_size: int = Field(default=32, ge=1, le=256)
     knowledge_embedding_timeout_seconds: float = Field(default=30.0, ge=1.0, le=120.0)
+    knowledge_embedding_query_instruct: str = ""
+    knowledge_embedding_cost_per_1k_tokens_usd: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=100.0,
+    )
+    knowledge_dashscope_batch_size: int = Field(default=10, ge=1, le=10)
     knowledge_fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     knowledge_fastembed_repository: str = "qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q"
     knowledge_fastembed_model_revision: str = "faf4aa4225822f3bc6376869cb1164e8e3feedd0"

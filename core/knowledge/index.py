@@ -29,6 +29,8 @@ from core.knowledge.retrieval import (
     citation_id,
     cosine_similarity,
     deserialize_vector,
+    embed_document_text,
+    embed_query_text,
     embedding_text,
     fts_query,
     index_text,
@@ -479,7 +481,7 @@ class LocalKnowledgeIndex:
         sparse = [(str(row["chunk_id"]), -float(row["score"])) for row in sparse_rows]
         try:
             query_vector = (
-                self.embedding_provider.embed(normalized)
+                embed_query_text(self.embedding_provider, normalized)
                 if retrieval_mode in {"dense", "hybrid"}
                 else ()
             )
@@ -856,7 +858,7 @@ class LocalKnowledgeIndex:
             (chunk.chunk_id, index_text(chunk, ablation_policy=self.ablation_policy)),
         )
         value = embedding_text(chunk, ablation_policy=self.ablation_policy)
-        vector = self.embedding_provider.embed(value)
+        vector = embed_document_text(self.embedding_provider, value)
         connection.execute(
             """
             INSERT INTO knowledge_chunk_embeddings (
