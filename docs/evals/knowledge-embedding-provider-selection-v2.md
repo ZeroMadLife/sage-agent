@@ -17,6 +17,11 @@ Hashing baseline 的 `0.940` 提升到 `1.000`。三者差异主要落在排序�
 豆包的 false rejection 最少，但 Coding Plan 没有逐 token 成本口径，本轮成本 Gate 按 unknown
 fail closed；FastEmbed 保留为不出网回退。
 
+冻结 final 随后只运行百炼候选：18 条可回答 test 的 Recall@10 从 `0.889` 提升到 `1.000`、
+MRR 从 `0.683` 提升到 `0.806`、NDCG@10 从 `0.701` 提升到 `0.852`；false rejection 从 2
+降到 0，false acceptance 保持 0。总体 activation 仍为 false，因为 frozen test 的
+`semantic_paraphrase` case 数为 0，专项门禁没有证据，不能用 overall 提升代替。
+
 ## Selection 对照
 
 | Provider | 维度 | Recall@10 | MRR | NDCG@10 | Abstain F1 | false rejection / acceptance | P95 | 准备耗时 | 估算费用 |
@@ -53,6 +58,24 @@ backend。Provider 与 Gate 只使用 dev/calibration；冻结 test 未参与三
 policy 为 `krp_20e8c339cd06a8b0`，同时绑定 model、role policy、dimensions、corpus revision 与
 Top-K；任一变化都拒绝复用。
 
+## Frozen Final
+
+final source commit 为 `396921b3dcc3de660a4084f5e28d6fd0ff173e68`，只读取已提交的百炼
+selection 阈值，selection 证据 SHA-256 为
+`d637cd16d94b3b4f3f8f67d6bab7a4f748a4f36755bfab36056c51e83505030f`。
+
+| hybrid test 指标 | Hashing | 百炼 v4 | delta |
+| --- | ---: | ---: | ---: |
+| Recall@10 | 0.889 | **1.000** | +0.111 |
+| MRR | 0.683 | **0.806** | +0.123 |
+| NDCG@10 | 0.701 | **0.852** | +0.151 |
+| Abstain F1 | 0.667 | **1.000** | +0.333 |
+| false rejection | 2 | **0** | -2 |
+| false acceptance | 0 | **0** | 0 |
+
+test P95 为 `10.445 ms`，估算本轮费用为 `$0.000479`，citation support 为 `1.0`。这里的
+citation support 只证明返回 evidence 可解析到正确 revision，不代表生成答案正确率。
+
 ## PostgreSQL 与 BM25 决策
 
 日常主链路使用当前 PostgreSQL 16 的 `GIN + ts_rank_cd` sparse 与 pgvector exact dense。
@@ -74,6 +97,8 @@ MRR、NDCG、P95、中文 tokenizer 与 rebuild；通过后再单独设计数据
   - SHA-256：`d637cd16d94b3b4f3f8f67d6bab7a4f748a4f36755bfab36056c51e83505030f`
 - `evals/reports/knowledge_embedding_doubao_postgres_selection_v2_2026-07-28.json`
   - SHA-256：`df7e4f8da3478633cddfea8d72b8f20be2e344e52034fb07ad5e4ba7845ded66`
+- `evals/reports/knowledge_embedding_bailian_postgres_final_v2_2026-07-28.json`
+  - SHA-256：`76033482119793480546ccc8e7b12aa6e32438512a8fcb83778ac8f094ba65ec`
 
 ## 当前边界
 

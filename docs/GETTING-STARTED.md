@@ -67,6 +67,29 @@ KNOWLEDGE_POSTGRES_DSN=
 切换前先运行 `python scripts/migrate_knowledge_index_postgres.py --force`。第一版不会创建
 HNSW/IVFFlat；若 PostgreSQL 不可用，显式配置的 postgres backend 会启动失败，不静默回退 SQLite。
 
+真实语义 Provider 需要显式选择。百炼原生模式会区分 document/query embedding，并把 role
+policy、模型 revision 和维度绑定到检索投影与 Gate policy：
+
+```bash
+KNOWLEDGE_EMBEDDING_PROVIDER=dashscope
+KNOWLEDGE_EMBEDDING_API_KEY=               # 只写入本机 .env
+KNOWLEDGE_EMBEDDING_BASE_URL=https://<workspace>.cn-beijing.maas.aliyuncs.com/api/v1
+KNOWLEDGE_EMBEDDING_MODEL=text-embedding-v4
+KNOWLEDGE_EMBEDDING_MODEL_REVISION=text-embedding-v4@<evaluation-date>
+KNOWLEDGE_EMBEDDING_DIMENSIONS=1024
+KNOWLEDGE_DASHSCOPE_BATCH_SIZE=10
+KNOWLEDGE_EMBEDDING_QUERY_INSTRUCT=Given a technical documentation query, retrieve relevant official documentation
+KNOWLEDGE_RELEVANCE_POLICY_PATH=evals/policies/knowledge_relevance_bailian_candidate_v2.json
+```
+
+豆包 Coding Plan 使用 `openai_compatible` 和其专属 `/api/coding/v3` Base URL；当前端点实测
+`doubao-embedding-vision` 返回 2048 维。FastEmbed 仍是禁止外发 workspace 的本地回退。三者的
+selection/final 证据见
+[多 Embedding Provider Selection v2](evals/knowledge-embedding-provider-selection-v2.md)。
+
+Provider、model revision、dimensions 或 query instruct 变化后必须 force rebuild 并重新校准
+Gate，不能继续复用旧 policy。云端失败会显式报错，不静默切到 Hashing。
+
 `.env` 已被 Git 忽略。不要提交 Provider key、OAuth secret、访问口令或用户数据。
 
 ## 4. 启动本地服务
