@@ -43,8 +43,12 @@ MRR 从 `0.683` 提升到 `0.806`、NDCG@10 从 `0.701` 提升到 `0.852`；fals
   instruct；document/query cache 相互隔离。官方文档说明 `text-embedding-v4` 支持 64-2048
   维，通用场景推荐 1024 维，并建议检索任务区分 query/document。
 - 豆包通过 Coding Plan 的 OpenAI-compatible `/embeddings` 调用
-  `doubao-embedding-vision-250615`。端点实测返回 2048 维；因接口为对称协议，本轮没有人为添加
-  query 前缀。
+  `doubao-embedding-vision-250615`。端点实测返回 2048 维，响应中的 model 字段为通用别名
+  `doubao-embedding-vision`；因接口为对称协议，本轮没有人为添加 query 前缀。
+
+百炼与豆包报告中的 `model_revision` 是“请求模型 + 评测日期/协议”的本地配置 revision，用来阻止
+不同配置之间误复用投影和 Gate；供应商接口没有返回可验证的不可变权重 commit，因此它不能证明云端
+模型权重永久不漂移。FastEmbed 的 Hugging Face commit 才是不可变模型快照。
 
 官方依据：
 
@@ -105,4 +109,6 @@ MRR、NDCG、P95、中文 tokenizer 与 rebuild；通过后再单独设计数据
 - selection 只有 60 条，且 corpus 只有 49 个 parser blocks；不能推导线上 SLA。
 - 三家 Recall 相同不代表模型等价，当前差异已出现在 ranking 与 Gate。
 - 百炼成本使用可审计的保守换算参数；豆包成本未知，不比较价格优劣。
+- 云 Provider 只绑定本地配置 revision，供应商未提供不可变权重 commit；需要长期复现时必须保留
+  报告日期、请求模型、响应别名和同集回归结果。
 - 本阶段未修改 frozen test、未评真实生成质量、未部署、未接飞书、未合入 `main`。

@@ -146,7 +146,8 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 > 仓库的可移植默认仍是 SQLite FTS5 + deterministic hashing，便于离线启动与确定性回归；
 > 日常自用可以显式启用 PostgreSQL GIN + pgvector exact、百炼/豆包/FastEmbed 与对应 Gate。
-> 云 Provider 仍是 revision-bound opt-in，运行时未创建 HNSW，也不把评测候选写成线上能力。
+> 云 Provider 仍是 config-revision-bound opt-in，供应商 alias 不等同不可变权重 commit；运行时未创建
+> HNSW，也不把评测候选写成线上能力。
 
 ## 快速开始
 

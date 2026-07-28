@@ -15,7 +15,6 @@ def test_build_provider_selects_native_dashscope_role_contract() -> None:
     provider = _build_provider(
         SimpleNamespace(
             provider="dashscope",
-            embedding_api_key="test-only",
             embedding_base_url="https://workspace.example/api/v1",
             embedding_model="text-embedding-v4",
             embedding_model_revision="text-embedding-v4@2026-07-28",
@@ -26,7 +25,8 @@ def test_build_provider_selects_native_dashscope_role_contract() -> None:
                 "Given a technical documentation query, retrieve relevant official documentation"
             ),
             cost_per_1k_tokens_usd=0.0001,
-        )
+        ),
+        api_key="test-only",
     )
 
     assert isinstance(provider, DashScopeEmbeddingProvider)
@@ -38,7 +38,6 @@ def test_build_provider_selects_openai_compatible_endpoint() -> None:
     provider = _build_provider(
         SimpleNamespace(
             provider="openai_compatible",
-            embedding_api_key="test-only",
             embedding_base_url="https://ark.example/api/coding/v3",
             embedding_model="doubao-embedding-vision-250615",
             embedding_model_revision="doubao-embedding-vision-250615@coding-v3",
@@ -47,7 +46,8 @@ def test_build_provider_selects_openai_compatible_endpoint() -> None:
             embedding_timeout_seconds=30.0,
             query_instruct="",
             cost_per_1k_tokens_usd=None,
-        )
+        ),
+        api_key="test-only",
     )
 
     assert isinstance(provider, OpenAICompatibleEmbeddingProvider)
@@ -60,7 +60,6 @@ def test_build_provider_rejects_missing_cloud_configuration() -> None:
         _build_provider(
             SimpleNamespace(
                 provider="dashscope",
-                embedding_api_key="",
                 embedding_base_url="",
                 embedding_model="",
                 embedding_model_revision="",
@@ -69,5 +68,6 @@ def test_build_provider_rejects_missing_cloud_configuration() -> None:
                 embedding_timeout_seconds=30.0,
                 query_instruct="",
                 cost_per_1k_tokens_usd=None,
-            )
+            ),
+            api_key="",
         )

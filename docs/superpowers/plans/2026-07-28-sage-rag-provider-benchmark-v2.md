@@ -34,11 +34,15 @@
 - 公共验证面：环境探测、同一 sparse cases、可销毁容器和决策报告。
 - 依赖：无；不阻塞 Slice 1-3。
 - 非目标：不升级当前应用 PostgreSQL volume，不把候选写成默认。
+- 执行结论：当前应用使用 PostgreSQL 16，而 `pg_textsearch` 要求 PostgreSQL 17/18；本阶段只完成
+  版本、许可、恢复与 tokenizer 决策，未运行 BM25 质量实验，继续以 `GIN + ts_rank_cd` 为 sparse
+  baseline。
 
 ## Slice 5：产品配置与求职证据
 
-- 行为：本机 `.env` 启用 PostgreSQL、selection 胜出的语义 Provider、对应 Gate 与 recovery；完成
-  migration、启动和检索 smoke。随后更新仓库复盘、Obsidian 面试答辩和简历前两个 RAG bullet。
+- 行为：本机 `.env` 启用 PostgreSQL 与 selection 胜出的语义 Provider；完成 migration、启动和检索
+  smoke。只有 relevance policy 的 corpus revision 与本机 corpus 一致时才启用对应 Gate/recovery；
+  随后更新仓库复盘、Obsidian 面试答辩和简历前两个 RAG bullet。
 - 公共验证面：配置存在性检查、PostgreSQL projection summary、检索 smoke、报告 SHA、完整质量门禁。
 - 依赖：Slice 3；简历数字只能来自已提交报告。
 - 非目标：不覆盖 PDF，不部署，不接飞书，不合入 `main`。
@@ -49,4 +53,3 @@
 2. 审查共享 Provider/API/store 影响，报告用户原有未提交文件但不修改。
 3. 代码与 Eval 证据用职责清晰的 commit 固定，通过中文 PR 合入 `dev/sage-v7`。
 4. Obsidian 记录 source/merge commit、真实指标、关闭风险和下一阶段边界。
-

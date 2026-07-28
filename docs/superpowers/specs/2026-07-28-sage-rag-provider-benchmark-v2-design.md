@@ -36,7 +36,8 @@ embed_query(text)
 Hashing、FastEmbed 和通用 OpenAI-compatible Provider 的 query/document 行为可以对称，但也
 必须实现同一合同。DashScope Provider 为 query 和 document 使用独立 cache，原生请求分别传
 `text_type=query/document`；query 可绑定固定英文 instruct。模型身份必须包含 provider、model、
-revision、dimensions 和 role policy，任一变化都使既有 Gate policy 与投影失配并触发重建。
+配置 revision、dimensions 和 role policy，任一变化都使既有 Gate policy 与投影失配并触发重建。
+云端配置 revision 用于本地复现与失配保护，不等同于供应商提供的不可变权重 commit。
 
 当前 PostgreSQL 投影继续只保存每个 workspace 的一份 active embedding。运行时切换 Provider
 通过 revision-aware rebuild 完成，不在产品表中并存三套向量。A/B Eval 使用隔离 workspace
@@ -65,11 +66,11 @@ PostgreSQL 17/18 和 `shared_preload_libraries`，因此先在独立容器对同
   改用 `embed_query`。
 - 云 Provider 初始化、超时、响应数量、响应顺序或维度变化均显式失败，不静默回退 Hashing。
 - API 错误只保留异常类型与有界摘要，不保存请求正文、响应向量或凭据。
-- private workspace 可以明确禁止外发；FastEmbed 是不出网回退，不是云调用失败后的静默降级。
+- 需要禁止外发时，由运行配置显式选择 FastEmbed；本阶段未新增 workspace 级外发策略开关。
+  FastEmbed 是不出网回退，不是云调用失败后的静默降级。
 
 ## 7. 非目标
 
 - 本阶段不开发 Dataset v2、RAGAS、真实生成质量、视觉向量或 HNSW。
 - 不迁移 Knowledge canonical truth，不部署，不恢复飞书，也不合入 `main`。
 - 不根据 frozen test 在多个 Provider 之间二次选优。
-

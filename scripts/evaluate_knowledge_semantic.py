@@ -56,11 +56,6 @@ def main() -> int:
     )
     parser.add_argument("--cache-dir", type=Path, default=Path("~/.cache/sage/fastembed"))
     parser.add_argument(
-        "--embedding-api-key",
-        default=settings.knowledge_embedding_api_key,
-        help="Defaults to KNOWLEDGE_EMBEDDING_API_KEY; prefer environment injection.",
-    )
-    parser.add_argument(
         "--embedding-base-url",
         default=settings.knowledge_embedding_base_url,
     )
@@ -136,7 +131,7 @@ def main() -> int:
             "sha256": "sha256:" + hashlib.sha256(selection_path.read_bytes()).hexdigest(),
         }
 
-    provider = _build_provider(args)
+    provider = _build_provider(args, api_key=settings.knowledge_embedding_api_key)
     if selection_candidate is not None:
         _assert_provider_identity(selection_candidate, provider)
     common: dict[str, Any] = {
@@ -224,7 +219,7 @@ def main() -> int:
     return 0 if comparison["overall_passed"] else 2
 
 
-def _build_provider(args: argparse.Namespace) -> Any:
+def _build_provider(args: argparse.Namespace, *, api_key: str) -> Any:
     if args.provider == "fastembed":
         return FastEmbedEmbeddingProvider(
             FastEmbedEmbeddingConfig(
@@ -238,7 +233,7 @@ def _build_provider(args: argparse.Namespace) -> Any:
             )
         )
     required = (
-        args.embedding_api_key,
+        api_key,
         args.embedding_base_url,
         args.embedding_model,
         args.embedding_model_revision,
@@ -248,7 +243,7 @@ def _build_provider(args: argparse.Namespace) -> Any:
     if args.provider == "dashscope":
         return DashScopeEmbeddingProvider(
             DashScopeEmbeddingConfig(
-                api_key=args.embedding_api_key,
+                api_key=api_key,
                 base_url=args.embedding_base_url,
                 model=args.embedding_model,
                 model_revision=args.embedding_model_revision,
@@ -262,7 +257,7 @@ def _build_provider(args: argparse.Namespace) -> Any:
     if args.provider == "openai_compatible":
         return OpenAICompatibleEmbeddingProvider(
             OpenAICompatibleEmbeddingConfig(
-                api_key=args.embedding_api_key,
+                api_key=api_key,
                 base_url=args.embedding_base_url,
                 model=args.embedding_model,
                 model_revision=args.embedding_model_revision,

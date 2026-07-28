@@ -64,7 +64,7 @@ KNOWLEDGE_WORKSPACE_ID=knowledge-local
 KNOWLEDGE_POSTGRES_DSN=
 ```
 
-切换前先运行 `python scripts/migrate_knowledge_index_postgres.py --force`。第一版不会创建
+切换前先在仓库根目录运行 `python -m scripts.migrate_knowledge_index_postgres --force`。第一版不会创建
 HNSW/IVFFlat；若 PostgreSQL 不可用，显式配置的 postgres backend 会启动失败，不静默回退 SQLite。
 
 真实语义 Provider 需要显式选择。百炼原生模式会区分 document/query embedding，并把 role
