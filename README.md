@@ -112,6 +112,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
+| **RAG Cloud Embedding Selection v2** | 同一 PostgreSQL selection 上，FastEmbed 384、百炼 v4 1024、豆包 vision 2048 的 Recall@10 均为 1.0；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final，并在 frozen test 将 Recall@10 0.889→1.000、MRR 0.683→0.806 | frozen test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；豆包逐 token 成本未知；这些不是线上指标 |
 | **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下的 pgvector exact Recall@10 均为 1.0，P95 为 1.403/2.838/93.906 ms；100k 未超过冻结的 100 ms，因此保持 exact、不触发 HNSW | 100k 已接近门限，扩容前必须在目标硬件重跑；合成向量不代表真实生产查询分布或 SLA |
 | **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
 | **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
@@ -123,6 +124,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 
 评测协议、复现命令和 clean source commit 见
 [RAG 工程化总复盘](docs/evals/sage-rag-engineering-retrospective-v1.md)、
+[多 Embedding Provider Selection v2](docs/evals/knowledge-embedding-provider-selection-v2.md)、
 [RAG HNSW 规模门禁报告](docs/evals/knowledge-hnsw-scale-gate-v1.md)、
 [RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
@@ -142,9 +144,10 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 - **协议与扩展**：REST、WebSocket、SSE、MCP、Skills
 - **部署与质量**：Docker Compose、GitHub Actions、Ruff、mypy、Canary controller
 
-> PostgreSQL GIN + pgvector exact 已实现为可选检索后端；Knowledge 当前默认检索仍是
-> SQLite FTS5 + deterministic hashing + RRF。真实语义 Provider 与 bounded recovery 保持
-> opt-in，运行时未创建 HNSW，不把评测候选写成默认能力。
+> 仓库的可移植默认仍是 SQLite FTS5 + deterministic hashing，便于离线启动与确定性回归；
+> 日常自用可以显式启用 PostgreSQL GIN + pgvector exact、百炼/豆包/FastEmbed 与对应 Gate。
+> 云 Provider 仍是 config-revision-bound opt-in，供应商 alias 不等同不可变权重 commit；运行时未创建
+> HNSW，也不把评测候选写成线上能力。
 
 ## 快速开始
 

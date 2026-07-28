@@ -1,0 +1,14 @@
+{
+  "policy_id": "krp_20e8c339cd06a8b0",
+  "benchmark_id": "sage-official-agent-fullstack-v1",
+  "benchmark_revision": "2026-07-27.1",
+  "corpus_revision": "kcorpus_c4a81137ab1a333e83758481797fcd30",
+  "embedding_model": "dashscope.text-embedding-v4",
+  "embedding_revision": "text-embedding-v4@2026-07-28+asymmetric-query-document+query-instruct-v1",
+  "top_k": 10,
+  "min_sparse_score": 0.10041373,
+  "min_dense_score": 0.5615925454144243,
+  "min_hybrid_score": 0.0315136476426799,
+  "minimum_answerable_recall_ratio": 0.9,
+  "schema_version": 2
+}

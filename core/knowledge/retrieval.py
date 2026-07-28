@@ -180,7 +180,61 @@ class DenseEmbeddingProvider(Protocol):
     supports_semantic_recall: bool
 
     def embed(self, text: str) -> tuple[float, ...]:
-        """Return one normalized vector for deterministic persistence and scoring."""
+        """Compatibility entrypoint for symmetric or legacy providers."""
+
+
+def embed_document_text(
+    provider: DenseEmbeddingProvider,
+    text: str,
+) -> tuple[float, ...]:
+    """Embed index content with a role-aware provider when available."""
+
+    embed_document = getattr(provider, "embed_document", None)
+    if callable(embed_document):
+        return tuple(float(value) for value in embed_document(text))
+    return tuple(float(value) for value in provider.embed(text))
+
+
+def embed_query_text(
+    provider: DenseEmbeddingProvider,
+    text: str,
+) -> tuple[float, ...]:
+    """Embed a retrieval query while preserving legacy provider compatibility."""
+
+    embed_query = getattr(provider, "embed_query", None)
+    if callable(embed_query):
+        return tuple(float(value) for value in embed_query(text))
+    return tuple(float(value) for value in provider.embed(text))
+
+
+def prepare_document_embeddings(
+    provider: DenseEmbeddingProvider,
+    texts: tuple[str, ...],
+) -> None:
+    """Batch document embeddings without conflating them with query vectors."""
+
+    prepare_documents = getattr(provider, "prepare_documents", None)
+    if callable(prepare_documents):
+        prepare_documents(texts)
+        return
+    prepare = getattr(provider, "prepare", None)
+    if callable(prepare):
+        prepare(texts)
+
+
+def prepare_query_embeddings(
+    provider: DenseEmbeddingProvider,
+    texts: tuple[str, ...],
+) -> None:
+    """Batch query embeddings for benchmarks that explicitly opt into precaching."""
+
+    prepare_queries = getattr(provider, "prepare_queries", None)
+    if callable(prepare_queries):
+        prepare_queries(texts)
+        return
+    prepare = getattr(provider, "prepare", None)
+    if callable(prepare):
+        prepare(texts)
 
 
 class KnowledgeReranker(Protocol):
@@ -216,6 +270,12 @@ class HashingEmbeddingProvider:
         if norm:
             vector = [value / norm for value in vector]
         return tuple(vector)
+
+    def embed_document(self, text: str) -> tuple[float, ...]:
+        return self.embed(text)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return self.embed(text)
 
 
 def chunk_document(
@@ -675,7 +735,7 @@ def _split_semantic_block(
     prepare = getattr(provider, "prepare", None)
     if callable(prepare):
         prepare(sentences)
-    vectors = tuple(provider.embed(sentence) for sentence in sentences)
+    vectors = tuple(embed_document_text(provider, sentence) for sentence in sentences)
     if any(len(vector) != provider.dimensions for vector in vectors):
         raise ValueError("semantic boundary embedding dimensions changed")
     distances = tuple(1.0 - cosine_similarity(left, right) for left, right in pairwise(vectors))

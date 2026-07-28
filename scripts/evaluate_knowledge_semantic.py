@@ -1,4 +1,4 @@
-"""Evaluate and gate the pinned local semantic provider without test-set tuning."""
+"""Evaluate and gate one version-bound semantic provider without test-set tuning."""
 
 from __future__ import annotations
 
@@ -15,8 +15,12 @@ from core.knowledge.embeddings import (
     DEFAULT_FASTEMBED_MODEL,
     DEFAULT_FASTEMBED_MODEL_REVISION,
     DEFAULT_FASTEMBED_REPOSITORY,
+    DashScopeEmbeddingConfig,
+    DashScopeEmbeddingProvider,
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
+    OpenAICompatibleEmbeddingConfig,
+    OpenAICompatibleEmbeddingProvider,
 )
 from core.knowledge.eval_runner import (
     EvalSplit,
@@ -37,6 +41,11 @@ def main() -> int:
     parser.add_argument("--stage", choices=("selection", "final"), required=True)
     parser.add_argument("--backend", choices=("sqlite", "postgres"), default="postgres")
     parser.add_argument(
+        "--provider",
+        choices=("fastembed", "dashscope", "openai_compatible"),
+        default="fastembed",
+    )
+    parser.add_argument(
         "--dataset",
         type=Path,
         default=repo_root / "knowledge" / "eval" / "dataset.json",
@@ -46,6 +55,35 @@ def main() -> int:
         default=settings.knowledge_postgres_dsn or settings.postgres_sync_dsn,
     )
     parser.add_argument("--cache-dir", type=Path, default=Path("~/.cache/sage/fastembed"))
+    parser.add_argument(
+        "--embedding-base-url",
+        default=settings.knowledge_embedding_base_url,
+    )
+    parser.add_argument("--embedding-model", default=settings.knowledge_embedding_model)
+    parser.add_argument(
+        "--embedding-model-revision",
+        default=settings.knowledge_embedding_model_revision,
+    )
+    parser.add_argument(
+        "--embedding-dimensions",
+        type=int,
+        default=settings.knowledge_embedding_dimensions,
+    )
+    parser.add_argument("--embedding-batch-size", type=int, default=10)
+    parser.add_argument(
+        "--embedding-timeout-seconds",
+        type=float,
+        default=settings.knowledge_embedding_timeout_seconds,
+    )
+    parser.add_argument(
+        "--query-instruct",
+        default=settings.knowledge_embedding_query_instruct,
+    )
+    parser.add_argument(
+        "--cost-per-1k-tokens-usd",
+        type=float,
+        default=settings.knowledge_embedding_cost_per_1k_tokens_usd,
+    )
     parser.add_argument("--selection-report", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--top-k", type=int, default=10)
@@ -93,17 +131,9 @@ def main() -> int:
             "sha256": "sha256:" + hashlib.sha256(selection_path.read_bytes()).hexdigest(),
         }
 
-    provider = FastEmbedEmbeddingProvider(
-        FastEmbedEmbeddingConfig(
-            model=DEFAULT_FASTEMBED_MODEL,
-            repository=DEFAULT_FASTEMBED_REPOSITORY,
-            model_revision=DEFAULT_FASTEMBED_MODEL_REVISION,
-            dimensions=DEFAULT_FASTEMBED_DIMENSIONS,
-            cache_dir=args.cache_dir,
-            batch_size=32,
-            local_files_only=args.local_files_only,
-        )
-    )
+    provider = _build_provider(args, api_key=settings.knowledge_embedding_api_key)
+    if selection_candidate is not None:
+        _assert_provider_identity(selection_candidate, provider)
     common: dict[str, Any] = {
         "retrieval_modes": _MODES,
         "top_k": args.top_k,
@@ -157,7 +187,7 @@ def main() -> int:
     policy = _policy(policy_source, args.minimum_answerable_recall)
     result = {
         "schema_version": 1,
-        "evaluation_id": f"sage-semantic-provider-{args.backend}-{args.stage}-v1",
+        "evaluation_id": f"sage-semantic-provider-{args.backend}-{args.stage}-v2",
         "stage": args.stage,
         "protocol": {
             "selection_splits": ["dev", "calibration"],
@@ -187,6 +217,69 @@ def main() -> int:
         )
     )
     return 0 if comparison["overall_passed"] else 2
+
+
+def _build_provider(args: argparse.Namespace, *, api_key: str) -> Any:
+    if args.provider == "fastembed":
+        return FastEmbedEmbeddingProvider(
+            FastEmbedEmbeddingConfig(
+                model=DEFAULT_FASTEMBED_MODEL,
+                repository=DEFAULT_FASTEMBED_REPOSITORY,
+                model_revision=DEFAULT_FASTEMBED_MODEL_REVISION,
+                dimensions=DEFAULT_FASTEMBED_DIMENSIONS,
+                cache_dir=args.cache_dir,
+                batch_size=32,
+                local_files_only=args.local_files_only,
+            )
+        )
+    required = (
+        api_key,
+        args.embedding_base_url,
+        args.embedding_model,
+        args.embedding_model_revision,
+    )
+    if any(not str(value).strip() for value in required):
+        raise ValueError("cloud embedding provider requires API key, base URL, model, and revision")
+    if args.provider == "dashscope":
+        return DashScopeEmbeddingProvider(
+            DashScopeEmbeddingConfig(
+                api_key=api_key,
+                base_url=args.embedding_base_url,
+                model=args.embedding_model,
+                model_revision=args.embedding_model_revision,
+                dimensions=args.embedding_dimensions,
+                query_instruct=args.query_instruct,
+                batch_size=args.embedding_batch_size,
+                timeout_seconds=args.embedding_timeout_seconds,
+                cost_per_1k_tokens_usd=args.cost_per_1k_tokens_usd,
+            )
+        )
+    if args.provider == "openai_compatible":
+        return OpenAICompatibleEmbeddingProvider(
+            OpenAICompatibleEmbeddingConfig(
+                api_key=api_key,
+                base_url=args.embedding_base_url,
+                model=args.embedding_model,
+                model_revision=args.embedding_model_revision,
+                dimensions=args.embedding_dimensions,
+                batch_size=args.embedding_batch_size,
+                timeout_seconds=args.embedding_timeout_seconds,
+                cost_per_1k_tokens_usd=args.cost_per_1k_tokens_usd,
+            )
+        )
+    raise ValueError("unknown semantic evaluation provider")
+
+
+def _assert_provider_identity(report: dict[str, Any], provider: Any) -> None:
+    expected = report.get("provider", {})
+    actual = {
+        "model_id": provider.model_id,
+        "model_revision": provider.model_revision,
+        "dimensions": provider.dimensions,
+    }
+    mismatches = [name for name, value in actual.items() if expected.get(name) != value]
+    if mismatches:
+        raise ValueError("final provider differs from selection: " + ", ".join(mismatches))
 
 
 def _thresholds(report: dict[str, Any]) -> dict[KnowledgeRetrievalMode, float]:

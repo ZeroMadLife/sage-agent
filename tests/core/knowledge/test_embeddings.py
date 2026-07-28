@@ -8,6 +8,8 @@ import pytest
 
 from core.knowledge.embeddings import (
     FASTEMBED_RUNTIME_REVISION,
+    DashScopeEmbeddingConfig,
+    DashScopeEmbeddingProvider,
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
     OpenAICompatibleEmbeddingConfig,
@@ -40,7 +42,8 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
             {
                 "data": [
                     {"index": index, "embedding": [3.0, 4.0]} for index, _value in enumerate(values)
-                ]
+                ],
+                "usage": {"prompt_tokens": len(values) * 5},
             }
         )
 
@@ -52,6 +55,7 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
             model="embedding-model",
             dimensions=2,
             batch_size=2,
+            cost_per_1k_tokens_usd=0.001,
         )
     )
 
@@ -65,6 +69,7 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
         ["third"],
     ]
     assert all(call["headers"]["Authorization"] == "Bearer secret" for call in calls)
+    assert provider.estimated_cost_usd == pytest.approx(0.000015)
 
 
 @pytest.mark.parametrize("indexes", ([0, 0], [0, 2]))
@@ -118,6 +123,102 @@ def test_openai_compatible_provider_allows_local_http() -> None:
     )
 
     assert config.base_url == "http://127.0.0.1:11434/v1"
+
+
+def test_dashscope_provider_separates_document_and_query_roles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(*_args: Any, **kwargs: Any) -> _Response:
+        calls.append(kwargs)
+        texts = kwargs["json"]["input"]["texts"]
+        role = kwargs["json"]["parameters"]["text_type"]
+        base = 3.0 if role == "document" else 4.0
+        return _Response(
+            {
+                "output": {
+                    "embeddings": [
+                        {
+                            "text_index": index,
+                            "embedding": [base, float(index + 1)],
+                        }
+                        for index in reversed(range(len(texts)))
+                    ]
+                },
+                "usage": {"total_tokens": len(texts) * 10},
+            }
+        )
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DashScopeEmbeddingProvider(
+        DashScopeEmbeddingConfig(
+            api_key="secret",
+            base_url="https://workspace.example/api/v1",
+            model="text-embedding-v4",
+            model_revision="text-embedding-v4@2026-07-28",
+            dimensions=2,
+            query_instruct=(
+                "Given a technical documentation query, retrieve relevant official documentation"
+            ),
+            batch_size=2,
+            cost_per_1k_tokens_usd=0.0001,
+        )
+    )
+
+    provider.prepare_documents(("same", "document-two"))
+    document_vector = provider.embed_document("same")
+    query_vector = provider.embed_query("same")
+
+    assert document_vector == pytest.approx((3.0 / 10**0.5, 1.0 / 10**0.5))
+    assert query_vector == pytest.approx((4.0 / 17**0.5, 1.0 / 17**0.5))
+    assert len(calls) == 2
+    assert calls[0]["json"]["parameters"] == {
+        "dimension": 2,
+        "text_type": "document",
+        "output_type": "dense",
+    }
+    assert calls[1]["json"]["parameters"] == {
+        "dimension": 2,
+        "text_type": "query",
+        "output_type": "dense",
+        "instruct": (
+            "Given a technical documentation query, retrieve relevant official documentation"
+        ),
+    }
+    assert calls[0]["json"]["input"] == {"texts": ["same", "document-two"]}
+    assert calls[1]["json"]["input"] == {"texts": ["same"]}
+    assert provider.estimated_cost_usd == pytest.approx(0.000003)
+
+
+def test_dashscope_provider_rejects_invalid_response_indexes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_post(*_args: Any, **_kwargs: Any) -> _Response:
+        return _Response(
+            {
+                "output": {
+                    "embeddings": [
+                        {"text_index": 0, "embedding": [3.0, 4.0]},
+                        {"text_index": 0, "embedding": [3.0, 4.0]},
+                    ]
+                }
+            }
+        )
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DashScopeEmbeddingProvider(
+        DashScopeEmbeddingConfig(
+            api_key="secret",
+            base_url="https://workspace.example/api/v1",
+            model="text-embedding-v4",
+            model_revision="text-embedding-v4@2026-07-28",
+            dimensions=2,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="DashScope embedding request failed"):
+        provider.prepare_documents(("first", "second"))
 
 
 def test_fastembed_provider_pins_snapshot_batches_normalizes_and_caches(

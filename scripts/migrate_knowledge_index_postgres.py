@@ -6,14 +6,15 @@ import argparse
 import json
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 from core.config.settings import get_settings
+from core.knowledge.embedding_factory import build_knowledge_embedding_provider
 from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
-from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeStore
 
 
@@ -31,8 +32,10 @@ def main() -> int:
     parser.add_argument("--dimensions", type=int, default=256)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
-    if not str(args.workspace).strip() or not str(args.database).strip():
-        parser.error("--workspace and --database are required")
+    if not str(args.workspace).strip():
+        parser.error("--workspace is required")
+    workspace = Path(args.workspace).expanduser()
+    database = _resolve_database_path(workspace, args.database)
 
     index = PostgresKnowledgeIndex(
         PostgresKnowledgeIndexConfig(
@@ -41,14 +44,17 @@ def main() -> int:
             pool_max_connections=settings.knowledge_postgres_pool_max_connections,
         ),
         workspace_id=args.workspace_id,
-        embedding_provider=HashingEmbeddingProvider(dimensions=args.dimensions),
+        embedding_provider=build_knowledge_embedding_provider(
+            settings,
+            hashing_dimensions=args.dimensions,
+        ),
     )
     started = time.perf_counter()
     try:
         if args.force:
             index.ensure_postgres_schema()
             index.delete_workspace()
-        store = KnowledgeStore(args.workspace, args.database, {}, knowledge_index=index)
+        store = KnowledgeStore(workspace, database, {}, knowledge_index=index)
         store.initialize()
         summary = store.index_summary()
         result = {
@@ -63,6 +69,13 @@ def main() -> int:
         return 1 if summary.error_count else 0
     finally:
         index.close()
+
+
+def _resolve_database_path(workspace: str | Path, database: str | Path) -> Path:
+    workspace_path = Path(workspace).expanduser()
+    if str(database).strip():
+        return Path(database).expanduser()
+    return workspace_path / ".sage" / "knowledge.sqlite3"
 
 
 if __name__ == "__main__":
