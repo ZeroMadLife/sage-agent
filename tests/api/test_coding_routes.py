@@ -1,5 +1,6 @@
 """Coding API route tests."""
 
+import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,30 @@ from langchain_core.messages import AIMessage
 
 from api.coding import _coding_knowledge_store
 from api.main import create_app
+
+
+def _init_git_repo(root: Path) -> None:
+    """为 Container Session 测试创建可生成 detached worktree 的真实仓库。"""
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "Sage Tests"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "config",
+            "user.email",
+            "sage-tests@example.invalid",
+        ],
+        check=True,
+    )
+    (root / ".gitignore").write_text(".coding/\n", encoding="utf-8")
+    (root / "README.md").write_text("# committed\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", ".gitignore", "README.md"], check=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-qm", "initial"],
+        check=True,
+    )
 
 
 def _receive_runtime_event(websocket):
@@ -258,6 +283,9 @@ def test_create_coding_session(tmp_path: Path) -> None:
     data = response.json()
     assert data["session_id"]
     assert data["workspace_root"] == str(tmp_path.resolve())
+    assert data["execution_workspace_root"] == str(tmp_path.resolve())
+    assert data["execution_workspace_kind"] == "primary"
+    assert data["execution_workspace_status"] == "active"
     assert data["permission_mode"] == "default"
     assert data["runtime_profile"] == "legacy"
     assert data["sandbox_provider"] == "local_workspace"
@@ -312,6 +340,7 @@ def test_deerflow_profile_requires_server_rollout_gate(tmp_path: Path) -> None:
 
 
 def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
     app = create_app(
         coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
@@ -331,6 +360,12 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert created.json()["runtime_profile"] == "deerflow_v2"
     assert created.json()["sandbox_provider"] == "container"
     assert created.json()["sandbox_image"] == "python:3.12-slim"
+    execution_root = Path(created.json()["execution_workspace_root"])
+    assert created.json()["workspace_root"] == str(tmp_path.resolve())
+    assert created.json()["execution_workspace_kind"] == "git_worktree"
+    assert execution_root != tmp_path.resolve()
+    assert (execution_root / "README.md").read_text(encoding="utf-8") == "# committed\n"
+    (execution_root / "resume-me.txt").write_text("preserved\n", encoding="utf-8")
     app.state.coding_sessions.pop(session_id)
 
     resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
@@ -339,7 +374,93 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert resumed.json()["runtime_profile"] == "deerflow_v2"
     assert resumed.json()["sandbox_provider"] == "container"
     assert resumed.json()["sandbox_image"] == "python:3.12-slim"
+    assert Path(resumed.json()["execution_workspace_root"]) == execution_root
+    assert (execution_root / "resume-me.txt").read_text(encoding="utf-8") == "preserved\n"
     assert app.state.coding_sessions[session_id].runtime_profile == "deerflow_v2"
+    assert app.state.coding_sessions[session_id].logical_workspace.root == tmp_path.resolve()
+    assert app.state.coding_sessions[session_id].execution_workspace.root == execution_root
+
+
+def test_container_session_resume_fails_closed_when_execution_worktree_is_missing(
+    tmp_path: Path,
+) -> None:
+    """执行区丢失后恢复返回冲突，不能回退到逻辑主工作区。"""
+    _init_git_repo(tmp_path)
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="container",
+    )
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "deerflow_v2"},
+    ).json()
+    session_id = created["session_id"]
+    execution_root = Path(created["execution_workspace_root"])
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "worktree", "unlock", str(execution_root)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "worktree", "remove", "--force", str(execution_root)],
+        check=True,
+    )
+    app.state.coding_sessions.pop(session_id)
+
+    resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+    assert resumed.status_code == 409
+    assert "execution workspace" in resumed.json()["detail"]
+    assert session_id not in app.state.coding_sessions
+
+
+def test_discard_coding_session_removes_execution_root_and_keeps_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式 discard 释放 worktree，历史 Diff/Trace 目录仍然存在。"""
+    _init_git_repo(tmp_path)
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="container",
+    )
+    calls: list[tuple[str, str]] = []
+
+    def fake_discard(provider, workspace, **kwargs):  # type: ignore[no-untyped-def]
+        calls.append((provider, str(workspace.root)))
+        return 0
+
+    monkeypatch.setattr("api.coding.discard_coding_sandbox", fake_discard)
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/coding/session",
+        json={"runtime_profile": "deerflow_v2"},
+    ).json()
+    session_id = created["session_id"]
+    execution_root = Path(created["execution_workspace_root"])
+    evidence = tmp_path / ".coding" / "evidence" / session_id / "run-1" / "trace.json"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_text('{"ok":true}\n', encoding="utf-8")
+
+    discarded = client.post(f"/api/v1/coding/session/{session_id}/discard")
+    discarded_again = client.post(f"/api/v1/coding/session/{session_id}/discard")
+
+    assert discarded.status_code == 200
+    assert discarded.json()["execution_workspace_status"] == "discarded"
+    assert discarded.json()["workspace_root"] == str(tmp_path.resolve())
+    assert discarded_again.status_code == 200
+    assert discarded_again.json() == discarded.json()
+    assert not execution_root.exists()
+    assert evidence.read_text(encoding="utf-8") == '{"ok":true}\n'
+    assert calls == [("container", str(execution_root))]
+    assert session_id not in app.state.coding_sessions
+    assert client.get("/api/v1/coding/sessions").json()["sessions"] == []
 
 
 def test_deerflow_profile_refuses_host_local_sandbox_outside_development(

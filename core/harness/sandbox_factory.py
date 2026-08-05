@@ -31,8 +31,9 @@ def create_coding_sandbox(
     allow_host_shell: bool = True,
     allow_writes: bool = True,
     container_image: str = "python:3.11-slim",
+    workspace_id: str | None = None,
 ) -> SandboxPort:
-    """Create the configured sandbox or fail closed before graph execution.
+    """创建配置的 Sandbox，并在图执行前对不安全配置 fail closed。
 
     ``local_workspace`` is intentionally limited to trusted local environments.
     ``container`` uses the server-owned Docker adapter and must never silently
@@ -46,6 +47,7 @@ def create_coding_sandbox(
             app_env=app_env,
             allow_host_shell=allow_host_shell,
             allow_writes=allow_writes,
+            workspace_id=workspace_id,
         )
     if normalized == "container":
         try:
@@ -55,6 +57,7 @@ def create_coding_sandbox(
                 image=container_image,
                 allow_host_shell=allow_host_shell,
                 allow_writes=allow_writes,
+                workspace_id=workspace_id,
             )
         except (ValueError, SandboxPolicyError):
             raise
@@ -78,4 +81,27 @@ def reconcile_coding_sandboxes(provider: str, *, docker_binary: str = "docker") 
     return ContainerWorkspaceSandbox.reconcile_stopped(docker_binary=docker_binary)
 
 
+def discard_coding_sandbox(
+    provider: str,
+    workspace: WorkspaceContext,
+    *,
+    thread_id: str,
+    workspace_id: str,
+    container_image: str = "python:3.11-slim",
+    docker_binary: str = "docker",
+) -> int:
+    """在 worktree 删除前释放对应容器；无法确认归属时保持 fail closed。"""
+    normalized = normalize_sandbox_provider(provider)
+    if normalized == "local_workspace":
+        return 0
+    return ContainerWorkspaceSandbox.discard_owned(
+        workspace,
+        thread_id=thread_id,
+        workspace_id=workspace_id,
+        image=container_image,
+        docker_binary=docker_binary,
+    )
+
+
 __all__.append("reconcile_coding_sandboxes")
+__all__.append("discard_coding_sandbox")

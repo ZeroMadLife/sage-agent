@@ -50,6 +50,11 @@ from core.coding.engine.events import (
     WorkspaceDiffReadyEvent,
     event_to_dict,
 )
+from core.coding.execution_workspace import (
+    ExecutionWorkspaceDescriptor,
+    ExecutionWorkspaceManager,
+    execution_workspace_payload,
+)
 from core.coding.memory import MemoryManager
 from core.coding.multiagent import WorkerManager
 from core.coding.persistence import (
@@ -87,6 +92,7 @@ class CodingRuntime:
         workspace_root: Path | str,
         model: Any,
         storage_root: Path | str,
+        execution_workspace: ExecutionWorkspaceDescriptor | None = None,
         model_factory: Callable[..., Any] | None = None,
         approval_policy: str = "auto",
         session_state: dict[str, Any] | None = None,
@@ -107,7 +113,40 @@ class CodingRuntime:
         sandbox_image: str = "python:3.11-slim",
     ) -> None:
         self.session_id = session_id
-        self.workspace = WorkspaceContext(root=Path(workspace_root))
+        self.logical_workspace = WorkspaceContext(root=Path(workspace_root), role="primary")
+        persisted_execution = (
+            session_state.get("execution_workspace") if session_state is not None else None
+        )
+        if execution_workspace is None and persisted_execution is not None:
+            execution_workspace = ExecutionWorkspaceDescriptor.from_dict(
+                execution_workspace_payload(persisted_execution)
+            )
+        if execution_workspace is None:
+            execution_workspace = ExecutionWorkspaceManager(storage_root).primary(
+                self.logical_workspace.root
+            )
+        elif persisted_execution is not None:
+            restored_descriptor = ExecutionWorkspaceDescriptor.from_dict(
+                execution_workspace_payload(persisted_execution)
+            )
+            if restored_descriptor != execution_workspace:
+                raise ValueError(
+                    "coding session execution workspace does not match persisted state"
+                )
+        if Path(execution_workspace.logical_root).resolve() != self.logical_workspace.root:
+            raise ValueError("execution workspace logical root does not match coding workspace")
+        if (
+            execution_workspace.kind == "primary"
+            and Path(execution_workspace.root).resolve() != self.logical_workspace.root
+        ):
+            raise ValueError("primary execution workspace must use the logical workspace root")
+        self.execution_workspace_descriptor = execution_workspace
+        self.execution_workspace = WorkspaceContext(
+            root=Path(execution_workspace.root),
+            role="disposable" if execution_workspace.kind == "git_worktree" else "primary",
+        )
+        # 兼容现有 Tool/Plan/Worker 调用；身份计算必须显式使用 logical_workspace。
+        self.workspace = self.execution_workspace
         self.model = model
         self.model_factory = model_factory or (lambda: model)
         self.storage_root = Path(storage_root)
@@ -117,7 +156,7 @@ class CodingRuntime:
         self.compaction_store = CompactionStore(
             self.storage_root, checkpoint_anchor_key=checkpoint_anchor_key
         )
-        self.diff_tracker = WorkspaceDiffTracker(self.workspace.root)
+        self.diff_tracker = WorkspaceDiffTracker(self.execution_workspace.root)
         self.session_event_bus = SessionEventBus(
             session_id=session_id,
             path=self.session_store.event_path(session_id),
@@ -127,7 +166,8 @@ class CodingRuntime:
             if session_state is not None
             else {
                 "id": session_id,
-                "workspace_root": str(self.workspace.root),
+                "workspace_root": str(self.logical_workspace.root),
+                "execution_workspace": self.execution_workspace_descriptor.to_dict(),
                 "created_at": now(),
                 "updated_at": now(),
                 "history": [],
@@ -145,7 +185,8 @@ class CodingRuntime:
         )
         self.session["sandbox_image"] = self.sandbox_image
         self.session["id"] = session_id
-        self.session["workspace_root"] = str(self.workspace.root)
+        self.session["workspace_root"] = str(self.logical_workspace.root)
+        self.session["execution_workspace"] = self.execution_workspace_descriptor.to_dict()
         persisted_owner = str(self.session.get("owner_user_id", "")).strip()
         requested_owner = (owner_user_id or "").strip()
         self.owner_user_id = persisted_owner or requested_owner or None
@@ -174,7 +215,7 @@ class CodingRuntime:
         )
         self.usage_store = usage_store
         self.todo_ledger = TodoLedger(self.session["todos"])
-        self.plan_mode = PlanModeManager(self.workspace.root)
+        self.plan_mode = PlanModeManager(self.execution_workspace.root)
         self._restore_plan_mode(self.session["runtime_mode"])
         self.context_manager = ContextManager()
         self.approval_policy = approval_policy
@@ -192,8 +233,8 @@ class CodingRuntime:
         self._context_operation_lock = asyncio.Lock()
         self.runtime_mode = self.plan_mode.mode
         self.permission_checker = self._permission_checker()
-        self.policy_checker = ToolPolicyChecker(self.workspace)
-        self.worker_manager = WorkerManager(self.workspace, self._current_model_factory)
+        self.policy_checker = ToolPolicyChecker(self.execution_workspace)
+        self.worker_manager = WorkerManager(self.execution_workspace, self._current_model_factory)
         self.tool_context = ToolContext(
             runtime=self,
             todo_ledger=self.todo_ledger,
@@ -201,12 +242,12 @@ class CodingRuntime:
             knowledge_store=knowledge_store,
         )
         self.tools = build_tool_registry(
-            self.workspace,
+            self.execution_workspace,
             tool_context=self.tool_context,
             activated_tools=self.activated_tools,
         )
-        self.skill_registry = SkillRegistry(root=self.workspace.root)
-        self.memory_manager = MemoryManager(self.storage_root, self.workspace.root)
+        self.skill_registry = SkillRegistry(root=self.execution_workspace.root)
+        self.memory_manager = MemoryManager(self.storage_root, self.logical_workspace.root)
         self._turn_id = ""
         self._backfill_transcript()
         self.model_capabilities = model_capabilities or ModelCapabilityRegistry()
@@ -251,9 +292,19 @@ class CodingRuntime:
         workspace_root = Path(str(session_state.get("workspace_root", "")))
         if not workspace_root:
             raise ValueError("persisted session is missing workspace_root")
+        execution_workspace = None
+        raw_execution_workspace = session_state.get("execution_workspace")
+        if raw_execution_workspace is not None:
+            # 直接 Runtime 恢复也必须走 worktree 注册/common-dir 校验，不能绕过 API。
+            execution_workspace = ExecutionWorkspaceManager(storage_path).restore(
+                session_id,
+                workspace_root,
+                execution_workspace_payload(raw_execution_workspace),
+            )
         return cls(
             session_id=session_id,
             workspace_root=workspace_root,
+            execution_workspace=execution_workspace,
             model=model,
             storage_root=storage_path,
             model_factory=model_factory,

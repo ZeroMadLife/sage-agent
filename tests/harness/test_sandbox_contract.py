@@ -297,6 +297,116 @@ def test_container_name_collision_fails_closed(
         sandbox._ensure_started()
 
 
+def test_discard_owned_removes_only_matching_sage_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式销毁必须核对 Sage 标签和 sandbox_id 后才能删除容器。"""
+    expected = ContainerWorkspaceSandbox(
+        WorkspaceContext(tmp_path),
+        thread_id="discard-owned",
+        workspace_id="logical-workspace-id",
+    )
+    payload = _hardened_inspect_payload(expected, tmp_path)
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        ContainerWorkspaceSandbox,
+        "_require_isolated_daemon",
+        lambda _self: None,
+    )
+
+    def fake_capture(
+        self: ContainerWorkspaceSandbox,
+        args: list[str],
+        *,
+        check: bool = True,
+    ) -> str:
+        _ = self, check
+        commands.append(args)
+        if args[:2] == ["ps", "-aq"]:
+            return "container-id\n"
+        if args[0] == "inspect":
+            return json.dumps(payload)
+        return ""
+
+    monkeypatch.setattr(ContainerWorkspaceSandbox, "_docker_capture", fake_capture)
+
+    removed = ContainerWorkspaceSandbox.discard_owned(
+        WorkspaceContext(tmp_path),
+        thread_id="discard-owned",
+        workspace_id="logical-workspace-id",
+    )
+
+    assert removed == 1
+    assert ["rm", "-f", expected._container_name] in commands
+
+
+def test_discard_owned_rejects_foreign_container_name_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """确定性容器名被其他 workload 占用时必须 fail closed，不能误删。"""
+    expected = ContainerWorkspaceSandbox(
+        WorkspaceContext(tmp_path),
+        thread_id="discard-foreign",
+        workspace_id="logical-workspace-id",
+    )
+    payload = _hardened_inspect_payload(expected, tmp_path)
+    payload["Config"]["Labels"] = {}  # type: ignore[index]
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        ContainerWorkspaceSandbox,
+        "_require_isolated_daemon",
+        lambda _self: None,
+    )
+
+    def fake_capture(
+        self: ContainerWorkspaceSandbox,
+        args: list[str],
+        *,
+        check: bool = True,
+    ) -> str:
+        _ = self, check
+        commands.append(args)
+        if args[:2] == ["ps", "-aq"]:
+            return "container-id\n"
+        if args[0] == "inspect":
+            return json.dumps(payload)
+        return ""
+
+    monkeypatch.setattr(ContainerWorkspaceSandbox, "_docker_capture", fake_capture)
+
+    with pytest.raises(SandboxPolicyError, match="owned by another workload"):
+        ContainerWorkspaceSandbox.discard_owned(
+            WorkspaceContext(tmp_path),
+            thread_id="discard-foreign",
+            workspace_id="logical-workspace-id",
+        )
+
+    assert not any(args[:2] == ["rm", "-f"] for args in commands)
+
+
+def test_container_sandbox_keeps_logical_identity_while_mounting_execution_root(
+    tmp_path: Path,
+) -> None:
+    """Container descriptor/name 使用逻辑 workspace_id，mount source 仍是 execution root。"""
+    execution_root = tmp_path / "execution"
+    execution_root.mkdir()
+    sandbox = ContainerWorkspaceSandbox(
+        WorkspaceContext(execution_root, role="disposable"),
+        thread_id="session-identity",
+        workspace_id="logical-workspace-id",
+    )
+
+    assert sandbox.descriptor.workspace_id == "logical-workspace-id"
+    args = sandbox._container_run_args()
+    mount = args[args.index("--mount") + 1]
+    assert f"source={execution_root.resolve()}" in mount
+    assert mount.endswith("target=/workspace,readonly=false,bind-propagation=rprivate")
+
+
 def test_container_shell_nonzero_exit_is_returned_as_structured_tool_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

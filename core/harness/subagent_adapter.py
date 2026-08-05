@@ -480,10 +480,13 @@ class CodingSubagentExecutor:
             raise ValueError("subagent thread does not match runtime")
         if request.parent_run_id != self.runtime.active_run_id:
             raise ValueError("subagent parent run is not active")
-        expected_workspace_id = workspace_id_from_path(self.runtime.workspace.root)
+        expected_workspace_id = workspace_id_from_path(self.runtime.logical_workspace.root)
         if request.workspace_id != expected_workspace_id:
             raise ValueError("subagent workspace identity does not match runtime")
-        if Path(request.workspace_path).resolve() != self.runtime.workspace.root.resolve():
+        if (
+            Path(request.workspace_path).resolve()
+            != self.runtime.execution_workspace.root.resolve()
+        ):
             raise ValueError("subagent workspace path does not match runtime")
         profile = request.subagent_type.casefold()
         allowed_scope = {
