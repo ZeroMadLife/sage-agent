@@ -112,9 +112,21 @@ def test_check_dangerous_command_detects_common_patterns() -> None:
     assert pattern_key == "git_reset_hard"
 
 
-def test_check_dangerous_command_allows_plain_commands() -> None:
-    """Plain read-only shell commands are not marked dangerous."""
-    dangerous, description, pattern_key = check_dangerous_command("pytest -q")
+@pytest.mark.parametrize("command", ["rm -rf src", "rm -fr src", "rm --recursive --force src"])
+def test_check_dangerous_command_detects_recursive_remove_options(command: str) -> None:
+    dangerous, description, pattern_key = check_dangerous_command(command)
+
+    assert dangerous is True
+    assert "recursive" in description.lower()
+    assert pattern_key == "rm_recursive"
+
+
+@pytest.mark.parametrize(
+    "command", ["pytest -q", "rm file.txt", "rm -f file.txt", "rm --force file.txt"]
+)
+def test_check_dangerous_command_allows_plain_commands(command: str) -> None:
+    """Plain commands and non-recursive remove variants are not marked dangerous."""
+    dangerous, description, pattern_key = check_dangerous_command(command)
 
     assert dangerous is False
     assert description == ""

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.coding.context import WorkspaceContext
-from core.coding.tool_executor.approval import check_dangerous_command
+from core.coding.tool_executor.shell_risk import check_dangerous_command
 from core.coding.tools.base import RegisteredTool
 
 PermissionMode = Literal["default", "accept_edits", "auto", "plan"]

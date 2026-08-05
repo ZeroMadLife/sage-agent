@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import threading
 import time
 from collections.abc import Mapping
@@ -11,37 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
-ApprovalChoice = Literal["once", "session", "always", "deny"]
-
-DANGEROUS_PATTERNS: tuple[tuple[str, str, str], ...] = (
-    (r"\brm\s+-[^\n;|&]*r", "Recursive delete command requires approval.", "rm_recursive"),
-    (r"\bgit\s+reset\s+--hard\b", "Hard git reset can discard work.", "git_reset_hard"),
-    (
-        r"\bgit\s+push\b[^\n;|&]*--force",
-        "Force push can overwrite remote history.",
-        "git_force_push",
-    ),
-    (r"\bchmod\s+777\b", "World-writable permission change requires approval.", "chmod_777"),
-    (
-        r"\bcurl\b.*\|\s*(sh|bash)\b",
-        "Piping remote curl output to shell requires approval.",
-        "curl_pipe_shell",
-    ),
-    (
-        r"\bwget\b.*\|\s*(sh|bash)\b",
-        "Piping remote wget output to shell requires approval.",
-        "wget_pipe_shell",
-    ),
-    (r"(^|\s)sudo(\s|$)", "sudo command requires approval.", "sudo"),
-    (r"(^|\s)>+\s*/etc/", "Writing into /etc requires approval.", "write_etc"),
-    (r"(^|\s)>+\s*~/.ssh/", "Writing into ~/.ssh requires approval.", "write_ssh"),
-    (
-        r"\bdocker\s+compose\s+down\b",
-        "Stopping compose services requires approval.",
-        "docker_compose_down",
-    ),
-    (r"\bkill\s+-9\b", "Force-killing processes requires approval.", "kill_9"),
+from core.coding.tool_executor.shell_risk import (
+    check_dangerous_command as check_dangerous_command,
 )
+
+ApprovalChoice = Literal["once", "session", "always", "deny"]
 
 
 @dataclass
@@ -217,11 +190,3 @@ class ApprovalManager:
             if entry.approval_id == approval_id:
                 return entry
         return None
-
-
-def check_dangerous_command(command: str) -> tuple[bool, str, str]:
-    """Return whether a shell command matches a dangerous pattern."""
-    for pattern, description, pattern_key in DANGEROUS_PATTERNS:
-        if re.search(pattern, command, flags=re.IGNORECASE | re.DOTALL):
-            return True, description, pattern_key
-    return False, "", ""

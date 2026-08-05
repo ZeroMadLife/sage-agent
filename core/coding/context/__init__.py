@@ -36,6 +36,7 @@ from core.coding.context.workspace import (
     IGNORED_PATH_NAMES,
     PROTECTED_PATH_NAMES,
     WorkspaceContext,
+    WorkspaceRole,
     clip,
     now,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "WorkspaceContext",
     "WorkspaceDiff",
     "WorkspaceDiffTracker",
+    "WorkspaceRole",
     "clip",
     "normalize_text",
     "now",
