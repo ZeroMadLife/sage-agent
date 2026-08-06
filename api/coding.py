@@ -148,6 +148,10 @@ from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.coding.usage_store import normalize_usage
 from core.harness import RuntimeProfile, normalize_runtime_profile
+from core.harness.book_learning_coordinator import (
+    BookLearningCoordinator,
+    BookLearningCoordinatorRequest,
+)
 from core.harness.capability_adapter import build_sage_capability_registry
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
@@ -692,6 +696,69 @@ async def _deerflow_timeline_events(
                 sandbox=sandbox,
                 allow_shell_network=web_routed,
             )
+            book_learning_outcome = None
+            if not is_resume and retrieval_gate is not None and knowledge_routed:
+                coordinator = BookLearningCoordinator(
+                    knowledge_port=routed_knowledge_port,
+                    evidence_bundle_port=evidence_bundle_port,
+                    subagent_executor=subagent_executor,
+                    subagent_config=subagent_config,
+                )
+                book_learning_outcome = await coordinator.run(
+                    BookLearningCoordinatorRequest(
+                        thread_id=runtime.session_id,
+                        run_id=run_id,
+                        workspace_id=workspace_id,
+                        workspace_path=str(runtime.workspace.root),
+                        query=content,
+                        query_fingerprint=retrieval_gate.query_fingerprint,
+                        route=retrieval_gate.intent_route,
+                        selected_sources=frozenset(retrieval_sources or ()),
+                    )
+                )
+                if book_learning_outcome.activated:
+                    durable_context["book_learning"] = {
+                        **book_learning_outcome.context,
+                        "decision": book_learning_outcome.decision,
+                        "stop_reason": book_learning_outcome.stop_reason,
+                        "retrieval_rounds": book_learning_outcome.retrieval_rounds,
+                        "child_count": len(book_learning_outcome.child_run_ids),
+                    }
+                    for ordinal, coordinator_payload in enumerate(
+                        book_learning_outcome.public_events
+                    ):
+                        event_type = str(coordinator_payload.get("type", "book_learning"))
+                        event_payload = dict(coordinator_payload)
+                        event_payload.setdefault("run_id", run_id)
+                        runtime.run_store.append_trace(run_id, event_payload)
+                        yield RunEvent(
+                            kind=_timeline_kind(event_type),
+                            status=_timeline_status(event_type, event_payload),
+                            payload=event_payload,
+                            event_id=f"harness:{run_id}:book-learning:{ordinal}:{event_type}",
+                        )
+                    if book_learning_outcome.final_answer:
+                        answer = book_learning_outcome.final_answer.strip()
+                        runtime.append_harness_message(
+                            role="assistant", content=answer, run_id=run_id
+                        )
+                        yield RunEvent(
+                            kind="assistant",
+                            status="completed",
+                            payload={"type": "final", "content": answer, "run_id": run_id},
+                            event_id=f"harness:{run_id}:final",
+                        )
+                        yield RunEvent(
+                            kind="terminal",
+                            status="completed",
+                            payload={
+                                "event": "run_completed",
+                                "runtime_profile": "deerflow_v2",
+                                "route": "book_learning",
+                            },
+                            event_id=f"harness:{run_id}:terminal",
+                        )
+                        return
             artifact_store = ToolResultStore(
                 runtime.storage_root,
                 runtime.session_id,
@@ -871,8 +938,13 @@ def _timeline_kind(event_type: str) -> str:
 def _timeline_status(event_type: str, event: dict[str, Any]) -> str:
     if event_type in {"approval_required", "plan_ready_for_review"}:
         return "blocked"
-    if event_type in {"model_requested", "tool_call", "turn_started"}:
+    if event_type in {"model_requested", "tool_call", "turn_started", "subagent_started"}:
         return "running"
+    if event_type == "subagent_terminal":
+        child_status = str(event.get("status", "completed"))
+        if child_status in {"failed", "timed_out"}:
+            return "error"
+        return "cancelled" if child_status == "cancelled" else "completed"
     if event_type in {"error", "context_compaction_failed"}:
         return "error"
     if event_type == "run_finished":

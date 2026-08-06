@@ -1,7 +1,7 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A 与 Slice B 已完成；Slice C/D 待后续小版本
+> 状态：Slice A/B/C 已完成；Slice D 已交付评测入口，真实长书 query gold 与生成评测待补
 > 基线：`codex/book-learning-rag-design@4837ca0`
 
 ## 产品目标
@@ -37,10 +37,15 @@ RAG；证据不足或问题需要跨来源比较时，由 Leader 在预算内委
 ### Slice C：有界 Agentic RAG 状态机
 
 - 首轮 Knowledge RAG；
-- 不充分时最多一次 Research 升级，最多 3 个只读 children；
+- 不充分时最多一次 Research 升级，最多 2 个并行只读 children；
 - Synthesize 只读取服务器组装的 EvidenceBundle；
 - 最多两轮检索；无新增证据、冲突未解或预算耗尽时停止；
 - 记录 route reason、child count、retrieval rounds、token、latency、stop reason。
+
+完成证据：Coordinator 已接入 `api/coding.py` 的 Gate 后、父 Harness 前；Agentic 综合和拒答
+直接终止父模型路径，单轮 RAG 将书籍证据写入 durable context；外部 resume 不重新执行
+Coordinator。Research 最大并发 2，Synthesize 只能读取服务端 EvidenceBundle，第二轮无新引用
+或输出未引用 bundle 时拒答。
 
 ### Slice D：分阶段 Eval 与运行时接入
 
@@ -49,6 +54,11 @@ RAG；证据不足或问题需要跨来源比较时，由 Leader 在预算内委
 - sufficiency：false acceptance、无意义升级率、停止原因；
 - agentic：相对 single-pass 的 evidence coverage 增益、成本和 P95；
 - 最后再加入 faithfulness、answer relevance、citation support 和端到端评测。
+
+当前完成：parser 使用两本真实公共领域长书复跑；Agentic evaluator 已覆盖 evidence coverage、
+false acceptance、unnecessary delegation、citation support、token、P95 和 stop reason，并为
+faithfulness/answer relevance 保留显式离线标签。未完成：尚无人工标注的长书 retrieval query
+gold，因此不能报告书籍 Recall/MRR/NDCG；尚未运行真实模型生成评测和端到端对照实验。
 
 ## 不在本阶段承诺
 

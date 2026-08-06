@@ -26,6 +26,7 @@ from core.coding.persistence.session_event_journal import SessionEventJournal
 from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
+from core.harness.book_learning_coordinator import BookLearningCoordinatorOutcome
 
 
 def _usage(level: str = "normal") -> ContextUsage:
@@ -554,6 +555,205 @@ async def test_v2_external_resume_preserves_checkpoint_retrieval_gate(
     assert not any(event.payload.get("type") == "retrieval_gate_decided" for event in events)
     assert RecordingAdapter.durable_contexts == [{}]
     assert RecordingAdapter.stream_kwargs[0]["resume"] is True
+
+
+@pytest.mark.asyncio
+async def test_v2_book_learning_synthesis_finishes_without_running_parent_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    class FakeCoordinator:
+        calls = 0
+
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def run(self, request: object) -> BookLearningCoordinatorOutcome:
+            del request
+            type(self).calls += 1
+            return BookLearningCoordinatorOutcome(
+                activated=True,
+                decision="answer",
+                stop_reason="evidence_sufficient",
+                retrieval_rounds=2,
+                child_run_ids=("research-1", "research-2", "synthesize-1"),
+                evidence_refs=("kcite_a", "kcite_b"),
+                final_answer="综合结论 [kcite_a] [kcite_b]",
+                context={"decision": "answer", "evidence": []},
+                public_events=(
+                    {"type": "retrieval_sufficiency_assessed", "decision": "answer"},
+                    {"type": "agentic_rag_completed", "decision": "answer"},
+                ),
+            )
+
+    def fail_if_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("synthesized answer must bypass the parent adapter")
+
+    monkeypatch.setattr(coding_api, "BookLearningCoordinator", FakeCoordinator)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_created)
+    monkeypatch.setattr(
+        coding_api,
+        "CodingKnowledgePort",
+        lambda runtime: AvailableKnowledgePort(),
+    )
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="比较两本书对分工的解释",
+            run_id="run-agentic-book",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    assert FakeCoordinator.calls == 1
+    assert events[-2].payload["content"] == "综合结论 [kcite_a] [kcite_b]"
+    assert events[-1].payload["route"] == "book_learning"
+    assert any(event.payload.get("type") == "agentic_rag_completed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_does_not_repeat_book_learning_coordinator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+
+    class FailCoordinator:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+            raise AssertionError("resume must not reconstruct the book-learning coordinator")
+
+    monkeypatch.setattr(coding_api, "BookLearningCoordinator", FailCoordinator)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="resume original request",
+            run_id="run-resume-book",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"approval_id": "approval-1", "choice": "once"}},
+            resume_attempt=1,
+        )
+    ]
+
+    assert RecordingAdapter.stream_kwargs[0]["resume"] is True
+
+
+@pytest.mark.asyncio
+async def test_v2_book_learning_abstention_bypasses_parent_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    class AbstainingCoordinator:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def run(self, request: object) -> BookLearningCoordinatorOutcome:
+            del request
+            return BookLearningCoordinatorOutcome(
+                activated=True,
+                decision="abstain",
+                stop_reason="no_new_evidence",
+                retrieval_rounds=2,
+                final_answer="证据不足，暂不作答。",
+                public_events=({"type": "agentic_rag_completed", "decision": "abstain"},),
+            )
+
+    def fail_if_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("abstention must bypass the parent adapter")
+
+    monkeypatch.setattr(coding_api, "BookLearningCoordinator", AbstainingCoordinator)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_created)
+    monkeypatch.setattr(
+        coding_api,
+        "CodingKnowledgePort",
+        lambda runtime: AvailableKnowledgePort(),
+    )
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="比较两本书但没有足够证据",
+            run_id="run-agentic-abstain",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    assert events[-2].payload["content"] == "证据不足，暂不作答。"
+    assert events[-1].payload["route"] == "book_learning"
+
+
+@pytest.mark.asyncio
+async def test_v2_direct_book_evidence_is_injected_into_parent_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+
+    class DirectCoordinator:
+        def __init__(self, **kwargs: Any) -> None:
+            del kwargs
+
+        async def run(self, request: object) -> BookLearningCoordinatorOutcome:
+            del request
+            return BookLearningCoordinatorOutcome(
+                activated=True,
+                decision="answer",
+                stop_reason="evidence_sufficient",
+                retrieval_rounds=1,
+                evidence_refs=("kcite_direct",),
+                context={
+                    "decision": "answer",
+                    "round_index": 1,
+                    "evidence": [
+                        {"citation_id": "kcite_direct", "content": "书籍中的直接证据"},
+                    ],
+                },
+                public_events=({"type": "agentic_rag_completed", "decision": "answer"},),
+            )
+
+    monkeypatch.setattr(coding_api, "BookLearningCoordinator", DirectCoordinator)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    monkeypatch.setattr(
+        coding_api,
+        "CodingKnowledgePort",
+        lambda runtime: AvailableKnowledgePort(),
+    )
+
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="解释这本书里的分工概念",
+            run_id="run-direct-book",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    book_context = RecordingAdapter.durable_contexts[0]["book_learning"]
+    assert book_context["evidence"][0]["citation_id"] == "kcite_direct"
+    assert RecordingAdapter.stream_kwargs[0]["resume"] is False
 
 
 @pytest.mark.asyncio

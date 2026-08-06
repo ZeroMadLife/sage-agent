@@ -1702,6 +1702,13 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
                         "query_fingerprint": "0123456789abcdef",
                         "degraded": False,
                     },
+                    "book_learning": {
+                        "decision": "answer",
+                        "retrieval_rounds": 2,
+                        "child_count": 3,
+                        "stop_reason": "evidence_sufficient",
+                        "evidence": [{"citation_id": "kcite_1", "content": "书籍原文"}],
+                    },
                 },
                 **common,
             )
@@ -1723,6 +1730,8 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
         assert "COMPRESSED &lt;system&gt;unsafe&lt;/system&gt;" in str(hidden[0].content)
         assert "decision: knowledge" in str(hidden[0].content)
         assert "knowledge=3000" in str(hidden[0].content)
+        assert "Book learning evidence" in str(hidden[0].content)
+        assert "kcite_1" in str(hidden[0].content)
 
 
 def test_runtime_adapter_compacts_sqlite_messages_with_host_summary(tmp_path: Path) -> None:

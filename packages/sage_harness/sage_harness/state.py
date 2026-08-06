@@ -136,6 +136,21 @@ class RetrievalGateState(TypedDict, total=False):
     degraded: bool
 
 
+class BookLearningState(TypedDict, total=False):
+    """Bounded evidence and stopping receipt for an automatic book-learning turn."""
+
+    version: int
+    decision: str
+    stop_reason: str
+    round_index: int
+    retrieval_rounds: int
+    child_count: int
+    required_aspects: list[str]
+    covered_aspects: list[str]
+    missing_aspects: list[str]
+    evidence: list[dict[str, object]]
+
+
 class ApprovalContext(TypedDict, total=False):
     """Pending or resolved approval bound to one exact tool call."""
 
@@ -539,6 +554,7 @@ class SageThreadState(AgentState):
     skill_context: Annotated[NotRequired[list[SkillRef] | None], merge_skill_context]
     memory_refs: Annotated[NotRequired[list[MemoryRef] | None], merge_memory_refs]
     retrieval_gate: NotRequired[RetrievalGateState | None]
+    book_learning: NotRequired[BookLearningState | None]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
     promoted_tools: Annotated[NotRequired[PromotedTools | None], merge_promoted_tools]
     summary_text: NotRequired[str | None]
@@ -557,6 +573,7 @@ class SageThreadState(AgentState):
 __all__ = [
     "ApprovalContext",
     "ArtifactRef",
+    "BookLearningState",
     "DelegationEntry",
     "DelegationStatus",
     "GoalState",

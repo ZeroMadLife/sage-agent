@@ -25,6 +25,7 @@ _MAX_TODOS = 32
 _MAX_MEMORY_REFS = 32
 _MAX_SKILLS = 8
 _RETRIEVAL_SOURCES = frozenset({"semantic_memory", "episodic_memory", "knowledge", "web"})
+_BOOK_LEARNING_DECISIONS = frozenset({"answer", "retry", "delegate_research", "abstain", "skip"})
 
 _AUTHORITY_CONTRACT = (
     "## Sage durable context authority\n"
@@ -41,6 +42,10 @@ def _bound_text(value: object, limit: int) -> str:
         return text[:limit]
     head = max(1, limit * 2 // 3)
     return f"{text[:head]}\n...\n{text[-(limit - head - 5):]}"
+
+
+def _bounded_counter(value: object, maximum: int) -> int:
+    return value if type(value) is int and 0 <= value <= maximum else 0
 
 
 def _record_list(
@@ -181,6 +186,32 @@ def _normalize_durable_context(value: object) -> dict[str, object]:
     )
     if skills:
         result["skill_context"] = skills
+    book_learning = value.get("book_learning")
+    if isinstance(book_learning, Mapping):
+        decision = str(book_learning.get("decision", "")).strip()
+        if decision in _BOOK_LEARNING_DECISIONS:
+            normalized_book: dict[str, object] = {
+                "version": 1,
+                "decision": decision,
+                "stop_reason": _bound_text(book_learning.get("stop_reason"), 80),
+                "round_index": _bounded_counter(book_learning.get("round_index"), 2),
+                "retrieval_rounds": _bounded_counter(book_learning.get("retrieval_rounds"), 2),
+                "child_count": _bounded_counter(book_learning.get("child_count"), 3),
+            }
+            for key in ("required_aspects", "covered_aspects", "missing_aspects"):
+                raw = book_learning.get(key)
+                if isinstance(raw, list | tuple):
+                    normalized_book[key] = [_bound_text(item, 120) for item in list(raw)[:8]]
+            evidence = book_learning.get("evidence")
+            if isinstance(evidence, list | tuple):
+                normalized_book["evidence"] = _record_list(
+                    evidence,
+                    limit=8,
+                    allowed_fields=frozenset(
+                        {"citation_id", "title", "source_ref", "source_revision", "content"}
+                    ),
+                )
+            result["book_learning"] = normalized_book
     return result
 
 
@@ -228,6 +259,26 @@ def _render_durable_context(value: Mapping[str, object]) -> str:
             lines.append("- degraded: true")
         sections.append("\n".join(lines))
 
+    book_learning = value.get("book_learning")
+    if isinstance(book_learning, Mapping) and book_learning.get("decision"):
+        lines = [
+            "## Book learning evidence",
+            f"- decision: {escape(str(book_learning.get('decision')), quote=False)}",
+            f"- rounds: {escape(str(book_learning.get('retrieval_rounds', 0)), quote=False)}",
+            f"- children: {escape(str(book_learning.get('child_count', 0)), quote=False)}",
+        ]
+        reason = str(book_learning.get("stop_reason", "")).strip()
+        if reason:
+            lines.append(f"- stop_reason: {escape(reason, quote=False)}")
+        for item in book_learning.get("evidence", []):
+            if not isinstance(item, Mapping):
+                continue
+            citation = escape(str(item.get("citation_id", "")), quote=False)
+            content = escape(str(item.get("content", "")), quote=False)
+            if citation and content:
+                lines.append(f"- [{citation}] {content[:1_000]}")
+        sections.append("\n".join(lines))
+
     todos = value.get("todos")
     if isinstance(todos, list) and todos:
         lines = ["## Task ledger"]
@@ -254,12 +305,8 @@ def _render_durable_context(value: Mapping[str, object]) -> str:
             provenance = escape(str(item.get("provenance", "")), quote=False)
             qualifiers = [part for part in (kind, revision, provenance) if part]
             conflict_group = str(item.get("conflict_group", "")).strip()
-            conflict = (
-                f" conflict={escape(conflict_group, quote=False)}" if conflict_group else ""
-            )
-            lines.append(
-                f"- [{', '.join(qualifiers)}] {memory_id}{conflict}: {summary}".strip()
-            )
+            conflict = f" conflict={escape(conflict_group, quote=False)}" if conflict_group else ""
+            lines.append(f"- [{', '.join(qualifiers)}] {memory_id}{conflict}: {summary}".strip())
         if len(lines) > 1:
             sections.append("\n".join(lines))
 
@@ -348,6 +395,7 @@ class DurableContextMiddleware(AgentMiddleware[SageThreadState, HarnessRunContex
                     "delegations",
                     "memory_refs",
                     "retrieval_gate",
+                    "book_learning",
                     "skill_context",
                 )
                 if state.get(key)

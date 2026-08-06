@@ -118,6 +118,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
 | **RAG Described Parent-Child v2（实验候选）** | 已实现句向量语义 parent、bounded child、revision-bound extractive description，以及“description + child 检索、parent 正文引用”的 SQLite/PostgreSQL 投影；保留 baseline 和 v1 策略 | 仅 synthetic long block 验证了契约；PostgreSQL live、真实书籍 benchmark、selection/frozen-test 与 Agentic RAG 生成质量尚未完成，不能声称提升准确率 |
 | **长书 TXT 摄取与定位 v1** | 两本公共领域真实长书共 4.73 MB、5,374 blocks；UTF-8/BOM、章节/段落、行/字符/字节 locator、SQLite/PostgreSQL citation 透传完成，正文行保留与 locator 回切均为 1.000 | 仅证明 parser 与引用定位契约；尚无书籍 query gold、Recall/MRR/NDCG、Agentic/faithfulness 和端到端数字 |
+| **有界长书 Agentic RAG v1** | 主对话自动执行首轮 Knowledge RAG；不足时最多并行 2 个只读 Research child，EvidenceBundle 授权 Synthesize，第二轮无新 citation 或输出无引用时拒答；checkpoint/resume 不重复执行 | 已有确定性状态机/恢复/Eval 回归；尚无真实长书 retrieval、生成与端到端质量数字 |
 | **RAG Local Semantic Gate v1（历史候选）** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771 | 已由 Cloud Embedding Selection v2 接续；test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；generation quality 尚未评测 |
 | **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
 | **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
@@ -132,6 +133,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
 [RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
 [长书 TXT Parser v1 报告](docs/evals/book-txt-parser-v1.md)、
+[长书 Agentic RAG v1 收口](docs/evals/book-learning-agentic-rag-v1.md)、
 [RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
 [历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
 [拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、
