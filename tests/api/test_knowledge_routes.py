@@ -399,6 +399,40 @@ def test_ingest_review_approve_and_rollback_api_contract(tmp_path: Path) -> None
     assert rollback.json()["policy_decision"]["action"] == "require_review"
 
 
+def test_txt_ingest_exposes_non_content_source_locators(tmp_path: Path) -> None:
+    app, vault, _ = _app(tmp_path)
+    (vault / "book.txt").write_text("第一章\n\n正文证据。\n", encoding="utf-8")
+    client = TestClient(app)
+
+    ingested = client.post(
+        "/api/v1/knowledge/ingest",
+        json={"source_root_id": "sage-learning", "relative_path": "book.txt"},
+    )
+
+    assert ingested.status_code == 201
+    proposal = ingested.json()
+    detail = client.get(f"/api/v1/knowledge/proposals/{proposal['proposal_id']}").json()
+    assert detail["parse_artifact"]["parser_id"] == "sage.txt"
+    paragraph = next(
+        block for block in detail["parse_artifact"]["blocks"] if block["kind"] == "paragraph"
+    )
+    assert paragraph["line_start"] == 3
+    assert paragraph["line_end"] == 3
+    assert paragraph["char_start"] == 5
+    assert paragraph["byte_start"] == 11
+    assert "text" not in paragraph
+
+    found = client.post(
+        "/api/v1/knowledge/search",
+        json={"query": "正文证据", "top_k": 4, "token_budget": 512},
+    )
+    assert found.status_code == 200
+    citation = found.json()["citations"][0]
+    assert citation["source_relative_path"] == "book.txt"
+    assert citation["line_start"] == 3
+    assert citation["byte_start"] == 11
+
+
 def test_pending_migration_preview_apply_and_conflict_contract(tmp_path: Path) -> None:
     app, vault, knowledge = _app(tmp_path)
     source = vault / "legacy.md"

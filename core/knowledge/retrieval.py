@@ -107,6 +107,12 @@ class KnowledgeChunk:
     confidence: float = 1.0
     parser_id: str = ""
     parser_version: str = ""
+    line_start: int | None = None
+    line_end: int | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    byte_start: int | None = None
+    byte_end: int | None = None
     retrieval_text: str | None = None
     parent_chunk_id: str | None = None
     retrieval_description: str | None = None
@@ -442,6 +448,12 @@ def chunk_document(
                     confidence=block.confidence,
                     parser_id=document.provenance.parser_id,
                     parser_version=document.provenance.parser_version,
+                    line_start=block.line_start if text == parent_text else None,
+                    line_end=block.line_end if text == parent_text else None,
+                    char_start=block.char_start if text == parent_text else None,
+                    char_end=block.char_end if text == parent_text else None,
+                    byte_start=block.byte_start if text == parent_text else None,
+                    byte_end=block.byte_end if text == parent_text else None,
                     retrieval_text=retrieval_value,
                     parent_chunk_id=parent_chunk_id,
                     retrieval_description=part.description,

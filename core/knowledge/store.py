@@ -117,6 +117,7 @@ _MAX_PROPOSAL_BYTES = 4 * 1024 * 1024
 _ROOT_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _SCHEMA_VERSION = 10
 _SOURCE_FORMATS = {
+    ".txt": ("text/plain", 20 * 1024 * 1024),
     ".md": ("text/markdown", 2 * 1024 * 1024),
     ".markdown": ("text/markdown", 2 * 1024 * 1024),
     ".html": ("text/html", 5 * 1024 * 1024),
@@ -3017,7 +3018,7 @@ def _read_source_bytes(root: Path, path: Path, *, max_bytes: int) -> bytes:
 
 
 def _scan_source_secrets(payload: bytes, media_type: str) -> None:
-    if media_type not in {"text/markdown", "text/html", "application/xhtml+xml"}:
+    if media_type not in {"text/plain", "text/markdown", "text/html", "application/xhtml+xml"}:
         return
     try:
         content = payload.decode("utf-8")
@@ -3124,6 +3125,7 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
         raise KnowledgeStoreError("parser returned oversized document content")
     if not document.provenance.parser_id or not document.provenance.parser_version:
         raise KnowledgeStoreError("parser returned incomplete provenance")
+    line_count = max(1, len(document.rendered_markdown.splitlines()))
     block_ids: set[str] = set()
     for ordinal, block in enumerate(document.blocks):
         media_path = PurePosixPath(block.media_ref) if block.media_ref else None
@@ -3132,6 +3134,21 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
             or not block.block_id.startswith("pblk_")
             or block.block_id in block_ids
             or not 0.0 <= block.confidence <= 1.0
+            or not _valid_locator_range(
+                block.line_start, block.line_end, minimum=1, maximum=line_count
+            )
+            or not _valid_locator_range(
+                block.char_start,
+                block.char_end,
+                minimum=0,
+                maximum=len(document.rendered_markdown),
+            )
+            or not _valid_locator_range(
+                block.byte_start,
+                block.byte_end,
+                minimum=0,
+                maximum=len(request.payload),
+            )
             or (
                 block.bbox is not None
                 and (
@@ -3155,6 +3172,18 @@ def _validate_parsed_document(request: ParseRequest, document: ParsedDocument) -
         ):
             raise KnowledgeStoreError("parser returned invalid block contract")
         block_ids.add(block.block_id)
+
+
+def _valid_locator_range(
+    start: int | None,
+    end: int | None,
+    *,
+    minimum: int,
+    maximum: int,
+) -> bool:
+    if start is None and end is None:
+        return True
+    return type(start) is int and type(end) is int and minimum <= start <= end <= maximum
 
 
 def _write_immutable_bytes(path: Path, content: bytes) -> None:

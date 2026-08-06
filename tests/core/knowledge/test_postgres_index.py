@@ -18,6 +18,7 @@ from core.knowledge.postgres_index import (
     POSTGRES_INDEX_SCHEMA_REVISION,
     POSTGRES_MULTIMODAL_SCHEMA_REVISION,
     POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
+    POSTGRES_TEXT_LOCATOR_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
@@ -125,6 +126,7 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
     assert POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION in revisions
     assert POSTGRES_MULTIMODAL_SCHEMA_REVISION in revisions
     assert POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION in revisions
+    assert POSTGRES_TEXT_LOCATOR_SCHEMA_REVISION in revisions
     assert "embedding_dimensions" in revision_columns
     assert {
         "block_kind",
@@ -133,6 +135,12 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
         "confidence",
         "parser_id",
         "parser_version",
+        "line_start",
+        "line_end",
+        "char_start",
+        "char_end",
+        "byte_start",
+        "byte_end",
         "parent_chunk_id",
         "retrieval_description",
         "retrieval_description_provider",

@@ -29,6 +29,7 @@ from .registry import (
     ParserRegistry,
 )
 from .serialization import deserialize_document, serialize_document
+from .txt import TxtParser
 from .types import (
     BlockKind,
     ParseArtifact,
@@ -46,6 +47,7 @@ def default_parser_registry() -> ParserRegistry:
     registry.register(TextPdfParser())
     registry.register(DocxParser())
     registry.register(PngImageParser())
+    registry.register(TxtParser())
     return registry
 
 
@@ -81,6 +83,7 @@ __all__ = [
     "ProgressCallback",
     "ResumableExternalParseAdapter",
     "TextPdfParser",
+    "TxtParser",
     "default_parser_registry",
     "deserialize_document",
     "serialize_document",
