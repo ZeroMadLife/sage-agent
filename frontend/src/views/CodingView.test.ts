@@ -7,6 +7,13 @@ import CodingView from './CodingView.vue'
 import { useCodingStore } from '../stores/coding'
 import type { CodingTimelineEvent } from '../types/api'
 
+// 构造可手动完成的异步步骤，用来稳定复现组件卸载竞态。
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((promiseResolve) => { resolve = promiseResolve })
+  return { promise, resolve }
+}
+
 function event(sequence: number, kind: CodingTimelineEvent['kind'], payload: Record<string, unknown>): CodingTimelineEvent {
   return {
     event_id: `event-${sequence}`,
@@ -88,6 +95,24 @@ describe('CodingView chat route lifecycle', () => {
     await vi.waitFor(() => expect(store.initialize).toHaveBeenCalledTimes(1))
     expect(order).toEqual(['catalog', 'sessions', 'session'])
     root.unmount()
+  })
+
+  it('stops mount hydration when model bootstrap finishes after unmount', async () => {
+    const store = useCodingStore()
+    const catalog = deferred<void>()
+    store.bootstrapModelCatalog = vi.fn(() => catalog.promise)
+    store.loadSessions = vi.fn()
+    store.initialize = vi.fn()
+    const { root } = await mountChat()
+
+    await vi.waitFor(() => expect(store.bootstrapModelCatalog).toHaveBeenCalledTimes(1))
+    root.unmount()
+    catalog.resolve()
+    await catalog.promise
+    await nextTick()
+
+    expect(store.loadSessions).not.toHaveBeenCalled()
+    expect(store.initialize).not.toHaveBeenCalled()
   })
 
   it('restores a persisted recent session before creating a new one', async () => {

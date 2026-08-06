@@ -1,5 +1,7 @@
 """Approval manager and dangerous command tests."""
 
+import asyncio
+
 import pytest
 
 from core.coding.tool_executor import ApprovalManager, check_dangerous_command
@@ -63,6 +65,25 @@ def test_approval_manager_cancel_session_denies_pending_entries() -> None:
     assert manager.pending("s1") is None
 
 
+@pytest.mark.asyncio
+async def test_approval_wait_avoids_long_blocking_executor_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """审批中断必须能立即取消，不能向默认线程池提交长时间 Event.wait。"""
+    manager = ApprovalManager()
+    entry = manager.submit("s1", "write_file", {}, "write_file requires approval.", "tool:write")
+
+    async def reject_executor_wait(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("approval wait must not use blocking executor work")
+
+    monkeypatch.setattr(asyncio, "to_thread", reject_executor_wait)
+    waiter = asyncio.create_task(manager.wait_for("s1", entry.approval_id, timeout_seconds=1))
+    await asyncio.sleep(0)
+    assert manager.resolve("s1", entry.approval_id, "once") is True
+
+    assert await waiter == "once"
+
+
 def test_graph_approval_resolution_is_replayable_after_cancel() -> None:
     manager = ApprovalManager()
     entry = manager.submit(
@@ -112,9 +133,21 @@ def test_check_dangerous_command_detects_common_patterns() -> None:
     assert pattern_key == "git_reset_hard"
 
 
-def test_check_dangerous_command_allows_plain_commands() -> None:
-    """Plain read-only shell commands are not marked dangerous."""
-    dangerous, description, pattern_key = check_dangerous_command("pytest -q")
+@pytest.mark.parametrize("command", ["rm -rf src", "rm -fr src", "rm --recursive --force src"])
+def test_check_dangerous_command_detects_recursive_remove_options(command: str) -> None:
+    dangerous, description, pattern_key = check_dangerous_command(command)
+
+    assert dangerous is True
+    assert "recursive" in description.lower()
+    assert pattern_key == "rm_recursive"
+
+
+@pytest.mark.parametrize(
+    "command", ["pytest -q", "rm file.txt", "rm -f file.txt", "rm --force file.txt"]
+)
+def test_check_dangerous_command_allows_plain_commands(command: str) -> None:
+    """Plain commands and non-recursive remove variants are not marked dangerous."""
+    dangerous, description, pattern_key = check_dangerous_command(command)
 
     assert dangerous is False
     assert description == ""

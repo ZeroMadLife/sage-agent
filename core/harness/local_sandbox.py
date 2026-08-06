@@ -40,6 +40,7 @@ class LocalWorkspaceSandbox:
         app_env: str = "development",
         allow_host_shell: bool = False,
         allow_writes: bool = True,
+        workspace_id: str | None = None,
     ) -> None:
         environment = app_env.strip().lower()
         if environment not in _LOCAL_ENVIRONMENTS:
@@ -52,12 +53,14 @@ class LocalWorkspaceSandbox:
             raise ValueError("thread_id must not be empty")
         self._workspace = workspace
         self._closed = False
-        workspace_id = workspace_id_from_path(workspace.root)
+        stable_workspace_id = (workspace_id or workspace_id_from_path(workspace.root)).strip()
+        if not stable_workspace_id:
+            raise ValueError("workspace_id must not be empty")
         thread_digest = hashlib.sha256(normalized_thread.encode()).hexdigest()[:12]
         self._descriptor = SandboxDescriptor(
-            sandbox_id=f"local:{workspace_id}:{thread_digest}",
+            sandbox_id=f"local:{stable_workspace_id}:{thread_digest}",
             provider="local_workspace",
-            workspace_id=workspace_id,
+            workspace_id=stable_workspace_id,
             capabilities=SandboxCapabilities(
                 isolated=False,
                 host_access=True,

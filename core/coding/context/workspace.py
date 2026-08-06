@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 MAX_TOOL_OUTPUT = 4000
 HIDDEN_CONTROL_DIR_NAMES = frozenset(
@@ -54,6 +54,7 @@ PROTECTED_PATH_NAMES = frozenset(
     }
 )
 _SAFE_ENV_SUFFIXES = (".example", ".sample", ".template")
+WorkspaceRole = Literal["primary", "disposable"]
 
 
 def now() -> str:
@@ -76,8 +77,11 @@ class WorkspaceContext:
     root: Path
     _read_fingerprints: dict[str, tuple[bool, int, int]] = field(default_factory=dict)
     _self_authored_fingerprints: dict[str, tuple[bool, int, int]] = field(default_factory=dict)
+    role: WorkspaceRole = field(default="primary", kw_only=True)
 
     def __post_init__(self) -> None:
+        if self.role not in {"primary", "disposable"}:
+            raise ValueError(f"unsupported workspace role: {self.role}")
         self.root = Path(self.root).resolve()
 
     def path(self, raw_path: str | Path) -> Path:

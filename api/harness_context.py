@@ -50,7 +50,7 @@ async def validate_surface_context(
 def _validate_coding_context(
     context: HarnessSurfaceContext, runtime: CodingRuntime
 ) -> HarnessSurfaceContext:
-    expected_workspace = workspace_id_from_path(runtime.workspace.root)
+    expected_workspace = workspace_id_from_path(runtime.logical_workspace.root)
     if context.workspace_id != expected_workspace:
         raise SurfaceContextValidationError("surface context workspace is not available")
     if context.graph_revision is not None:
@@ -69,7 +69,7 @@ def _validate_coding_context(
         resource = HarnessResourceContext(
             type="coding_workspace",
             id=expected_workspace,
-            label=runtime.workspace.root.name or "workspace",
+            label=runtime.logical_workspace.root.name or "workspace",
         )
 
     selection: HarnessSelectionContext | None = None
@@ -77,14 +77,14 @@ def _validate_coding_context(
         if context.selection.type != "coding_file":
             raise SurfaceContextValidationError("coding selection type is invalid")
         try:
-            path = runtime.workspace.path(context.selection.id)
+            path = runtime.execution_workspace.path(context.selection.id)
         except ValueError as exc:
             raise SurfaceContextValidationError(
                 "coding selection is outside the workspace"
             ) from exc
         if not path.is_file():
             raise SurfaceContextValidationError("coding selection does not exist")
-        relative_path = runtime.workspace.relative(path)
+        relative_path = runtime.execution_workspace.relative(path)
         revision = context.selection.revision
         if revision is not None and revision != _file_revision(path):
             raise SurfaceContextValidationError("coding selection revision is stale")

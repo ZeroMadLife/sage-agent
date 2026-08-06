@@ -45,6 +45,8 @@ const harnessDetailsCloseRef = ref<HTMLButtonElement | null>(null)
 const harnessDetailsTriggerRef = ref<HTMLElement | null>(null)
 const lastResolvedSessionId = ref<string | null>(null)
 const viewGeneration = ref(0)
+// 挂载流程包含异步恢复；卸载后禁止继续触碰浏览器存储和路由状态。
+let viewActive = true
 const composer = ref<{
   setInput: (value: string) => void
   focus: () => void
@@ -410,11 +412,14 @@ watch(() => store.pendingApproval?.approval_id, (approvalId) => {
 
 onMounted(async () => {
   await store.bootstrapModelCatalog()
+  if (!viewActive) return
   await synchronizeRoute()
+  if (!viewActive) return
   await hydratePendingDraft()
 })
 
 onBeforeUnmount(() => {
+  viewActive = false
   viewGeneration.value += 1
 })
 </script>

@@ -24,10 +24,10 @@ from core.coding.engine.helpers import normalize_tool_payload
 from core.coding.tool_executor.approval import (
     ApprovalChoice,
     ApprovalManager,
-    check_dangerous_command,
 )
 from core.coding.tool_executor.permissions import PermissionChecker
 from core.coding.tool_executor.policy import ToolPolicyChecker
+from core.coding.tool_executor.shell_risk import check_dangerous_command
 from core.coding.tools.base import RegisteredTool, ToolResult
 from core.coding.tools.registry import validate_tool
 

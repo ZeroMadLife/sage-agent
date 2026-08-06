@@ -23,6 +23,9 @@ class CodingSessionResponse(BaseModel):
     session_id: str
     workspace_root: str
     workspace_id: str
+    execution_workspace_root: str
+    execution_workspace_kind: Literal["primary", "git_worktree"]
+    execution_workspace_status: Literal["active", "discarding", "discarded"]
     permission_mode: Literal["default", "accept_edits", "auto", "plan"] = "default"
     runtime_profile: Literal["legacy", "deerflow_v2"] = "legacy"
     sandbox_provider: str = "local_workspace"

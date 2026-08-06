@@ -3,7 +3,6 @@
 from core.coding.tool_executor.approval import (
     ApprovalEntry,
     ApprovalManager,
-    check_dangerous_command,
 )
 from core.coding.tool_executor.permissions import (
     ApprovalCallback,
@@ -12,6 +11,7 @@ from core.coding.tool_executor.permissions import (
     PermissionMode,
 )
 from core.coding.tool_executor.policy import ToolPolicyChecker, ToolPolicyDecision
+from core.coding.tool_executor.shell_risk import check_dangerous_command
 
 __all__ = [
     "ApprovalCallback",

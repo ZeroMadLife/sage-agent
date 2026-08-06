@@ -1,7 +1,7 @@
 """ToolExecutor pipeline tests."""
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 from sage_harness import SandboxCapabilities, SandboxDescriptor, SandboxResult
@@ -31,8 +31,9 @@ def _executor(
     session_id: str = "coding_1",
     should_stop: bool = False,
     sandbox: Any | None = None,
+    workspace_role: Literal["primary", "disposable"] = "primary",
 ) -> ToolExecutor:
-    workspace = WorkspaceContext(root=tmp_path)
+    workspace = WorkspaceContext(root=tmp_path, role=workspace_role)
     tools = build_tool_registry(workspace)
     # Map legacy approval_policy to permission_mode for backward compat in tests
     mode = "auto" if approval_policy == "auto" else "default"
@@ -241,17 +242,90 @@ async def test_empty_shell_command_fails_before_approval(
     assert manager.pending("coding_1") is None
 
 
-async def test_auto_mode_still_requires_approval_for_dangerous_shell(tmp_path: Path) -> None:
-    """Dangerous shell commands keep an approval boundary in automatic mode."""
+async def test_primary_workspace_recursive_delete_is_denied_before_approval_or_sandbox(
+    tmp_path: Path,
+) -> None:
+    """Primary workspace recursive deletion fails closed before observable execution."""
     manager = ApprovalManager()
-    executor = _executor(tmp_path, approval_manager=manager)
-    stream = executor.execute({"name": "run_shell", "args": {"command": "git reset --hard HEAD"}})
+    sandbox = RecordingSandbox()
+    executor = _executor(tmp_path, approval_manager=manager, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "run_shell", "args": {"command": "rm -rf src"}}
+        )
+    ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ToolResultEvent)
+    assert events[0].is_error is True
+    assert events[0].policy_reason == "primary_workspace_destructive_shell_forbidden"
+    assert str(tmp_path) not in repr(events)
+    assert not any(isinstance(event, ToolCallEvent) for event in events)
+    assert manager.pending("coding_1") is None
+    assert sandbox.calls == []
+
+
+async def test_primary_workspace_hard_reset_is_denied_before_approval_or_sandbox(
+    tmp_path: Path,
+) -> None:
+    """Primary workspace hard reset fails closed before observable execution."""
+    manager = ApprovalManager()
+    sandbox = RecordingSandbox()
+    executor = _executor(tmp_path, approval_manager=manager, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute(
+            {"name": "run_shell", "args": {"command": "git reset --hard HEAD"}}
+        )
+    ]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ToolResultEvent)
+    assert events[0].is_error is True
+    assert events[0].policy_reason == "primary_workspace_destructive_shell_forbidden"
+    assert not any(isinstance(event, ToolCallEvent) for event in events)
+    assert manager.pending("coding_1") is None
+    assert sandbox.calls == []
+
+
+@pytest.mark.parametrize("command", ["rm file.txt", "rm -f file.txt", "rm --force file.txt"])
+async def test_primary_workspace_plain_file_remove_is_not_blocked_by_destructive_policy(
+    tmp_path: Path,
+    command: str,
+) -> None:
+    """The primary-workspace rule does not broaden into a blanket rm denial."""
+    sandbox = RecordingSandbox()
+    executor = _executor(tmp_path, sandbox=sandbox)
+
+    events = [
+        event
+        async for event in executor.execute({"name": "run_shell", "args": {"command": command}})
+    ]
+
+    assert [event.type for event in events] == ["tool_call", "tool_result"]
+    assert sandbox.calls == [("run_shell", {"command": command, "timeout": 20})]
+
+
+async def test_auto_mode_disposable_workspace_dangerous_shell_still_requires_approval(
+    tmp_path: Path,
+) -> None:
+    """Disposable execution may proceed only through the existing approval boundary."""
+    manager = ApprovalManager()
+    executor = _executor(
+        tmp_path,
+        approval_manager=manager,
+        workspace_role="disposable",
+    )
+    stream = executor.execute({"name": "run_shell", "args": {"command": "rm -rf src"}})
 
     first = await anext(stream)
     await stream.aclose()
 
     assert isinstance(first, ApprovalRequiredEvent)
-    assert "reset" in first.description.lower()
+    assert "recursive" in first.description.lower()
 
 
 async def test_ask_approval_granted_then_executes_tool(tmp_path: Path) -> None:

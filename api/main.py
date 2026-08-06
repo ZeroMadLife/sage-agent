@@ -25,6 +25,7 @@ from core.cloud.auth.repository import CloudRepository
 from core.cloud.github import GitHubOAuthConfig, GitHubOAuthService
 from core.cloud.model_providers import ModelProviderRepository, ProviderProbe
 from core.coding.context import ModelCapabilityRegistry
+from core.coding.execution_workspace import ExecutionWorkspaceManager
 from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.usage_store import UsageStore
 from core.config.settings import get_settings
@@ -390,6 +391,9 @@ def create_app(
     app.state.coding_storage_root = Path(
         coding_storage_root or settings.sage_coding_storage_root or (repo_root / ".coding")
     ).resolve()
+    app.state.coding_execution_workspace_manager = ExecutionWorkspaceManager(
+        app.state.coding_storage_root
+    )
     configured_knowledge_root = (
         Path(knowledge_workspace_root).expanduser()
         if knowledge_workspace_root is not None

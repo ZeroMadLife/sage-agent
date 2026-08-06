@@ -32,6 +32,7 @@ from sage_harness import (
     McpManager,
     McpScope,
     McpToolSnapshot,
+    SandboxPolicyError,
     SubagentLimits,
     SubagentToolConfig,
     WebFetchPort,
@@ -123,7 +124,13 @@ from api.schemas import (
     UserMessage,
 )
 from core.cloud.auth.repository import CloudRepository
-from core.coding.context import ContextBusyError
+from core.coding.context import ContextBusyError, WorkspaceContext
+from core.coding.execution_workspace import (
+    ExecutionWorkspaceDescriptor,
+    ExecutionWorkspaceError,
+    ExecutionWorkspaceManager,
+    execution_workspace_payload,
+)
 from core.coding.harness import CodingHarnessStageProjector
 from core.coding.memory import workspace_id_from_path
 from core.coding.persistence import (
@@ -170,7 +177,11 @@ from core.harness.retrieval_gate import (
     retrieval_tool_scope_from_events,
 )
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
-from core.harness.sandbox_factory import create_coding_sandbox
+from core.harness.sandbox_factory import (
+    DISPOSABLE_SANDBOX_PROVIDERS,
+    create_coding_sandbox,
+    discard_coding_sandbox,
+)
 from core.harness.subagent_adapter import (
     CodingSubagentExecutor,
     build_coding_subagent_config,
@@ -646,7 +657,7 @@ async def _deerflow_timeline_events(
         if isinstance(mcp_catalog, McpManager):
             mcp_scope = McpScope(
                 owner_id=runtime.owner_user_id or "local",
-                workspace_id=workspace_id_from_path(runtime.workspace.root),
+                workspace_id=workspace_id_from_path(runtime.logical_workspace.root),
                 thread_id=runtime.session_id,
             )
             mcp_snapshot = await mcp_catalog.load_tools(mcp_scope)
@@ -659,15 +670,17 @@ async def _deerflow_timeline_events(
                 run_id=run_id,
                 servers=mcp_servers,
             )
-        workspace_id = workspace_id_from_path(runtime.workspace.root)
+        workspace_id = workspace_id_from_path(runtime.logical_workspace.root)
         sandbox = create_coding_sandbox(
-            runtime.workspace,
+            runtime.execution_workspace,
             thread_id=runtime.session_id,
             app_env=app_env,
             provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
             allow_host_shell=True,
             allow_writes=True,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
+            workspace_id=workspace_id,
+            logical_workspace_root=str(runtime.logical_workspace.root),
         )
         try:
             evidence_bundle_port = CodingEvidenceBundlePort(runtime)
@@ -784,7 +797,7 @@ async def _deerflow_timeline_events(
                     run_id=run_id,
                     owner_id=runtime.owner_user_id or "local",
                     workspace_id=workspace_id,
-                    workspace_path=str(runtime.workspace.root),
+                    workspace_path=str(runtime.execution_workspace.root),
                     content=content,
                     surface_context=surface_context,
                     durable_context=durable_context,
@@ -1198,6 +1211,69 @@ async def _reconcile_goal_followup(app: Any, session_id: str) -> None:
         await _post_turn_goal_followup(app, session_id, terminal.run_id)
 
 
+def _coding_session_response(runtime: CodingRuntime) -> CodingSessionResponse:
+    """统一返回逻辑身份与物理执行区，避免调用点再次混用两类路径。"""
+    return _coding_session_response_from_state(
+        runtime.session_id,
+        runtime.logical_workspace.root,
+        runtime.execution_workspace_descriptor,
+        runtime.session,
+        permission_mode=runtime.permission_mode,
+        runtime_profile=runtime.runtime_profile,
+        sandbox_provider=runtime.sandbox_provider,
+        sandbox_image=runtime.sandbox_image,
+    )
+
+
+def _coding_session_response_from_state(
+    session_id: str,
+    logical_root: Path,
+    descriptor: ExecutionWorkspaceDescriptor,
+    persisted: Mapping[str, object],
+    *,
+    permission_mode: object | None = None,
+    runtime_profile: object | None = None,
+    sandbox_provider: object | None = None,
+    sandbox_image: object | None = None,
+) -> CodingSessionResponse:
+    """从持久化状态构造响应，discard 后无需重新创建一个虚拟 Runtime。"""
+    raw_permission_mode = str(
+        permission_mode
+        if permission_mode is not None
+        else persisted.get("permission_mode", "default")
+    )
+    allowed_permission_modes = {"default", "accept_edits", "auto", "plan"}
+    resolved_permission_mode = cast(
+        Literal["default", "accept_edits", "auto", "plan"],
+        raw_permission_mode if raw_permission_mode in allowed_permission_modes else "default",
+    )
+    resolved_profile = normalize_runtime_profile(
+        runtime_profile if runtime_profile is not None else persisted.get("runtime_profile")
+    )
+    resolved_provider = str(
+        sandbox_provider
+        if sandbox_provider is not None
+        else persisted.get("sandbox_provider", "local_workspace")
+    )
+    resolved_image = str(
+        sandbox_image
+        if sandbox_image is not None
+        else persisted.get("sandbox_image", "python:3.11-slim")
+    )
+    return CodingSessionResponse(
+        session_id=session_id,
+        workspace_root=str(logical_root),
+        workspace_id=workspace_id_from_path(logical_root),
+        execution_workspace_root=descriptor.root,
+        execution_workspace_kind=descriptor.kind,
+        execution_workspace_status=descriptor.status,
+        permission_mode=resolved_permission_mode,
+        runtime_profile=resolved_profile,
+        sandbox_provider=resolved_provider,
+        sandbox_image=resolved_image,
+    )
+
+
 @router.post("/api/v1/coding/session")
 async def create_coding_session(
     payload: CodingSessionRequest,
@@ -1225,42 +1301,61 @@ async def create_coding_session(
     reasoning_modes = combined_reasoning_modes(request, account)
     session_id = str(uuid4())
     runtime_profile = _resolve_new_runtime_profile(payload.runtime_profile, request)
-    runtime = CodingRuntime(
-        session_id=session_id,
-        workspace_root=workspace_root,
-        model=_build_model(model_factory, model_id, "off"),
-        storage_root=storage_root,
-        model_factory=model_factory,
-        approval_policy=payload.approval_policy,
-        save_on_init=True,
-        permission_mode="default",
-        context_policy=registry.resolve(model_id),
-        model_capabilities=registry,
-        checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
-        model_spec=model_id,
-        reasoning_mode="off",
-        model_reasoning_modes=reasoning_modes,
-        usage_store=request.app.state.coding_usage_store,
-        owner_user_id=account.user_id if account is not None else None,
-        knowledge_store=_coding_knowledge_store(request),
-        runtime_profile=runtime_profile,
-        sandbox_provider=str(
-            getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
-        ),
-        sandbox_image=str(getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")),
+    sandbox_provider = str(getattr(request.app.state, "coding_sandbox_provider", "local_workspace"))
+    execution_manager: ExecutionWorkspaceManager = (
+        request.app.state.coding_execution_workspace_manager
     )
+    try:
+        execution_workspace = (
+            await asyncio.to_thread(execution_manager.create, session_id, workspace_root)
+            if sandbox_provider in DISPOSABLE_SANDBOX_PROVIDERS
+            else execution_manager.primary(workspace_root)
+        )
+    except ExecutionWorkspaceError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="isolated sandbox requires a disposable Git execution workspace",
+        ) from exc
+    try:
+        runtime = CodingRuntime(
+            session_id=session_id,
+            workspace_root=workspace_root,
+            execution_workspace=execution_workspace,
+            model=_build_model(model_factory, model_id, "off"),
+            storage_root=storage_root,
+            model_factory=model_factory,
+            approval_policy=payload.approval_policy,
+            save_on_init=True,
+            permission_mode="default",
+            context_policy=registry.resolve(model_id),
+            model_capabilities=registry,
+            checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
+            model_spec=model_id,
+            reasoning_mode="off",
+            model_reasoning_modes=reasoning_modes,
+            usage_store=request.app.state.coding_usage_store,
+            owner_user_id=account.user_id if account is not None else None,
+            knowledge_store=_coding_knowledge_store(request),
+            runtime_profile=runtime_profile,
+            sandbox_provider=sandbox_provider,
+            sandbox_image=str(
+                getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")
+            ),
+        )
+    except Exception:
+        if execution_workspace.kind == "git_worktree":
+            with suppress(ExecutionWorkspaceError):
+                await asyncio.to_thread(
+                    execution_manager.discard,
+                    session_id,
+                    workspace_root,
+                    execution_workspace.to_dict(),
+                )
+        raise
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
     request.app.state.coding_run_registry.get(session_id)
-    return CodingSessionResponse(
-        session_id=session_id,
-        workspace_root=str(workspace_root.resolve()),
-        workspace_id=workspace_id_from_path(workspace_root),
-        permission_mode=runtime.permission_mode,
-        runtime_profile=runtime.runtime_profile,
-        sandbox_provider=runtime.sandbox_provider,
-        sandbox_image=runtime.sandbox_image,
-    )
+    return _coding_session_response(runtime)
 
 
 @router.get("/api/v1/coding/sessions", response_model=CodingSessionsResponse)
@@ -1326,7 +1421,7 @@ async def _close_coding_mcp_scope(request: Request, session_id: str) -> None:
         return
     scope = McpScope(
         owner_id=runtime.owner_user_id or "local",
-        workspace_id=workspace_id_from_path(runtime.workspace.root),
+        workspace_id=workspace_id_from_path(runtime.logical_workspace.root),
         thread_id=runtime.session_id,
     )
     with suppress(Exception):
@@ -1518,15 +1613,7 @@ async def resume_coding_session(
                 status_code=409,
                 detail="active coding run has no in-memory runtime",
             )
-        return CodingSessionResponse(
-            session_id=session_id,
-            workspace_root=str(active_runtime.workspace.root.resolve()),
-            workspace_id=workspace_id_from_path(active_runtime.workspace.root),
-            permission_mode=active_runtime.permission_mode,
-            runtime_profile=active_runtime.runtime_profile,
-            sandbox_provider=active_runtime.sandbox_provider,
-            sandbox_image=active_runtime.sandbox_image,
-        )
+        return _coding_session_response(active_runtime)
     try:
         runtime_profile = _require_enabled_runtime_profile(
             persisted.get("runtime_profile"), request
@@ -1546,6 +1633,36 @@ async def resume_coding_session(
         default_workspace, persisted.get("workspace_root")
     )
     persisted["workspace_root"] = str(persisted_workspace)
+    persisted_sandbox_provider = str(
+        persisted.get(
+            "sandbox_provider",
+            getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
+        )
+    )
+    execution_manager: ExecutionWorkspaceManager = (
+        request.app.state.coding_execution_workspace_manager
+    )
+    try:
+        raw_execution_workspace = persisted.get("execution_workspace")
+        if raw_execution_workspace is None:
+            if persisted_sandbox_provider in DISPOSABLE_SANDBOX_PROVIDERS:
+                raise ExecutionWorkspaceError(
+                    "persisted isolated session is missing execution workspace"
+                )
+            execution_workspace = execution_manager.primary(persisted_workspace)
+            persisted["execution_workspace"] = execution_workspace.to_dict()
+        else:
+            execution_workspace = await asyncio.to_thread(
+                execution_manager.restore,
+                session_id,
+                persisted_workspace,
+                execution_workspace_payload(raw_execution_workspace),
+            )
+    except ExecutionWorkspaceError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="execution workspace is unavailable or invalid",
+        ) from exc
     reasoning_mode = _resolved_reasoning_mode(
         model_id,
         str(persisted.get("reasoning_mode", "off")),
@@ -1554,6 +1671,7 @@ async def resume_coding_session(
     runtime = CodingRuntime(
         session_id=session_id,
         workspace_root=persisted_workspace,
+        execution_workspace=execution_workspace,
         model=_build_model(model_factory, model_id, reasoning_mode),
         storage_root=storage_root,
         model_factory=model_factory,
@@ -1568,12 +1686,7 @@ async def resume_coding_session(
         usage_store=request.app.state.coding_usage_store,
         knowledge_store=_coding_knowledge_store(request),
         runtime_profile=runtime_profile,
-        sandbox_provider=str(
-            persisted.get(
-                "sandbox_provider",
-                getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
-            )
-        ),
+        sandbox_provider=persisted_sandbox_provider,
         sandbox_image=str(
             persisted.get(
                 "sandbox_image",
@@ -1587,14 +1700,119 @@ async def resume_coding_session(
         runtime.approval_manager.restore_pending(pending_approval)
     else:
         _schedule_goal_reconciliation(request.app, session_id)
-    return CodingSessionResponse(
-        session_id=session_id,
-        workspace_root=str(persisted_workspace),
-        workspace_id=workspace_id_from_path(persisted_workspace),
-        permission_mode=runtime.permission_mode,
-        runtime_profile=runtime.runtime_profile,
-        sandbox_provider=runtime.sandbox_provider,
-        sandbox_image=runtime.sandbox_image,
+    return _coding_session_response(runtime)
+
+
+@router.post(
+    "/api/v1/coding/session/{session_id}/discard",
+    response_model=CodingSessionResponse,
+)
+async def discard_coding_session(
+    session_id: str,
+    request: Request,
+) -> CodingSessionResponse:
+    """显式结束 disposable Session，保留会话证据并阻止后续恢复。"""
+    _require_valid_session_id(session_id)
+    store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
+    try:
+        persisted = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    runtime = request.app.state.coding_sessions.get(session_id)
+    coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
+    if runtime is not None and _coding_operation_busy(request, session_id, runtime):
+        raise HTTPException(status_code=409, detail="coding session has an active run")
+    if coordinator.active_run_id or coordinator.journal.active_run_id():
+        raise HTTPException(status_code=409, detail="coding session has an active run")
+    logical_root = _resolve_persisted_workspace_root(
+        Path(request.app.state.coding_workspace_root).resolve(),
+        persisted.get("workspace_root"),
+    )
+    try:
+        descriptor = ExecutionWorkspaceDescriptor.from_dict(
+            execution_workspace_payload(persisted.get("execution_workspace"))
+        )
+    except ExecutionWorkspaceError as exc:
+        raise HTTPException(
+            status_code=409, detail="execution workspace is unavailable or invalid"
+        ) from exc
+    if descriptor.kind != "git_worktree":
+        raise HTTPException(
+            status_code=409, detail="only disposable coding sessions can be discarded"
+        )
+    if descriptor.status == "discarded":
+        request.app.state.coding_sessions.pop(session_id, None)
+        return _coding_session_response_from_state(
+            session_id,
+            logical_root,
+            descriptor,
+            persisted,
+        )
+
+    execution_manager: ExecutionWorkspaceManager = (
+        request.app.state.coding_execution_workspace_manager
+    )
+    if descriptor.status == "active":
+        try:
+            await asyncio.to_thread(
+                execution_manager.restore,
+                session_id,
+                logical_root,
+                descriptor.to_dict(),
+            )
+        except ExecutionWorkspaceError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="execution workspace is unavailable or invalid",
+            ) from exc
+        discarding = replace(descriptor, status="discarding")
+        persisted["execution_workspace"] = discarding.to_dict()
+        persisted["archived"] = True
+        store.save(persisted)
+    else:
+        discarding = descriptor
+
+    if runtime is not None:
+        await _close_coding_mcp_scope(request, session_id)
+    request.app.state.coding_sessions.pop(session_id, None)
+    workspace = (
+        runtime.execution_workspace
+        if runtime is not None
+        else WorkspaceContext(Path(discarding.root), role="disposable")
+    )
+    try:
+        await asyncio.to_thread(
+            discard_coding_sandbox,
+            str(persisted.get("sandbox_provider", "container")),
+            workspace,
+            thread_id=session_id,
+            workspace_id=workspace_id_from_path(logical_root),
+            container_image=str(persisted.get("sandbox_image", "python:3.11-slim")),
+        )
+        discarded = await asyncio.to_thread(
+            execution_manager.discard,
+            session_id,
+            logical_root,
+            discarding.to_dict(),
+        )
+    except (ExecutionWorkspaceError, SandboxPolicyError) as exc:
+        raise HTTPException(
+            status_code=503, detail="coding session discard is pending cleanup"
+        ) from exc
+
+    persisted["execution_workspace"] = discarded.to_dict()
+    persisted["archived"] = True
+    store.save(persisted)
+    if runtime is not None:
+        runtime.execution_workspace_descriptor = discarded
+    return _coding_session_response_from_state(
+        session_id,
+        logical_root,
+        discarded,
+        persisted,
+        permission_mode=runtime.permission_mode if runtime is not None else None,
     )
 
 

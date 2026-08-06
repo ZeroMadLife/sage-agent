@@ -66,6 +66,7 @@ class ContainerWorkspaceSandbox:
         allow_host_shell: bool = True,
         allow_writes: bool = True,
         docker_binary: str = "docker",
+        workspace_id: str | None = None,
     ) -> None:
         normalized_thread = thread_id.strip()
         normalized_image = image.strip()
@@ -76,16 +77,18 @@ class ContainerWorkspaceSandbox:
         self._workspace = workspace
         self._image = normalized_image
         self._docker = docker_binary
+        self._workspace_id = (workspace_id or workspace_id_from_path(workspace.root)).strip()
+        if not self._workspace_id:
+            raise ValueError("workspace_id must not be empty")
         self._closed = False
         self._started = False
         self._lifecycle_lock = threading.RLock()
-        self._container_name = self._name(workspace, normalized_thread)
-        workspace_id = workspace_id_from_path(workspace.root)
+        self._container_name = self._name(self._workspace_id, normalized_thread)
         thread_digest = hashlib.sha256(normalized_thread.encode()).hexdigest()[:12]
         self._descriptor = SandboxDescriptor(
-            sandbox_id=f"container:{workspace_id}:{thread_digest}",
+            sandbox_id=f"container:{self._workspace_id}:{thread_digest}",
             provider="container",
-            workspace_id=workspace_id,
+            workspace_id=self._workspace_id,
             capabilities=SandboxCapabilities(
                 isolated=True,
                 host_access=False,
@@ -142,6 +145,36 @@ class ContainerWorkspaceSandbox:
     async def health(self) -> dict[str, object]:
         """Return a sanitized provider health snapshot for diagnostics."""
         return await asyncio.to_thread(self._health_sync)
+
+    @classmethod
+    def discard_owned(
+        cls,
+        workspace: WorkspaceContext,
+        *,
+        thread_id: str,
+        workspace_id: str | None = None,
+        image: str = _DEFAULT_IMAGE,
+        docker_binary: str = "docker",
+    ) -> int:
+        """显式释放一个 Session 的容器，只允许删除 Sage 自己拥有的实例。"""
+        sandbox = cls(
+            workspace,
+            thread_id=thread_id,
+            workspace_id=workspace_id,
+            image=image,
+            docker_binary=docker_binary,
+        )
+        sandbox._require_isolated_daemon()
+        existing = sandbox._docker_capture(
+            ["ps", "-aq", "--filter", f"name=^{sandbox._container_name}$"],
+            check=False,
+        ).strip()
+        if not existing:
+            return 0
+        payload = sandbox._inspect_container()
+        sandbox._require_owned_container(payload)
+        sandbox._docker_capture(["rm", "-f", sandbox._container_name])
+        return 1
 
     @classmethod
     def reconcile_stopped(cls, *, docker_binary: str = "docker") -> int:
@@ -639,8 +672,8 @@ class ContainerWorkspaceSandbox:
         return content.replace(f"{_CONTAINER_ROOT}/", "").replace(_CONTAINER_ROOT, ".")
 
     @staticmethod
-    def _name(workspace: WorkspaceContext, thread_id: str) -> str:
-        digest = hashlib.sha256(f"{workspace.root}:{thread_id}".encode()).hexdigest()[:20]
+    def _name(workspace_id: str, thread_id: str) -> str:
+        digest = hashlib.sha256(f"{workspace_id}:{thread_id}".encode()).hexdigest()[:20]
         return f"sage-sandbox-{digest}"
 
     @staticmethod

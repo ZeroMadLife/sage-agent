@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from core.coding.context import WorkspaceContext
+from core.coding.tool_executor.shell_risk import check_dangerous_command
 from core.coding.tools.base import RegisteredTool
 
 SHELL_OPERATOR_RE = re.compile(r"^[;&|]+$")
 SHELL_READ_COMMANDS = frozenset({"cat", "find", "grep", "head", "less", "ls", "rg", "tail"})
+PRIMARY_WORKSPACE_DENIED_SHELL_PATTERNS = frozenset({"git_reset_hard", "rm_recursive"})
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,14 @@ class ToolPolicyChecker:
                 return self._prior_read_required(tool.name, str(args.get("path", "")))
         if tool.name == "run_shell":
             command = str(args.get("command", "")).strip()
+            if self.workspace.role == "primary":
+                dangerous, _, pattern_key = check_dangerous_command(command)
+                if dangerous and pattern_key in PRIMARY_WORKSPACE_DENIED_SHELL_PATTERNS:
+                    return ToolPolicyDecision.deny(
+                        "primary_workspace_destructive_shell_forbidden",
+                        "error: recursive deletion and hard reset are forbidden in the "
+                        "primary workspace",
+                    )
             if not self.allow_network_retrieval and _contains_network_access(command):
                 return ToolPolicyDecision.deny(
                     "retrieval_gate_web_not_selected",
