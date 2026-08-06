@@ -1,0 +1,953 @@
+{
+  "schema_version": 1,
+  "stage": "intent_routing",
+  "protocol": {
+    "dataset_provenance": "product_seed",
+    "formal_model_accuracy_claim": false,
+    "test_used_for_tuning": false,
+    "production_seam": "core.harness.retrieval_gate.decide_retrieval_gate"
+  },
+  "metrics": {
+    "case_count": 24,
+    "intent_accuracy": 0.9583,
+    "intent_macro_f1": 0.9683,
+    "scope_accuracy": 1.0,
+    "scope_macro_f1": 1.0,
+    "depth_accuracy": 0.9167,
+    "learning_stage_accuracy": 1.0,
+    "agentic_mode_accuracy": 0.9167,
+    "agentic_precision": 0.8333,
+    "agentic_recall": 1.0,
+    "agentic_f1": 0.9091,
+    "source_selection_accuracy": 1.0,
+    "constraint_adherence": 1.0,
+    "exact_route_accuracy": 0.9167
+  },
+  "splits": {
+    "dev": {
+      "case_count": 8,
+      "intent_accuracy": 1.0,
+      "intent_macro_f1": 1.0,
+      "scope_accuracy": 1.0,
+      "scope_macro_f1": 1.0,
+      "depth_accuracy": 1.0,
+      "learning_stage_accuracy": 1.0,
+      "agentic_mode_accuracy": 1.0,
+      "agentic_precision": 1.0,
+      "agentic_recall": 1.0,
+      "agentic_f1": 1.0,
+      "source_selection_accuracy": 1.0,
+      "constraint_adherence": 1.0,
+      "exact_route_accuracy": 1.0
+    },
+    "calibration": {
+      "case_count": 8,
+      "intent_accuracy": 0.875,
+      "intent_macro_f1": 0.8286,
+      "scope_accuracy": 1.0,
+      "scope_macro_f1": 1.0,
+      "depth_accuracy": 0.875,
+      "learning_stage_accuracy": 1.0,
+      "agentic_mode_accuracy": 0.875,
+      "agentic_precision": 0.8,
+      "agentic_recall": 1.0,
+      "agentic_f1": 0.8889,
+      "source_selection_accuracy": 1.0,
+      "constraint_adherence": 1.0,
+      "exact_route_accuracy": 0.875
+    },
+    "test": {
+      "case_count": 8,
+      "intent_accuracy": 1.0,
+      "intent_macro_f1": 1.0,
+      "scope_accuracy": 1.0,
+      "scope_macro_f1": 1.0,
+      "depth_accuracy": 0.875,
+      "learning_stage_accuracy": 1.0,
+      "agentic_mode_accuracy": 0.875,
+      "agentic_precision": 0.75,
+      "agentic_recall": 1.0,
+      "agentic_f1": 0.8571,
+      "source_selection_accuracy": 1.0,
+      "constraint_adherence": 1.0,
+      "exact_route_accuracy": 0.875
+    }
+  },
+  "failures": {
+    "depth": 1,
+    "intent": 1
+  },
+  "cases": [
+    {
+      "case_id": "intent-dev-001",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "explain",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "explain",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-002",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "compare",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "compare",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-003",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-004",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-005",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "episodic_memory",
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "episodic_memory",
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-006",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ]
+      },
+      "actual": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-007",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "explain",
+        "knowledge_scope": "book",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "explain",
+        "knowledge_scope": "book",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-dev-008",
+      "dataset_split": "dev",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": []
+      },
+      "actual": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": [],
+        "routing_confidence": 0.6,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-001",
+      "dataset_split": "calibration",
+      "primary_failure": "intent",
+      "checks": {
+        "constraint": true,
+        "intent": false,
+        "scope": true,
+        "depth": false,
+        "learning_stage": true,
+        "agentic": false,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "explain",
+        "knowledge_scope": "mixed",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge",
+          "web"
+        ]
+      },
+      "actual": {
+        "intent_family": "research",
+        "knowledge_scope": "mixed",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge",
+          "web"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-002",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "compare",
+        "knowledge_scope": "book",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "compare",
+        "knowledge_scope": "book",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-003",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-004",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-005",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-006",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "research",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "research",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-007",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": []
+      },
+      "actual": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": [],
+        "routing_confidence": 0.6,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-cal-008",
+      "dataset_split": "calibration",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ]
+      },
+      "actual": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-001",
+      "dataset_split": "test",
+      "primary_failure": "depth",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": false,
+        "learning_stage": true,
+        "agentic": false,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "explain",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "explain",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-002",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "compare",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "compare",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-003",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "plan",
+        "knowledge_scope": "workspace",
+        "depth": "multi_hop",
+        "learning_stage": "discover",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-004",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "practice",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "apply",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-005",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "recall",
+        "knowledge_scope": "workspace",
+        "depth": "direct",
+        "learning_stage": "assess",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-006",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ]
+      },
+      "actual": {
+        "intent_family": "research",
+        "knowledge_scope": "web",
+        "depth": "multi_hop",
+        "learning_stage": "understand",
+        "recommended_mode": "agentic_candidate",
+        "selected_sources": [
+          "web"
+        ],
+        "routing_confidence": 0.82,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-007",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "explain",
+        "knowledge_scope": "book",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ]
+      },
+      "actual": {
+        "intent_family": "explain",
+        "knowledge_scope": "book",
+        "depth": "direct",
+        "learning_stage": "understand",
+        "recommended_mode": "single_pass",
+        "selected_sources": [
+          "knowledge"
+        ],
+        "routing_confidence": 0.9,
+        "degraded": false
+      }
+    },
+    {
+      "case_id": "intent-test-008",
+      "dataset_split": "test",
+      "primary_failure": "none",
+      "checks": {
+        "constraint": true,
+        "intent": true,
+        "scope": true,
+        "depth": true,
+        "learning_stage": true,
+        "agentic": true,
+        "source": true
+      },
+      "expected": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": []
+      },
+      "actual": {
+        "intent_family": "meta",
+        "knowledge_scope": "none",
+        "depth": "direct",
+        "learning_stage": "discover",
+        "recommended_mode": "skip",
+        "selected_sources": [],
+        "routing_confidence": 0.6,
+        "degraded": false
+      }
+    }
+  ],
+  "evaluation_id": "sage-book-learning-intent-product-seed-v1",
+  "source": {
+    "commit": "849241d44f49563b1e53066f110a808e47059332",
+    "dirty": false
+  },
+  "dataset": {
+    "path": "book_learning_intent_v1_seed.jsonl",
+    "sha256": "sha256:2ff6bf00b6a1506f8f22bd3a2b90432c88d11d21c347fe40e207047bd0fcdf19",
+    "case_count": 24,
+    "split_counts": {
+      "dev": 8,
+      "calibration": 8,
+      "test": 8
+    }
+  }
+}

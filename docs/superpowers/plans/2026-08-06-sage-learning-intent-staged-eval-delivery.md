@@ -1,7 +1,7 @@
 # Sage 学习意图路由与分阶段 Eval 实施计划
 
 > 日期：2026-08-06
-> 状态：执行中
+> 状态：第一切片已完成；Agentic RAG 与生成评测待后续阶段
 > 基线：`codex/book-learning-rag-design@5673226`
 > 前置设计：`docs/superpowers/specs/2026-08-05-sage-book-learning-rag-design.md`
 
@@ -59,3 +59,10 @@
 不足或问题确实需要跨来源时才委派 Research；最后再加入生成、faithfulness、answer relevance
 和端到端成本/延迟 Eval。
 
+## 5. 第一切片收口
+
+- source commit：`849241d44f49563b1e53066f110a808e47059332`；
+- 24 条 `product_seed` 中 22 条完整路由正确，2 条分别暴露 intent 与 depth 过度升级；
+- 约束遵循与来源选择均为 `1.0`，但它们只代表人工 seed 回归，不是正式模型准确率；
+- 后端全量 `1756 passed, 11 skipped`，前端 `505 passed`，两套生产构建通过；
+- 报告与失败分析见 `docs/evals/learning-intent-routing-v1.md`。
