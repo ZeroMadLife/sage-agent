@@ -1,7 +1,7 @@
 # Sage 语义边界与描述增强 Parent-Child 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A-C 已实现并通过本地门禁；Slice D 未开始
+> 状态：Slice A-C 已实现；Slice D 的运行时与分阶段 evaluator 已交付，校准 gate 和真实生成仍待完成
 > 基线：`codex/book-learning-rag-design@204fcef`
 > 前置设计：`docs/superpowers/specs/2026-08-05-sage-book-learning-rag-design.md`
 
@@ -180,3 +180,31 @@ git diff --check
 - 尚未加入版权与来源可审计的真实长书/TXT/EPUB benchmark；
 - 尚未产生 v2 PostgreSQL selection/frozen-test 报告，不存在可写入简历的增益数字；
 - Slice D Agentic RAG、claim-level faithfulness 与 retrieval sufficiency 升级策略仍是下一阶段。
+
+## 8. 2026-08-06 真实长书与 Agentic 评测推进
+
+本阶段关闭了第 7 节中的两项缺口：
+
+- 接入 Project Gutenberg《西遊記》和 *The Wealth of Nations*，建立 14 条 `seed_manual`
+  query/gold、manifest hash 和本地忽略语料缓存；
+- 交付运行时 `BookLearningCoordinator`、分阶段 evaluator 和真实书籍 bounded recovery runner，
+  可记录首轮/最终 evidence recall、claim coverage、增量 gain、false acceptance、P95 与停止原因。
+
+真实运行还发现并修复了两个此前 synthetic 测试没有暴露的问题：
+
+- TXT 丢失 `BOOK -> CHAPTER -> PART` 层级，导致同名 `CHAPTER I` 无法唯一标注；parser 升级
+  到 `sage.txt@1.1.0`，TXT passage ID 使用完整 heading path；
+- 每 revision 2,000 chunk 上限使两本长书只覆盖 3,968/5,185 个正文 block；上限改为
+  `KnowledgeAblationPolicy.max_chunks_per_revision=20_000` 并把 coverage/truncation 写入报告，
+  当前 baseline 覆盖率为 1.000。
+
+当前真实诊断不支持直接切换默认策略：semantic boundary 在 32 个超长 block 上没有净质量增益；
+contextual chunk 有小幅 Recall/NDCG 候选收益；parent-child 提高 MRR/NDCG，但 25,836 chunks
+使 SQLite FastEmbed P95 达到 6.3s。默认仍保持 baseline，下一轮先扩大并独立 review gold，
+再在 PostgreSQL/pgvector 上做完整 selection/frozen-test。
+
+Agentic 的 oracle-manual rewrite 在 2-query 上限下把 3 条可回答 case 的 candidate evidence recall
+从 0.1667 提高到 0.8889、gold-evidence 完整度代理从 0 提高到 0.6667，但 unanswerable 子集 false acceptance 为
+1.00、correct abstention 为 0。下一优先级是校准 relevance/
+evidence sufficiency gate；真实 LLMWiki 生成、RAGAS 辅助指标和 judge agreement 仍未运行，
+不能把 recovery 上限实验写成自动意图模型或生产 answer quality。

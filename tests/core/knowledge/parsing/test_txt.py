@@ -61,3 +61,23 @@ def test_txt_parser_rejects_non_utf8_payload() -> None:
         assert "UTF-8" in str(exc)
     else:
         raise AssertionError("non-UTF-8 TXT must be rejected")
+
+
+def test_txt_parser_preserves_book_chapter_and_part_hierarchy() -> None:
+    payload = (
+        b"BOOK I.\n\n"
+        b"CHAPTER I.\n\n"
+        b"Division of labour.\n\n"
+        b"PART I.\n\n"
+        b"A bounded subsection.\n\n"
+        b"BOOK II.\n\n"
+        b"CHAPTER I.\n\n"
+        b"Division of stock.\n"
+    )
+
+    document = TxtParser().parse(_request(payload))
+
+    assert document.provenance.parser_version == "1.1.0"
+    assert document.blocks[2].heading_path == ("BOOK I.", "CHAPTER I.")
+    assert document.blocks[4].heading_path == ("BOOK I.", "CHAPTER I.", "PART I.")
+    assert document.blocks[-1].heading_path == ("BOOK II.", "CHAPTER I.")

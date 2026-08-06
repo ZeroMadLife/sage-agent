@@ -24,7 +24,6 @@ _LATIN_TOKEN = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _MAX_CHUNK_CHARS = 4_000
 _CHUNK_OVERLAP_CHARS = 160
-_MAX_CHUNKS_PER_REVISION = 2_000
 _MAX_QUERY_TERMS = 64
 
 KnowledgeRetrievalMode = Literal["sparse", "dense", "hybrid"]
@@ -50,6 +49,7 @@ class KnowledgeAblationPolicy:
     semantic_breakpoint_percentile: float = 95.0
     description_max_chars: int = 320
     rerank_top_n: int = 20
+    max_chunks_per_revision: int = 20_000
 
     def __post_init__(self) -> None:
         if self.strategy not in {
@@ -75,6 +75,8 @@ class KnowledgeAblationPolicy:
             raise ValueError("parent description max chars must be between 80 and 1000")
         if not 2 <= self.rerank_top_n <= 50:
             raise ValueError("cross-encoder rerank top-n must be between 2 and 50")
+        if not 2_000 <= self.max_chunks_per_revision <= 50_000:
+            raise ValueError("max chunks per revision must be between 2000 and 50000")
 
 
 @dataclass(frozen=True, slots=True)
@@ -461,7 +463,7 @@ def chunk_document(
                     retrieval_description_revision=part.description_revision,
                 )
             )
-            if len(chunks) >= _MAX_CHUNKS_PER_REVISION:
+            if len(chunks) >= policy.max_chunks_per_revision:
                 return tuple(chunks)
     if chunks:
         return tuple(chunks)

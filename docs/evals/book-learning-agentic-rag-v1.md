@@ -1,57 +1,108 @@
-# Sage 长书学习 Agentic RAG v1 收口
+# Sage 长书学习 RAG / LLMWiki / Agentic RAG v1 收口
 
 > 日期：2026-08-06
-> 状态：运行时状态机与评测入口已交付；真实长书检索/生成质量数字待人工 gold
+> 状态：真实公共领域 TXT 已接入；检索与有界 recovery 已有可复现 seed 数字；生成层仍待模型评测
 
 ## 产品行为
 
-用户仍然只在主对话里提问，不需要先选择一本书。服务端先按学习意图路由本地 Knowledge：
+用户继续在主对话提问，不需要先选择书。服务端按学习意图决定是否读取本地书籍 Knowledge：
 
-1. 单一概念且已有可引用证据时，把证据放入父模型的 durable context；
-2. 跨书、比较或多跳问题证据不足时，最多并行启动 2 个只读 Research child；
-3. 服务端把 child 的真实 citation 合成 EvidenceBundle，再交给 Synthesize；
-4. Synthesize 有引用且第二轮新增了证据，直接返回综合答案；
-5. 没有新证据、bundle 为空、检索失败、冲突未解或综合没有引用时，服务端直接拒答。
+1. 单一概念且证据充分时，直接把带 citation 的 EvidenceBundle 放入父模型上下文。
+2. 比较、跨书或多跳问题首轮证据不足时，只允许一次有界 recovery；可以拆成最多两个定向 Research 分支。
+3. 服务端合并真实 citation，生成模型只能读取当前 parent run 授权的 EvidenceBundle。
+4. 第二轮没有新增证据、来源冲突未解、bundle 为空或答案没有 citation 时，fail closed，返回拒答。
+5. 用户只看最终答案；轮次、rewrite、child 数量、停止原因进入 bounded receipt，Citation Inspector 再按需展开，不展示 CoT。
 
-这条路径复用现有 Harness、RunStore、EvidenceBundle 和 Subagent profile，没有建立第二套 Agent
-运行时。外部 approval resume 只恢复 checkpoint，不重新执行 Coordinator。
+## 本轮真实语料与数据边界
 
-## 工程约束
+- 语料为 Project Gutenberg 公共领域《西遊記》和 *The Wealth of Nations*，合计 4,733,020 bytes。
+- TXT parser `sage.txt@1.1.0` 保留 `BOOK -> CHAPTER -> PART` heading path，citation 使用完整路径，避免《国富论》不同 Book 的同名章节碰撞。
+- Benchmark `sage-book-learning-v1@2026-08-06.1` 当前 14 条：10 条 answerable、3 条 multi-document、4 条 unanswerable/hard negative；状态为 `seed_manual`，不是人工冻结生产集。
+- 本轮发现并修正 1 条 gold：悟空加入取经队伍的第十四回此前被漏标。修改后必须同步 dataset SHA-256，旧报告均视为历史诊断，不与新 gold 混算。
+- 长书容量从隐藏的 2,000 chunk 上限改为策略字段默认 20,000，并在报告记录 block coverage/truncation。当前完整语料覆盖 5,185/5,185 个正文 block，baseline 5,220 chunks。
 
-- 首轮 Knowledge 检索，最多一次恢复/升级，总检索轮次不超过 2；
-- Research child 最大并发数和数量均为 2，委派深度仍为 1；
-- Synthesize 只能读取当前 parent run 授权的 EvidenceBundle；
-- 第二轮没有新增 citation、生成结果没有引用 bundle citation 时 fail closed；
-- timeline 只公开轮次、数量、状态、token 和停止原因，不公开 query、证据正文或 citation ID；
-- 单轮书籍证据进入 Harness state，checkpoint/resume 后仍可恢复，未知字段不会被中间件丢弃。
+## Retrieval 阶段
 
-## 分阶段 Eval
+指标回答“正确章节有没有找回、排在第几、是否拖慢”：Recall@10、Precision@10、MRR、NDCG@10、Hit Rate、unanswerable accuracy、P50/P95，以及 block coverage。
 
-| 阶段 | 已有证据 | 当前边界 |
-| --- | --- | --- |
-| Parser | 2 本公共领域长书，4,733,020 bytes、5,374 blocks；locator 覆盖和非空行保留均为 1.000 | 只证明解析与定位，不证明检索/回答正确 |
-| Chunk/Index | Semantic Boundary、Parent-Child、Described Parent-Child 均保留为可消融候选 | 尚无真实长书 query gold，不能报告增益 |
-| Retrieval | 复用版本化 Recall/MRR/NDCG 评测器 | 书籍 benchmark 尚未人工标注 |
-| Agentic | 新 evaluator 统计 evidence coverage、false acceptance、unnecessary delegation、citation support、token、P95、stop reason | 当前只有确定性回归，没有真实模型对照数字 |
-| Generation/E2E | faithfulness 与 answer relevance 必须作为显式离线标签进入 evaluator | 尚未运行真实模型生成评测 |
+完整语料上的已运行诊断（seed gold；不等同生产准确率）：
 
-因此本版本可以证明“Agentic RAG 如何自动运行、如何停止、如何恢复、如何拒答”，不能声称它
-已经提升了真实长书 Recall、Faithfulness 或端到端准确率。
+| 策略 | provider | Recall@10 | MRR | NDCG@10 | chunks | P50/P95 | 结论 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| baseline | `sage.hashing` | 0.650 | 0.525 | 0.556 | 5,220 | 553/759 ms | 便宜基线，非语义召回 |
+| baseline | FastEmbed multilingual | 0.700 | 0.520 | 0.565 | 5,220 | 1,133/2,345 ms | 语义模型提高覆盖但 SQLite 扫描变慢 |
+| contextual_chunk | FastEmbed multilingual | 0.750 | 0.523 | 0.582 | 5,220 | 859/1,569 ms | 当前 seed 候选最优，但仍未经过 frozen split |
+| parent_child | FastEmbed multilingual | 0.750* | 0.608* | 0.647* | 25,836 | 4,614/6,329 ms | child 找、parent 答的方向成立，成本过高 |
+| semantic_boundary | FastEmbed multilingual | 0.700* | 0.520* | 0.565* | 5,240 | 1,111/1,852 ms | 当前长 block 样本太少，未证明增益 |
+
+`*` 标记表示运行时使用 gold 修正前的同一语料诊断报告，只能用于方向判断；正式比较需在
+gold v1.1 扩充后重跑。contextual row 使用修正后 gold；recovery 另有最多 2 个 rewrite 的独立
+v2 收据。所有报告还明确写入 provider revision、parser revision、chunk strategy 和 source dirty 状态。
+
+当前可执行结论：
+
+- 不把 semantic boundary 直接设为默认；先补后半章节和真正长 block 的 query gold。
+- contextual chunk 作为候选策略保留，下一轮重点看跨书和 hard negative，而不是只看总 Recall。
+- parent-child 需要异步索引、向量缓存和 PostgreSQL/pgvector 或 parent projection；不能把 25k child 的 SQLite exact scan 直接放到交互路径。
+
+## Bounded Recovery / Agentic 阶段
+
+`scripts/evaluate_book_learning_recovery.py` 在同一索引上比较首轮 query 和一次人工审计 rewrite，
+每个 case 最多 2 个并行 rewrite。当前协议明确是 `oracle_manual`，用于隔离“索引能力”和
+“意图改写能力”，不是小模型效果；统计对象是进入 EvidenceBundle token budget 前的候选 passages，
+不是最终答案已实际消费的上下文。
+
+FastEmbed + contextual chunk 的 4-case 收据（3 条 answerable、1 条 unanswerable）：
+
+- answerable candidate evidence recall 从 0.1667 提升到 0.8889，incremental gain 0.7222；
+  三者都有增量证据，但没有被 2-query 预算全部找齐。无答案 case 不再以空 gold 计作 100% 召回。
+- gold-evidence 完整度代理从 0 提升到 0.6667，说明 recovery 有效但仍不是满覆盖；无答案
+  case 只进入 false acceptance / correct abstention，不再抬高 claim coverage。
+- 这里的 claim coverage 是“gold passages 是否全部找齐”的代理，不是模型已经抽取并验证了
+  答案声明；真实 claim-level 指标必须等生成层输出后再计算。
+- rewrite intent drift 0.000（人工标签，不能替代模型改写评测）。
+- 两次同口径 v3/v4 收据中，14 条 first-pass query 的 P50 为 917-3,078 ms、P95 为
+  1,993-9,420 ms；recovery 分支并行估计 P95 为 2,044-5,727 ms。延迟来自本地 SQLite exact
+  scan，受机器负载影响明显，当前 worktree 为 dirty，只用于识别成本瓶颈，不作为生产 SLA。
+- 以“非空检索即回答”的无 gate 代理决策计算，unanswerable 子集 false acceptance 1.00、correct
+  abstention 0.0：当前最紧的缺口是 relevance/证据充分性 gate，不能把这个代理值当成最终模型回答率。
+
+运行时 `BookLearningCoordinator` 已把同一策略落到服务端：最多 2 个 research child、最多 2 轮检索、EvidenceBundle 绑定 parent run、无新 citation 或无 citation 生成就拒答。它不依赖模型自报 confidence；confidence 只能作为评测字段。
+
+## LLMWiki / Generation / E2E 阶段
+
+LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类：
+
+- 硬门禁：required claim coverage、unsupported claim rate、citation correctness、false acceptance、correct abstention。
+- 生成辅助：context precision/recall、faithfulness、answer relevance、noise sensitivity；RAGAS 只作为辅助，不替代 citation/claim 门禁。
+- 用户体验：最终答案相关性、是否明确边界、Citation Inspector 是否能定位原文；不展示模型 CoT。
+
+`evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。当前没有真实长书模型生成数字，也没有声称 RAGAS 已安装或已跑通；需要外部 LLM key 时再单独配置 provider 并记录模型 revision、成本和 judge agreement。
 
 ## 验证入口
 
 ```bash
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
-  -m pytest tests/core/harness/test_book_learning_coordinator.py \
-  tests/api/test_coding_deerflow_context.py \
-  tests/evals/test_book_learning_agentic.py -q
+  -m pytest tests/evals/test_book_learning_stages.py \
+  tests/evals/test_book_learning_agentic.py \
+  tests/scripts/test_evaluate_book_learning_recovery.py \
+  tests/core/knowledge/parsing/test_txt.py \
+  tests/core/knowledge/test_benchmark.py -q
 
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
-  scripts/evaluate_book_txt_parser.py
+  scripts/benchmark_book_learning_retrieval.py --skip-fetch \
+  --provider-factory scripts.benchmark_providers.fastembed_local:create_provider \
+  --strategy contextual_chunk --output .coding/evals/book-learning-retrieval.json
+
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
+  scripts/evaluate_book_learning_recovery.py --skip-fetch \
+  --provider-factory scripts.benchmark_providers.fastembed_local:create_provider \
+  --strategy contextual_chunk --output .coding/evals/book-learning-recovery.json
 ```
 
-下一阶段先标 30-50 条《西游记》《国富论》书籍 query gold，覆盖单章、跨章、跨书、无答案和
-hard negative；按 split 冻结后再跑 Recall/MRR/NDCG、single-pass 对 Agentic 的增益、P95/成本，
-最后才接真实生成的 Faithfulness、citation support 和 answer relevance。
+## 下一阶段
+
+先把 seed 扩展到 30-50 条并独立 review，特别补后半章节、跨书拆解、不可回答数值和相似 hard negative；再做 dev/calibration/test gate。只有 gate 的 false acceptance 降到可接受范围后，才接真实模型生成与 RAGAS judge，比较 single-pass、bounded recovery、Agentic 多分支的端到端 faithfulness、citation support、成本和 P95。

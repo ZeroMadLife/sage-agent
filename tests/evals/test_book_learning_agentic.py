@@ -42,10 +42,13 @@ def test_agentic_metrics_separate_support_from_faithfulness_labels() -> None:
     )
 
     metrics = report["metrics"]
+    assert metrics["answerable_case_count"] == 1
+    assert metrics["unanswerable_case_count"] == 1
     assert metrics["evidence_coverage"] == 1.0
     assert metrics["citation_support"] == 0.5
-    assert metrics["false_acceptance_rate"] == 0.5
-    assert metrics["faithfulness_labeled_rate"] == 1.0
+    assert metrics["false_acceptance_rate"] == 1.0
+    assert metrics["faithfulness_pass_rate"] == 1.0
+    assert metrics["faithfulness_labeled_count"] == 1
     assert metrics["p95_latency_ms"] == 350
     assert report["stop_reasons"] == {
         "evidence_sufficient": 1,

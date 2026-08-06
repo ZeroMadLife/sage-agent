@@ -177,6 +177,7 @@ def test_layered_eval_records_cross_encoder_as_one_isolated_strategy() -> None:
             "semantic_breakpoint_percentile": 95.0,
             "description_max_chars": 320,
             "rerank_top_n": 20,
+            "max_chunks_per_revision": 20_000,
         },
         "description_provider": None,
         "reranker": {

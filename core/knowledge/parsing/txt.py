@@ -13,6 +13,11 @@ _CHAPTER_HEADING = re.compile(
     r"(?:第[一二三四五六七八九十百千万零〇○\d]+[章节回部卷篇]))(?:[\s:：.-].*)?\s*$",
     re.IGNORECASE,
 )
+_BOOK_HEADING = re.compile(r"^\s*(?:book|volume)\b", re.IGNORECASE)
+_PART_HEADING = re.compile(r"^\s*part\b", re.IGNORECASE)
+_ENGLISH_CHAPTER_HEADING = re.compile(r"^\s*chapter\b", re.IGNORECASE)
+_CJK_BOOK_HEADING = re.compile(r"^\s*第[一二三四五六七八九十百千万零〇○\d]+[部卷篇]")
+_CJK_CHAPTER_HEADING = re.compile(r"^\s*第[一二三四五六七八九十百千万零〇○\d]+[章节回]")
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
 _LATIN = re.compile(r"[A-Za-z]")
 
@@ -21,7 +26,7 @@ class TxtParser:
     """Parse TXT without inventing pages or losing source offsets."""
 
     parser_id = "sage.txt"
-    parser_version = "1.0.0"
+    parser_version = "1.1.0"
     priority = 90
     media_types = frozenset({"text/plain"})
     extensions = frozenset({".txt"})
@@ -41,6 +46,8 @@ class TxtParser:
         lines = _source_lines(content, bom_bytes=bom_bytes)
         blocks: list[ParsedBlock] = []
         heading_path: tuple[str, ...] = ()
+        book_heading = ""
+        chapter_heading = ""
         pending: list[_SourceLine] = []
 
         def flush_pending() -> None:
@@ -71,7 +78,22 @@ class TxtParser:
             if _CHAPTER_HEADING.match(line.text):
                 flush_pending()
                 heading = line.text.strip()
-                heading_path = (heading,)
+                level = _heading_level(heading)
+                if level == "book":
+                    book_heading = heading
+                    chapter_heading = ""
+                    heading_path = (heading,)
+                elif level == "chapter":
+                    chapter_heading = heading
+                    heading_path = tuple(item for item in (book_heading, heading) if item)
+                elif level == "part":
+                    heading_path = tuple(
+                        item for item in (book_heading, chapter_heading, heading) if item
+                    )
+                else:
+                    book_heading = ""
+                    chapter_heading = heading
+                    heading_path = (heading,)
                 blocks.append(
                     _block(
                         document_id,
@@ -201,3 +223,13 @@ def _language(content: str) -> str:
     if latin:
         return "en"
     return "und"
+
+
+def _heading_level(heading: str) -> str:
+    if _BOOK_HEADING.match(heading) or _CJK_BOOK_HEADING.match(heading):
+        return "book"
+    if _PART_HEADING.match(heading):
+        return "part"
+    if _ENGLISH_CHAPTER_HEADING.match(heading) or _CJK_CHAPTER_HEADING.match(heading):
+        return "chapter"
+    return "section"

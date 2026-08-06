@@ -44,12 +44,11 @@ def evaluate_agentic_outcomes(cases: Iterable[AgenticEvalCase]) -> dict[str, obj
         ):
             raise ValueError(f"invalid resource counters for {case.case_id}")
 
-    coverage = [_coverage(case.expected_citations, case.actual_citations) for case in evaluated]
+    answerable = [case for case in evaluated if case.expected_decision == "answer"]
+    unanswerable = [case for case in evaluated if case.expected_decision == "abstain"]
+    coverage = [_coverage(case.expected_citations, case.actual_citations) for case in answerable]
     citation_support = [_citation_support(case) for case in evaluated]
-    false_acceptance = [
-        case.expected_decision == "abstain" and case.actual_decision == "answer"
-        for case in evaluated
-    ]
+    false_acceptance = [case.actual_decision == "answer" for case in unanswerable]
     unnecessary_delegation = [
         not case.expected_agentic and case.child_count > 0 for case in evaluated
     ]
@@ -65,6 +64,8 @@ def evaluate_agentic_outcomes(cases: Iterable[AgenticEvalCase]) -> dict[str, obj
         },
         "metrics": {
             "case_count": len(evaluated),
+            "answerable_case_count": len(answerable),
+            "unanswerable_case_count": len(unanswerable),
             "evidence_coverage": _mean(coverage),
             "citation_support": _mean(citation_support),
             "false_acceptance_rate": _rate(false_acceptance),
@@ -73,8 +74,10 @@ def evaluate_agentic_outcomes(cases: Iterable[AgenticEvalCase]) -> dict[str, obj
             "mean_retrieval_rounds": _mean([float(case.retrieval_rounds) for case in evaluated]),
             "mean_child_count": _mean([float(case.child_count) for case in evaluated]),
             "p95_latency_ms": _percentile([case.latency_ms for case in evaluated], 0.95),
-            "faithfulness_labeled_rate": _rate(faithfulness) if faithfulness else None,
-            "answer_relevance_labeled_rate": _rate(relevance) if relevance else None,
+            "faithfulness_pass_rate": _rate(faithfulness) if faithfulness else None,
+            "answer_relevance_pass_rate": _rate(relevance) if relevance else None,
+            "faithfulness_labeled_count": len(faithfulness),
+            "answer_relevance_labeled_count": len(relevance),
         },
         "stop_reasons": _counts(case.actual_stop_reason for case in evaluated),
         "cases": [_case_payload(case) for case in evaluated],

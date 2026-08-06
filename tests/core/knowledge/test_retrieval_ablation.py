@@ -63,11 +63,22 @@ def _hit(chunk, *, rank: int, score: float = 0.03) -> KnowledgeSearchHit:
 
 def test_ablation_policy_allows_exactly_one_named_strategy() -> None:
     assert KnowledgeAblationPolicy().strategy == "baseline"
+    assert KnowledgeAblationPolicy().max_chunks_per_revision == 20_000
     assert KnowledgeAblationPolicy(strategy="cross_encoder").rerank_top_n == 20
     assert KnowledgeAblationPolicy(strategy="described_parent_child").description_max_chars == 320
 
     with pytest.raises(ValueError, match="unsupported Knowledge ablation strategy"):
         KnowledgeAblationPolicy(strategy="contextual_chunk+cross_encoder")  # type: ignore[arg-type]
+
+
+def test_long_book_chunking_preserves_more_than_two_thousand_blocks() -> None:
+    markdown = "# Long Book\n\n" + "\n\n".join(
+        f"paragraph number {index}" for index in range(2_001)
+    )
+
+    chunks = _chunks(markdown, KnowledgeAblationPolicy())
+
+    assert len(chunks) == 2_001
 
 
 def test_contextual_chunk_adds_source_context_only_to_index_inputs() -> None:
