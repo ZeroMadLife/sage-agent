@@ -14,6 +14,7 @@ from PIL import Image, PngImagePlugin
 
 from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
+    POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION,
     POSTGRES_INDEX_SCHEMA_REVISION,
     POSTGRES_MULTIMODAL_SCHEMA_REVISION,
     POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
@@ -123,10 +124,20 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
     assert POSTGRES_INDEX_SCHEMA_REVISION in revisions
     assert POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION in revisions
     assert POSTGRES_MULTIMODAL_SCHEMA_REVISION in revisions
+    assert POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION in revisions
     assert "embedding_dimensions" in revision_columns
-    assert {"block_kind", "bbox", "media_ref", "confidence", "parser_id", "parser_version"} <= (
-        chunk_columns
-    )
+    assert {
+        "block_kind",
+        "bbox",
+        "media_ref",
+        "confidence",
+        "parser_id",
+        "parser_version",
+        "parent_chunk_id",
+        "retrieval_description",
+        "retrieval_description_provider",
+        "retrieval_description_revision",
+    } <= chunk_columns
     assert idle_in_transaction == 0
 
 

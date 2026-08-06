@@ -45,6 +45,7 @@ from core.knowledge.retrieval import (
 POSTGRES_INDEX_SCHEMA_REVISION = "20260727_rag_postgres_exact_v1"
 POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION = "20260728_rag_retrieval_trace_v1"
 POSTGRES_MULTIMODAL_SCHEMA_REVISION = "20260728_rag_multimodal_evidence_v1"
+POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION = "20260806_rag_described_parent_child_v1"
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,10 @@ CREATE TABLE IF NOT EXISTS knowledge_index_chunks (
     confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     parser_id TEXT NOT NULL DEFAULT '',
     parser_version TEXT NOT NULL DEFAULT '',
+    parent_chunk_id TEXT,
+    retrieval_description TEXT,
+    retrieval_description_provider TEXT,
+    retrieval_description_revision TEXT,
     text TEXT NOT NULL,
     token_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
@@ -294,7 +299,11 @@ class PostgresKnowledgeIndex:
                     ADD COLUMN IF NOT EXISTS media_ref TEXT,
                     ADD COLUMN IF NOT EXISTS confidence DOUBLE PRECISION NOT NULL DEFAULT 1.0,
                     ADD COLUMN IF NOT EXISTS parser_id TEXT NOT NULL DEFAULT '',
-                    ADD COLUMN IF NOT EXISTS parser_version TEXT NOT NULL DEFAULT ''
+                    ADD COLUMN IF NOT EXISTS parser_version TEXT NOT NULL DEFAULT '',
+                    ADD COLUMN IF NOT EXISTS parent_chunk_id TEXT,
+                    ADD COLUMN IF NOT EXISTS retrieval_description TEXT,
+                    ADD COLUMN IF NOT EXISTS retrieval_description_provider TEXT,
+                    ADD COLUMN IF NOT EXISTS retrieval_description_revision TEXT
                     """
                 )
                 cursor.execute(
@@ -317,6 +326,13 @@ class PostgresKnowledgeIndex:
                     VALUES (%s) ON CONFLICT (revision) DO NOTHING
                     """,
                     (POSTGRES_MULTIMODAL_SCHEMA_REVISION,),
+                )
+                cursor.execute(
+                    """
+                    INSERT INTO knowledge_index_schema_migrations (revision)
+                    VALUES (%s) ON CONFLICT (revision) DO NOTHING
+                    """,
+                    (POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION,),
                 )
             postgres.commit()
 
@@ -1117,14 +1133,16 @@ class PostgresKnowledgeIndex:
                 source_id, source_revision, source_kind, source_relative_path,
                 proposal_id, artifact_id, block_id, ordinal, title, heading_path,
                 page_number, block_kind, bbox, media_ref, confidence, parser_id,
-                parser_version, text, token_count, content_hash, visibility, language,
+                parser_version, parent_chunk_id, retrieval_description,
+                retrieval_description_provider, retrieval_description_revision,
+                text, token_count, content_hash, visibility, language,
                 active, search_text, embedding, embedding_model, embedding_revision,
                 embedding_dimensions, embedding_input_hash, created_at
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             """,
             (
@@ -1150,6 +1168,10 @@ class PostgresKnowledgeIndex:
                 chunk.confidence,
                 chunk.parser_id,
                 chunk.parser_version,
+                chunk.parent_chunk_id,
+                chunk.retrieval_description,
+                chunk.retrieval_description_provider,
+                chunk.retrieval_description_revision,
                 chunk.text,
                 chunk.token_count,
                 chunk.content_hash,
@@ -1295,6 +1317,20 @@ class PostgresKnowledgeIndex:
             confidence=float(row["confidence"]),
             parser_id=str(row["parser_id"]),
             parser_version=str(row["parser_version"]),
+            parent_chunk_id=str(row["parent_chunk_id"]) if row["parent_chunk_id"] else None,
+            retrieval_description=(
+                str(row["retrieval_description"]) if row["retrieval_description"] else None
+            ),
+            retrieval_description_provider=(
+                str(row["retrieval_description_provider"])
+                if row["retrieval_description_provider"]
+                else None
+            ),
+            retrieval_description_revision=(
+                str(row["retrieval_description_revision"])
+                if row["retrieval_description_revision"]
+                else None
+            ),
         )
 
     @contextmanager

@@ -70,6 +70,7 @@ from core.knowledge.migration import (
 )
 from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import (
+    POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION,
     POSTGRES_INDEX_SCHEMA_REVISION,
     POSTGRES_MULTIMODAL_SCHEMA_REVISION,
     POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION,
@@ -98,6 +99,7 @@ from core.knowledge.reranking import (
     FastEmbedCrossEncoderProvider,
 )
 from core.knowledge.retrieval import (
+    ExtractiveParentDescriptionProvider,
     HashingEmbeddingProvider,
     KnowledgeAblationPolicy,
     KnowledgeAblationStrategy,
@@ -141,6 +143,7 @@ __all__ = [
     "DEFAULT_FASTEMBED_MODEL_REVISION",
     "DEFAULT_FASTEMBED_REPOSITORY",
     "FASTEMBED_RERANK_RUNTIME_REVISION",
+    "POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION",
     "POSTGRES_INDEX_SCHEMA_REVISION",
     "POSTGRES_MULTIMODAL_SCHEMA_REVISION",
     "POSTGRES_RETRIEVAL_TRACE_SCHEMA_REVISION",
@@ -152,6 +155,7 @@ __all__ = [
     "EvalPassage",
     "EvidenceLearning",
     "EvidenceLearningCitation",
+    "ExtractiveParentDescriptionProvider",
     "FastEmbedCrossEncoderConfig",
     "FastEmbedCrossEncoderProvider",
     "FastEmbedEmbeddingConfig",

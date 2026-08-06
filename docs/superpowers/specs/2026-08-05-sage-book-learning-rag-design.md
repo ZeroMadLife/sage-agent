@@ -410,6 +410,52 @@ sparse + dense seed
 不使用没有证据的 `SHARES_SOURCE` 或可视化 community 作为相关性传播边。完整实体三元组、
 PPR 和 community summary 是后续候选，只有 relation benchmark 证明一跳不足时才引入。
 
+### 8.3 面试可证明的切分实验
+
+第一版不把“语义切分”直接改成生产默认，而是保留单变量、可复现的实验策略：
+
+```text
+Baseline
+  -> parser block + bounded fixed split
+
+Semantic Boundary
+  -> sentence units
+  -> adjacent sentence embedding distance
+  -> dev-only percentile breakpoint
+  -> minimum chunk + hard maximum
+
+Described Parent-Child
+  -> semantic parent block
+  -> one revision-bound extractive description per parent
+  -> small child = description + bounded child text for sparse/dense
+  -> parent text returned once for answer/citation
+```
+
+`description` 是检索投影，不是可引用正文。第一版使用确定性的 extractive 描述（章节路径、
+代表句和高频主题词），后续才允许接入带模型 revision 的小模型摘要。摘要生成失败时，
+必须回退到不带 description 的 Parent-Child，不能阻塞原文索引，也不能把生成文本当作事实。
+
+这个实验专门验证大 parent 的两个矛盾：parent 语义完整但长文本会稀释词项密度与候选排名；
+child 便于精确召回但单独作为上下文会丢失定义、限定条件和跨句关系。评测必须同时报告：
+Recall/MRR/NDCG、required-claim recall、citation support、chunk 数、存储倍数、P95 和成本。
+只改善 MRR 或 NDCG、但降低 Recall、提高 false acceptance 或超过成本门槛，不能上线。
+
+### 8.4 Agentic RAG 的质量指标边界
+
+Agentic RAG 不是一个单独的“置信度分数”。Sage 将指标拆成四层：
+
+| 层 | 指标 | 要回答的问题 |
+| --- | --- | --- |
+| 检索 | context precision / context recall / multi-hop AllRecall | 找到的证据是否相关、是否覆盖所需证据 |
+| 引用 | citation support / freshness / version validity | 引用是否真的指向当前来源 |
+| 生成 | faithfulness / unsupported claim rate / answer relevance | 回答声明是否被证据支持、是否真正回答问题 |
+| 路由 | retrieval sufficiency、abstain F1、false acceptance | 是否应该继续检索、升级 Agent 或拒答 |
+
+`faithfulness` 必须基于可枚举的回答声明与 EvidenceBundle 验证，不能用模型一句“我有信心”
+替代；`answer relevance` 也不能掩盖无证据回答。Agentic RAG 只有在扩大候选、改写查询、
+关系扩展或并行 Research 后提高证据覆盖/忠实度，并且没有突破成本、延迟和拒答门禁时，
+才算工程收益。
+
 ## 9. Cangjie Skill 集成
 
 Cangjie Skill 作为“方法执行层”导入 Sage：它可以提供学习步骤、触发条件、反场景、边界和
@@ -489,6 +535,17 @@ dataset、model、parser、embedding 和 commit revision；没有跑过的能力
 - 添加 TXT/EPUB fixture 和 `book-learning-v1` route/parser/evidence 数据集；
 - 扩展 `ParsedBlock` 的 line/offset/locator，不改变现有 Markdown/PDF 行为；
 - 明确版权、路径、大小、ZIP 安全和 source revision 门禁。
+
+### Phase 0.5：长文档切分实验（当前首个实现切片）
+
+- 保留历史 `semantic_boundary` 与 `parent_child` 策略，新增独立的描述增强实验，不修改历史
+  报告的解释；
+- 加入真实会触发 `>4000` 字符 block 的论文/书籍风格 fixture，并固定 dev/calibration/test
+  的 required passages、claims 和 hard negatives；
+- 让 description 带生成器 ID/revision，检索只索引 description + child，答案只返回 parent；
+- 通过 SQLite public seam 验证重建、去重、citation 和旧策略兼容，再按同一数据集运行 PostgreSQL
+  selection/frozen-test 消融；
+- 没有通过 Recall、citation、false acceptance、P95、成本和存储门禁前，不将策略设为默认。
 
 ### Phase 1：自动书架与 Hybrid RAG
 
