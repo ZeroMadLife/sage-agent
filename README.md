@@ -105,7 +105,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **Practice Engine** | 文件、搜索、Shell、Patch、Diff、Git、审批、测试与运行工件 |
 | **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL exact 后端、可插拔 Embedding、RRF、校准拒答、失败 trace、显式一跳关系检索与 citation |
 | **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
-| **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
+| **Safety Boundary** | 路径 containment、fresh-read、权限/审批、disposable worktree、Native Local 与 Container Sandbox |
 | **Release Engineering** | 前后端质量门禁、不可变镜像、同 SHA Canary、公开/私有隔离与共同回滚 |
 
 ## 可复现工程证据
@@ -222,7 +222,8 @@ sage-agent/
 
 ## 当前边界
 
-- `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
+- `local_workspace` 只适合可信开发机；本地自动运行优先使用 `native_local` + disposable worktree，
+  macOS Seatbelt 已做 live 验证，Linux bubblewrap 仍缺本机 live 证据；生产继续使用 Container。
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
 - Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
 - RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。

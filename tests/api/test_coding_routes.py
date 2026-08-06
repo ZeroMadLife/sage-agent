@@ -381,6 +381,52 @@ def test_enabled_deerflow_profile_is_persisted_and_resumed(tmp_path: Path) -> No
     assert app.state.coding_sessions[session_id].execution_workspace.root == execution_root
 
 
+def test_native_local_session_uses_disposable_worktree_and_keeps_logical_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """native_local Run 使用 detached worktree，但继续以 primary 作为逻辑身份。"""
+    _init_git_repo(tmp_path)
+    monkeypatch.setattr(
+        "core.harness.native_local_sandbox.NativeLocalSandbox._resolve_backend",
+        staticmethod(lambda *_args, **_kwargs: ("seatbelt", "/usr/bin/sandbox-exec")),
+    )
+    app = create_app(
+        coding_model_factory=DeerflowFakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding-native",
+        coding_deerflow_v2_enabled=True,
+        coding_sandbox_provider="native_local",
+    )
+    with TestClient(app) as client:
+        created = client.post(
+            "/api/v1/coding/session",
+            json={"runtime_profile": "deerflow_v2"},
+        )
+
+        assert created.status_code == 200
+        data = created.json()
+        execution_root = Path(data["execution_workspace_root"])
+        assert data["sandbox_provider"] == "native_local"
+        assert data["workspace_root"] == str(tmp_path.resolve())
+        assert data["execution_workspace_kind"] == "git_worktree"
+        assert execution_root != tmp_path.resolve()
+        assert execution_root.is_relative_to(tmp_path.resolve())
+        assert (execution_root / "README.md").read_text(encoding="utf-8") == "# committed\n"
+        session_id = data["session_id"]
+
+        with client.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "回答一句话"})
+            while websocket.receive_json()["kind"] != "terminal":
+                pass
+
+        discarded = client.post(f"/api/v1/coding/session/{session_id}/discard")
+
+        assert discarded.status_code == 200
+        assert discarded.json()["execution_workspace_status"] == "discarded"
+        assert not execution_root.exists()
+
+
 def test_container_session_resume_fails_closed_when_execution_worktree_is_missing(
     tmp_path: Path,
 ) -> None:

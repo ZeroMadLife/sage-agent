@@ -177,7 +177,11 @@ from core.harness.retrieval_gate import (
     retrieval_tool_scope_from_events,
 )
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
-from core.harness.sandbox_factory import create_coding_sandbox, discard_coding_sandbox
+from core.harness.sandbox_factory import (
+    DISPOSABLE_SANDBOX_PROVIDERS,
+    create_coding_sandbox,
+    discard_coding_sandbox,
+)
 from core.harness.subagent_adapter import (
     CodingSubagentExecutor,
     build_coding_subagent_config,
@@ -676,6 +680,7 @@ async def _deerflow_timeline_events(
             allow_writes=True,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
             workspace_id=workspace_id,
+            logical_workspace_root=str(runtime.logical_workspace.root),
         )
         try:
             evidence_bundle_port = CodingEvidenceBundlePort(runtime)
@@ -1303,13 +1308,13 @@ async def create_coding_session(
     try:
         execution_workspace = (
             await asyncio.to_thread(execution_manager.create, session_id, workspace_root)
-            if sandbox_provider == "container"
+            if sandbox_provider in DISPOSABLE_SANDBOX_PROVIDERS
             else execution_manager.primary(workspace_root)
         )
     except ExecutionWorkspaceError as exc:
         raise HTTPException(
             status_code=422,
-            detail="container sandbox requires a disposable Git execution workspace",
+            detail="isolated sandbox requires a disposable Git execution workspace",
         ) from exc
     try:
         runtime = CodingRuntime(
@@ -1640,9 +1645,9 @@ async def resume_coding_session(
     try:
         raw_execution_workspace = persisted.get("execution_workspace")
         if raw_execution_workspace is None:
-            if persisted_sandbox_provider == "container":
+            if persisted_sandbox_provider in DISPOSABLE_SANDBOX_PROVIDERS:
                 raise ExecutionWorkspaceError(
-                    "persisted container session is missing execution workspace"
+                    "persisted isolated session is missing execution workspace"
                 )
             execution_workspace = execution_manager.primary(persisted_workspace)
             persisted["execution_workspace"] = execution_workspace.to_dict()
