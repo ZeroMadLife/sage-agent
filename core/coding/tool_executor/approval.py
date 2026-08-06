@@ -15,6 +15,7 @@ from core.coding.tool_executor.shell_risk import (
 )
 
 ApprovalChoice = Literal["once", "session", "always", "deny"]
+_APPROVAL_POLL_INTERVAL_SECONDS = 0.05
 
 
 @dataclass
@@ -150,13 +151,18 @@ class ApprovalManager:
     async def wait_for(
         self, session_id: str, approval_id: str, *, timeout_seconds: float = 300
     ) -> ApprovalChoice | None:
-        """Wait for one approval without exposing its threading primitive."""
+        """异步等待审批结果，取消时不在默认线程池遗留长阻塞任务。"""
         with self._lock:
             entry = self._find_entry_locked(session_id, approval_id)
             if entry is None:
                 return self._resolved.get((session_id, approval_id))
-        completed = await asyncio.to_thread(entry.event.wait, timeout_seconds)
-        return entry.result if completed else None
+        deadline = time.monotonic() + max(timeout_seconds, 0)
+        while not entry.event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(_APPROVAL_POLL_INTERVAL_SECONDS, remaining))
+        return entry.result
 
     def consume_resolution(self, session_id: str, approval_id: str) -> ApprovalChoice | None:
         """Consume a graph approval decision after the checkpoint resumes."""

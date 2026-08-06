@@ -1,5 +1,7 @@
 """Approval manager and dangerous command tests."""
 
+import asyncio
+
 import pytest
 
 from core.coding.tool_executor import ApprovalManager, check_dangerous_command
@@ -61,6 +63,25 @@ def test_approval_manager_cancel_session_denies_pending_entries() -> None:
     assert entry.event.is_set()
     assert entry.result == "deny"
     assert manager.pending("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_approval_wait_avoids_long_blocking_executor_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """审批中断必须能立即取消，不能向默认线程池提交长时间 Event.wait。"""
+    manager = ApprovalManager()
+    entry = manager.submit("s1", "write_file", {}, "write_file requires approval.", "tool:write")
+
+    async def reject_executor_wait(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("approval wait must not use blocking executor work")
+
+    monkeypatch.setattr(asyncio, "to_thread", reject_executor_wait)
+    waiter = asyncio.create_task(manager.wait_for("s1", entry.approval_id, timeout_seconds=1))
+    await asyncio.sleep(0)
+    assert manager.resolve("s1", entry.approval_id, "once") is True
+
+    assert await waiter == "once"
 
 
 def test_graph_approval_resolution_is_replayable_after_cancel() -> None:
