@@ -36,6 +36,10 @@ class GenerationEvalCase:
     unsupported_claims: tuple[str, ...]
     answer_citations: tuple[str, ...]
     supported_citations: tuple[str, ...]
+    generated_claims: tuple[str, ...] = ()
+    supported_generated_claims: tuple[str, ...] = ()
+    context_precision: float | None = None
+    context_recall: float | None = None
     faithfulness: float | None = None
     answer_relevance: float | None = None
 
@@ -125,6 +129,14 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
         raise ValueError("generation evaluation requires cases")
     faithfulness = [case.faithfulness for case in evaluated if case.faithfulness is not None]
     relevance = [case.answer_relevance for case in evaluated if case.answer_relevance is not None]
+    context_precision = [
+        case.context_precision for case in evaluated if case.context_precision is not None
+    ]
+    context_recall = [case.context_recall for case in evaluated if case.context_recall is not None]
+    generated_claim_count = sum(len(case.generated_claims) for case in evaluated)
+    supported_generated_claims = sum(
+        len(case.supported_generated_claims) for case in evaluated if case.generated_claims
+    )
     return {
         "schema_version": 1,
         "stage": "generation",
@@ -141,11 +153,20 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
         "metrics": {
             "case_count": len(evaluated),
             "claim_coverage": _mean(
-                [_coverage(case.required_claims, case.present_claims) for case in evaluated]
+                [
+                    _coverage(case.required_claims, case.present_claims)
+                    for case in evaluated
+                    if case.answerable
+                ]
             ),
             "unsupported_claim_rate": _mean(
                 [
-                    len(set(case.unsupported_claims)) / max(1, len(set(case.present_claims)))
+                    (
+                        len(set(case.unsupported_claims)) / max(1, len(set(case.generated_claims)))
+                        if case.generated_claims
+                        else len(set(case.unsupported_claims))
+                        / max(1, len(set(case.present_claims)))
+                    )
                     for case in evaluated
                 ]
             ),
@@ -160,6 +181,16 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
             "false_acceptance_rate": _rate(
                 case.final_decision == "answer" for case in evaluated if not case.answerable
             ),
+            "correct_abstention_rate": _rate(
+                case.final_decision == "abstain" for case in evaluated if not case.answerable
+            ),
+            "answerable_answer_rate": _rate(
+                case.final_decision == "answer" for case in evaluated if case.answerable
+            ),
+            "generated_claim_count": generated_claim_count,
+            "supported_generated_claim_count": supported_generated_claims,
+            "context_precision": _mean(context_precision) if context_precision else None,
+            "context_recall": _mean(context_recall) if context_recall else None,
             "faithfulness": _mean(faithfulness) if faithfulness else None,
             "answer_relevance": _mean(relevance) if relevance else None,
             "faithfulness_labeled_count": len(faithfulness),

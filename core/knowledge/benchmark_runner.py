@@ -145,46 +145,17 @@ def run_benchmark(
     queries = load_benchmark_v2(_inside(repo_root, manifest.dataset))
     embedding_provider = provider or HashingEmbeddingProvider()
     policy = ablation_policy or KnowledgeAblationPolicy()
-    corpus_root = _inside(repo_root, manifest.corpus_root)
     with tempfile.TemporaryDirectory(prefix="sage-rag-v2-") as temp:
         temporary = Path(temp)
-        store = KnowledgeStore(
-            temporary / "workspace",
-            temporary / "knowledge.sqlite3",
-            {
-                "benchmark": KnowledgeSourceRoot(
-                    root_id="benchmark",
-                    kind="markdown",
-                    label="Sage Benchmark v2",
-                    path=corpus_root,
-                )
-            },
-            knowledge_index=LocalKnowledgeIndex(
-                workspace_id="sage-knowledge-benchmark-v2",
-                embedding_provider=embedding_provider,
-                ablation_policy=policy,
-            ),
+        store, chunking, available_passages = build_benchmark_store(
+            repo_root,
+            manifest,
+            workspace_path=temporary / "workspace",
+            database_path=temporary / "knowledge.sqlite3",
+            embedding_provider=embedding_provider,
             ablation_policy=policy,
+            query_texts=tuple(query.query for query in queries),
         )
-        available_passages: set[str] = set()
-        prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]] = []
-        for item in manifest.files:
-            prepared = store.prepare_ingest("benchmark", item.path)
-            prepared_sources.append((item, prepared))
-            available_passages.update(
-                passage_id(item.path, _passage_section(item.path, block.heading_path))
-                for block in prepared.document.blocks
-                if block.heading_path
-            )
-        chunking = _prepare_provider(
-            embedding_provider,
-            prepared_sources,
-            tuple(query.query for query in queries),
-            ablation_policy=policy,
-        )
-        for _item, prepared in prepared_sources:
-            proposal = store.ingest_prepared(prepared)
-            store.approve(proposal.proposal_id, proposal.revision)
         _validate_judgments(queries, available_passages)
 
         ranked: dict[str, tuple[str, ...]] = {}
@@ -260,6 +231,64 @@ def run_benchmark(
             }
         )
         return result
+
+
+def build_benchmark_store(
+    repo_root: Path,
+    manifest: BenchmarkManifest,
+    *,
+    workspace_path: Path,
+    database_path: Path,
+    embedding_provider: DenseEmbeddingProvider,
+    ablation_policy: KnowledgeAblationPolicy,
+    query_texts: tuple[str, ...] = (),
+) -> tuple[KnowledgeStore, dict[str, int | float | bool], set[str]]:
+    """Build an approved benchmark store for retrieval and generation evals.
+
+    The caller owns ``workspace_path`` and ``database_path``. This keeps the
+    corpus/index lifecycle explicit while allowing the generation evaluator to
+    inspect the same citation-bound chunks that retrieval returns.
+    """
+
+    corpus_root = _inside(repo_root, manifest.corpus_root)
+    store = KnowledgeStore(
+        workspace_path,
+        database_path,
+        {
+            "benchmark": KnowledgeSourceRoot(
+                root_id="benchmark",
+                kind="markdown",
+                label="Sage Benchmark v2",
+                path=corpus_root,
+            )
+        },
+        knowledge_index=LocalKnowledgeIndex(
+            workspace_id="sage-knowledge-benchmark-v2",
+            embedding_provider=embedding_provider,
+            ablation_policy=ablation_policy,
+        ),
+        ablation_policy=ablation_policy,
+    )
+    prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]] = []
+    available_passages: set[str] = set()
+    for item in manifest.files:
+        prepared = store.prepare_ingest("benchmark", item.path)
+        prepared_sources.append((item, prepared))
+        available_passages.update(
+            passage_id(item.path, _passage_section(item.path, block.heading_path))
+            for block in prepared.document.blocks
+            if block.heading_path
+        )
+    chunking = _prepare_provider(
+        embedding_provider,
+        prepared_sources,
+        query_texts,
+        ablation_policy=ablation_policy,
+    )
+    for _item, prepared in prepared_sources:
+        proposal = store.ingest_prepared(prepared)
+        store.approve(proposal.proposal_id, proposal.revision)
+    return store, chunking, available_passages
 
 
 def _validate_judgments(
@@ -380,6 +409,7 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 __all__ = [
     "BenchmarkManifest",
+    "build_benchmark_store",
     "load_embedding_provider",
     "load_manifest",
     "run_benchmark",

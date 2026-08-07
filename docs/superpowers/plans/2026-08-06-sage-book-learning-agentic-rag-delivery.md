@@ -1,7 +1,7 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A/B/C 已完成；Slice D 已交付真实长书 seed retrieval/recovery，冻结 gold 与生成评测待补
+> 状态：Slice A/B/C 已完成；Slice D 已交付真实长书 seed retrieval/recovery 与 LLMWiki generation runner，真实模型收据待 Keychain provider 配置
 > 基线：`codex/book-learning-rag-design@4837ca0`
 
 ## 产品目标
@@ -59,8 +59,10 @@ Coordinator。Research 最大并发 2，Synthesize 只能读取服务端 Evidenc
 FastEmbed + contextual 首轮 Recall@10 为 0.750、MRR 为 0.523；3 条可回答 recovery case 的
 oracle rewrite 将 candidate evidence recall 从 0.1667 提升到 0.8889。Agentic evaluator 已覆盖
 evidence coverage、false acceptance、unnecessary delegation、citation support、token、P95 和
-stop reason，并为 faithfulness/answer relevance 保留显式离线标签。未完成：seed 尚未扩展、
-独立 review 或冻结；证据充分性 gate 尚未在真实书籍上校准；尚未运行真实模型生成评测和端到端对照实验。
+stop reason，并新增真实 LLMWiki generation runner：生成模型负责 bounded planner/rewrite/answer，
+独立 judge 负责 claim/citation/faithfulness/answer relevance 收据。未完成：seed 尚未扩展、
+独立 review 或冻结；证据充分性 gate 尚未在真实书籍上校准；尚未配置 provider key 运行真实模型
+生成与端到端对照实验。
 
 ## 不在本阶段承诺
 

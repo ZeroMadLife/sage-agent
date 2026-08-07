@@ -77,7 +77,20 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 - 生成辅助：context precision/recall、faithfulness、answer relevance、noise sensitivity；RAGAS 只作为辅助，不替代 citation/claim 门禁。
 - 用户体验：最终答案相关性、是否明确边界、Citation Inspector 是否能定位原文；不展示模型 CoT。
 
-`evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。当前没有真实长书模型生成数字，也没有声称 RAGAS 已安装或已跑通；需要外部 LLM key 时再单独配置 provider 并记录模型 revision、成本和 judge agreement。
+`evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。新增 `scripts/evaluate_book_learning_generation.py` 作为真实 LLMWiki 入口：生成模型负责受限 planner/rewrite 和最终答案，独立 judge 只检查 claim、citation、faithfulness 与 answer relevance；服务端 citation contract 先于 judge 做 fail-closed。它不输出 CoT，也不把原文写入跟踪报告。
+
+当前没有真实长书模型生成数字，也没有声称 RAGAS 已安装或已跑通。运行前需要在进程环境中安全配置生成模型和 judge 的 provider key，并在收据中记录模型 revision、token、成本与错误；推荐生成用 Doubao、judge 用 DeepSeek：
+
+```bash
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
+  scripts/evaluate_book_learning_generation.py --skip-fetch \
+  --generator-model doubao:Doubao-Seed-2.0-pro \
+  --judge-model deepseek:deepseek-v4-flash \
+  --strategy contextual_chunk --output .coding/evals/book-learning-generation.json
+```
+
+首轮先用 `--max-cases 4` 做成本和协议 smoke，再跑完整 14 条；没有 Key 或模型返回非结构化结果时，评测不会把失败转成质量数字。
 
 ## 验证入口
 
