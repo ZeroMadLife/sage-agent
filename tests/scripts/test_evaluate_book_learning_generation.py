@@ -40,6 +40,17 @@ def test_generation_citation_contract_fails_closed_for_uncited_answers() -> None
         )
         == "answer"
     )
+    assert (
+        _accepted_decision(
+            model_decision="answer",
+            answer_payload={
+                "decision": "answer",
+                "claims": [{"claim_id": "c1", "text": "fact", "citation_ids": ["kcite_forged"]}],
+            },
+            answer_citations=("kcite_1",),
+        )
+        == "abstain"
+    )
 
 
 def test_generation_rewrite_budget_is_bounded_and_requires_retry_decision() -> None:

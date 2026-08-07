@@ -144,6 +144,7 @@ async def _evaluate_case(
     started = time.perf_counter()
     first_hits = store.search(query.query, top_k=top_k)
     evidence = _evidence(first_hits)
+    first_evidence = list(evidence)
     planner_prompt = _planner_prompt(query.query, evidence, retry_available=True)
     planner, planner_usage = await _invoke_json(generator, planner_prompt, "planner")
     rewrite_queries = _rewrite_queries(planner, max_recovery_queries)
@@ -165,7 +166,7 @@ async def _evaluate_case(
             _planner_prompt(query.query, evidence, retry_available=False),
             "planner_final",
         )
-    model_decision = str(final_plan.get("decision", "abstain"))
+    model_decision = _planner_decision(final_plan)
     answer_payload: dict[str, Any] = {
         "decision": "abstain",
         "answer_markdown": "",
@@ -205,10 +206,9 @@ async def _evaluate_case(
         for claim_id in _string_list(judge_payload.get("supported_claim_ids"))
         if claim_id in generated_claims
     )
+    judge_supported_claims = set(supported_generated_claims)
     unsupported_claims = tuple(
-        claim_id
-        for claim_id in _string_list(judge_payload.get("unsupported_claim_ids"))
-        if claim_id in generated_claims
+        claim_id for claim_id in generated_claims if claim_id not in judge_supported_claims
     )
     supported_citations = tuple(
         citation
@@ -241,7 +241,7 @@ async def _evaluate_case(
         "stop_reason": _stop_reason(model_decision, accepted_decision, evidence),
         "planner_rounds": planner_rounds,
         "rewrite_queries": rewrite_queries,
-        "first_pass_evidence": first_hits,
+        "first_pass_evidence": first_evidence,
         "recovery": recovery_records,
         "final_evidence": evidence,
         "answer": answer_payload,
@@ -438,7 +438,7 @@ def _context_metrics(
     if not query.answerable:
         return None, None
     gold = {item.document_id for item in query.relevant}
-    returned = [str(item["passage_id"]) for item in evidence]
+    returned = tuple(dict.fromkeys(str(item["passage_id"]) for item in evidence))
     relevant = sum(item in gold for item in returned)
     return (
         round(relevant / len(returned), 4) if returned else 0.0,
@@ -454,7 +454,11 @@ def _accepted_decision(
     claims = _claims(answer_payload.get("claims"))
     if not answer_citations or not claims:
         return "abstain"
-    if any(not item["citation_ids"] for item in claims):
+    allowed = set(answer_citations)
+    if any(
+        not item["citation_ids"] or not set(item["citation_ids"]).issubset(allowed)
+        for item in claims
+    ):
         return "abstain"
     return "answer"
 
@@ -475,9 +479,14 @@ def _rewrite_queries(payload: Mapping[str, Any], limit: int) -> tuple[str, ...]:
     decision = str(payload.get("decision", "abstain"))
     if decision not in {"retry", "delegate_research"}:
         return ()
-    return tuple(
-        value for value in _string_list(payload.get("rewrite_queries")) if value.strip()[:2_000]
-    )[:limit]
+    return tuple(value[:2_000] for value in _string_list(payload.get("rewrite_queries")))[:limit]
+
+
+def _planner_decision(payload: Mapping[str, Any]) -> str:
+    decision = str(payload.get("decision", "abstain"))
+    if decision not in {"answer", "retry", "delegate_research", "abstain"}:
+        return "abstain"
+    return decision
 
 
 def _string_list(value: Any) -> list[str]:
