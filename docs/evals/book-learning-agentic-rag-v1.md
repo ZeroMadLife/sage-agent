@@ -67,6 +67,20 @@ FastEmbed + contextual chunk 的 4-case 收据（3 条 answerable、1 条 unansw
 - 以“非空检索即回答”的无 gate 代理决策计算，unanswerable 子集 false acceptance 1.00、correct
   abstention 0.0：当前最紧的缺口是 relevance/证据充分性 gate，不能把这个代理值当成最终模型回答率。
 
+### Score-only relevance gate 诊断
+
+在 clean source `e81ba1f` 上重跑 FastEmbed + contextual，整体 Recall@10/MRR/NDCG 为
+`0.750/0.523/0.582`，P50/P95 为 `845/1,600 ms`。随后只用 dev split 校准现有
+`KnowledgeRelevancePolicy` 的 sparse/dense 绝对阈值，得到候选 `krp_d4cc98e315dde2ab`：
+
+- dev 仅 3 条（2 answerable、1 unanswerable），校准后 answerable Recall 保持 1.0，但
+  unanswerable accuracy 仍为 0；
+- untouched test 上 unanswerable accuracy 从 0 提升到 0.333，但 answerable Recall 从
+  0.583 降到 0.333，MRR 从 0.422 降到 0.333；
+- 因此该 policy 不激活、不提交到生产 policy 目录。当前 score distribution 无法同时分开
+  相关章节与 hard negative，且 dev 样本太少；下一步必须扩充 calibration gold，并加入
+  claim-aware sufficiency（问题需要哪些声明、当前 citation 覆盖哪些声明），而不是继续抬高分数阈值。
+
 运行时 `BookLearningCoordinator` 已把同一策略落到服务端：最多 2 个 research child、最多 2 轮检索、EvidenceBundle 绑定 parent run、无新 citation 或无 citation 生成就拒答。它不依赖模型自报 confidence；confidence 只能作为评测字段。
 
 ## LLMWiki / Generation / E2E 阶段
