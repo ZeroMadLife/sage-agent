@@ -1,7 +1,7 @@
 # Sage 长书学习 RAG / LLMWiki / Agentic RAG v1 收口
 
-> 日期：2026-08-06
-> 状态：真实公共领域 TXT 已接入；检索与有界 recovery 已有可复现 seed 数字；生成层仍待模型评测
+> 日期：2026-08-07
+> 状态：真实公共领域 TXT、检索、有界 recovery 与真实 LLMWiki generation smoke/full 均已跑通；仍属于 seed 阶段，不是生产准确率
 
 ## 产品行为
 
@@ -93,7 +93,27 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 
 `evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。新增 `scripts/evaluate_book_learning_generation.py` 作为真实 LLMWiki 入口：生成模型负责受限 planner/rewrite 和最终答案，独立 judge 只检查 claim、citation、faithfulness 与 answer relevance；服务端 citation contract 先于 judge 做 fail-closed。它不输出 CoT，也不把原文写入跟踪报告。
 
-当前没有真实长书模型生成数字，也没有声称 RAGAS 已安装或已跑通。运行前需要在进程环境中安全配置生成模型和 judge 的 provider key，并在收据中记录模型 revision、token、成本与错误；推荐生成用 Doubao、judge 用 DeepSeek：
+### 首次真实模型收据（clean source）
+
+在 clean source `d442b37`、`sage-book-learning-v1@2026-08-06.1`、FastEmbed + `contextual_chunk` 上，使用 Doubao `Doubao-Seed-2.0-pro` 负责 planner/rewrite/answer，DeepSeek `deepseek-v4-flash` 负责独立 claim/citation judge，14 条完整跑通（10 answerable、4 unanswerable）。报告：`.coding/evals/book-learning-generation-full-d442b37.json`（ignored，本地不入 Git）。
+
+| 维度 | 结果 | 产品解释 |
+| --- | ---: | --- |
+| provider failure | 3/14 = **0.2143** | 3 条均为 answerable，发生在 planner/answer，不能算作质量正确或错误；必须单独看供应商可用性 |
+| 已完成质量评测 | 11/14 | 质量指标只在完成 judge 的 case 上计算，避免网络故障污染分数 |
+| answerable 最终回答率 | 4/7 = **0.5714** | 4 条通过服务端 citation contract + judge；3 条跨书/证据不足安全拒答 |
+| 全部 case 接受回答率 | 4/14 = **0.2857** | 含 provider failure 和安全拒答，反映当前端到端可用性，不是检索 Recall |
+| claim coverage | **0.5714** | seed required-claim 覆盖仍不足，说明“找到了部分证据”不等于回答完成 |
+| unsupported claim rate | **0.0000** | 已生成的 10 个 claims 全部被独立 judge 支持；这是完成 case 的结果 |
+| citation correctness | **1.0000** | 已接受回答的 citation 均来自当前 EvidenceBundle 且被 judge 支持 |
+| unanswerable false acceptance / correct abstention | **0.0000 / 1.0000** | 4 条 hard negative 全部拒答；当前 gate 对无答案有效，但样本仍小 |
+| context precision / recall | **0.1420 / 0.6429** | 召回上下文噪声较高，跨书 case 仍是主要缺口 |
+| judge faithfulness / answer relevance | **1.0000 / 1.0000** | 仅 4 条真实回答有独立标签，RAGAS-compatible 辅助指标，不能单独作为上线门禁 |
+| token / P50 / P95 | **171,486 / 59,647 / 120,385 ms** | 评测串行、包含 clean index 与 bounded recovery；成本因无冻结价格表保持 `null` |
+
+这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。它也明确了下一阶段不是继续调高 sparse/dense 阈值，而是扩充 calibration gold、做 claim-aware sufficiency，并降低长上下文导致的 provider timeout。
+
+推荐复现命令（Key 只注入单次进程，不写入报告）：
 
 ```bash
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
@@ -101,10 +121,11 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   scripts/evaluate_book_learning_generation.py --skip-fetch \
   --generator-model doubao:Doubao-Seed-2.0-pro \
   --judge-model deepseek:deepseek-v4-flash \
-  --strategy contextual_chunk --output .coding/evals/book-learning-generation.json
+  --strategy contextual_chunk --request-timeout-seconds 60 \
+  --output .coding/evals/book-learning-generation.json
 ```
 
-首轮先用 `--max-cases 4` 做成本和协议 smoke，再跑完整 14 条；没有 Key 或模型返回非结构化结果时，评测不会把失败转成质量数字。
+首轮可用 `--case-id` 组合中文、英文、跨书和 hard negative 做协议 smoke，再跑完整 14 条；模型超时、非结构化返回或 provider 异常会记录为 secret-free failure receipt，不会把失败转成质量数字。
 
 ## 验证入口
 
@@ -113,6 +134,7 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
   -m pytest tests/evals/test_book_learning_stages.py \
   tests/evals/test_book_learning_agentic.py \
+  tests/scripts/test_evaluate_book_learning_generation.py \
   tests/scripts/test_evaluate_book_learning_recovery.py \
   tests/core/knowledge/parsing/test_txt.py \
   tests/core/knowledge/test_benchmark.py -q
@@ -132,4 +154,4 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
 
 ## 下一阶段
 
-先把 seed 扩展到 30-50 条并独立 review，特别补后半章节、跨书拆解、不可回答数值和相似 hard negative；再做 dev/calibration/test gate。只有 gate 的 false acceptance 降到可接受范围后，才接真实模型生成与 RAGAS judge，比较 single-pass、bounded recovery、Agentic 多分支的端到端 faithfulness、citation support、成本和 P95。
+先把 seed 扩展到 30-50 条并独立 review，特别补后半章节、跨书拆解、不可回答数值和相似 hard negative；再做 dev/calibration/test gate。随后把 claim-aware sufficiency 接入 planner 候选判断，比较 single-pass、bounded recovery、Agentic 多分支的端到端 claim coverage、faithfulness、citation support、provider failure、成本和 P95。意图小模型/SFT/RL 和更多 agent 协同留在这条离线回路稳定之后，避免在 gate 尚未校准时放大错误路由。

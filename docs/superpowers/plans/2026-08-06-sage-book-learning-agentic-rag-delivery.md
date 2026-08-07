@@ -1,8 +1,8 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A/B/C 已完成；Slice D 已交付真实长书 seed retrieval/recovery 与 LLMWiki generation runner，真实模型收据待 Keychain provider 配置
-> 基线：`codex/book-learning-rag-design@4837ca0`
+> 状态：Slice A/B/C/D 已完成首轮交付；真实模型收据已在 clean source 上跑通，下一阶段转向 calibration gold、claim-aware sufficiency 与 provider timeout 优化
+> 基线：`codex/book-learning-rag-design@d442b37`
 
 ## 产品目标
 
@@ -61,8 +61,14 @@ oracle rewrite 将 candidate evidence recall 从 0.1667 提升到 0.8889。Agent
 evidence coverage、false acceptance、unnecessary delegation、citation support、token、P95 和
 stop reason，并新增真实 LLMWiki generation runner：生成模型负责 bounded planner/rewrite/answer，
 独立 judge 负责 claim/citation/faithfulness/answer relevance 收据。未完成：seed 尚未扩展、
-独立 review 或冻结；证据充分性 gate 尚未在真实书籍上校准；尚未配置 provider key 运行真实模型
-生成与端到端对照实验。
+独立 review 或冻结；score-only 证据充分性 gate 尚未在真实书籍上校准；意图小模型/SFT/RL 尚未接入线上路径。
+
+真实 LLMWiki full receipt（clean source `d442b37`，FastEmbed + contextual，Doubao generator +
+DeepSeek judge，14 case）已完成：11/14 case 完成 judge，provider failure 3/14，完成 case 的
+unsupported claim rate 0、citation correctness 1、unanswerable correct abstention 1；
+answerable 最终回答率 4/7，context precision/recall 0.1420/0.6429，P50/P95 59,647/120,385 ms，
+token 171,486，cost 仍为 null（未冻结价格表）。这组数字是 seed 的端到端诊断，不是生产 SLA 或
+泛化准确率。完整结果保存在 ignored `.coding/evals/book-learning-generation-full-d442b37.json`。
 
 ## 不在本阶段承诺
 
