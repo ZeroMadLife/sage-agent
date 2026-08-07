@@ -18,6 +18,7 @@ from core.knowledge.benchmark_runner import (
     BenchmarkCorpusFile,
     BenchmarkManifest,
     load_manifest,
+    read_manifest,
     run_benchmark,
 )
 from core.knowledge.retrieval import KnowledgeAblationPolicy
@@ -166,16 +167,16 @@ def test_committed_v2_manifest_matches_dataset_and_corpus() -> None:
     assert len(manifest.files) == 16
 
 
-def test_book_benchmark_manifest_accepts_verified_txt_corpus() -> None:
+def test_committed_book_manifest_and_dataset_contract_is_ci_portable() -> None:
     repo_root = Path(__file__).parents[3]
 
-    manifest = load_manifest(
-        repo_root,
-        repo_root / "evals" / "book_learning_benchmark_v1_manifest.json",
-    )
+    manifest = read_manifest(repo_root / "evals" / "book_learning_benchmark_v1_manifest.json")
     queries = load_benchmark_v2(repo_root / manifest.dataset)
 
     assert manifest.benchmark_id == "sage-book-learning-v1"
+    assert hashlib.sha256((repo_root / manifest.dataset).read_bytes()).hexdigest() == (
+        manifest.dataset_sha256
+    )
     assert {Path(item.path).suffix for item in manifest.files} == {".txt"}
     assert len(queries) == 14
     assert sum(not item.answerable for item in queries) == 4

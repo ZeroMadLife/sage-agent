@@ -47,6 +47,14 @@ class BenchmarkManifest:
 
 
 def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
+    manifest = read_manifest(path)
+    validate_manifest(repo_root, manifest)
+    return manifest
+
+
+def read_manifest(path: Path) -> BenchmarkManifest:
+    """Read and validate a manifest contract without requiring the corpus cache."""
+
     raw: Any = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or set(raw) != {
         "benchmark_id",
@@ -71,7 +79,7 @@ def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
         if len(digest) != 64:
             raise ValueError("invalid benchmark corpus digest")
         parsed_files.append(BenchmarkCorpusFile(relative, digest))
-    manifest = BenchmarkManifest(
+    return BenchmarkManifest(
         benchmark_id=str(raw["benchmark_id"]),
         benchmark_revision=str(raw["benchmark_revision"]),
         dataset=str(raw["dataset"]),
@@ -79,8 +87,6 @@ def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
         corpus_root=str(raw["corpus_root"]),
         files=tuple(parsed_files),
     )
-    validate_manifest(repo_root, manifest)
-    return manifest
 
 
 def validate_manifest(repo_root: Path, manifest: BenchmarkManifest) -> None:
