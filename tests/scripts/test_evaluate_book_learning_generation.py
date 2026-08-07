@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from scripts.evaluate_book_learning_generation import (
     _accepted_decision,
+    _model_receipt,
     _parse_json_object,
     _rewrite_queries,
+    _runtime_metrics,
 )
 
 
@@ -58,3 +62,40 @@ def test_generation_rewrite_budget_is_bounded_and_requires_retry_decision() -> N
     assert _rewrite_queries(
         {"decision": "retry", "rewrite_queries": ["one", "two", "three"]}, 2
     ) == ("one", "two")
+
+
+def test_generation_runtime_receipt_aggregates_tokens_latency_and_model_name() -> None:
+    metrics = _runtime_metrics(
+        [
+            {
+                "latency_ms": 100,
+                "rewrite_queries": [],
+                "accepted_decision": "answer",
+                "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+            },
+            {
+                "latency_ms": 250,
+                "rewrite_queries": ["rewrite"],
+                "accepted_decision": "abstain",
+                "usage": {"input_tokens": 20, "output_tokens": 6, "total_tokens": 26},
+            },
+        ]
+    )
+
+    assert metrics["p50_latency_ms"] == 100
+    assert metrics["p95_latency_ms"] == 250
+    assert metrics["recovery_activation_rate"] == 0.5
+    assert metrics["token_usage"] == {
+        "input_tokens": 30,
+        "output_tokens": 10,
+        "total_tokens": 40,
+    }
+    assert metrics["cost_status"] == "not_computed_without_frozen_price_table"
+    assert _model_receipt(
+        SimpleNamespace(
+            response_metadata={
+                "model_name": "judge-revision-1",
+                "system_fingerprint": "fp_1",
+            }
+        )
+    ) == {"model_name": "judge-revision-1", "system_fingerprint": "fp_1"}

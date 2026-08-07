@@ -121,6 +121,8 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             "supports_semantic_recall": provider.supports_semantic_recall,
         },
         "chunking": chunking,
+        "runtime_metrics": _runtime_metrics(records),
+        "observed_models": _observed_models(records),
         "metrics": evaluate_generation(eval_cases),
         "cases": records,
     }
@@ -146,7 +148,7 @@ async def _evaluate_case(
     evidence = _evidence(first_hits)
     first_evidence = list(evidence)
     planner_prompt = _planner_prompt(query.query, evidence, retry_available=True)
-    planner, planner_usage = await _invoke_json(generator, planner_prompt, "planner")
+    planner, planner_usage, planner_model = await _invoke_json(generator, planner_prompt, "planner")
     rewrite_queries = _rewrite_queries(planner, max_recovery_queries)
     recovery_records: list[dict[str, Any]] = []
     planner_rounds = 1
@@ -160,8 +162,9 @@ async def _evaluate_case(
 
     final_plan = planner
     final_planner_usage: dict[str, int] = {}
+    final_planner_model: dict[str, str] = {}
     if recovery_records:
-        final_plan, final_planner_usage = await _invoke_json(
+        final_plan, final_planner_usage, final_planner_model = await _invoke_json(
             generator,
             _planner_prompt(query.query, evidence, retry_available=False),
             "planner_final",
@@ -174,16 +177,18 @@ async def _evaluate_case(
         "citation_ids": [],
     }
     answer_usage: dict[str, int] = {}
+    answer_model: dict[str, str] = {}
     judge_payload: dict[str, Any] = {}
     judge_usage: dict[str, int] = {}
+    judge_model: dict[str, str] = {}
     if model_decision == "answer":
-        answer_payload, answer_usage = await _invoke_json(
+        answer_payload, answer_usage, answer_model = await _invoke_json(
             generator,
             _answer_prompt(query.query, evidence),
             "answer",
         )
         if answer_payload.get("decision") == "answer":
-            judge_payload, judge_usage = await _invoke_json(
+            judge_payload, judge_usage, judge_model = await _invoke_json(
                 judge,
                 _judge_prompt(
                     query,
@@ -253,6 +258,12 @@ async def _evaluate_case(
             "answer_relevance": answer_relevance,
         },
         "usage": usage,
+        "models": {
+            "planner": planner_model,
+            "planner_final": final_planner_model,
+            "answer": answer_model,
+            "judge": judge_model,
+        },
         "latency_ms": elapsed_ms,
         "available_passage_count": len(available_passages),
     }
@@ -350,11 +361,13 @@ def _json_prompt(instruction: str, payload: Mapping[str, Any]) -> str:
     )
 
 
-async def _invoke_json(llm: Any, prompt: str, stage: str) -> tuple[dict[str, Any], dict[str, int]]:
+async def _invoke_json(
+    llm: Any, prompt: str, stage: str
+) -> tuple[dict[str, Any], dict[str, int], dict[str, str]]:
     response = await llm.ainvoke(prompt)
     text = _response_text(response)
     payload = _parse_json_object(text, stage)
-    return payload, _usage(response)
+    return payload, _usage(response), _model_receipt(response)
 
 
 def _response_text(response: Any) -> str:
@@ -513,12 +526,76 @@ def _usage(response: Any) -> dict[str, int]:
     return values
 
 
+def _model_receipt(response: Any) -> dict[str, str]:
+    metadata = getattr(response, "response_metadata", None)
+    if not isinstance(metadata, Mapping):
+        return {}
+    receipt: dict[str, str] = {}
+    for source, target in (
+        ("model_name", "model_name"),
+        ("model", "model_name"),
+        ("system_fingerprint", "system_fingerprint"),
+        ("finish_reason", "finish_reason"),
+    ):
+        value = metadata.get(source)
+        if value is not None and target not in receipt:
+            receipt[target] = str(value)[:200]
+    token_usage = metadata.get("token_usage")
+    if isinstance(token_usage, Mapping):
+        value = token_usage.get("model_name") or token_usage.get("model")
+        if value is not None and "model_name" not in receipt:
+            receipt["model_name"] = str(value)[:200]
+    return receipt
+
+
 def _sum_usage(*usages: Mapping[str, int]) -> dict[str, int]:
     result: dict[str, int] = {}
     for usage in usages:
         for key, value in usage.items():
             result[key] = result.get(key, 0) + value
     return result
+
+
+def _runtime_metrics(records: list[dict[str, Any]]) -> dict[str, object]:
+    latencies = [int(record["latency_ms"]) for record in records]
+    usage = _sum_usage(
+        *(record["usage"] for record in records if isinstance(record.get("usage"), Mapping))
+    )
+    return {
+        "case_count": len(records),
+        "recovery_activation_rate": round(
+            sum(bool(record["rewrite_queries"]) for record in records) / len(records), 4
+        ),
+        "accepted_answer_rate": round(
+            sum(record["accepted_decision"] == "answer" for record in records) / len(records),
+            4,
+        ),
+        "p50_latency_ms": _percentile(latencies, 0.50),
+        "p95_latency_ms": _percentile(latencies, 0.95),
+        "token_usage": usage,
+        "cost_usd": None,
+        "cost_status": "not_computed_without_frozen_price_table",
+    }
+
+
+def _observed_models(records: list[dict[str, Any]]) -> dict[str, list[str]]:
+    observed: dict[str, set[str]] = {}
+    for record in records:
+        models = record.get("models")
+        if not isinstance(models, Mapping):
+            continue
+        for stage, raw in models.items():
+            if isinstance(raw, Mapping) and raw.get("model_name"):
+                observed.setdefault(str(stage), set()).add(str(raw["model_name"]))
+    return {stage: sorted(values) for stage, values in sorted(observed.items())}
+
+
+def _percentile(values: list[int], percentile: float) -> int:
+    if not values:
+        return 0
+    ordered = sorted(values)
+    index = max(0, min(len(ordered) - 1, int(len(ordered) * percentile + 0.9999) - 1))
+    return ordered[index]
 
 
 def _select_queries(
