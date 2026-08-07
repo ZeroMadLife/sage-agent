@@ -87,6 +87,9 @@ def test_generation_metrics_keep_ragas_auxiliary_to_claim_and_citation_gates() -
     assert report["protocol"]["ragas_is_auxiliary"] is True
     assert report["metrics"] == {
         "case_count": 2,
+        "evaluated_case_count": 2,
+        "provider_failure_count": 0,
+        "provider_failure_rate": 0.0,
         "claim_coverage": 1.0,
         "unsupported_claim_rate": 0.25,
         "citation_correctness": 0.75,
@@ -102,6 +105,39 @@ def test_generation_metrics_keep_ragas_auxiliary_to_claim_and_citation_gates() -
         "faithfulness_labeled_count": 1,
         "answer_relevance_labeled_count": 1,
     }
+
+
+def test_generation_metrics_separate_provider_failures_from_quality_scores() -> None:
+    report = evaluate_generation(
+        (
+            GenerationEvalCase(
+                case_id="answer",
+                answerable=True,
+                final_decision="answer",
+                required_claims=("a",),
+                present_claims=("a",),
+                unsupported_claims=(),
+                answer_citations=("c1",),
+                supported_citations=("c1",),
+            ),
+            GenerationEvalCase(
+                case_id="timeout",
+                answerable=True,
+                final_decision="abstain",
+                required_claims=("b",),
+                present_claims=(),
+                unsupported_claims=(),
+                answer_citations=(),
+                supported_citations=(),
+                evaluation_status="provider_error",
+            ),
+        )
+    )
+
+    assert report["metrics"]["provider_failure_count"] == 1
+    assert report["metrics"]["provider_failure_rate"] == 0.5
+    assert report["metrics"]["evaluated_case_count"] == 1
+    assert report["metrics"]["answerable_answer_rate"] == 1.0
 
 
 def test_false_acceptance_rate_uses_only_unanswerable_cases_as_denominator() -> None:

@@ -27,6 +27,24 @@ from core.llm import create_llm
 from evals.book_learning_stages import GenerationEvalCase, evaluate_generation
 
 
+class ModelInvocationError(RuntimeError):
+    """Bounded, secret-free receipt for one failed model stage."""
+
+    def __init__(
+        self,
+        *,
+        stage: str,
+        error_type: str,
+        elapsed_ms: int,
+        prompt_chars: int,
+    ) -> None:
+        super().__init__(f"{stage} failed: {error_type}")
+        self.stage = stage
+        self.error_type = error_type
+        self.elapsed_ms = elapsed_ms
+        self.prompt_chars = prompt_chars
+
+
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description=__doc__)
@@ -46,6 +64,7 @@ def main() -> int:
     parser.add_argument("--max-recovery-queries", type=int, default=2)
     parser.add_argument("--max-cases", type=int)
     parser.add_argument("--case-id", action="append", default=[])
+    parser.add_argument("--request-timeout-seconds", type=float, default=120.0)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--skip-fetch", action="store_true")
     args = parser.parse_args()
@@ -53,6 +72,8 @@ def main() -> int:
         raise RuntimeError("generation runner requires --skip-fetch after corpus verification")
     if not 1 <= args.max_recovery_queries <= 2:
         raise ValueError("max recovery queries must be between 1 and 2")
+    if args.request_timeout_seconds <= 0:
+        raise ValueError("request timeout seconds must be positive")
 
     return asyncio.run(_run(args, repo_root))
 
@@ -81,15 +102,25 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
         records: list[dict[str, Any]] = []
         eval_cases: list[GenerationEvalCase] = []
         for query in queries:
-            record, eval_case = await _evaluate_case(
-                query,
-                store=store,
-                generator=generator,
-                judge=judge,
-                top_k=args.top_k,
-                max_recovery_queries=args.max_recovery_queries,
-                available_passages=available_passages,
-            )
+            case_started = time.perf_counter()
+            try:
+                record, eval_case = await _evaluate_case(
+                    query,
+                    store=store,
+                    generator=generator,
+                    judge=judge,
+                    top_k=args.top_k,
+                    max_recovery_queries=args.max_recovery_queries,
+                    request_timeout_seconds=args.request_timeout_seconds,
+                    available_passages=available_passages,
+                )
+            except ModelInvocationError as failure:
+                record, eval_case = _failed_case(
+                    query,
+                    failure,
+                    latency_ms=round((time.perf_counter() - case_started) * 1_000),
+                    available_passage_count=len(available_passages),
+                )
             records.append(record)
             eval_cases.append(eval_case)
 
@@ -100,6 +131,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             "generator_model": args.generator_model,
             "judge_model": args.judge_model,
             "max_recovery_queries": args.max_recovery_queries,
+            "request_timeout_seconds": args.request_timeout_seconds,
             "chain_of_thought_required": False,
             "answer_requires_citation_contract": True,
             "judge_is_auxiliary_to_server_gate": True,
@@ -141,6 +173,7 @@ async def _evaluate_case(
     judge: Any,
     top_k: int,
     max_recovery_queries: int,
+    request_timeout_seconds: float,
     available_passages: set[str],
 ) -> tuple[dict[str, Any], GenerationEvalCase]:
     started = time.perf_counter()
@@ -148,7 +181,12 @@ async def _evaluate_case(
     evidence = _evidence(first_hits)
     first_evidence = list(evidence)
     planner_prompt = _planner_prompt(query.query, evidence, retry_available=True)
-    planner, planner_usage, planner_model = await _invoke_json(generator, planner_prompt, "planner")
+    planner, planner_usage, planner_model = await _invoke_json(
+        generator,
+        planner_prompt,
+        "planner",
+        timeout_seconds=request_timeout_seconds,
+    )
     rewrite_queries = _rewrite_queries(planner, max_recovery_queries)
     recovery_records: list[dict[str, Any]] = []
     planner_rounds = 1
@@ -158,7 +196,7 @@ async def _evaluate_case(
             rewrite_evidence = _evidence(rewrite_hits)
             recovery_records.append({"query": rewrite, "evidence": rewrite_evidence})
             evidence = _merge_evidence(evidence, rewrite_evidence)
-            planner_rounds += 1
+        planner_rounds = 2
 
     final_plan = planner
     final_planner_usage: dict[str, int] = {}
@@ -168,6 +206,7 @@ async def _evaluate_case(
             generator,
             _planner_prompt(query.query, evidence, retry_available=False),
             "planner_final",
+            timeout_seconds=request_timeout_seconds,
         )
     model_decision = _planner_decision(final_plan)
     answer_payload: dict[str, Any] = {
@@ -186,6 +225,7 @@ async def _evaluate_case(
             generator,
             _answer_prompt(query.query, evidence),
             "answer",
+            timeout_seconds=request_timeout_seconds,
         )
         if answer_payload.get("decision") == "answer":
             judge_payload, judge_usage, judge_model = await _invoke_json(
@@ -196,6 +236,7 @@ async def _evaluate_case(
                     answer_payload,
                 ),
                 "judge",
+                timeout_seconds=request_timeout_seconds,
             )
 
     allowed_citations = {item["citation_id"] for item in evidence}
@@ -362,12 +403,82 @@ def _json_prompt(instruction: str, payload: Mapping[str, Any]) -> str:
 
 
 async def _invoke_json(
-    llm: Any, prompt: str, stage: str
+    llm: Any, prompt: str, stage: str, *, timeout_seconds: float = 120.0
 ) -> tuple[dict[str, Any], dict[str, int], dict[str, str]]:
-    response = await llm.ainvoke(prompt)
-    text = _response_text(response)
-    payload = _parse_json_object(text, stage)
+    started = time.perf_counter()
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            response = await llm.ainvoke(prompt)
+        text = _response_text(response)
+        payload = _parse_json_object(text, stage)
+    except TimeoutError as exc:
+        raise ModelInvocationError(
+            stage=stage,
+            error_type="timeout",
+            elapsed_ms=round((time.perf_counter() - started) * 1_000),
+            prompt_chars=len(prompt),
+        ) from exc
+    except Exception as exc:
+        raise ModelInvocationError(
+            stage=stage,
+            error_type=("invalid_response" if isinstance(exc, ValueError) else "provider_error"),
+            elapsed_ms=round((time.perf_counter() - started) * 1_000),
+            prompt_chars=len(prompt),
+        ) from exc
     return payload, _usage(response), _model_receipt(response)
+
+
+def _failed_case(
+    query: KnowledgeBenchmarkQueryV2,
+    failure: ModelInvocationError,
+    *,
+    latency_ms: int,
+    available_passage_count: int,
+) -> tuple[dict[str, Any], GenerationEvalCase]:
+    record = {
+        "query_id": query.query_id,
+        "query": query.query,
+        "answerable": query.answerable,
+        "category": query.category,
+        "split": query.split,
+        "model_decision": "error",
+        "accepted_decision": "abstain",
+        "stop_reason": f"provider_{failure.error_type}",
+        "planner_rounds": 0,
+        "rewrite_queries": [],
+        "first_pass_evidence": [],
+        "recovery": [],
+        "final_evidence": [],
+        "answer": {},
+        "judge": {},
+        "metrics": {
+            "context_precision": None,
+            "context_recall": None,
+            "faithfulness": None,
+            "answer_relevance": None,
+        },
+        "usage": {},
+        "models": {},
+        "latency_ms": latency_ms,
+        "available_passage_count": available_passage_count,
+        "failure": {
+            "stage": failure.stage,
+            "error_type": failure.error_type,
+            "call_latency_ms": failure.elapsed_ms,
+            "prompt_chars": failure.prompt_chars,
+        },
+    }
+    return record, GenerationEvalCase(
+        case_id=query.query_id,
+        answerable=query.answerable,
+        final_decision="abstain",
+        required_claims=query.required_claims,
+        present_claims=(),
+        unsupported_claims=(),
+        answer_citations=(),
+        supported_citations=(),
+        evaluation_status="provider_error",
+    )
 
 
 def _response_text(response: Any) -> str:
@@ -561,8 +672,11 @@ def _runtime_metrics(records: list[dict[str, Any]]) -> dict[str, object]:
     usage = _sum_usage(
         *(record["usage"] for record in records if isinstance(record.get("usage"), Mapping))
     )
+    provider_failures = sum(isinstance(record.get("failure"), Mapping) for record in records)
     return {
         "case_count": len(records),
+        "provider_failure_count": provider_failures,
+        "provider_failure_rate": round(provider_failures / len(records), 4),
         "recovery_activation_rate": round(
             sum(bool(record["rewrite_queries"]) for record in records) / len(records), 4
         ),

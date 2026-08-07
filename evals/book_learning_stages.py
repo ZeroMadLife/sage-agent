@@ -42,6 +42,7 @@ class GenerationEvalCase:
     context_recall: float | None = None
     faithfulness: float | None = None
     answer_relevance: float | None = None
+    evaluation_status: str = "completed"
 
 
 def evaluate_recovery(cases: Iterable[RecoveryEvalCase]) -> dict[str, object]:
@@ -127,15 +128,19 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
     evaluated = list(cases)
     if not evaluated:
         raise ValueError("generation evaluation requires cases")
-    faithfulness = [case.faithfulness for case in evaluated if case.faithfulness is not None]
-    relevance = [case.answer_relevance for case in evaluated if case.answer_relevance is not None]
+    if any(case.evaluation_status not in {"completed", "provider_error"} for case in evaluated):
+        raise ValueError("invalid generation evaluation status")
+    completed = [case for case in evaluated if case.evaluation_status == "completed"]
+    failures = [case for case in evaluated if case.evaluation_status == "provider_error"]
+    faithfulness = [case.faithfulness for case in completed if case.faithfulness is not None]
+    relevance = [case.answer_relevance for case in completed if case.answer_relevance is not None]
     context_precision = [
-        case.context_precision for case in evaluated if case.context_precision is not None
+        case.context_precision for case in completed if case.context_precision is not None
     ]
-    context_recall = [case.context_recall for case in evaluated if case.context_recall is not None]
-    generated_claim_count = sum(len(case.generated_claims) for case in evaluated)
+    context_recall = [case.context_recall for case in completed if case.context_recall is not None]
+    generated_claim_count = sum(len(case.generated_claims) for case in completed)
     supported_generated_claims = sum(
-        len(case.supported_generated_claims) for case in evaluated if case.generated_claims
+        len(case.supported_generated_claims) for case in completed if case.generated_claims
     )
     return {
         "schema_version": 1,
@@ -152,10 +157,13 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
         },
         "metrics": {
             "case_count": len(evaluated),
+            "evaluated_case_count": len(completed),
+            "provider_failure_count": len(failures),
+            "provider_failure_rate": round(len(failures) / len(evaluated), 4),
             "claim_coverage": _mean(
                 [
                     _coverage(case.required_claims, case.present_claims)
-                    for case in evaluated
+                    for case in completed
                     if case.answerable
                 ]
             ),
@@ -167,7 +175,7 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
                         else len(set(case.unsupported_claims))
                         / max(1, len(set(case.present_claims)))
                     )
-                    for case in evaluated
+                    for case in completed
                 ]
             ),
             "citation_correctness": _mean(
@@ -175,17 +183,17 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
                     _coverage(case.answer_citations, case.supported_citations)
                     if case.answer_citations
                     else (1.0 if case.final_decision == "abstain" else 0.0)
-                    for case in evaluated
+                    for case in completed
                 ]
             ),
             "false_acceptance_rate": _rate(
-                case.final_decision == "answer" for case in evaluated if not case.answerable
+                case.final_decision == "answer" for case in completed if not case.answerable
             ),
             "correct_abstention_rate": _rate(
-                case.final_decision == "abstain" for case in evaluated if not case.answerable
+                case.final_decision == "abstain" for case in completed if not case.answerable
             ),
             "answerable_answer_rate": _rate(
-                case.final_decision == "answer" for case in evaluated if case.answerable
+                case.final_decision == "answer" for case in completed if case.answerable
             ),
             "generated_claim_count": generated_claim_count,
             "supported_generated_claim_count": supported_generated_claims,

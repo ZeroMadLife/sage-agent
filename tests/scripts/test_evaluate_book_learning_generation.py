@@ -5,12 +5,20 @@ from types import SimpleNamespace
 import pytest
 
 from scripts.evaluate_book_learning_generation import (
+    ModelInvocationError,
     _accepted_decision,
+    _invoke_json,
     _model_receipt,
     _parse_json_object,
     _rewrite_queries,
     _runtime_metrics,
 )
+
+
+class _NeverRespondingLLM:
+    async def ainvoke(self, _prompt: str) -> object:
+        await __import__("asyncio").Event().wait()
+        raise AssertionError("unreachable")
 
 
 def test_generation_json_parser_accepts_fenced_object_and_rejects_non_object() -> None:
@@ -19,6 +27,20 @@ def test_generation_json_parser_accepts_fenced_object_and_rejects_non_object() -
     }
     with pytest.raises(ValueError, match="did not return"):
         _parse_json_object("no structured result", "judge")
+
+
+@pytest.mark.asyncio
+async def test_generation_model_call_times_out_with_stage_receipt() -> None:
+    with pytest.raises(ModelInvocationError) as captured:
+        await _invoke_json(
+            _NeverRespondingLLM(),
+            "prompt",
+            "planner_final",
+            timeout_seconds=0.01,
+        )
+
+    assert captured.value.stage == "planner_final"
+    assert captured.value.error_type == "timeout"
 
 
 def test_generation_citation_contract_fails_closed_for_uncited_answers() -> None:
@@ -85,6 +107,8 @@ def test_generation_runtime_receipt_aggregates_tokens_latency_and_model_name() -
     assert metrics["p50_latency_ms"] == 100
     assert metrics["p95_latency_ms"] == 250
     assert metrics["recovery_activation_rate"] == 0.5
+    assert metrics["provider_failure_count"] == 0
+    assert metrics["provider_failure_rate"] == 0.0
     assert metrics["token_usage"] == {
         "input_tokens": 30,
         "output_tokens": 10,
@@ -99,3 +123,20 @@ def test_generation_runtime_receipt_aggregates_tokens_latency_and_model_name() -
             }
         )
     ) == {"model_name": "judge-revision-1", "system_fingerprint": "fp_1"}
+
+
+def test_generation_runtime_receipt_counts_provider_failures_separately() -> None:
+    metrics = _runtime_metrics(
+        [
+            {
+                "latency_ms": 60_000,
+                "rewrite_queries": [],
+                "accepted_decision": "abstain",
+                "usage": {},
+                "failure": {"stage": "planner", "error_type": "timeout"},
+            }
+        ]
+    )
+
+    assert metrics["provider_failure_count"] == 1
+    assert metrics["provider_failure_rate"] == 1.0
