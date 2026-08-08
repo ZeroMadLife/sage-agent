@@ -1,8 +1,8 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A/B/C/D 已完成首轮交付，Slice E 已完成 claim-aware 离线诊断；下一阶段转向 gold 扩充、rewrite 优化、Gate 校准与 provider timeout 优化
-> 基线：`codex/book-learning-rag-design@d442b37`
+> 状态：Slice A/B/C/D 已完成首轮交付，Slice E 已完成 claim-aware 离线诊断，Slice F 已交付 4+2 Scorecard 与 clean 策略选择；下一阶段转向原子答案 Judge 实测与 rewrite 优化
+> 基线：`codex/book-learning-rag-design@3902827`
 
 ## 产品目标
 
@@ -79,6 +79,15 @@ token 171,486，cost 仍为 null（未冻结价格表）。这组数字是 seed 
 - 本轮实际 rewrite 的 claim recovery gain / resolution 均为 `0`，说明触发 recovery 没有补回 gold claim；4 个完整 bundle 全部放行、3 个不完整 bundle 全部拒答，离线 readiness precision/recall 为 `1/1`。
 - Faithfulness 保持生成层独立 judge 指标：本轮为 `1.0`，但仅覆盖 4 个最终回答；不能用它替代检索完整性或 citation gate。
 - 当前只接入离线报告，`online_gate_activated=false`；等 gold 扩充和 calibration/test 稳定后再决定是否接入 Coordinator。
+
+### Slice F：四项核心 KPI 与检索策略选择
+
+- 生成 Judge 接入原子 Gold Claim ID/statement，独立输出 covered、contradicted 和 unsupported；Answer Correctness 不再由 Faithfulness 或旧概括 claim 代替。
+- Answer Claim Coverage 计算最终答案覆盖的必要 Gold Claim；Answer Correctness 要求最终决策为 answer、全部 Gold Claim 覆盖且没有矛盾。Provider failure 不进入质量分母。
+- 新增 4+2 Scorecard：首轮证据覆盖、答案正确、拒答安全、二次检索收益，以及 Provider Failure/P95；其余指标降级为 diagnostics。
+- clean source `3902827` 上，同语料、FastEmbed、Top-10 的五策略复跑后，contextual Claim Coverage/Recall 为 `0.7333/0.7500`，P95 `521.865 ms`；parent-child 同覆盖但 P95 `3509.691 ms`、chunks `25836`。
+- 3 秒策略预算内，选择器将 `contextual_chunk` 标为 `offline_candidate`；没有修改线上默认 policy。Answer Correctness 首次真实数值仍等待新版 Judge full run。
+- 完整指标定义、架构图、策略表和下一阶段边界见 `docs/evals/book-learning-scorecard-v1.md`。
 
 ## 不在本阶段承诺
 
