@@ -27,7 +27,9 @@ from fastapi import (
 from langchain_core.tools import BaseTool
 from sage_harness import (
     CapabilityRegistry,
+    CheckpointScopeError,
     HarnessConfig,
+    HarnessRunContext,
     McpCatalogPort,
     McpManager,
     McpScope,
@@ -36,6 +38,7 @@ from sage_harness import (
     SubagentToolConfig,
     WebFetchPort,
     WebSearchPort,
+    load_scoped_checkpoint,
     resolve_skill_allowed_tools,
 )
 from starlette.requests import HTTPConnection
@@ -134,6 +137,8 @@ from core.coding.persistence import (
     MemoryProposal,
     MemoryStoredFact,
     MemoryStoreError,
+    TurnPlanStore,
+    TurnPlanStoreError,
 )
 from core.coding.persistence.session_event_journal import (
     SessionEvent,
@@ -155,7 +160,7 @@ from core.harness.book_learning_coordinator import (
 from core.harness.capability_adapter import build_sage_capability_registry
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
-    build_deerflow_system_prompt,
+    build_deerflow_prompt_components,
     context_status_event,
 )
 from core.harness.evidence_bundle import CodingEvidenceBundlePort
@@ -166,6 +171,11 @@ from core.harness.knowledge_source_proposal_adapter import (
 )
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.model_context_frame import (
+    ModelContextFrame,
+    ModelContextFrameError,
+    ModelContextFrameFactory,
+)
 from core.harness.retrieval_gate import (
     decide_retrieval_gate,
     memory_retrieval_events,
@@ -191,6 +201,20 @@ from core.harness.thread_goal_evaluator import (
     build_thread_goal_evaluation_request,
 )
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
+from core.harness.turn_context_assembler import (
+    ContextAssemblyMode,
+    TurnContextAssembler,
+    TurnContextAssemblyRequest,
+    normalize_context_assembly_mode,
+)
+from core.harness.turn_context_comparator import compare_turn_context_plan
+from core.harness.turn_context_resume import (
+    PreparedTurnContextResume,
+    TurnContextResumeError,
+    TurnContextResumeExecutionRequest,
+    compare_turn_context_plan_resume,
+    prepare_turn_context_resume,
+)
 from core.knowledge import KnowledgeStore
 from core.knowledge.source_proposals import (
     KnowledgeSourceProposal,
@@ -222,6 +246,46 @@ def _retrieval_scoped_harness_config(
         max_tool_calls=min(effective.max_tool_calls, 4),
         max_run_tokens=min(effective.max_run_tokens, 64_000),
         max_run_seconds=min(effective.max_run_seconds, 120.0),
+    )
+
+
+def _turn_context_plan_failure_events(
+    run_id: str,
+    *,
+    error_code: str,
+    phase: str,
+    plan_id: str | None = None,
+    plan_hash: str | None = None,
+) -> tuple[RunEvent, RunEvent]:
+    """生成无正文的 fail-closed 事件；只记录固定错误码和 Plan 身份。"""
+    payload: dict[str, object] = {
+        "type": "turn_context_plan_enforcement_failed",
+        "version": 1,
+        "run_id": run_id,
+        "phase": phase,
+        "error_code": error_code,
+    }
+    if plan_id is not None:
+        payload["plan_id"] = plan_id
+    if plan_hash is not None:
+        payload["plan_hash"] = plan_hash
+    return (
+        RunEvent(
+            kind="harness",
+            status="error",
+            payload=payload,
+            event_id=f"harness:{run_id}:turn-context-plan-enforcement-error",
+        ),
+        RunEvent(
+            kind="terminal",
+            status="error",
+            payload={
+                "event": "run_error",
+                "runtime_profile": "deerflow_v2",
+                "error_type": error_code,
+            },
+            event_id=f"harness:{run_id}:terminal",
+        ),
     )
 
 
@@ -373,6 +437,7 @@ async def _runtime_timeline_events(
     resume_value: object | None = None,
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
+    context_assembly_mode: ContextAssemblyMode = "shadow",
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
     if runtime.runtime_profile == "deerflow_v2":
@@ -400,6 +465,7 @@ async def _runtime_timeline_events(
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
                 input_origin=input_origin,
+                context_assembly_mode=context_assembly_mode,
             ):
                 if graph_event.kind == "terminal":
                     diff_payload = await runtime.finish_harness_evidence(
@@ -518,17 +584,100 @@ async def _deerflow_timeline_events(
     resume_value: object | None = None,
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
+    context_assembly_mode: ContextAssemblyMode = "shadow",
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
+    context_assembly_mode = normalize_context_assembly_mode(context_assembly_mode)
     async with runtime.harness_turn(run_id):
         is_resume = resume_value is not None
+        owner_id = runtime.owner_user_id or "local"
+        workspace_id = workspace_id_from_path(runtime.workspace.root)
+        resume_plan = None
+        prepared_resume: PreparedTurnContextResume | None = None
+        if is_resume and context_assembly_mode == "enforce":
+            try:
+                resume_plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run(
+                    run_id
+                )
+            except TurnPlanStoreError:
+                logger.exception("turn context plan load failed for resume run %s", run_id)
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code="resume_plan_corrupt",
+                    phase="resume_load",
+                ):
+                    yield event
+                return
+            if resume_plan is None:
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code="resume_plan_missing",
+                    phase="resume_load",
+                ):
+                    yield event
+                return
+            try:
+                prepared_resume = prepare_turn_context_resume(
+                    resume_plan,
+                    session_id=runtime.session_id,
+                    run_id=run_id,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    surface="coding",
+                )
+            except TurnContextResumeError as exc:
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code=exc.code,
+                    phase="resume_scope",
+                    plan_id=resume_plan.plan_id,
+                    plan_hash=resume_plan.plan_hash,
+                ):
+                    yield event
+                return
+            resume_context = HarnessRunContext(
+                thread_id=runtime.session_id,
+                run_id=run_id,
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                workspace_path=str(runtime.workspace.root),
+                surface="coding",
+            )
+            try:
+                checkpoint = await load_scoped_checkpoint(
+                    checkpointer,
+                    resume_context,
+                    expected_plan_binding=prepared_resume.binding,
+                )
+            except CheckpointScopeError:
+                logger.warning("turn context checkpoint binding rejected for run %s", run_id)
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code="resume_plan_checkpoint_mismatch",
+                    phase="resume_checkpoint",
+                    plan_id=resume_plan.plan_id,
+                    plan_hash=resume_plan.plan_hash,
+                ):
+                    yield event
+                return
+            if checkpoint is None:
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code="resume_plan_checkpoint_missing",
+                    phase="resume_checkpoint",
+                    plan_id=resume_plan.plan_id,
+                    plan_hash=resume_plan.plan_hash,
+                ):
+                    yield event
+                return
         prepared = None
+        user_message: Mapping[str, object] | None = None
         if not is_resume:
             prepared = await runtime.prepare_harness_context(
                 user_message=content,
                 run_id=run_id,
             )
-            runtime.append_harness_message(
+            user_message = runtime.append_harness_message(
                 role="user",
                 content=content,
                 run_id=run_id,
@@ -551,17 +700,22 @@ async def _deerflow_timeline_events(
 
         knowledge_port = CodingKnowledgePort(runtime)
         memory_port = CodingMemoryPort(runtime)
+        retrieval_sources: frozenset[str] | None
         if is_resume:
             # Command(resume=...) continues from checkpoint state. Supplying a fresh gate here
             # would replace the decision frozen before the interrupted model/tool step.
             durable_context = {}
             retrieval_gate = None
-            frozen_events = SessionEventJournal(
-                runtime.storage_root,
-                runtime.session_id,
-            ).events_for_run(run_id)
-            retrieval_sources = retrieval_sources_from_events(frozen_events)
-            retrieval_tool_scope = retrieval_tool_scope_from_events(frozen_events) or "default"
+            if prepared_resume is not None:
+                retrieval_sources = prepared_resume.retrieval_sources
+                retrieval_tool_scope = prepared_resume.retrieval_tool_scope
+            else:
+                frozen_events = SessionEventJournal(
+                    runtime.storage_root,
+                    runtime.session_id,
+                ).events_for_run(run_id)
+                retrieval_sources = retrieval_sources_from_events(frozen_events)
+                retrieval_tool_scope = retrieval_tool_scope_from_events(frozen_events) or "default"
         else:
             retrieval_gate = decide_retrieval_gate(
                 content,
@@ -649,8 +803,8 @@ async def _deerflow_timeline_events(
         mcp_servers = None
         if isinstance(mcp_catalog, McpManager):
             mcp_scope = McpScope(
-                owner_id=runtime.owner_user_id or "local",
-                workspace_id=workspace_id_from_path(runtime.workspace.root),
+                owner_id=owner_id,
+                workspace_id=workspace_id,
                 thread_id=runtime.session_id,
             )
             mcp_snapshot = await mcp_catalog.load_tools(mcp_scope)
@@ -663,7 +817,6 @@ async def _deerflow_timeline_events(
                 run_id=run_id,
                 servers=mcp_servers,
             )
-        workspace_id = workspace_id_from_path(runtime.workspace.root)
         sandbox = create_coding_sandbox(
             runtime.workspace,
             thread_id=runtime.session_id,
@@ -764,6 +917,11 @@ async def _deerflow_timeline_events(
                 runtime.session_id,
                 run_id,
             )
+            active_skill_allowed_tools = (
+                prepared_resume.active_skill_allowed_tools
+                if prepared_resume is not None
+                else resolve_skill_allowed_tools(runtime.skill_registry, content)
+            )
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
                 run_id=run_id,
@@ -772,10 +930,7 @@ async def _deerflow_timeline_events(
                 sandbox=sandbox,
                 extra_deferred_tools=mcp_tools,
                 mcp_catalog=mcp_snapshot.catalog if mcp_snapshot is not None else None,
-                active_skill_allowed_tools=resolve_skill_allowed_tools(
-                    runtime.skill_registry,
-                    content,
-                ),
+                active_skill_allowed_tools=active_skill_allowed_tools,
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
                 web_fetch_port=web_fetch_port,
@@ -788,6 +943,16 @@ async def _deerflow_timeline_events(
                 ),
                 graph_approvals=True,
                 retrieval_sources=retrieval_sources,
+                retrieval_tool_scope=retrieval_tool_scope,
+            )
+            prompt_components = build_deerflow_prompt_components(
+                runtime,
+                retrieval_tool_scope=retrieval_tool_scope,
+                retrieval_sources=retrieval_sources,
+            )
+            rendered_system_prompt = prompt_components.render()
+            effective_harness_config = _retrieval_scoped_harness_config(
+                harness_config,
                 retrieval_tool_scope=retrieval_tool_scope,
             )
             if not is_resume:
@@ -805,23 +970,221 @@ async def _deerflow_timeline_events(
                     },
                     event_id=f"harness:{run_id}:capability-catalog",
                 )
+            turn_context_plan_binding: Mapping[str, object] | None = None
+            model_context_frame: ModelContextFrame | None = None
+            if (
+                not is_resume
+                and context_assembly_mode != "off"
+                and prepared is not None
+                and user_message is not None
+                and retrieval_gate is not None
+            ):
+                assembly_request = TurnContextAssemblyRequest(
+                    session_id=runtime.session_id,
+                    run_id=run_id,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    input_origin=input_origin,
+                    user_message=user_message,
+                    surface_context=surface_context,
+                    thread_goal=thread_goal,
+                    prepared_context=prepared,
+                    durable_context=durable_context,
+                    prompt_components=prompt_components,
+                    rendered_system_prompt=rendered_system_prompt,
+                    retrieval_gate=retrieval_gate,
+                    tool_snapshot=tool_bundle.snapshot,
+                    sandbox_descriptor=sandbox.descriptor,
+                    harness_config=effective_harness_config,
+                    runtime_mode=runtime.runtime_mode,
+                    permission_mode=runtime.permission_mode,
+                    model_spec=runtime.model_spec,
+                    mcp_snapshot=mcp_snapshot,
+                )
+                try:
+                    # capture 复用已有选择；shadow 只审计，enforce 会提升为 Graph 门禁。
+                    assembled = TurnContextAssembler(
+                        TurnPlanStore(runtime.storage_root, runtime.session_id)
+                    ).prepare_new_turn(assembly_request)
+                except Exception:
+                    logger.exception("turn context plan capture failed for run %s", run_id)
+                    if context_assembly_mode == "shadow":
+                        yield RunEvent(
+                            kind="harness",
+                            status="error",
+                            payload={
+                                "type": "turn_context_plan_shadow_failed",
+                                "version": 1,
+                                "run_id": run_id,
+                                "error_code": "capture_failed",
+                            },
+                            event_id=f"harness:{run_id}:turn-context-plan-shadow-error",
+                        )
+                    else:
+                        for event in _turn_context_plan_failure_events(
+                            run_id,
+                            error_code="context_plan_capture_failed",
+                            phase="new_turn_capture",
+                        ):
+                            yield event
+                        return
+                else:
+                    yield RunEvent(
+                        kind="harness",
+                        status="completed",
+                        payload=dict(assembled.receipt),
+                        event_id=f"harness:{run_id}:turn-context-plan",
+                    )
+                    try:
+                        # comparator 只输出固定 mismatch code，不记录被比较的真实内容。
+                        comparison = compare_turn_context_plan(assembled.plan, assembly_request)
+                    except Exception:
+                        logger.exception("turn context plan comparison failed for run %s", run_id)
+                        if context_assembly_mode == "shadow":
+                            yield RunEvent(
+                                kind="harness",
+                                status="error",
+                                payload={
+                                    "type": "turn_context_plan_compare_failed",
+                                    "version": 1,
+                                    "run_id": run_id,
+                                    "plan_id": assembled.plan.plan_id,
+                                    "plan_hash": assembled.plan.plan_hash,
+                                    "error_code": "compare_failed",
+                                },
+                                event_id=f"harness:{run_id}:turn-context-plan-compare-error",
+                            )
+                        else:
+                            for event in _turn_context_plan_failure_events(
+                                run_id,
+                                error_code="context_plan_compare_failed",
+                                phase="new_turn_compare",
+                                plan_id=assembled.plan.plan_id,
+                                plan_hash=assembled.plan.plan_hash,
+                            ):
+                                yield event
+                            return
+                    else:
+                        yield RunEvent(
+                            kind="harness",
+                            status="completed" if comparison.matched else "error",
+                            payload=comparison.to_receipt(),
+                            event_id=f"harness:{run_id}:turn-context-plan-compare",
+                        )
+                        if context_assembly_mode == "enforce" and not comparison.matched:
+                            for event in _turn_context_plan_failure_events(
+                                run_id,
+                                error_code="context_plan_mismatch",
+                                phase="new_turn_compare",
+                                plan_id=assembled.plan.plan_id,
+                                plan_hash=assembled.plan.plan_hash,
+                            ):
+                                yield event
+                            return
+                        try:
+                            model_context_frame = ModelContextFrameFactory().create(
+                                assembled.plan,
+                                prompt_components,
+                                expected_run_id=run_id,
+                            )
+                        except ModelContextFrameError:
+                            logger.exception(
+                                "model context frame creation failed for run %s", run_id
+                            )
+                            if context_assembly_mode == "enforce":
+                                for event in _turn_context_plan_failure_events(
+                                    run_id,
+                                    error_code="context_frame_creation_failed",
+                                    phase="new_turn_frame",
+                                    plan_id=assembled.plan.plan_id,
+                                    plan_hash=assembled.plan.plan_hash,
+                                ):
+                                    yield event
+                                return
+                            model_context_frame = None
+                        if context_assembly_mode == "enforce" and model_context_frame is not None:
+                            turn_context_plan_binding = assembled.plan.checkpoint_binding()
+            elif is_resume and context_assembly_mode == "enforce":
+                if resume_plan is None or prepared_resume is None:
+                    raise RuntimeError("validated resume plan is unavailable")
+                try:
+                    resume_comparison = compare_turn_context_plan_resume(
+                        resume_plan,
+                        TurnContextResumeExecutionRequest(
+                            prompt_components=prompt_components,
+                            rendered_system_prompt=rendered_system_prompt,
+                            retrieval_sources=prepared_resume.retrieval_sources,
+                            retrieval_tool_scope=prepared_resume.retrieval_tool_scope,
+                            tool_snapshot=tool_bundle.snapshot,
+                            sandbox_descriptor=sandbox.descriptor,
+                            harness_config=effective_harness_config,
+                            runtime_mode=runtime.runtime_mode,
+                            permission_mode=runtime.permission_mode,
+                            model_spec=runtime.model_spec,
+                            mcp_snapshot=mcp_snapshot,
+                        ),
+                    )
+                except Exception:
+                    logger.exception("turn context resume comparison failed for run %s", run_id)
+                    for event in _turn_context_plan_failure_events(
+                        run_id,
+                        error_code="resume_plan_compare_failed",
+                        phase="resume_dependencies",
+                        plan_id=resume_plan.plan_id,
+                        plan_hash=resume_plan.plan_hash,
+                    ):
+                        yield event
+                    return
+                yield RunEvent(
+                    kind="harness",
+                    status="completed" if resume_comparison.matched else "error",
+                    payload=resume_comparison.to_receipt(),
+                    event_id=f"harness:{run_id}:turn-context-plan-resume-compare",
+                )
+                if not resume_comparison.matched:
+                    for event in _turn_context_plan_failure_events(
+                        run_id,
+                        error_code="resume_plan_dependency_mismatch",
+                        phase="resume_dependencies",
+                        plan_id=resume_plan.plan_id,
+                        plan_hash=resume_plan.plan_hash,
+                    ):
+                        yield event
+                    return
+                try:
+                    model_context_frame = ModelContextFrameFactory().create(
+                        resume_plan,
+                        prompt_components,
+                    )
+                except ModelContextFrameError:
+                    logger.exception("model context frame creation failed for resume %s", run_id)
+                    for event in _turn_context_plan_failure_events(
+                        run_id,
+                        error_code="resume_context_frame_creation_failed",
+                        phase="resume_frame",
+                        plan_id=resume_plan.plan_id,
+                        plan_hash=resume_plan.plan_hash,
+                    ):
+                        yield event
+                    return
+                turn_context_plan_binding = prepared_resume.binding
             adapter = SageHarnessRuntimeAdapter(
                 model=runtime.model,
                 checkpointer=checkpointer,
                 tools=tool_bundle.tools,
-                system_prompt=build_deerflow_system_prompt(
-                    runtime,
-                    retrieval_tool_scope=retrieval_tool_scope,
-                    retrieval_sources=retrieval_sources,
+                system_prompt=(
+                    rendered_system_prompt
+                    if context_assembly_mode != "enforce" or model_context_frame is None
+                    else None
+                ),
+                model_context_frame=(
+                    model_context_frame if context_assembly_mode == "enforce" else None
                 ),
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
                 subagent_tool_config=subagent_config,
-                config=_retrieval_scoped_harness_config(
-                    harness_config,
-                    retrieval_tool_scope=retrieval_tool_scope,
-                ),
+                config=effective_harness_config,
                 artifact_store=artifact_store,
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
                 capability_revision=tool_bundle.capability_revision,
@@ -849,7 +1212,7 @@ async def _deerflow_timeline_events(
                 async for event in adapter.stream_turn(
                     session_id=runtime.session_id,
                     run_id=run_id,
-                    owner_id=runtime.owner_user_id or "local",
+                    owner_id=owner_id,
                     workspace_id=workspace_id,
                     workspace_path=str(runtime.workspace.root),
                     content=content,
@@ -860,6 +1223,7 @@ async def _deerflow_timeline_events(
                     resume=resume,
                     resume_value=current_resume_value,
                     resume_attempt=current_resume_attempt,
+                    turn_context_plan=turn_context_plan_binding,
                 ):
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
@@ -1222,6 +1586,7 @@ async def _start_pending_goal_followup(app: Any, session_id: str) -> None:
         ),
         app_env=str(getattr(app.state, "cloud_app_env", "development")),
         input_origin="goal_followup",
+        context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
     )
     try:
         task = await coordinator.start_run(
@@ -2107,6 +2472,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                     websocket.app.state, "knowledge_source_proposal_service", None
                 ),
                 app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
+                context_assembly_mode=getattr(
+                    websocket.app.state, "coding_context_assembly_mode", "shadow"
+                ),
             )
             try:
                 task = await coordinator.start_run(
@@ -2365,6 +2733,9 @@ async def coding_approval_respond(
             app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
             resume_value=_graph_approval_resume_value(durable_approval, resolved_choice),
             resume_attempt=resume_attempt,
+            context_assembly_mode=getattr(
+                request.app.state, "coding_context_assembly_mode", "shadow"
+            ),
         )
         try:
             task = await coordinator.start_existing_run(resumed_run_id, stream)

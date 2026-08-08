@@ -102,7 +102,11 @@ from sage_harness.skills import (
     parse_skill_activation,
     resolve_skill_allowed_tools,
 )
-from sage_harness.state import SageThreadState
+from sage_harness.state import (
+    SageThreadState,
+    TurnContextPlanBinding,
+    normalize_turn_context_plan_binding,
+)
 from sage_harness.subagents import (
     CancelCheck,
     MasteryEvidenceCandidate,
@@ -209,6 +213,7 @@ __all__ = [
     "ToolCallRequest",
     "ToolExecutionPort",
     "ToolExecutionResult",
+    "TurnContextPlanBinding",
     "WebEvidence",
     "WebFetchPort",
     "WebFetchResult",
@@ -224,6 +229,7 @@ __all__ = [
     "load_graph_message_compaction_plan",
     "load_scoped_checkpoint",
     "normalize_stream_item",
+    "normalize_turn_context_plan_binding",
     "open_sqlite_checkpointer",
     "parse_skill_activation",
     "render_deferred_tool_index",

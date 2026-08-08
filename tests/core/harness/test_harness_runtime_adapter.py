@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import json
 import subprocess
 from pathlib import Path
@@ -22,6 +24,7 @@ from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.runtime import CodingRuntime
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
+    build_deerflow_prompt_components,
     build_deerflow_system_prompt,
     context_status_event,
 )
@@ -29,11 +32,13 @@ from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.model_context_frame import ModelContextFrameFactory
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import (
     build_deerflow_coding_tool_bundle,
     build_deerflow_coding_tools,
 )
+from core.harness.turn_context_plan import TurnContextPlan
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 
 
@@ -990,6 +995,41 @@ def test_runtime_adapter_persists_scoped_sandbox_identity(tmp_path: Path) -> Non
     }
 
 
+def test_runtime_adapter_persists_only_the_turn_plan_binding(tmp_path: Path) -> None:
+    binding = {
+        "version": 1,
+        "run_id": "r-plan",
+        "plan_id": "tcp-plan",
+        "plan_hash": "sha256:plan",
+    }
+
+    async def run() -> dict[str, object]:
+        async with open_sqlite_checkpointer(tmp_path / "plan-checkpoints.sqlite3") as saver:
+            adapter = SageHarnessRuntimeAdapter(
+                model=FakeMessagesListChatModel(responses=[AIMessage(content="ok")]),
+                checkpointer=saver,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-plan",
+                    run_id="r-plan",
+                    workspace_id="w-plan",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                    turn_context_plan=binding,
+                )
+            ]
+            checkpoint = await saver.aget_tuple(thread_config("s-plan"))
+            assert checkpoint is not None
+            return dict(checkpoint.checkpoint["channel_values"])
+
+    state = asyncio.run(run())
+
+    assert state["turn_context_plan"] == binding
+    assert set(state["turn_context_plan"]) == {"version", "run_id", "plan_id", "plan_hash"}
+
+
 def test_runtime_adapter_reuses_sqlite_checkpoint_across_turns(tmp_path: Path) -> None:
     async def run() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         async with open_sqlite_checkpointer(tmp_path / "checkpoints.sqlite3") as saver:
@@ -1598,6 +1638,34 @@ def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> No
     assert context_status_event(runtime, "r1") is None
 
 
+def test_deerflow_prompt_components_preserve_rendering_and_authority_boundary(
+    tmp_path: Path,
+) -> None:
+    runtime = CodingRuntime(
+        session_id="s1",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    runtime.session["history"] = [{"role": "user", "content": "untrusted-user-history"}]
+
+    components = build_deerflow_prompt_components(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+
+    assert components.render() == build_deerflow_system_prompt(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+    assert "untrusted-user-history" not in components.static_policy
+    assert "untrusted-user-history" not in components.dynamic_authority
+    assert "untrusted-user-history" in components.untrusted_context
+    assert "source-locked to: knowledge" in components.dynamic_authority
+
+
 def test_deerflow_context_projects_only_bounded_summary_todos_and_memory_refs(
     tmp_path: Path,
 ) -> None:
@@ -1732,6 +1800,76 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
         assert "knowledge=3000" in str(hidden[0].content)
         assert "Book learning evidence" in str(hidden[0].content)
         assert "kcite_1" in str(hidden[0].content)
+
+
+def test_runtime_adapter_projects_frame_untrusted_layer_as_hidden_data(tmp_path: Path) -> None:
+    components = build_deerflow_prompt_components(
+        CodingRuntime(
+            session_id="s-frame",
+            workspace_root=tmp_path,
+            model=object(),
+            storage_root=tmp_path / ".coding",
+        ),
+        retrieval_tool_scope="no_tools",
+    )
+    plan = TurnContextPlan.create(
+        plan_id="tcp-frame-adapter",
+        session_id="s-frame",
+        run_id="r-frame",
+        owner_fingerprint="owner",
+        workspace_id="w-frame",
+        surface="coding",
+        created_at="2026-08-08T00:00:00+00:00",
+        admission={},
+        prompt={
+            "rendered_prompt_hash": "sha256:"
+            + hashlib.sha256(components.render().encode()).hexdigest(),
+            "static_policy": {"rendered_content": components.static_policy},
+            "dynamic_authority": {
+                "rendered_content_hash": "sha256:"
+                + hashlib.sha256(components.dynamic_authority.encode()).hexdigest()
+            },
+            "untrusted_context": {
+                "working_memory_digest": "sha256:"
+                + hashlib.sha256(components.untrusted_context.encode()).hexdigest()
+            },
+        },
+        context_refs={},
+        retrieval={},
+        tools={},
+        execution={},
+        resume={"checkpoint_thread_id": "s-frame", "checkpoint_namespace": ""},
+    )
+    frame = ModelContextFrameFactory().create(plan, components)
+
+    async def run() -> list[BaseMessage]:
+        async with open_sqlite_checkpointer(tmp_path / "frame-checkpoints.sqlite3") as saver:
+            model = RecordingBindableFakeModel(responses=[AIMessage(content="done")])
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                model_context_frame=frame,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-frame",
+                    run_id="r-frame",
+                    owner_id="owner",
+                    workspace_id="w-frame",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                )
+            ]
+            return type(model).seen_messages[0]
+
+    messages = asyncio.run(run())
+    assert str(messages[0].content) == frame.render_system_prompt()
+    hidden = [
+        message for message in messages if message.additional_kwargs.get("sage_model_context_data")
+    ]
+    assert len(hidden) == 1
+    assert html.escape(frame.untrusted_context, quote=False) in str(hidden[0].content)
 
 
 def test_runtime_adapter_compacts_sqlite_messages_with_host_summary(tmp_path: Path) -> None:

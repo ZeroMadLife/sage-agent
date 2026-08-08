@@ -1,0 +1,282 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1400" viewBox="0 0 2400 1400" role="img" aria-labelledby="title desc">
+  <title id="title">Sage Context Assembly 总体架构</title>
+  <desc id="desc">展示新 Turn 的不可变 Plan 门禁、Graph 动态状态、审计证据与 fail-closed 恢复权威链。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#46647a"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#27836d"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b64b48"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif; letter-spacing: 0; fill: #173247; }
+      .title { font-size: 40px; font-weight: 700; }
+      .subtitle { font-size: 19px; fill: #5d7180; }
+      .zone-title { font-size: 22px; font-weight: 700; }
+      .box-title { font-size: 17px; font-weight: 700; }
+      .body { font-size: 15px; fill: #435b6d; }
+      .small { font-size: 13px; fill: #596f80; }
+      .tiny { font-size: 12px; fill: #6b7d8a; }
+      .zone { stroke-width: 2; rx: 8; }
+      .box { stroke-width: 1.7; rx: 6; }
+      .arrow { fill: none; stroke: #46647a; stroke-width: 2.3; marker-end: url(#arrow); }
+      .green-arrow { fill: none; stroke: #27836d; stroke-width: 2.6; marker-end: url(#arrowGreen); }
+      .red-arrow { fill: none; stroke: #b64b48; stroke-width: 2.4; marker-end: url(#arrowRed); }
+      .dash { stroke-dasharray: 8 7; }
+      .divider { stroke: #c9d4dc; stroke-width: 1.2; }
+    </style>
+  </defs>
+
+  <rect width="2400" height="1400" fill="#ffffff"/>
+  <text x="1200" y="56" text-anchor="middle" class="title">Sage Context Assembly 总体架构</text>
+  <text x="1200" y="92" text-anchor="middle" class="subtitle">选择 → 冻结 → 比较 → 执行 → 证据 → 恢复</text>
+
+  <!-- ① 输入与选择 -->
+  <rect x="38" y="132" width="442" height="492" class="zone" fill="#f2f8fc" stroke="#70a8d2"/>
+  <text x="60" y="169" class="zone-title" fill="#246b9e">① 输入与选择</text>
+
+  <rect x="70" y="206" width="160" height="72" class="box" fill="#e5f1f9" stroke="#5796c4"/>
+  <text x="150" y="235" text-anchor="middle" class="box-title">用户 Turn</text>
+  <text x="150" y="259" text-anchor="middle" class="small">canonical message</text>
+
+  <rect x="258" y="190" width="190" height="164" class="box" fill="#e5f1f9" stroke="#5796c4"/>
+  <text x="353" y="218" text-anchor="middle" class="box-title">现有选择链</text>
+  <text x="278" y="247" class="small">Context / 压缩 / Budget</text>
+  <text x="278" y="272" class="small">Retrieval / Memory / RAG</text>
+  <text x="278" y="297" class="small">MCP catalog / Tool Bundle</text>
+  <text x="278" y="322" class="small">Permission / Sandbox</text>
+  <text x="278" y="342" class="tiny">每个外部选择只执行一次</text>
+  <path d="M230 242 L258 242" class="arrow"/>
+
+  <rect x="70" y="390" width="160" height="96" class="box" fill="#ffffff" stroke="#5796c4"/>
+  <text x="150" y="419" text-anchor="middle" class="box-title">渐进开关</text>
+  <text x="92" y="445" class="small">off：旧路径</text>
+  <text x="92" y="466" class="small">shadow：只审计</text>
+  <text x="92" y="487" class="small">enforce：执行门禁</text>
+
+  <rect x="258" y="398" width="190" height="102" class="box" fill="#d9edf8" stroke="#357fad"/>
+  <text x="353" y="428" text-anchor="middle" class="box-title">TurnContextAssembler</text>
+  <text x="278" y="455" class="small">净化正文，生成 ref / digest</text>
+  <text x="278" y="478" class="small">不重新查询外部 Port</text>
+  <path d="M353 354 L353 398" class="arrow"/>
+  <path d="M230 438 L258 438" class="arrow"/>
+
+  <rect x="70" y="540" width="378" height="56" class="box" fill="#ffffff" stroke="#91b6d0"/>
+  <text x="259" y="565" text-anchor="middle" class="small">原组件拥有输入事实；Assembler 只收敛本 Turn 快照</text>
+  <text x="259" y="586" text-anchor="middle" class="tiny">Plan 不是消息列表，也不是任务 DAG</text>
+
+  <!-- ② 不可变控制面 -->
+  <rect x="500" y="132" width="650" height="492" class="zone" fill="#f0faf8" stroke="#54a69e"/>
+  <text x="522" y="169" class="zone-title" fill="#257f77">② 不可变控制面</text>
+
+  <rect x="530" y="198" width="370" height="352" class="box" fill="#e1f4f0" stroke="#338c83"/>
+  <text x="715" y="228" text-anchor="middle" class="box-title">TurnContextPlan（frozen）</text>
+  <line x1="530" y1="245" x2="900" y2="245" class="divider"/>
+  <text x="552" y="274" class="body">Static Policy</text>
+  <text x="705" y="274" class="small">版本 + 唯一允许保存的规则正文</text>
+  <line x1="552" y1="291" x2="878" y2="291" class="divider"/>
+  <text x="552" y="320" class="body">Dynamic Authority</text>
+  <text x="705" y="320" class="small">mode / scope / budget</text>
+  <line x1="552" y1="337" x2="878" y2="337" class="divider"/>
+  <text x="552" y="366" class="body">Context refs</text>
+  <text x="705" y="366" class="small">Transcript / Memory / RAG refs</text>
+  <line x1="552" y1="383" x2="878" y2="383" class="divider"/>
+  <text x="552" y="412" class="body">Tool / MCP</text>
+  <text x="705" y="412" class="small">capability IDs + revision / hash</text>
+  <line x1="552" y1="429" x2="878" y2="429" class="divider"/>
+  <text x="552" y="458" class="body">Execution</text>
+  <text x="705" y="458" class="small">Permission / Sandbox / limits</text>
+  <line x1="552" y1="475" x2="878" y2="475" class="divider"/>
+  <text x="552" y="504" class="body">Resume</text>
+  <text x="705" y="504" class="small">checkpoint scope + fail_closed</text>
+  <text x="715" y="535" text-anchor="middle" class="tiny">用户、Memory、RAG、MCP 正文不进入 Plan</text>
+
+  <rect x="930" y="204" width="188" height="76" class="box" fill="#d9f0ec" stroke="#338c83"/>
+  <text x="1024" y="233" text-anchor="middle" class="box-title">plan_hash</text>
+  <text x="1024" y="258" text-anchor="middle" class="small">canonical SHA-256</text>
+  <path d="M900 242 L930 242" class="arrow"/>
+
+  <rect x="930" y="312" width="188" height="92" class="box" fill="#d9f0ec" stroke="#338c83"/>
+  <text x="1024" y="341" text-anchor="middle" class="box-title">TurnPlanStore</text>
+  <text x="1024" y="365" text-anchor="middle" class="small">同 run 幂等 · 冲突拒绝</text>
+  <text x="1024" y="386" text-anchor="middle" class="small">读取时重验完整 Plan</text>
+  <path d="M1024 280 L1024 312" class="arrow"/>
+
+  <rect x="930" y="446" width="188" height="96" class="box" fill="#e8f7f4" stroke="#338c83"/>
+  <text x="1024" y="475" text-anchor="middle" class="box-title">Comparator</text>
+  <text x="1024" y="499" text-anchor="middle" class="small">Prompt · Gate / Scope</text>
+  <text x="1024" y="521" text-anchor="middle" class="small">Tool / MCP · Sandbox · Limits</text>
+  <path d="M900 494 L930 494" class="arrow"/>
+  <path d="M448 449 C485 449 485 374 530 374" class="arrow"/>
+  <path d="M448 272 C485 272 485 486 930 486" class="arrow dash"/>
+
+  <!-- ③ 运行与动态状态 -->
+  <rect x="1170" y="132" width="660" height="492" class="zone" fill="#fff8ef" stroke="#de9850"/>
+  <text x="1192" y="169" class="zone-title" fill="#bc6d23">③ 运行与动态状态</text>
+
+  <polygon points="1205,244 1270,204 1335,244 1270,284" fill="#ffffff" stroke="#cb7c2f" stroke-width="1.7"/>
+  <text x="1270" y="239" text-anchor="middle" class="box-title">比较门禁</text>
+  <text x="1270" y="260" text-anchor="middle" class="tiny">matched?</text>
+  <path d="M1118 494 C1150 494 1150 244 1205 244" class="arrow"/>
+
+  <rect x="1370" y="202" width="198" height="82" class="box" fill="#ffecd8" stroke="#cb7c2f"/>
+  <text x="1469" y="232" text-anchor="middle" class="box-title">Runtime Adapter</text>
+  <text x="1469" y="257" text-anchor="middle" class="small">门禁通过后才创建</text>
+  <path d="M1335 244 L1370 244" class="green-arrow"/>
+  <text x="1350" y="224" text-anchor="middle" class="tiny" fill="#27836d">enforce</text>
+
+  <rect x="1600" y="202" width="196" height="82" class="box" fill="#ffe3c5" stroke="#cb7c2f"/>
+  <text x="1698" y="232" text-anchor="middle" class="box-title">Harness Graph</text>
+  <text x="1698" y="257" text-anchor="middle" class="small">Model ↔ Tool loop</text>
+  <path d="M1568 244 L1600 244" class="arrow"/>
+
+  <rect x="1210" y="344" width="132" height="64" class="box" fill="#fff4e8" stroke="#cb7c2f"/>
+  <text x="1276" y="383" text-anchor="middle" class="box-title">模型调用</text>
+  <rect x="1370" y="344" width="170" height="64" class="box" fill="#fff4e8" stroke="#cb7c2f"/>
+  <text x="1455" y="370" text-anchor="middle" class="box-title">工具 / MCP</text>
+  <text x="1455" y="392" text-anchor="middle" class="small">Sandbox 内执行</text>
+  <rect x="1568" y="344" width="228" height="64" class="box" fill="#fff4e8" stroke="#cb7c2f"/>
+  <text x="1682" y="370" text-anchor="middle" class="box-title">Approval interrupt</text>
+  <text x="1682" y="392" text-anchor="middle" class="small">等待外部显式恢复</text>
+  <path d="M1698 284 C1698 314 1276 314 1276 344" class="arrow"/>
+  <path d="M1698 284 C1698 320 1455 320 1455 344" class="arrow"/>
+  <path d="M1698 284 L1682 344" class="arrow"/>
+
+  <rect x="1210" y="474" width="586" height="112" class="box" fill="#ffecd8" stroke="#cb7c2f"/>
+  <text x="1503" y="505" text-anchor="middle" class="box-title">Graph Checkpoint（动态执行状态）</text>
+  <text x="1503" y="532" text-anchor="middle" class="small">消息尾部 · Tool loop · pending Approval · 预算计数</text>
+  <text x="1503" y="559" text-anchor="middle" class="body">最小 Plan binding = { version, run_id, plan_id, plan_hash }</text>
+  <path d="M1276 408 L1276 474" class="arrow"/>
+  <path d="M1455 408 L1455 474" class="arrow"/>
+  <path d="M1682 408 L1682 474" class="arrow"/>
+  <path d="M1698 284 C1810 284 1810 530 1796 530" class="arrow"/>
+
+  <!-- ④ 对话事实与审计证据 -->
+  <rect x="1850" y="132" width="512" height="492" class="zone" fill="#f6f7fb" stroke="#7f91b5"/>
+  <text x="1872" y="169" class="zone-title" fill="#586b92">④ 对话事实与审计证据</text>
+
+  <rect x="1880" y="202" width="200" height="92" class="box" fill="#edf0f7" stroke="#7184aa"/>
+  <text x="1980" y="231" text-anchor="middle" class="box-title">Plan Receipt</text>
+  <text x="1980" y="255" text-anchor="middle" class="small">plan_id / hash / 计数</text>
+  <text x="1980" y="277" text-anchor="middle" class="small">固定 mismatch / error code</text>
+
+  <rect x="2114" y="194" width="216" height="74" class="box" fill="#edf0f7" stroke="#7184aa"/>
+  <text x="2222" y="224" text-anchor="middle" class="box-title">Timeline</text>
+  <text x="2222" y="248" text-anchor="middle" class="small">用户可见事件投影</text>
+  <rect x="2114" y="292" width="216" height="74" class="box" fill="#edf0f7" stroke="#7184aa"/>
+  <text x="2222" y="322" text-anchor="middle" class="box-title">Run Trace</text>
+  <text x="2222" y="346" text-anchor="middle" class="small">排查与失败证据</text>
+  <path d="M2080 235 L2114 231" class="arrow"/>
+  <path d="M2080 260 C2095 260 2095 329 2114 329" class="arrow"/>
+
+  <rect x="1880" y="420" width="450" height="106" class="box" fill="#edf0f7" stroke="#7184aa"/>
+  <text x="2105" y="452" text-anchor="middle" class="box-title">Transcript</text>
+  <text x="2105" y="478" text-anchor="middle" class="small">canonical 用户 / 助手 / ToolCall / Tool Result 顺序</text>
+  <text x="2105" y="503" text-anchor="middle" class="body">保存对话事实，但不承担权限裁决，也不是 Resume 权威</text>
+  <path d="M1796 244 C1832 244 1832 473 1880 473" class="arrow"/>
+  <path d="M1118 358 C1825 358 1825 248 1880 248" class="arrow dash"/>
+  <text x="1872" y="565" class="small">Receipt 是给 Timeline / Trace / 运维看的脱敏收据：</text>
+  <text x="1872" y="589" class="small">不是 Transcript 副本，也不参与 Graph 恢复。</text>
+
+  <!-- ⑤ Enforce Resume -->
+  <rect x="38" y="668" width="2324" height="480" class="zone" fill="#fff5f4" stroke="#c8625f"/>
+  <text x="60" y="707" class="zone-title" fill="#a94946">⑤ Enforce Resume：恢复权威 = 完整 Plan + scoped Graph Checkpoint</text>
+
+  <rect x="68" y="760" width="180" height="82" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="158" y="789" text-anchor="middle" class="box-title">恢复请求</text>
+  <text x="158" y="814" text-anchor="middle" class="small">run_id + resume value</text>
+
+  <rect x="284" y="752" width="214" height="98" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="391" y="782" text-anchor="middle" class="box-title">PlanStore.load_for_run</text>
+  <text x="391" y="807" text-anchor="middle" class="small">重算 hash · 校验 canonical JSON</text>
+  <text x="391" y="830" text-anchor="middle" class="small">Plan 缺失 / 损坏即停止</text>
+
+  <rect x="534" y="752" width="200" height="98" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="634" y="782" text-anchor="middle" class="box-title">Plan scope gate</text>
+  <text x="634" y="807" text-anchor="middle" class="small">session / run / owner</text>
+  <text x="634" y="830" text-anchor="middle" class="small">workspace / surface</text>
+
+  <rect x="770" y="752" width="220" height="98" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="880" y="782" text-anchor="middle" class="box-title">load_scoped_checkpoint</text>
+  <text x="880" y="807" text-anchor="middle" class="small">thread / owner / workspace</text>
+  <text x="880" y="830" text-anchor="middle" class="small">workspace_path</text>
+
+  <rect x="1026" y="752" width="220" height="98" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="1136" y="782" text-anchor="middle" class="box-title">binding 精确比较</text>
+  <text x="1136" y="807" text-anchor="middle" class="small">version / run_id</text>
+  <text x="1136" y="830" text-anchor="middle" class="small">plan_id / plan_hash</text>
+
+  <rect x="1282" y="752" width="222" height="98" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="1393" y="782" text-anchor="middle" class="box-title">从 Plan 恢复 routing</text>
+  <text x="1393" y="807" text-anchor="middle" class="small">retrieval sources / tool scope</text>
+  <text x="1393" y="830" text-anchor="middle" class="small">skill scope</text>
+
+  <rect x="1540" y="744" width="244" height="114" class="box" fill="#fce8e6" stroke="#b95754"/>
+  <text x="1662" y="775" text-anchor="middle" class="box-title">重建并比较当前依赖</text>
+  <text x="1662" y="801" text-anchor="middle" class="small">Prompt / Tool / MCP catalog</text>
+  <text x="1662" y="824" text-anchor="middle" class="small">Sandbox / Limits / runtime / model</text>
+  <text x="1662" y="846" text-anchor="middle" class="tiny">依赖漂移只返回固定 code</text>
+
+  <rect x="1820" y="752" width="204" height="98" class="box" fill="#e5f5ee" stroke="#27836d"/>
+  <text x="1922" y="782" text-anchor="middle" class="box-title">Command(resume)</text>
+  <text x="1922" y="807" text-anchor="middle" class="small">携带已验证 binding</text>
+  <text x="1922" y="830" text-anchor="middle" class="small">进入同一 Graph</text>
+
+  <rect x="2060" y="752" width="260" height="98" class="box" fill="#e5f5ee" stroke="#27836d"/>
+  <text x="2190" y="782" text-anchor="middle" class="box-title">恢复 Harness Graph</text>
+  <text x="2190" y="807" text-anchor="middle" class="small">继续 pending Approval / Tool loop</text>
+  <text x="2190" y="830" text-anchor="middle" class="small">不创建新的 Turn Plan</text>
+
+  <path d="M248 801 L284 801" class="arrow"/>
+  <path d="M498 801 L534 801" class="arrow"/>
+  <path d="M734 801 L770 801" class="arrow"/>
+  <path d="M990 801 L1026 801" class="arrow"/>
+  <path d="M1246 801 L1282 801" class="arrow"/>
+  <path d="M1504 801 L1540 801" class="arrow"/>
+  <path d="M1784 801 L1820 801" class="green-arrow"/>
+  <path d="M2024 801 L2060 801" class="green-arrow"/>
+
+  <path d="M1024 404 C1024 650 391 650 391 752" class="arrow"/>
+  <path d="M1503 586 C1503 690 880 690 880 752" class="arrow"/>
+  <text x="718" y="675" text-anchor="middle" class="tiny">完整 Plan</text>
+  <text x="1220" y="699" text-anchor="middle" class="tiny">scoped checkpoint</text>
+
+  <rect x="696" y="968" width="1010" height="122" class="box" fill="#fce3e1" stroke="#b5403e" stroke-width="2.2"/>
+  <text x="1201" y="1002" text-anchor="middle" class="box-title" fill="#9e3936">FAIL CLOSED</text>
+  <text x="1201" y="1031" text-anchor="middle" class="body">任一 Plan、scope、binding 或依赖校验失败 → 固定 error_code 写入 Timeline / Trace</text>
+  <text x="1201" y="1059" text-anchor="middle" class="body">不创建 Runtime Adapter · 不调用模型 · 不调用工具 · 不用 Timeline 补造权限</text>
+  <text x="1201" y="1084" text-anchor="middle" class="small">停在最后可信 Checkpoint，等待显式修复 / 恢复；不会自动回滚 GraphState 或源码</text>
+
+  <path d="M391 850 C391 930 820 930 820 968" class="red-arrow"/>
+  <path d="M634 850 C634 920 960 920 960 968" class="red-arrow"/>
+  <path d="M1136 850 L1136 968" class="red-arrow"/>
+  <path d="M1662 858 C1662 920 1510 920 1510 968" class="red-arrow"/>
+  <path d="M1706 1029 C1920 1029 1920 329 2114 329" class="red-arrow dash"/>
+
+  <!-- 边界图例 -->
+  <rect x="38" y="1180" width="2324" height="164" class="zone" fill="#fafbfc" stroke="#bdc9d2"/>
+  <text x="60" y="1217" class="zone-title">事实边界与当前交付</text>
+
+  <rect x="70" y="1240" width="470" height="72" class="box" fill="#e1f4f0" stroke="#338c83"/>
+  <text x="92" y="1269" class="box-title">Plan</text>
+  <text x="164" y="1269" class="small">本 Turn 的不可变上下文与执行边界</text>
+  <text x="92" y="1295" class="small">权威：TurnPlanStore；Checkpoint 只保存四元 binding</text>
+
+  <rect x="570" y="1240" width="470" height="72" class="box" fill="#ffecd8" stroke="#cb7c2f"/>
+  <text x="592" y="1269" class="box-title">Checkpoint</text>
+  <text x="710" y="1269" class="small">Graph 动态状态与 Approval interrupt</text>
+  <text x="592" y="1295" class="small">恢复权威之一；不保存完整 Plan</text>
+
+  <rect x="1070" y="1240" width="470" height="72" class="box" fill="#edf0f7" stroke="#7184aa"/>
+  <text x="1092" y="1269" class="box-title">Transcript</text>
+  <text x="1200" y="1269" class="small">canonical 对话事实</text>
+  <text x="1092" y="1295" class="small">不是权限裁决源；当前 Resume 不靠它重放 Graph</text>
+
+  <rect x="1570" y="1240" width="760" height="72" class="box" fill="#ffffff" stroke="#9ba8b1" stroke-dasharray="7 5"/>
+  <text x="1592" y="1269" class="box-title">后续切片：ModelContextFrameFactory</text>
+  <text x="1908" y="1269" class="small">由 Plan + Checkpoint 直接派生每次模型调用输入</text>
+  <text x="1592" y="1295" class="small">本 PR 只完成 capture / compare / binding / enforce / resume，不虚假标记 FrameFactory 已完成</text>
+</svg>

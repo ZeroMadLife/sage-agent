@@ -38,6 +38,7 @@ from core.harness.sandbox_factory import (
     normalize_sandbox_provider,
     reconcile_coding_sandboxes,
 )
+from core.harness.turn_context_assembler import normalize_context_assembly_mode
 from core.harness.web_fetch import SafeWebFetchAdapter
 from core.harness.web_search import SearxngWebSearchAdapter
 from core.knowledge import (
@@ -93,6 +94,7 @@ def create_app(
     coding_checkpoint_anchor_key: bytes | None = None,
     coding_deerflow_v2_enabled: bool | None = None,
     coding_default_runtime_profile: str | None = None,
+    coding_context_assembly_mode: str | None = None,
     coding_harness_config: HarnessConfig | None = None,
     coding_sandbox_provider: str | None = None,
     coding_sandbox_image: str | None = None,
@@ -341,6 +343,11 @@ def create_app(
         raise ValueError("coding default runtime profile must not be empty")
     app.state.coding_default_runtime_profile = normalize_runtime_profile(
         configured_default_runtime_profile
+    )
+    app.state.coding_context_assembly_mode = normalize_context_assembly_mode(
+        settings.sage_context_assembly_mode
+        if coding_context_assembly_mode is None
+        else coding_context_assembly_mode
     )
     app.state.coding_harness_config = coding_harness_config or HarnessConfig(
         max_model_calls=settings.sage_harness_max_model_calls,

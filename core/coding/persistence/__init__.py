@@ -26,6 +26,12 @@ from core.coding.persistence.transcript_store import (
     TranscriptItem,
     TranscriptStore,
 )
+from core.coding.persistence.turn_plan_store import (
+    TurnPlanConflictError,
+    TurnPlanCorruptionError,
+    TurnPlanStore,
+    TurnPlanStoreError,
+)
 
 __all__ = [
     "CodingSessionStore",
@@ -48,4 +54,8 @@ __all__ = [
     "TranscriptCorruptionError",
     "TranscriptItem",
     "TranscriptStore",
+    "TurnPlanConflictError",
+    "TurnPlanCorruptionError",
+    "TurnPlanStore",
+    "TurnPlanStoreError",
 ]

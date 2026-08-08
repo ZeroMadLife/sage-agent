@@ -169,6 +169,15 @@ class PromotedTools(TypedDict):
     capability_ids: NotRequired[list[str]]
 
 
+class TurnContextPlanBinding(TypedDict):
+    """Checkpoint 只保存本 run 的不可变 Plan 身份，不保存完整 Plan。"""
+
+    version: int
+    run_id: str
+    plan_id: str
+    plan_hash: str
+
+
 def _usage_count(entry: Mapping[str, object], key: str) -> int:
     value = entry.get(key)
     return value if type(value) is int and value >= 0 else 0
@@ -534,6 +543,48 @@ def merge_promoted_tools(
     return merged_result
 
 
+def normalize_turn_context_plan_binding(
+    value: Mapping[str, object],
+) -> TurnContextPlanBinding:
+    """校验并净化 Plan binding，防止完整 Plan 或额外正文进入 checkpoint。"""
+    expected_fields = {"version", "run_id", "plan_id", "plan_hash"}
+    if set(value) != expected_fields:
+        raise ValueError("Turn context plan binding must contain only identity fields")
+    version = value.get("version")
+    if isinstance(version, bool) or version != 1:
+        raise ValueError("Turn context plan binding version must be 1")
+    normalized: TurnContextPlanBinding = {
+        "version": 1,
+        "run_id": str(value.get("run_id", "")).strip(),
+        "plan_id": str(value.get("plan_id", "")).strip(),
+        "plan_hash": str(value.get("plan_hash", "")).strip(),
+    }
+    if not normalized["run_id"] or not normalized["plan_id"] or not normalized["plan_hash"]:
+        raise ValueError("Turn context plan binding identity must not be empty")
+    return normalized
+
+
+def merge_turn_context_plan(
+    existing: TurnContextPlanBinding | None,
+    new: TurnContextPlanBinding | None,
+) -> TurnContextPlanBinding | None:
+    """同一 run 的 Plan 不可漂移；新 run 可以替换上一 Turn 的 binding。"""
+    if new is None:
+        return existing
+    normalized_new = normalize_turn_context_plan_binding(new)
+    if existing is None:
+        return normalized_new
+    normalized_existing = normalize_turn_context_plan_binding(existing)
+    if normalized_existing["run_id"] != normalized_new["run_id"]:
+        return normalized_new
+    if normalized_existing != normalized_new:
+        raise ValueError(
+            "Conflicting turn context plan bindings: "
+            f"{normalized_existing['run_id']!r} cannot be rebound"
+        )
+    return normalized_existing
+
+
 class SageThreadState(AgentState):
     """Checkpoint-safe state shared by Sage's future harness surfaces."""
 
@@ -557,6 +608,9 @@ class SageThreadState(AgentState):
     book_learning: NotRequired[BookLearningState | None]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
     promoted_tools: Annotated[NotRequired[PromotedTools | None], merge_promoted_tools]
+    turn_context_plan: Annotated[
+        NotRequired[TurnContextPlanBinding | None], merge_turn_context_plan
+    ]
     summary_text: NotRequired[str | None]
     budget_run_id: NotRequired[str]
     run_token_usage: NotRequired[int]
@@ -586,6 +640,7 @@ __all__ = [
     "SkillRef",
     "ThreadDataState",
     "TodoItem",
+    "TurnContextPlanBinding",
     "delegation_budget_usage",
     "merge_approval_context",
     "merge_artifacts",
@@ -599,4 +654,6 @@ __all__ = [
     "merge_skill_context",
     "merge_thread_data",
     "merge_todos",
+    "merge_turn_context_plan",
+    "normalize_turn_context_plan_binding",
 ]
