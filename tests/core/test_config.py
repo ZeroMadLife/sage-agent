@@ -1,5 +1,7 @@
 """Configuration module tests."""
 
+import pytest
+
 from core.config.settings import Settings
 
 
@@ -42,10 +44,21 @@ def test_sandbox_configuration_defaults_to_local_development() -> None:
 def test_harness_budget_defaults_allow_long_evidence_runs() -> None:
     settings = Settings(_env_file=None)
 
+    assert settings.sage_context_assembly_mode == "shadow"
     assert settings.sage_harness_max_model_calls == 24
     assert settings.sage_harness_max_tool_calls == 64
     assert settings.sage_harness_max_run_tokens == 250_000
     assert settings.sage_harness_max_run_seconds == 1_800.0
+
+
+def test_context_assembly_configuration_accepts_enforce(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SAGE_CONTEXT_ASSEMBLY_MODE", "enforce")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.sage_context_assembly_mode == "enforce"
 
 
 def test_web_fetch_is_fail_closed_with_bounded_timeouts_by_default() -> None:

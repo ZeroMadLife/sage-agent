@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
@@ -24,8 +27,10 @@ from core.coding.engine.events import (
 )
 from core.coding.persistence.session_event_journal import SessionEventJournal
 from core.coding.persistence.tool_result_store import ToolResultStore
+from core.coding.persistence.turn_plan_store import TurnPlanStore
 from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
+from core.harness.turn_context_comparator import TurnContextComparison
 
 
 def _usage(level: str = "normal") -> ContextUsage:
@@ -229,6 +234,29 @@ class AvailableKnowledgePort:
         raise AssertionError("routing test must not execute Knowledge search")
 
 
+class StaticPlanCheckpoint:
+    """Expose one already-scoped Graph checkpoint for enforce resume tests."""
+
+    def __init__(self, *, runtime: CodingRuntime, binding: dict[str, object]) -> None:
+        self._checkpoint = SimpleNamespace(
+            checkpoint={
+                "channel_values": {
+                    "thread_data": {
+                        "owner_id": runtime.owner_user_id or "local",
+                        "workspace_id": coding_api.workspace_id_from_path(runtime.workspace.root),
+                        "thread_id": runtime.session_id,
+                        "workspace_path": str(runtime.workspace.root),
+                    },
+                    "turn_context_plan": binding,
+                }
+            }
+        )
+
+    async def aget_tuple(self, config: object) -> object:
+        del config
+        return self._checkpoint
+
+
 @pytest.mark.asyncio
 async def test_v2_compacts_before_graph_and_injects_new_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -251,6 +279,12 @@ async def test_v2_compacts_before_graph_and_injects_new_summary(
     ]
 
     event_types = [str(event.payload.get("type", "")) for event in events]
+    assert event_types.count("turn_context_plan_prepared") == 1
+    assert event_types.count("turn_context_plan_compared") == 1
+    comparison_event = next(
+        event for event in events if event.payload.get("type") == "turn_context_plan_compared"
+    )
+    assert comparison_event.payload["matched"] is True
     assert event_types.count("context_compaction_started") == 1
     assert event_types.count("context_compaction_completed") == 1
     assert event_types.count("context_usage_updated") == 1
@@ -268,6 +302,9 @@ async def test_v2_compacts_before_graph_and_injects_new_summary(
     assert runtime.session["context_state"]["checkpoint_id"] == "compact-v2"
     assert runtime.active_run_id is None
     assert runtime.context_snapshot()["context_operation_active"] is False
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-context")
+    assert plan is not None
+    assert plan.to_payload()["context_refs"]["user_message_ref"]["sequence"] == 2
     assert [item["role"] for item in runtime.session["history"][-2:]] == [
         "user",
         "assistant",
@@ -552,8 +589,487 @@ async def test_v2_external_resume_preserves_checkpoint_retrieval_gate(
     ]
 
     assert not any(event.payload.get("type") == "retrieval_gate_decided" for event in events)
+    assert not any(event.payload.get("type") == "turn_context_plan_prepared" for event in events)
     assert RecordingAdapter.durable_contexts == [{}]
     assert RecordingAdapter.stream_kwargs[0]["resume"] is True
+
+
+@pytest.mark.asyncio
+async def test_v2_shadow_capture_failure_is_content_free_and_does_not_block_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    def fail_capture(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise RuntimeError("private plan failure detail")
+
+    monkeypatch.setattr(coding_api.TurnContextAssembler, "prepare_new_turn", fail_capture)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="private user request",
+            run_id="run-shadow-failure",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    shadow_error = next(
+        event for event in events if event.payload.get("type") == "turn_context_plan_shadow_failed"
+    )
+    assert shadow_error.status == "error"
+    assert shadow_error.payload["error_code"] == "capture_failed"
+    assert "private" not in str(shadow_error.payload)
+    assert events[-2].payload["type"] == "final"
+    assert (
+        TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-shadow-failure")
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_a1_mismatch_is_audit_event_and_does_not_block_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    def report_mismatch(plan: Any, request: Any) -> TurnContextComparison:
+        del request
+        return TurnContextComparison(
+            plan_id=plan.plan_id,
+            plan_hash=plan.plan_hash,
+            run_id=plan.run_id,
+            checked_codes=("prompt.rendered_hash",),
+            mismatch_codes=("prompt.rendered_hash",),
+        )
+
+    monkeypatch.setattr(coding_api, "compare_turn_context_plan", report_mismatch)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="a1 mismatch request",
+            run_id="run-a1-mismatch",
+            surface_context={"surface": "coding"},
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    comparison = next(
+        event for event in events if event.payload.get("type") == "turn_context_plan_compared"
+    )
+    assert comparison.status == "error"
+    assert comparison.payload["matched"] is False
+    assert comparison.payload["mismatch_codes"] == ["prompt.rendered_hash"]
+    assert events[-2].payload["type"] == "final"
+    assert RecordingAdapter.stream_kwargs
+
+
+@pytest.mark.asyncio
+async def test_v2_a1_receipt_is_mirrored_to_run_trace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    events = [
+        event
+        async for event in coding_api._runtime_timeline_events(
+            runtime,
+            content="trace receipt request",
+            skill_prompt=None,
+            command="",
+            arguments="",
+            run_id="run-a1-trace",
+            surface_context={"surface": "coding"},
+            harness_checkpointer=object(),
+            mcp_catalog=None,
+        )
+    ]
+
+    assert any(event.payload.get("type") == "turn_context_plan_compared" for event in events)
+    trace = runtime.run_store.get_run("run-a1-trace")["events"]
+    trace_event = next(item for item in trace if item.get("type") == "turn_context_plan_compared")
+    assert trace_event["matched"] is True
+    assert "trace receipt request" not in json.dumps(trace_event, ensure_ascii=False)
+
+
+@pytest.mark.asyncio
+async def test_v2_context_assembly_off_keeps_legacy_path_without_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="legacy path",
+            run_id="run-plan-off",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="off",
+        )
+    ]
+
+    assert not any(
+        str(event.payload.get("type", "")).startswith("turn_context_plan") for event in events
+    )
+    assert events[-2].payload["type"] == "final"
+    assert (
+        TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-plan-off") is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_binds_the_verified_plan_before_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="enforced request",
+            run_id="run-enforced",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-enforced")
+    assert plan is not None
+    assert RecordingAdapter.stream_kwargs[0]["turn_context_plan"] == {
+        "version": 1,
+        "run_id": "run-enforced",
+        "plan_id": plan.plan_id,
+        "plan_hash": plan.plan_hash,
+    }
+    assert any(event.payload.get("type") == "turn_context_plan_compared" for event in events)
+    assert events[-1].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_capture_failure_stops_before_adapter_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    def fail_capture(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise RuntimeError("private capture detail")
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("adapter must not be created after enforce capture failure")
+
+    monkeypatch.setattr(coding_api.TurnContextAssembler, "prepare_new_turn", fail_capture)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="private request",
+            run_id="run-enforce-capture-failed",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert events[-2].payload["type"] == "turn_context_plan_enforcement_failed"
+    assert events[-2].payload["error_code"] == "context_plan_capture_failed"
+    assert "private" not in json.dumps(events[-2].payload)
+    assert events[-1].payload["error_type"] == "context_plan_capture_failed"
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_mismatch_stops_before_adapter_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    def report_mismatch(plan: Any, request: Any) -> TurnContextComparison:
+        del request
+        return TurnContextComparison(
+            plan_id=plan.plan_id,
+            plan_hash=plan.plan_hash,
+            run_id=plan.run_id,
+            checked_codes=("tools.catalog_hash",),
+            mismatch_codes=("tools.catalog_hash",),
+        )
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("adapter must not be created after enforce mismatch")
+
+    monkeypatch.setattr(coding_api, "compare_turn_context_plan", report_mismatch)
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="mismatch request",
+            run_id="run-enforce-mismatch",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert events[-2].payload["error_code"] == "context_plan_mismatch"
+    assert events[-1].payload["error_type"] == "context_plan_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_resume_requires_a_stored_plan_before_adapter_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("adapter must not be created without a resume plan")
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="resume original request",
+            run_id="run-missing-plan",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert events[-2].payload["error_code"] == "resume_plan_missing"
+    assert events[-1].payload["error_type"] == "resume_plan_missing"
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_resume_uses_plan_routing_instead_of_timeline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="1 + 1 等于多少？",
+            run_id="run-plan-resume",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-plan-resume")
+    assert plan is not None
+    runtime.session["history"] = runtime.session["history"][:-1]
+    binding = {
+        "version": 1,
+        "run_id": plan.run_id,
+        "plan_id": plan.plan_id,
+        "plan_hash": plan.plan_hash,
+    }
+    SessionEventJournal(runtime.storage_root, runtime.session_id).append(
+        run_id="run-plan-resume",
+        kind="harness",
+        status="completed",
+        payload={
+            "type": "retrieval_gate_decided",
+            "selected_sources": ["web"],
+            "tool_scope": "retrieval_only",
+        },
+        event_id="forged:timeline:gate",
+    )
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="1 + 1 等于多少？",
+            run_id="run-plan-resume",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding=binding),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    deferred_setup = RecordingAdapter.init_kwargs["deferred_setup"]
+    assert "search_web" not in deferred_setup.deferred_names
+    assert RecordingAdapter.stream_kwargs[0]["turn_context_plan"] == binding
+    assert any(
+        event.payload.get("type") == "turn_context_plan_resume_compared"
+        and event.payload.get("matched") is True
+        for event in events
+    ), [event.payload for event in events]
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_resume_rejects_capability_catalog_drift_before_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="1 + 1 等于多少？",
+            run_id="run-catalog-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-catalog-drift")
+    assert plan is not None
+    runtime.session["history"] = runtime.session["history"][:-1]
+    binding = {
+        "version": 1,
+        "run_id": plan.run_id,
+        "plan_id": plan.plan_id,
+        "plan_hash": plan.plan_hash,
+    }
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("adapter must not be created after catalog drift")
+
+    original_builder = coding_api.build_deerflow_coding_tool_bundle
+
+    def build_drifted_bundle(*args: Any, **kwargs: Any) -> Any:
+        bundle = original_builder(*args, **kwargs)
+        return replace(
+            bundle,
+            deferred_setup=replace(
+                bundle.deferred_setup,
+                catalog_hash="catalog-drifted",
+            ),
+        )
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    monkeypatch.setattr(coding_api, "build_deerflow_coding_tool_bundle", build_drifted_bundle)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="1 + 1 等于多少？",
+            run_id="run-catalog-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding=binding),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    comparison = next(
+        event
+        for event in events
+        if event.payload.get("type") == "turn_context_plan_resume_compared"
+    )
+    assert comparison.payload["matched"] is False
+    assert "tools.catalog_hash" in comparison.payload["mismatch_codes"]
+    assert events[-2].payload["error_code"] == "resume_plan_dependency_mismatch"
+    assert events[-1].payload["error_type"] == "resume_plan_dependency_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_v2_enforce_resume_rejects_checkpoint_without_plan_binding_before_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="checkpoint binding request",
+            run_id="run-binding-missing",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run(
+        "run-binding-missing"
+    )
+    assert plan is not None
+    runtime.session["history"] = runtime.session["history"][:-1]
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("adapter must not be created without checkpoint binding")
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="checkpoint binding request",
+            run_id="run-binding-missing",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding={}),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert events[-2].payload["error_code"] == "resume_plan_checkpoint_mismatch"
+    assert events[-1].payload["error_type"] == "resume_plan_checkpoint_mismatch"
 
 
 @pytest.mark.asyncio
@@ -716,6 +1232,7 @@ async def test_v2_emergency_context_blocks_graph_model_request(
     assert [event.kind for event in events][-2:] == ["system", "terminal"]
     assert events[-1].status == "error"
     assert events[-1].payload["error_type"] == "context_emergency"
+    assert not any(event.payload.get("type") == "turn_context_plan_prepared" for event in events)
     assert runtime.active_run_id is None
     assert [item["role"] for item in runtime.session["history"][-1:]] == ["user"]
 

@@ -19,6 +19,7 @@ from sage_harness.state import (
     merge_skill_context,
     merge_thread_data,
     merge_todos,
+    merge_turn_context_plan,
 )
 
 
@@ -28,6 +29,38 @@ def test_state_extends_langchain_agent_state() -> None:
     assert "artifacts" in SageThreadState.__annotations__
     assert "approval_context" in SageThreadState.__annotations__
     assert "retrieval_gate" in SageThreadState.__annotations__
+    assert "turn_context_plan" in SageThreadState.__annotations__
+
+
+def test_turn_context_plan_binding_is_immutable_within_one_run() -> None:
+    first = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:first",
+    }
+
+    assert merge_turn_context_plan(None, first) == first
+    assert merge_turn_context_plan(first, dict(first)) == first
+    with pytest.raises(ValueError, match="Conflicting turn context plan bindings"):
+        merge_turn_context_plan(first, {**first, "plan_hash": "sha256:changed"})
+
+
+def test_turn_context_plan_binding_can_advance_on_a_new_run() -> None:
+    first = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:first",
+    }
+    second = {
+        "version": 1,
+        "run_id": "run-2",
+        "plan_id": "tcp-2",
+        "plan_hash": "sha256:second",
+    }
+
+    assert merge_turn_context_plan(first, second) == second
 
 
 def test_langgraph_applies_sage_reducers_during_a_real_graph_run() -> None:
