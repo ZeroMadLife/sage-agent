@@ -146,9 +146,7 @@ def compare_retrieval_strategies(
     eligible = {
         name: item
         for name, item in candidates.items()
-        if item["within_latency_budget"]
-        and has_claim_receipts
-        and not bool(item["source_dirty"])
+        if item["within_latency_budget"] and has_claim_receipts and not bool(item["source_dirty"])
     }
     recommended = None
     if comparable and eligible:
