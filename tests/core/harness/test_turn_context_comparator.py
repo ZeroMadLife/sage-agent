@@ -6,10 +6,16 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from sage_harness import HarnessConfig, SandboxCapabilities, SandboxDescriptor
+from sage_harness import (
+    HarnessConfig,
+    McpLifecycleSnapshot,
+    SandboxCapabilities,
+    SandboxDescriptor,
+)
 
 from core.coding.context import ContextUsage, PreparedContext
 from core.coding.persistence import TurnPlanStore
+from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
 from core.harness.tool_bundle import ToolBundleSnapshot
@@ -82,6 +88,18 @@ def _request() -> TurnContextAssemblyRequest:
             capability_count=1,
             skill_scope_active=True,
             skill_allowlist=("read_file",),
+            mcp_lifecycle=McpLifecycleSnapshot(
+                config_revision="mcp-r1",
+                scope_fingerprint="sha256:" + "1" * 64,
+                catalog_hash="mcp-catalog-r1",
+                tool_ids=("docs:lookup",),
+            ),
+            skill_lifecycle=SkillLifecycleSnapshot(
+                catalog_revision="skill-catalog-r1",
+                activation_ref="skill://project/review",
+                activation_revision="skill-r1",
+                allowed_tools=("read_file",),
+            ),
         ),
         sandbox_descriptor=SandboxDescriptor(
             sandbox_id="container:internal-id",
@@ -161,6 +179,42 @@ def test_a1_comparator_reports_prompt_and_catalog_drift_as_codes_only(tmp_path: 
     assert "changed-catalog" not in serialized
 
 
+def test_resume_comparator_reports_typed_mcp_and_skill_lifecycle_drift(
+    tmp_path: Path,
+) -> None:
+    original = _request()
+    captured = _capture(tmp_path, original)
+    assert original.tool_snapshot.mcp_lifecycle is not None
+    assert original.tool_snapshot.skill_lifecycle is not None
+    drifted_mcp = replace(
+        original.tool_snapshot.mcp_lifecycle,
+        catalog_hash="private-mcp-drift",
+        snapshot_hash="",
+    )
+    drifted_skill = replace(
+        original.tool_snapshot.skill_lifecycle,
+        catalog_revision="private-skill-drift",
+        snapshot_hash="",
+    )
+    drifted_snapshot = replace(
+        original.tool_snapshot,
+        mcp_lifecycle=drifted_mcp,
+        skill_lifecycle=drifted_skill,
+        snapshot_hash="",
+    )
+
+    comparison = compare_turn_context_plan_resume(
+        captured.plan,
+        replace(_resume_request(original), tool_snapshot=drifted_snapshot),
+    )
+    serialized = json.dumps(comparison.to_receipt(), sort_keys=True)
+
+    assert "tools.mcp_lifecycle" in comparison.mismatch_codes
+    assert "tools.skill_lifecycle" in comparison.mismatch_codes
+    assert "private-mcp-drift" not in serialized
+    assert "private-skill-drift" not in serialized
+
+
 def _resume_request(request: TurnContextAssemblyRequest) -> TurnContextResumeExecutionRequest:
     return TurnContextResumeExecutionRequest(
         prompt_components=request.prompt_components,
@@ -173,7 +227,6 @@ def _resume_request(request: TurnContextAssemblyRequest) -> TurnContextResumeExe
         runtime_mode=request.runtime_mode,
         permission_mode=request.permission_mode,
         model_spec=request.model_spec,
-        mcp_snapshot=request.mcp_snapshot,
     )
 
 

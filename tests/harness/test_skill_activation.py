@@ -97,7 +97,7 @@ def test_before_agent_persists_only_a_non_host_skill_reference() -> None:
                 "path": "skill://builtin/review",
                 "description": "Review the current changes",
                 "loaded_at": 0,
-                "revision": "8df49d9f98975566",
+                "revision": "e9d1a1cf7522c371",
             }
         ]
     }

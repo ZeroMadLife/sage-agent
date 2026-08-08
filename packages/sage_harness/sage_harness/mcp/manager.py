@@ -162,12 +162,101 @@ class McpCatalogSnapshot:
     catalog_hash: str
 
 
+class McpLifecycleError(RuntimeError):
+    """MCP 生命周期与冻结执行计划不一致。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+@dataclass(frozen=True, slots=True)
+class McpLifecycleSnapshot:
+    """可持久化的 MCP 生命周期身份，不包含连接、凭据或工具正文。"""
+
+    config_revision: str
+    scope_fingerprint: str
+    catalog_hash: str
+    tool_ids: tuple[str, ...]
+    snapshot_hash: str = ""
+
+    def __post_init__(self) -> None:
+        """校验 canonical 字段并计算稳定 snapshot hash。"""
+        if not self.config_revision.strip() or len(self.config_revision) > 128:
+            raise ValueError("MCP lifecycle config revision must be non-empty and bounded")
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", self.scope_fingerprint):
+            raise ValueError("MCP lifecycle scope fingerprint is invalid")
+        if not self.catalog_hash.strip() or len(self.catalog_hash) > 128:
+            raise ValueError("MCP lifecycle catalog hash must be non-empty and bounded")
+        if tuple(sorted(set(self.tool_ids))) != self.tool_ids:
+            raise ValueError("MCP lifecycle tool ids must be sorted and unique")
+        if any(not item.strip() or len(item) > 256 for item in self.tool_ids):
+            raise ValueError("MCP lifecycle tool ids must be non-empty and bounded")
+        expected_hash = _lifecycle_hash(self._hash_payload())
+        if self.snapshot_hash and self.snapshot_hash != expected_hash:
+            raise ValueError("MCP lifecycle snapshot hash mismatch")
+        object.__setattr__(self, "snapshot_hash", expected_hash)
+
+    @classmethod
+    def from_catalog(cls, catalog: McpCatalogSnapshot) -> McpLifecycleSnapshot:
+        """从公开 catalog 提取不可执行的生命周期身份。"""
+        return cls(
+            config_revision=catalog.revision,
+            scope_fingerprint=_scope_fingerprint(catalog.scope),
+            catalog_hash=catalog.catalog_hash,
+            tool_ids=tuple(sorted(tool.tool_id for tool in catalog.tools)),
+        )
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, object]) -> McpLifecycleSnapshot:
+        """从 Plan JSON 重建并验证 MCP 生命周期快照。"""
+        raw_tool_ids = value.get("tool_ids", ())
+        if not isinstance(raw_tool_ids, Sequence) or isinstance(
+            raw_tool_ids, str | bytes | bytearray
+        ):
+            raise ValueError("MCP lifecycle tool ids must be a sequence")
+        return cls(
+            config_revision=str(value.get("config_revision", "")),
+            scope_fingerprint=str(value.get("scope_fingerprint", "")),
+            catalog_hash=str(value.get("catalog_hash", "")),
+            tool_ids=tuple(str(item) for item in raw_tool_ids),
+            snapshot_hash=str(value.get("snapshot_hash", "")),
+        )
+
+    def matches_scope(self, scope: McpScope) -> bool:
+        """比较完整 tenant/workspace/thread scope 的不可逆指纹。"""
+        return self.scope_fingerprint == _scope_fingerprint(scope)
+
+    def as_dict(self) -> dict[str, object]:
+        """返回可进入 Plan 的无连接 JSON 数据。"""
+        return {
+            "config_revision": self.config_revision,
+            "scope_fingerprint": self.scope_fingerprint,
+            "catalog_hash": self.catalog_hash,
+            "tool_ids": list(self.tool_ids),
+            "snapshot_hash": self.snapshot_hash,
+        }
+
+    def _hash_payload(self) -> dict[str, object]:
+        return {
+            "config_revision": self.config_revision,
+            "scope_fingerprint": self.scope_fingerprint,
+            "catalog_hash": self.catalog_hash,
+            "tool_ids": list(self.tool_ids),
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class McpToolSnapshot:
     """Executable wrappers plus the sanitized catalog used to build them."""
 
     catalog: McpCatalogSnapshot
     tools: tuple[BaseTool, ...]
+    lifecycle: McpLifecycleSnapshot = field(init=False)
+
+    def __post_init__(self) -> None:
+        """把可执行 wrapper 与同源的不可变生命周期身份绑定。"""
+        object.__setattr__(self, "lifecycle", McpLifecycleSnapshot.from_catalog(self.catalog))
 
 
 class McpTransportPort(Protocol):
@@ -237,14 +326,15 @@ class McpManager:
         """Discover tools for one isolated scope and config revision."""
         if self._closed:
             raise RuntimeError("MCP manager is closed")
-        key = (self._snapshot.revision, scope.key)
+        config_snapshot = self._snapshot
+        key = (config_snapshot.revision, scope.key)
         if not force and key in self._cache:
             return self._cache[key]
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             if not force and key in self._cache:
                 return self._cache[key]
-            servers = list(self._snapshot.servers)
+            servers = list(config_snapshot.servers)
             discovered: list[McpToolDescriptor] = []
             statuses: dict[str, McpServerStatus] = {}
 
@@ -278,9 +368,11 @@ class McpManager:
                 )
                 for server in servers
             )
-            catalog_hash = _catalog_hash(self._snapshot.revision, discovered)
+            if self._snapshot.revision != config_snapshot.revision:
+                raise McpLifecycleError("mcp_config_revision_changed")
+            catalog_hash = _catalog_hash(config_snapshot.revision, discovered)
             snapshot = McpCatalogSnapshot(
-                revision=self._snapshot.revision,
+                revision=config_snapshot.revision,
                 scope=scope,
                 servers=updated_servers,
                 tools=tuple(discovered),
@@ -294,6 +386,7 @@ class McpManager:
         catalog = await self.catalog(scope, force=force)
         wrappers: list[BaseTool] = []
         for descriptor in catalog.tools:
+
             async def invoke(
                 _descriptor: McpToolDescriptor = descriptor,
                 **kwargs: object,
@@ -323,6 +416,25 @@ class McpManager:
                 )
             )
         return McpToolSnapshot(catalog=catalog, tools=tuple(wrappers))
+
+    async def acquire_tools(
+        self,
+        scope: McpScope,
+        *,
+        expected: McpLifecycleSnapshot | None = None,
+        force: bool = False,
+    ) -> McpToolSnapshot:
+        """按冻结 revision/scope 获取工具，catalog 漂移时关闭本 scope 并拒绝恢复。"""
+        if expected is not None:
+            if expected.config_revision != self.revision:
+                raise McpLifecycleError("mcp_config_revision_mismatch")
+            if not expected.matches_scope(scope):
+                raise McpLifecycleError("mcp_scope_mismatch")
+        acquired = await self.load_tools(scope, force=force)
+        if expected is not None and acquired.lifecycle != expected:
+            await self.close_scope(scope)
+            raise McpLifecycleError("mcp_catalog_mismatch")
+        return acquired
 
     async def invalidate(self) -> None:
         """Invalidate all scope catalogs after a config revision change."""
@@ -396,9 +508,21 @@ def _catalog_hash(revision: str, tools: Sequence[McpToolDescriptor]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
+def _scope_fingerprint(scope: McpScope) -> str:
+    encoded = json.dumps(scope.key, ensure_ascii=False, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _lifecycle_hash(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
 __all__ = [
     "McpCatalogSnapshot",
     "McpConfigSnapshot",
+    "McpLifecycleError",
+    "McpLifecycleSnapshot",
     "McpManager",
     "McpScope",
     "McpServerConfig",

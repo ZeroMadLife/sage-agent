@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-from sage_harness import HarnessConfig, McpToolSnapshot, SandboxDescriptor
+from sage_harness import HarnessConfig, SandboxDescriptor
 
 from core.coding.context import PreparedContext
 from core.coding.persistence.turn_plan_store import TurnPlanStore
@@ -59,7 +59,6 @@ class TurnContextAssemblyRequest:
     runtime_mode: str
     permission_mode: str
     model_spec: str = ""
-    mcp_snapshot: McpToolSnapshot | None = None
     surface: str = "coding"
 
 
@@ -240,13 +239,6 @@ def _tools(request: TurnContextAssemblyRequest) -> dict[str, object]:
             {"graph_approvals": True, "permission_mode": request.permission_mode}
         ),
     }
-    if request.mcp_snapshot is not None:
-        catalog = request.mcp_snapshot.catalog
-        tools["mcp_catalog"] = {
-            "revision": catalog.revision,
-            "catalog_hash": catalog.catalog_hash,
-            "tool_ids": sorted(tool.tool_id for tool in catalog.tools),
-        }
     return tools
 
 
