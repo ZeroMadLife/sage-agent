@@ -103,8 +103,11 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
         raise ValueError(f"claim gold is missing benchmark query: {exc.args[0]}") from exc
     provider = load_embedding_provider(args.provider_factory)
     policy = KnowledgeAblationPolicy(strategy=args.strategy)
-    generator = create_llm(args.generator_model, temperature=0.0)
-    judge = create_llm(args.judge_model, temperature=0.0)
+    # 评测需要把 provider 故障和质量结果分开；关闭 SDK 隐式重试，避免
+    # 单个 case 的实际耗时超过报告中的 request_timeout_seconds。
+    llm_options = _evaluation_llm_options(args.request_timeout_seconds)
+    generator = create_llm(args.generator_model, temperature=0.0, **llm_options)
+    judge = create_llm(args.judge_model, temperature=0.0, **llm_options)
 
     with tempfile.TemporaryDirectory(
         prefix="sage-book-generation-", dir=repo_root / ".coding"
@@ -189,6 +192,12 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
         json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return 0
+
+
+def _evaluation_llm_options(timeout_seconds: float) -> dict[str, float | int]:
+    """Return bounded client options for deterministic provider receipts."""
+
+    return {"max_retries": 0, "timeout": timeout_seconds}
 
 
 async def _evaluate_case(

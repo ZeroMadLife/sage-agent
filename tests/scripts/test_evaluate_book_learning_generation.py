@@ -9,6 +9,7 @@ from evals.book_learning_claims import ClaimEvidenceGoldCase, ClaimEvidenceRequi
 from scripts.evaluate_book_learning_generation import (
     ModelInvocationError,
     _accepted_decision,
+    _evaluation_llm_options,
     _invoke_json,
     _judge_prompt,
     _model_receipt,
@@ -30,6 +31,10 @@ def test_generation_json_parser_accepts_fenced_object_and_rejects_non_object() -
     }
     with pytest.raises(ValueError, match="did not return"):
         _parse_json_object("no structured result", "judge")
+
+
+def test_generation_provider_options_are_explicitly_bounded() -> None:
+    assert _evaluation_llm_options(45.0) == {"max_retries": 0, "timeout": 45.0}
 
 
 @pytest.mark.asyncio
