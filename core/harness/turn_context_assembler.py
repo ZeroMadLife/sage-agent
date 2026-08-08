@@ -16,7 +16,7 @@ from core.coding.context import PreparedContext
 from core.coding.persistence.turn_plan_store import TurnPlanStore
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
-from core.harness.tools_adapter import CodingToolBundle
+from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_plan import TurnContextPlan, build_turn_context_plan_receipt
 
 _PROMPT_TEMPLATE_ID = "sage-deerflow-coding"
@@ -53,14 +53,13 @@ class TurnContextAssemblyRequest:
     prompt_components: DeerFlowPromptComponents
     rendered_system_prompt: str
     retrieval_gate: RetrievalGateReceipt
-    tool_bundle: CodingToolBundle
+    tool_snapshot: ToolBundleSnapshot
     sandbox_descriptor: SandboxDescriptor
     harness_config: HarnessConfig
     runtime_mode: str
     permission_mode: str
     model_spec: str = ""
     mcp_snapshot: McpToolSnapshot | None = None
-    active_skill_allowed_tools: frozenset[str] | None = None
     surface: str = "coding"
 
 
@@ -150,7 +149,7 @@ def _prompt(request: TurnContextAssemblyRequest) -> dict[str, object]:
         "retrieval_sources": sorted(request.retrieval_gate.selected_sources),
         "rendered_content_hash": _digest_text(components.dynamic_authority),
     }
-    deferred_ids = _deferred_capability_ids(request.tool_bundle)
+    snapshot = request.tool_snapshot
     return {
         "rendered_prompt_hash": _digest_text(request.rendered_system_prompt),
         "static_policy": {
@@ -163,8 +162,8 @@ def _prompt(request: TurnContextAssemblyRequest) -> dict[str, object]:
             "working_memory_digest": _digest_text(components.untrusted_context),
         },
         "deferred_capability_index": {
-            "catalog_hash": request.tool_bundle.deferred_setup.catalog_hash or "resident-only",
-            "safe_index_digest": _digest_json(deferred_ids),
+            "catalog_hash": snapshot.catalog_hash,
+            "safe_index_digest": _digest_json(snapshot.deferred_ids),
         },
     }
 
@@ -234,15 +233,9 @@ def _retrieval(gate: RetrievalGateReceipt) -> dict[str, object]:
 
 
 def _tools(request: TurnContextAssemblyRequest) -> dict[str, object]:
-    bundle = request.tool_bundle
+    snapshot = request.tool_snapshot
     tools: dict[str, object] = {
-        "catalog_hash": bundle.deferred_setup.catalog_hash or "resident-only",
-        "capability_revision": bundle.capability_revision,
-        "resident_ids": sorted(set(bundle.capability_ids_by_tool_name.values())),
-        "deferred_ids": _deferred_capability_ids(bundle),
-        "capability_count": bundle.capability_count,
-        "skill_scope_active": request.active_skill_allowed_tools is not None,
-        "skill_allowlist": sorted(request.active_skill_allowed_tools or ()),
+        **snapshot.as_dict(),
         "approval_contract_digest": _digest_json(
             {"graph_approvals": True, "permission_mode": request.permission_mode}
         ),
@@ -255,17 +248,6 @@ def _tools(request: TurnContextAssemblyRequest) -> dict[str, object]:
             "tool_ids": sorted(tool.tool_id for tool in catalog.tools),
         }
     return tools
-
-
-def _deferred_capability_ids(bundle: CodingToolBundle) -> list[str]:
-    selection_index = bundle.deferred_setup.selection_index
-    if selection_index is None:
-        return []
-    return sorted(
-        descriptor.capability_id
-        for descriptor in selection_index.registry.list()
-        if descriptor.deferred
-    )
 
 
 def _execution(request: TurnContextAssemblyRequest) -> dict[str, object]:

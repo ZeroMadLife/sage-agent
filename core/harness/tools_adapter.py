@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Annotated, Any, cast
 
 from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
@@ -37,6 +37,7 @@ from core.harness.capability_adapter import (
     local_tool_capability_id,
     mcp_tool_capability_id,
 )
+from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.web_fetch import build_web_fetch_tool
 from core.harness.web_search import build_web_search_tool
 
@@ -48,13 +49,35 @@ _LEGACY_AGENT_TOOLS = frozenset({"agent", "send_message", "task_stop"})
 
 @dataclass(frozen=True, slots=True)
 class CodingToolBundle:
-    """Executable graph tools plus model-visibility policy for one turn."""
+    """One-turn executable tools; :attr:`snapshot` is the persistence-safe contract."""
 
     tools: tuple[BaseTool, ...]
     deferred_setup: DeferredToolSetup
     capability_revision: str
     capability_ids_by_tool_name: Mapping[str, str]
     capability_count: int
+    active_skill_allowed_tools: frozenset[str] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _snapshot: ToolBundleSnapshot | None = field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """在 Runtime Bundle 创建时冻结一份不含执行对象的能力快照。"""
+        object.__setattr__(self, "_snapshot", ToolBundleSnapshot.from_runtime_bundle(self))
+
+    @property
+    def snapshot(self) -> ToolBundleSnapshot:
+        """返回本轮不可变能力契约，Plan 不应穿透 Runtime Bundle。"""
+        if self._snapshot is None:
+            raise RuntimeError("tool bundle snapshot is unavailable")
+        return self._snapshot
 
 
 class SaveWebSourceArgs(BaseModel):
@@ -452,6 +475,7 @@ def build_deerflow_coding_tool_bundle(
         capability_registry.revision,
         _capability_bindings(graph_tools),
         len(capability_registry.query(surface="coding")),
+        active_skill_allowed_tools=active_skill_allowed_tools,
     )
 
 

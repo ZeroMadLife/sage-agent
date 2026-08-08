@@ -126,34 +126,39 @@ def compare_turn_context_plan(
             dict(sorted(request.retrieval_gate.token_budget_by_source.items())),
         ),
         (
+            "tools.snapshot_hash",
+            tools.get("snapshot_hash"),
+            request.tool_snapshot.snapshot_hash,
+        ),
+        (
             "tools.catalog_hash",
             tools.get("catalog_hash"),
-            request.tool_bundle.deferred_setup.catalog_hash or "resident-only",
+            request.tool_snapshot.catalog_hash,
         ),
         (
             "tools.capability_revision",
             tools.get("capability_revision"),
-            request.tool_bundle.capability_revision,
+            request.tool_snapshot.capability_revision,
         ),
         (
             "tools.resident_ids",
             tools.get("resident_ids"),
-            sorted(set(request.tool_bundle.capability_ids_by_tool_name.values())),
+            list(request.tool_snapshot.resident_ids),
         ),
         (
             "tools.deferred_ids",
             tools.get("deferred_ids"),
-            _deferred_capability_ids(request),
+            list(request.tool_snapshot.deferred_ids),
         ),
         (
             "tools.skill_scope_active",
             tools.get("skill_scope_active"),
-            request.active_skill_allowed_tools is not None,
+            request.tool_snapshot.skill_scope_active,
         ),
         (
             "tools.skill_allowlist",
             tools.get("skill_allowlist"),
-            sorted(request.active_skill_allowed_tools or ()),
+            list(request.tool_snapshot.skill_allowlist),
         ),
         (
             "tools.mcp_catalog",
@@ -235,17 +240,6 @@ def _digest_json(value: object) -> str:
         sort_keys=True,
     )
     return _digest_text(encoded)
-
-
-def _deferred_capability_ids(request: TurnContextAssemblyRequest) -> list[str]:
-    selection_index = request.tool_bundle.deferred_setup.selection_index
-    if selection_index is None:
-        return []
-    return sorted(
-        descriptor.capability_id
-        for descriptor in selection_index.registry.list()
-        if descriptor.deferred
-    )
 
 
 def _mcp_catalog(request: TurnContextAssemblyRequest) -> dict[str, object] | None:

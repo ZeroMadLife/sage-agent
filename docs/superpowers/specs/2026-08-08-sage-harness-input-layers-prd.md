@@ -132,6 +132,23 @@ Factory 隐藏 Plan 校验、分层、预算、隐藏数据包装和 digest；AP
 - 统一 local/MCP/Skill/subagent/web capability revision；
 - Plan、Comparator、Resume 只依赖快照，不穿透 deferred 内部实现。
 
+#### F2 已落地
+
+```text
+CodingToolBundle
+  +-- BaseTool / MCP wrapper / deferred selection   Runtime 执行对象
+  +-- ToolBundleSnapshot                             不可变本轮契约
+        +-- catalog_hash / capability_revision
+        +-- resident_ids / deferred_ids
+        +-- skill_scope_active / skill_allowlist
+        +-- snapshot_hash
+```
+
+- `ToolBundleSnapshot` 只保存能力元数据和稳定 hash，不持有工具、连接、selection index 或执行闭包。
+- `CodingToolBundle` 创建时冻结 snapshot；Runtime Adapter 继续消费原 Bundle，Plan/Comparator/Resume 只消费 snapshot。
+- `resident_ids` 与 `deferred_ids` 分离，Skill allowlist 只保存能力 ID，不保存 Skill 正文。
+- F2 不负责 MCP transport 的连接复用、关闭或重连；这些行为由 F3 的生命周期管理器负责。
+
 ### F3：MCP/Skills 生命周期
 
 - MCP：固定 `config revision + scope + catalog hash`，明确 session acquire/reuse/close；
