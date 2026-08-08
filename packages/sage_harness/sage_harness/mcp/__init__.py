@@ -3,6 +3,8 @@
 from sage_harness.mcp.manager import (
     McpCatalogSnapshot,
     McpConfigSnapshot,
+    McpLifecycleError,
+    McpLifecycleSnapshot,
     McpManager,
     McpScope,
     McpServerConfig,
@@ -14,6 +16,8 @@ from sage_harness.mcp.manager import (
 __all__ = [
     "McpCatalogSnapshot",
     "McpConfigSnapshot",
+    "McpLifecycleError",
+    "McpLifecycleSnapshot",
     "McpManager",
     "McpScope",
     "McpServerConfig",

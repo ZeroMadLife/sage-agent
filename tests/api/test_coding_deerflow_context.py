@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import pytest
+from sage_harness import (
+    McpConfigSnapshot,
+    McpManager,
+    McpScope,
+    McpServerConfig,
+    McpToolDescriptor,
+)
 
 import api.coding as coding_api
 from core.coding.context import (
@@ -30,7 +38,9 @@ from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.persistence.turn_plan_store import TurnPlanStore
 from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
+from core.coding.skills import SkillRegistry
 from core.harness.turn_context_comparator import TurnContextComparison
+from core.harness.turn_context_plan import TurnContextPlan
 
 
 def _usage(level: str = "normal") -> ContextUsage:
@@ -255,6 +265,50 @@ class StaticPlanCheckpoint:
     async def aget_tuple(self, config: object) -> object:
         del config
         return self._checkpoint
+
+
+class CountingMcpTransport:
+    """只记录 discovery 次数，验证 lifecycle preflight 不触发新连接。"""
+
+    def __init__(self) -> None:
+        self.discoveries = 0
+        self.invalidated: list[str] = []
+
+    async def discover(
+        self,
+        server: McpServerConfig,
+        scope: McpScope,
+    ) -> Sequence[McpToolDescriptor]:
+        del scope
+        self.discoveries += 1
+        return (
+            McpToolDescriptor.from_schema(
+                tool_id=f"{server.name}:lookup",
+                server_name=server.name,
+                name=f"{server.name}_lookup",
+                original_name="lookup",
+                description="Lookup docs",
+                schema={"type": "object", "properties": {}},
+            ),
+        )
+
+    async def invoke(
+        self,
+        tool: McpToolDescriptor,
+        arguments: Mapping[str, object],
+        scope: McpScope,
+    ) -> object:
+        del tool, arguments, scope
+        raise AssertionError("lifecycle test must not invoke MCP tools")
+
+    async def close_scope(self, scope: McpScope) -> None:
+        del scope
+
+    async def invalidate_revision(self, revision: str) -> None:
+        self.invalidated.append(revision)
+
+    async def aclose(self) -> None:
+        return None
 
 
 @pytest.mark.asyncio
@@ -1021,6 +1075,236 @@ async def test_v2_enforce_resume_rejects_capability_catalog_drift_before_adapter
     assert "tools.catalog_hash" in comparison.payload["mismatch_codes"]
     assert events[-2].payload["error_code"] == "resume_plan_dependency_mismatch"
     assert events[-1].payload["error_type"] == "resume_plan_dependency_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_mcp_revision_drift_stops_before_discovery_sandbox_and_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    transport = CountingMcpTransport()
+    manager = McpManager(
+        McpConfigSnapshot(
+            revision="mcp-r1",
+            servers=(McpServerConfig(name="docs", transport="stdio"),),
+        ),
+        transport,
+    )
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="capture MCP lifecycle",
+            run_id="run-mcp-lifecycle-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=manager,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run(
+        "run-mcp-lifecycle-drift"
+    )
+    assert plan is not None
+    binding = plan.checkpoint_binding()
+    assert transport.discoveries == 1
+    runtime.session["history"] = runtime.session["history"][:-1]
+    await manager.replace_snapshot(
+        McpConfigSnapshot(
+            revision="mcp-r2",
+            servers=(McpServerConfig(name="docs", transport="stdio"),),
+        )
+    )
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("MCP lifecycle drift must stop before adapter creation")
+
+    def fail_if_sandbox_created(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("MCP lifecycle drift must stop before sandbox creation")
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    monkeypatch.setattr(coding_api, "create_coding_sandbox", fail_if_sandbox_created)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="capture MCP lifecycle",
+            run_id="run-mcp-lifecycle-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding=binding),
+            mcp_catalog=manager,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert transport.discoveries == 1
+    assert events[-2].payload["error_code"] == "mcp_config_revision_mismatch"
+    assert events[-1].payload["error_type"] == "mcp_config_revision_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_missing_mcp_lifecycle_stops_before_discovery_sandbox_and_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    transport = CountingMcpTransport()
+    manager = McpManager(
+        McpConfigSnapshot(
+            revision="mcp-r1",
+            servers=(McpServerConfig(name="docs", transport="stdio"),),
+        ),
+        transport,
+    )
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="capture MCP lifecycle",
+            run_id="run-mcp-lifecycle-missing",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=manager,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run(
+        "run-mcp-lifecycle-missing"
+    )
+    assert plan is not None
+    payload = plan.to_payload()
+    tools = payload["tools"]
+    assert isinstance(tools, dict)
+    tools.pop("mcp_lifecycle")
+    legacy = TurnContextPlan.create(
+        **plan.identity_kwargs(),
+        created_at=plan.created_at,
+        admission=payload["admission"],
+        prompt=payload["prompt"],
+        context_refs=payload["context_refs"],
+        retrieval=payload["retrieval"],
+        tools=tools,
+        execution=payload["execution"],
+        resume=payload["resume"],
+        budget=payload.get("budget"),
+    )
+    monkeypatch.setattr(
+        TurnPlanStore,
+        "load_for_run",
+        lambda self, run_id: legacy if run_id == legacy.run_id else None,
+    )
+    runtime.session["history"] = runtime.session["history"][:-1]
+    binding = legacy.checkpoint_binding()
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("missing MCP lifecycle must stop before adapter creation")
+
+    def fail_if_sandbox_created(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("missing MCP lifecycle must stop before sandbox creation")
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    monkeypatch.setattr(coding_api, "create_coding_sandbox", fail_if_sandbox_created)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="capture MCP lifecycle",
+            run_id=legacy.run_id,
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding=binding),
+            mcp_catalog=manager,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert transport.discoveries == 1
+    assert events[-2].payload["error_code"] == "resume_mcp_lifecycle_missing"
+    assert events[-1].payload["error_type"] == "resume_mcp_lifecycle_missing"
+
+
+@pytest.mark.asyncio
+async def test_v2_resume_skill_catalog_drift_stops_before_sandbox_and_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = _runtime(tmp_path)
+    skill_dir = runtime.workspace.root / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\nname: review\nallowed-tools: read_file\n---\nReview v1.",
+        encoding="utf-8",
+    )
+    runtime.skill_registry = SkillRegistry(root=runtime.workspace.root, home=tmp_path / "home")
+    RecordingAdapter.runtime = runtime
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
+    _ = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="/review inspect",
+            run_id="run-skill-lifecycle-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=None,
+            context_assembly_mode="enforce",
+        )
+    ]
+    plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run(
+        "run-skill-lifecycle-drift"
+    )
+    assert plan is not None
+    binding = plan.checkpoint_binding()
+    runtime.session["history"] = runtime.session["history"][:-1]
+    skill_file.write_text(
+        "---\nname: review\nallowed-tools: read_file, search\n---\nReview v2.",
+        encoding="utf-8",
+    )
+    runtime.skill_registry = SkillRegistry(root=runtime.workspace.root, home=tmp_path / "home")
+
+    def fail_if_adapter_created(**kwargs: Any) -> None:
+        del kwargs
+        raise AssertionError("Skill lifecycle drift must stop before adapter creation")
+
+    def fail_if_sandbox_created(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        raise AssertionError("Skill lifecycle drift must stop before sandbox creation")
+
+    monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", fail_if_adapter_created)
+    monkeypatch.setattr(coding_api, "create_coding_sandbox", fail_if_sandbox_created)
+    events = [
+        event
+        async for event in coding_api._deerflow_timeline_events(
+            runtime,
+            content="/review inspect",
+            run_id="run-skill-lifecycle-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=StaticPlanCheckpoint(runtime=runtime, binding=binding),
+            mcp_catalog=None,
+            resume_value={"interrupt-1": {"choice": "once"}},
+            resume_attempt=1,
+            context_assembly_mode="enforce",
+        )
+    ]
+
+    assert events[-2].payload["error_code"] == "skill_catalog_revision_mismatch"
+    assert events[-1].payload["error_type"] == "skill_catalog_revision_mismatch"
 
 
 @pytest.mark.asyncio

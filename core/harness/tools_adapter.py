@@ -16,6 +16,7 @@ from sage_harness import (
     KnowledgePort,
     KnowledgeSourceProposalPort,
     McpCatalogSnapshot,
+    McpLifecycleSnapshot,
     MemoryPort,
     SandboxPort,
     SubagentExecutorPort,
@@ -29,6 +30,7 @@ from sage_harness import (
 
 from core.coding.engine.events import ToolResultEvent, event_to_dict
 from core.coding.runtime import CodingRuntime
+from core.coding.skills import SkillLifecycleSnapshot
 from core.coding.tool_executor.approval import ApprovalChoice
 from core.coding.tool_executor.executor import ToolExecutor
 from core.coding.tool_executor.policy import ToolPolicyChecker
@@ -61,6 +63,8 @@ class CodingToolBundle:
         repr=False,
         compare=False,
     )
+    mcp_lifecycle: McpLifecycleSnapshot | None = None
+    skill_lifecycle: SkillLifecycleSnapshot | None = None
     _snapshot: ToolBundleSnapshot | None = field(
         default=None,
         init=False,
@@ -133,6 +137,8 @@ def build_deerflow_coding_tool_bundle(
     extra_deferred_tools: Sequence[BaseTool] = (),
     mcp_catalog: McpCatalogSnapshot | None = None,
     active_skill_allowed_tools: frozenset[str] | None = None,
+    mcp_lifecycle: McpLifecycleSnapshot | None = None,
+    skill_lifecycle: SkillLifecycleSnapshot | None = None,
     subagent_executor: SubagentExecutorPort | None = None,
     subagent_config: SubagentToolConfig | None = None,
     web_fetch_port: WebFetchPort | None = None,
@@ -476,6 +482,8 @@ def build_deerflow_coding_tool_bundle(
         _capability_bindings(graph_tools),
         len(capability_registry.query(surface="coding")),
         active_skill_allowed_tools=active_skill_allowed_tools,
+        mcp_lifecycle=mcp_lifecycle,
+        skill_lifecycle=skill_lifecycle,
     )
 
 

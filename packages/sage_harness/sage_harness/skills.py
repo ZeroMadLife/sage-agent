@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -68,15 +69,42 @@ def resolve_skill_allowed_tools(
     text: object,
 ) -> frozenset[str] | None:
     """Return the exact active Skill allowlist without exposing its prompt body."""
+    activation = resolve_skill_activation(catalog, text)
+    return activation.allowed_tools if activation is not None else None
+
+
+def resolve_skill_activation(catalog: SkillCatalog, text: object) -> SkillActivation | None:
+    """解析一次显式 Skill 激活并返回无宿主路径的结构化引用。"""
     parsed = parse_skill_activation(text)
     if parsed is None:
         return None
     name, arguments = parsed
     skill = catalog.get(name)
     activation = _skill_activation(skill, arguments) if skill is not None else None
-    if activation is None or activation.name != name:
-        return None
-    return activation.allowed_tools
+    return activation if activation is not None and activation.name == name else None
+
+
+def skill_revision(skill: object) -> str:
+    """对会影响 Skill 执行语义的字段计算稳定 revision。"""
+    source_prompt = str(_skill_field(skill, "prompt", "") or "").strip()
+    allowed = _skill_field(skill, "allowed_tools", ())
+    if isinstance(allowed, str):
+        allowed_names = sorted(item.strip() for item in allowed.split(",") if item.strip())
+    elif isinstance(allowed, Sequence):
+        allowed_names = sorted({str(item).strip() for item in allowed if str(item).strip()})
+    else:
+        allowed_names = []
+    payload = {
+        "name": str(_skill_field(skill, "name", "")).strip(),
+        "source": str(_skill_field(skill, "source", "application")).strip() or "application",
+        "description": " ".join(str(_skill_field(skill, "description", "")).split())[:500],
+        "prompt_hash": hashlib.sha256(source_prompt.encode("utf-8")).hexdigest(),
+        "allowed_tools": allowed_names,
+        "argument_hint": str(_skill_field(skill, "argument_hint", ""))[:500],
+        "user_invocable": _skill_field(skill, "user_invocable", True) is not False,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
 
 
 def _skill_field(skill: object, name: str, default: object = "") -> object:
@@ -115,7 +143,7 @@ def _skill_activation(skill: object, arguments: str) -> SkillActivation | None:
         path=path,
         allowed_tools=frozenset(allowed_names),
         arguments=arguments,
-        revision=hashlib.sha256(source_prompt.encode("utf-8")).hexdigest()[:16],
+        revision=skill_revision(skill),
     )
 
 
@@ -296,5 +324,7 @@ __all__ = [
     "SkillActivationMiddleware",
     "SkillCatalog",
     "parse_skill_activation",
+    "resolve_skill_activation",
     "resolve_skill_allowed_tools",
+    "skill_revision",
 ]
