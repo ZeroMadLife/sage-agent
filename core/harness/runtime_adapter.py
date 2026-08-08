@@ -41,6 +41,10 @@ from sage_harness.runtime.manager import StreamableGraph
 
 from core.coding.run_coordinator import RunEvent
 from core.harness.event_adapter import HarnessEventAdapter
+from core.harness.model_context_frame import (
+    ModelContextFrame,
+    ModelContextFrameDataMiddleware,
+)
 
 
 class SageHarnessRuntimeAdapter:
@@ -53,6 +57,8 @@ class SageHarnessRuntimeAdapter:
         checkpointer: BaseCheckpointSaver[Any],
         tools: Sequence[BaseTool] = (),
         system_prompt: str | None = None,
+        model_context_frame: ModelContextFrame | None = None,
+        legacy_context_compat: bool = False,
         deferred_setup: DeferredToolSetup | None = None,
         skill_catalog: SkillCatalog | None = None,
         subagent_limits: SubagentLimits | None = None,
@@ -74,7 +80,23 @@ class SageHarnessRuntimeAdapter:
                 ),
                 after="remote_content_sanitization",
             )
+        if model_context_frame is not None and system_prompt is not None:
+            raise ValueError("system_prompt and model_context_frame are mutually exclusive")
         effective_prompt = system_prompt
+        if model_context_frame is not None:
+            effective_prompt = (
+                model_context_frame.render_legacy_system_prompt()
+                if legacy_context_compat
+                else model_context_frame.render_system_prompt()
+            )
+        if model_context_frame is not None and not legacy_context_compat:
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "model_context_frame_data",
+                    lambda config: ModelContextFrameDataMiddleware(model_context_frame),
+                ),
+                before="input_sanitization",
+            )
         if deferred_setup is not None and deferred_setup.enabled:
             catalog_hash = deferred_setup.catalog_hash
             if catalog_hash is None:
@@ -94,7 +116,7 @@ class SageHarnessRuntimeAdapter:
             )
             deferred_prompt = render_deferred_tool_index(deferred_setup)
             effective_prompt = "\n\n".join(
-                part for part in (system_prompt, deferred_prompt) if part
+                part for part in (effective_prompt, deferred_prompt) if part
             )
         if capability_ids_by_tool_name:
             if capability_revision is None:
