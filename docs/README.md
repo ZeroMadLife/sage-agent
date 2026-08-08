@@ -22,6 +22,8 @@
 - [Source Connector](superpowers/specs/2026-07-16-sage-v7-5-4-source-connector-foundation-design.md)
 - [Knowledge Graph 探索](superpowers/specs/2026-07-16-sage-v7-5-5-graph-exploration-design.md)
 - [Runtime 与 Provider](superpowers/specs/2026-07-14-sage-v7-runtime-provider-experience-design.md)
+- [Context Assembly v1](superpowers/specs/2026-08-07-sage-turn-context-assembly-design.md)
+- [Context Assembly 总 PRD](superpowers/specs/2026-08-08-sage-context-assembly-prd.md)
 
 ## 当前路线
 

@@ -733,6 +733,46 @@ def test_v2_migration_preserves_active_lease_as_legacy_owner(tmp_path: Path) -> 
     assert migrated.active_run_id() is None
 
 
+def test_v5_journal_migrates_to_turn_context_plan_schema(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    _append(journal)
+    with sqlite3.connect(journal.path) as connection:
+        connection.execute("DROP TABLE turn_context_plans")
+        connection.execute("PRAGMA user_version=5")
+
+    migrated = SessionEventJournal(tmp_path, "session-1")
+
+    assert [item.event_id for item in migrated.replay(after=0, limit=10).items]
+    with sqlite3.connect(migrated.path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert connection.execute(
+            "SELECT name FROM sqlite_schema WHERE name = 'turn_context_plans'"
+        ).fetchone() == ("turn_context_plans",)
+
+
+def test_turn_context_plan_rows_are_not_exposed_by_timeline_replay(tmp_path: Path) -> None:
+    journal = SessionEventJournal(tmp_path, "session-1")
+    event = _append(journal)
+    journal.put_turn_context_plan(
+        plan_id="tcp-1",
+        run_id="run-plan",
+        version=1,
+        plan_hash="sha256:" + "0" * 64,
+        owner_fingerprint="owner-1",
+        workspace_id="workspace-1",
+        surface="coding",
+        checkpoint_thread_id="session-1",
+        checkpoint_namespace="",
+        payload_json="{}",
+        created_at="2026-08-07T00:00:00+00:00",
+    )
+
+    replayed = journal.replay(after=0, limit=10).items
+
+    assert [item.event_id for item in replayed] == [event.event_id]
+    assert all(item.run_id != "run-plan" for item in replayed)
+
+
 def test_locked_database_is_transient_not_corruption(tmp_path: Path) -> None:
     journal = SessionEventJournal(tmp_path, "session-1", busy_timeout_seconds=0.01)
     blocker = sqlite3.connect(journal.path)

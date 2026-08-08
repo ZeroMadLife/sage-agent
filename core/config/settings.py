@@ -112,6 +112,7 @@ class Settings(BaseSettings):
     sage_auto_migrate: bool = True
     sage_deerflow_v2_enabled: bool = True
     sage_coding_default_runtime_profile: str = "deerflow_v2"
+    sage_context_assembly_mode: Literal["off", "shadow", "enforce"] = "shadow"
     sage_harness_max_model_calls: int = Field(default=24, ge=1, le=128)
     sage_harness_max_tool_calls: int = Field(default=64, ge=1, le=512)
     sage_harness_max_run_tokens: int = Field(default=250_000, ge=1_000, le=5_000_000)

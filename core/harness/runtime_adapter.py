@@ -1,4 +1,4 @@
-"""Sage application adapter for the DeerFlow-compatible graph runtime."""
+"""Sage 应用侧的 DeerFlow 兼容 Graph Runtime Adapter。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from sage_harness import (
     CapabilityTelemetryMiddleware,
+    CheckpointScopeError,
     DeferredToolFilterMiddleware,
     DeferredToolSetup,
     GraphMessageCompactionRequest,
@@ -27,6 +28,7 @@ from sage_harness import (
     create_sage_agent,
     load_graph_message_compaction_plan,
     load_scoped_checkpoint,
+    normalize_turn_context_plan_binding,
     render_deferred_tool_index,
 )
 from sage_harness.middleware import (
@@ -42,7 +44,7 @@ from core.harness.event_adapter import HarnessEventAdapter
 
 
 class SageHarnessRuntimeAdapter:
-    """Build and run one graph while keeping Sage's event contract at the edge."""
+    """构造并运行一个 Graph，同时把 Sage 事件契约保持在边界层。"""
 
     def __init__(
         self,
@@ -163,8 +165,9 @@ class SageHarnessRuntimeAdapter:
         durable_context: Mapping[str, Any] | None = None,
         graph_compaction: Mapping[str, Any] | None = None,
         sandbox: SandboxDescriptor | None = None,
+        turn_context_plan: Mapping[str, object] | None = None,
     ) -> AsyncIterator[RunEvent]:
-        """Yield only public graph events; the host adds the terminal event."""
+        """写入最小 Plan binding；恢复前先校验 checkpoint 与 binding 完全一致。"""
         context = HarnessRunContext(
             thread_id=session_id,
             run_id=run_id,
@@ -179,8 +182,21 @@ class SageHarnessRuntimeAdapter:
         )
         if sandbox is not None and sandbox.workspace_id != workspace_id:
             raise ValueError("sandbox workspace_id does not match run context")
-        await load_scoped_checkpoint(self.checkpointer, context)
+        normalized_plan_binding = (
+            normalize_turn_context_plan_binding(turn_context_plan)
+            if turn_context_plan is not None
+            else None
+        )
+        checkpoint = await load_scoped_checkpoint(
+            self.checkpointer,
+            context,
+            expected_plan_binding=normalized_plan_binding if resume else None,
+        )
+        if resume and normalized_plan_binding is not None and checkpoint is None:
+            raise CheckpointScopeError("checkpoint plan binding is unavailable for resume")
         state_update: dict[str, object] = {}
+        if normalized_plan_binding is not None:
+            state_update["turn_context_plan"] = normalized_plan_binding
         if sandbox is not None:
             state_update.update(
                 {

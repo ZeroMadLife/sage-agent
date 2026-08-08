@@ -22,6 +22,7 @@ from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.runtime import CodingRuntime
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
+    build_deerflow_prompt_components,
     build_deerflow_system_prompt,
     context_status_event,
 )
@@ -990,6 +991,41 @@ def test_runtime_adapter_persists_scoped_sandbox_identity(tmp_path: Path) -> Non
     }
 
 
+def test_runtime_adapter_persists_only_the_turn_plan_binding(tmp_path: Path) -> None:
+    binding = {
+        "version": 1,
+        "run_id": "r-plan",
+        "plan_id": "tcp-plan",
+        "plan_hash": "sha256:plan",
+    }
+
+    async def run() -> dict[str, object]:
+        async with open_sqlite_checkpointer(tmp_path / "plan-checkpoints.sqlite3") as saver:
+            adapter = SageHarnessRuntimeAdapter(
+                model=FakeMessagesListChatModel(responses=[AIMessage(content="ok")]),
+                checkpointer=saver,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-plan",
+                    run_id="r-plan",
+                    workspace_id="w-plan",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                    turn_context_plan=binding,
+                )
+            ]
+            checkpoint = await saver.aget_tuple(thread_config("s-plan"))
+            assert checkpoint is not None
+            return dict(checkpoint.checkpoint["channel_values"])
+
+    state = asyncio.run(run())
+
+    assert state["turn_context_plan"] == binding
+    assert set(state["turn_context_plan"]) == {"version", "run_id", "plan_id", "plan_hash"}
+
+
 def test_runtime_adapter_reuses_sqlite_checkpoint_across_turns(tmp_path: Path) -> None:
     async def run() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         async with open_sqlite_checkpointer(tmp_path / "checkpoints.sqlite3") as saver:
@@ -1596,6 +1632,34 @@ def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> No
     assert "never assume /workspace exists" in prompt
     assert "do not retry the same selection" in prompt
     assert context_status_event(runtime, "r1") is None
+
+
+def test_deerflow_prompt_components_preserve_rendering_and_authority_boundary(
+    tmp_path: Path,
+) -> None:
+    runtime = CodingRuntime(
+        session_id="s1",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    runtime.session["history"] = [{"role": "user", "content": "untrusted-user-history"}]
+
+    components = build_deerflow_prompt_components(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+
+    assert components.render() == build_deerflow_system_prompt(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+    assert "untrusted-user-history" not in components.static_policy
+    assert "untrusted-user-history" not in components.dynamic_authority
+    assert "untrusted-user-history" in components.untrusted_context
+    assert "source-locked to: knowledge" in components.dynamic_authority
 
 
 def test_deerflow_context_projects_only_bounded_summary_todos_and_memory_refs(
