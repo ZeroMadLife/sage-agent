@@ -761,6 +761,8 @@ async def test_v2_enforce_binds_the_verified_plan_before_graph(
 
     plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-enforced")
     assert plan is not None
+    assert RecordingAdapter.init_kwargs["model_context_frame"] is not None
+    assert RecordingAdapter.init_kwargs["system_prompt"] is None
     assert RecordingAdapter.stream_kwargs[0]["turn_context_plan"] == {
         "version": 1,
         "run_id": "run-enforced",

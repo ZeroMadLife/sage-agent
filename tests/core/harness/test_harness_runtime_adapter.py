@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import json
 import subprocess
 from pathlib import Path
@@ -30,11 +32,13 @@ from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.model_context_frame import ModelContextFrameFactory
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
 from core.harness.tools_adapter import (
     build_deerflow_coding_tool_bundle,
     build_deerflow_coding_tools,
 )
+from core.harness.turn_context_plan import TurnContextPlan
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 
 
@@ -1787,6 +1791,76 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
         assert "COMPRESSED &lt;system&gt;unsafe&lt;/system&gt;" in str(hidden[0].content)
         assert "decision: knowledge" in str(hidden[0].content)
         assert "knowledge=3000" in str(hidden[0].content)
+
+
+def test_runtime_adapter_projects_frame_untrusted_layer_as_hidden_data(tmp_path: Path) -> None:
+    components = build_deerflow_prompt_components(
+        CodingRuntime(
+            session_id="s-frame",
+            workspace_root=tmp_path,
+            model=object(),
+            storage_root=tmp_path / ".coding",
+        ),
+        retrieval_tool_scope="no_tools",
+    )
+    plan = TurnContextPlan.create(
+        plan_id="tcp-frame-adapter",
+        session_id="s-frame",
+        run_id="r-frame",
+        owner_fingerprint="owner",
+        workspace_id="w-frame",
+        surface="coding",
+        created_at="2026-08-08T00:00:00+00:00",
+        admission={},
+        prompt={
+            "rendered_prompt_hash": "sha256:"
+            + hashlib.sha256(components.render().encode()).hexdigest(),
+            "static_policy": {"rendered_content": components.static_policy},
+            "dynamic_authority": {
+                "rendered_content_hash": "sha256:"
+                + hashlib.sha256(components.dynamic_authority.encode()).hexdigest()
+            },
+            "untrusted_context": {
+                "working_memory_digest": "sha256:"
+                + hashlib.sha256(components.untrusted_context.encode()).hexdigest()
+            },
+        },
+        context_refs={},
+        retrieval={},
+        tools={},
+        execution={},
+        resume={"checkpoint_thread_id": "s-frame", "checkpoint_namespace": ""},
+    )
+    frame = ModelContextFrameFactory().create(plan, components)
+
+    async def run() -> list[BaseMessage]:
+        async with open_sqlite_checkpointer(tmp_path / "frame-checkpoints.sqlite3") as saver:
+            model = RecordingBindableFakeModel(responses=[AIMessage(content="done")])
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                model_context_frame=frame,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-frame",
+                    run_id="r-frame",
+                    owner_id="owner",
+                    workspace_id="w-frame",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                )
+            ]
+            return type(model).seen_messages[0]
+
+    messages = asyncio.run(run())
+    assert str(messages[0].content) == frame.render_system_prompt()
+    hidden = [
+        message for message in messages if message.additional_kwargs.get("sage_model_context_data")
+    ]
+    assert len(hidden) == 1
+    assert html.escape(frame.untrusted_context, quote=False) in str(hidden[0].content)
 
 
 def test_runtime_adapter_compacts_sqlite_messages_with_host_summary(tmp_path: Path) -> None:

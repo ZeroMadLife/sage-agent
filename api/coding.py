@@ -167,6 +167,11 @@ from core.harness.knowledge_source_proposal_adapter import (
 )
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.model_context_frame import (
+    ModelContextFrame,
+    ModelContextFrameError,
+    ModelContextFrameFactory,
+)
 from core.harness.retrieval_gate import (
     decide_retrieval_gate,
     memory_retrieval_events,
@@ -899,6 +904,7 @@ async def _deerflow_timeline_events(
                     event_id=f"harness:{run_id}:capability-catalog",
                 )
             turn_context_plan_binding: Mapping[str, object] | None = None
+            model_context_frame: ModelContextFrame | None = None
             if (
                 not is_resume
                 and context_assembly_mode != "off"
@@ -1009,7 +1015,28 @@ async def _deerflow_timeline_events(
                             ):
                                 yield event
                             return
-                        if context_assembly_mode == "enforce":
+                        try:
+                            model_context_frame = ModelContextFrameFactory().create(
+                                assembled.plan,
+                                prompt_components,
+                                expected_run_id=run_id,
+                            )
+                        except ModelContextFrameError:
+                            logger.exception(
+                                "model context frame creation failed for run %s", run_id
+                            )
+                            if context_assembly_mode == "enforce":
+                                for event in _turn_context_plan_failure_events(
+                                    run_id,
+                                    error_code="context_frame_creation_failed",
+                                    phase="new_turn_frame",
+                                    plan_id=assembled.plan.plan_id,
+                                    plan_hash=assembled.plan.plan_hash,
+                                ):
+                                    yield event
+                                return
+                            model_context_frame = None
+                        if context_assembly_mode == "enforce" and model_context_frame is not None:
                             turn_context_plan_binding = assembled.plan.checkpoint_binding()
             elif is_resume and context_assembly_mode == "enforce":
                 if resume_plan is None or prepared_resume is None:
@@ -1059,12 +1086,35 @@ async def _deerflow_timeline_events(
                     ):
                         yield event
                     return
+                try:
+                    model_context_frame = ModelContextFrameFactory().create(
+                        resume_plan,
+                        prompt_components,
+                    )
+                except ModelContextFrameError:
+                    logger.exception("model context frame creation failed for resume %s", run_id)
+                    for event in _turn_context_plan_failure_events(
+                        run_id,
+                        error_code="resume_context_frame_creation_failed",
+                        phase="resume_frame",
+                        plan_id=resume_plan.plan_id,
+                        plan_hash=resume_plan.plan_hash,
+                    ):
+                        yield event
+                    return
                 turn_context_plan_binding = prepared_resume.binding
             adapter = SageHarnessRuntimeAdapter(
                 model=runtime.model,
                 checkpointer=checkpointer,
                 tools=tool_bundle.tools,
-                system_prompt=rendered_system_prompt,
+                system_prompt=(
+                    rendered_system_prompt
+                    if context_assembly_mode != "enforce" or model_context_frame is None
+                    else None
+                ),
+                model_context_frame=(
+                    model_context_frame if context_assembly_mode == "enforce" else None
+                ),
                 deferred_setup=tool_bundle.deferred_setup,
                 skill_catalog=runtime.skill_registry,
                 subagent_limits=SubagentLimits(),
