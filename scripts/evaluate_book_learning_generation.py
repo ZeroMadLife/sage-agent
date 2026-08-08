@@ -26,6 +26,7 @@ from core.knowledge.benchmark_runner import (
 from core.knowledge.retrieval import KnowledgeAblationPolicy, KnowledgeSearchHit
 from core.llm import create_llm
 from evals.book_learning_claims import (
+    ClaimEvidenceGoldCase,
     claim_eval_cases_from_report,
     evaluate_claim_evidence,
     load_claim_evidence_gold,
@@ -124,6 +125,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             try:
                 record, eval_case = await _evaluate_case(
                     query,
+                    claim_gold=all_claim_gold[query.query_id],
                     store=store,
                     generator=generator,
                     judge=judge,
@@ -192,6 +194,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
 async def _evaluate_case(
     query: KnowledgeBenchmarkQueryV2,
     *,
+    claim_gold: ClaimEvidenceGoldCase,
     store: Any,
     generator: Any,
     judge: Any,
@@ -256,6 +259,7 @@ async def _evaluate_case(
                 judge,
                 _judge_prompt(
                     query,
+                    claim_gold,
                     evidence,
                     answer_payload,
                 ),
@@ -290,6 +294,16 @@ async def _evaluate_case(
         for claim in query.required_claims
         if claim in _string_list(judge_payload.get("covered_required_claims"))
     )
+    gold_claim_ids = tuple(claim.claim_id for claim in claim_gold.claims)
+    covered_gold_claim_ids = _known_ids(
+        judge_payload.get("covered_gold_claim_ids"), gold_claim_ids
+    )
+    contradicted_gold_claim_ids = _known_ids(
+        judge_payload.get("contradicted_gold_claim_ids"), gold_claim_ids
+    )
+    unsupported_gold_claim_ids = _known_ids(
+        judge_payload.get("unsupported_gold_claim_ids"), gold_claim_ids
+    )
     accepted_decision = _accepted_decision(
         model_decision=model_decision,
         answer_payload=answer_payload,
@@ -321,6 +335,18 @@ async def _evaluate_case(
             "context_recall": context_recall,
             "faithfulness": faithfulness,
             "answer_relevance": answer_relevance,
+            "answer_claim_coverage": (
+                round(len(covered_gold_claim_ids) / len(gold_claim_ids), 4)
+                if gold_claim_ids
+                else None
+            ),
+            "answer_correct": (
+                accepted_decision == "answer"
+                and set(gold_claim_ids).issubset(covered_gold_claim_ids)
+                and not contradicted_gold_claim_ids
+                if gold_claim_ids
+                else None
+            ),
         },
         "usage": usage,
         "models": {
@@ -343,6 +369,10 @@ async def _evaluate_case(
         supported_citations=supported_citations,
         generated_claims=generated_claims,
         supported_generated_claims=supported_generated_claims,
+        gold_claim_ids=gold_claim_ids,
+        covered_gold_claim_ids=covered_gold_claim_ids,
+        contradicted_gold_claim_ids=contradicted_gold_claim_ids,
+        unsupported_gold_claim_ids=unsupported_gold_claim_ids,
         context_precision=context_precision,
         context_recall=context_recall,
         faithfulness=faithfulness,
@@ -389,20 +419,28 @@ def _answer_prompt(query: str, evidence: list[dict[str, Any]]) -> str:
 
 def _judge_prompt(
     query: KnowledgeBenchmarkQueryV2,
+    claim_gold: ClaimEvidenceGoldCase,
     evidence: list[dict[str, Any]],
     answer: Mapping[str, Any],
 ) -> str:
     return _json_prompt(
-        "You are an independent RAG judge. Check every answer claim against the evidence, and check whether citations actually support it. "
-        "Do not reward plausible world knowledge. Return only JSON and no reasoning.",
+        "You are an independent RAG judge. Check every generated answer claim against the evidence, and separately compare the final answer with each atomic gold claim. "
+        "A covered gold claim must be explicitly stated or semantically entailed by the final answer. A contradicted gold claim conflicts with the final answer. "
+        "An unsupported gold claim is mentioned by the answer but lacks support in the supplied evidence. Do not reward plausible world knowledge. Return only JSON and no reasoning.",
         {
             "question": query.query,
-            "required_claims": list(query.required_claims),
+            "gold_claims": [
+                {"claim_id": claim.claim_id, "statement": claim.statement}
+                for claim in claim_gold.claims
+            ],
+            "legacy_required_claims": list(query.required_claims),
             "forbidden_claims": list(query.forbidden_claims),
             "evidence": evidence,
             "answer": answer,
             "output_schema": {
-                "covered_required_claims": ["exact required claim strings covered by answer"],
+                "covered_gold_claim_ids": ["gold claim ids covered by the final answer"],
+                "contradicted_gold_claim_ids": ["gold claim ids contradicted by the final answer"],
+                "unsupported_gold_claim_ids": ["gold claim ids mentioned but unsupported by evidence"],
                 "supported_claim_ids": ["claim ids fully supported by evidence"],
                 "unsupported_claim_ids": ["claim ids not fully supported"],
                 "supported_citation_ids": ["citation ids that support the cited claim"],
@@ -641,6 +679,11 @@ def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _known_ids(value: Any, allowed: tuple[str, ...]) -> tuple[str, ...]:
+    requested = set(_string_list(value))
+    return tuple(item for item in allowed if item in requested)
 
 
 def _optional_score(value: Any) -> float | None:

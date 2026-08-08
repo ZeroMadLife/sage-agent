@@ -38,6 +38,10 @@ class GenerationEvalCase:
     supported_citations: tuple[str, ...]
     generated_claims: tuple[str, ...] = ()
     supported_generated_claims: tuple[str, ...] = ()
+    gold_claim_ids: tuple[str, ...] = ()
+    covered_gold_claim_ids: tuple[str, ...] = ()
+    contradicted_gold_claim_ids: tuple[str, ...] = ()
+    unsupported_gold_claim_ids: tuple[str, ...] = ()
     context_precision: float | None = None
     context_recall: float | None = None
     faithfulness: float | None = None
@@ -142,6 +146,23 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
     supported_generated_claims = sum(
         len(case.supported_generated_claims) for case in completed if case.generated_claims
     )
+    gold_claim_cases = [case for case in completed if case.answerable and case.gold_claim_ids]
+    answer_claim_coverage = _mean(
+        _coverage(case.gold_claim_ids, case.covered_gold_claim_ids) for case in gold_claim_cases
+    )
+    answer_correctness = _rate(
+        case.final_decision == "answer"
+        and set(case.gold_claim_ids).issubset(case.covered_gold_claim_ids)
+        and not set(case.contradicted_gold_claim_ids)
+        for case in gold_claim_cases
+    )
+    legacy_claim_coverage = _mean(
+        [
+            _coverage(case.required_claims, case.present_claims)
+            for case in completed
+            if case.answerable
+        ]
+    )
     return {
         "schema_version": 1,
         "stage": "generation",
@@ -154,18 +175,31 @@ def evaluate_generation(cases: Iterable[GenerationEvalCase]) -> dict[str, object
             ],
             "ragas_is_auxiliary": True,
             "citation_and_claim_labels_are_activation_gates": True,
+            "answer_correctness_uses_atomic_gold_claims": True,
+            "provider_failures_excluded_from_quality_denominators": True,
         },
         "metrics": {
             "case_count": len(evaluated),
             "evaluated_case_count": len(completed),
             "provider_failure_count": len(failures),
             "provider_failure_rate": round(len(failures) / len(evaluated), 4),
-            "claim_coverage": _mean(
-                [
-                    _coverage(case.required_claims, case.present_claims)
-                    for case in completed
-                    if case.answerable
-                ]
+            "claim_coverage": (
+                answer_claim_coverage if gold_claim_cases else legacy_claim_coverage
+            ),
+            "answer_claim_coverage": answer_claim_coverage if gold_claim_cases else None,
+            "answer_correctness": answer_correctness if gold_claim_cases else None,
+            "gold_claim_case_count": len(gold_claim_cases),
+            "covered_gold_claim_count": sum(
+                len(set(case.covered_gold_claim_ids).intersection(case.gold_claim_ids))
+                for case in gold_claim_cases
+            ),
+            "contradicted_gold_claim_count": sum(
+                len(set(case.contradicted_gold_claim_ids).intersection(case.gold_claim_ids))
+                for case in gold_claim_cases
+            ),
+            "unsupported_gold_claim_count": sum(
+                len(set(case.unsupported_gold_claim_ids).intersection(case.gold_claim_ids))
+                for case in gold_claim_cases
             ),
             "unsupported_claim_rate": _mean(
                 [

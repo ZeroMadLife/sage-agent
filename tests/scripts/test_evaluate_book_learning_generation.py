@@ -4,10 +4,13 @@ from types import SimpleNamespace
 
 import pytest
 
+from core.knowledge.benchmark import KnowledgeBenchmarkQueryV2, KnowledgeRelevanceJudgment
+from evals.book_learning_claims import ClaimEvidenceGoldCase, ClaimEvidenceRequirement
 from scripts.evaluate_book_learning_generation import (
     ModelInvocationError,
     _accepted_decision,
     _invoke_json,
+    _judge_prompt,
     _model_receipt,
     _parse_json_object,
     _rewrite_queries,
@@ -140,3 +143,35 @@ def test_generation_runtime_receipt_counts_provider_failures_separately() -> Non
 
     assert metrics["provider_failure_count"] == 1
     assert metrics["provider_failure_rate"] == 1.0
+
+
+def test_generation_judge_uses_atomic_gold_claim_ids() -> None:
+    query = KnowledgeBenchmarkQueryV2(
+        query_id="q1",
+        query="问题",
+        category="real_user",
+        split="test",
+        answerable=True,
+        relevant=(KnowledgeRelevanceJudgment(document_id="book#a", relevance=3),),
+        required_claims=("旧概括句",),
+    )
+    gold = ClaimEvidenceGoldCase(
+        query_id="q1",
+        answerable=True,
+        expected_decision="answer",
+        claims=(
+            ClaimEvidenceRequirement(
+                claim_id="g1",
+                statement="原子事实一",
+                passage_ids=("book#a",),
+                coverage_mode="any",
+            ),
+        ),
+    )
+
+    prompt = _judge_prompt(query, gold, [], {"decision": "answer", "claims": []})
+
+    assert '"claim_id":"g1"' in prompt
+    assert '"statement":"原子事实一"' in prompt
+    assert '"covered_gold_claim_ids"' in prompt
+    assert '"contradicted_gold_claim_ids"' in prompt

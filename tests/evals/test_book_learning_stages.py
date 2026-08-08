@@ -68,6 +68,8 @@ def test_generation_metrics_keep_ragas_auxiliary_to_claim_and_citation_gates() -
                 unsupported_claims=("b",),
                 answer_citations=("c1", "c2"),
                 supported_citations=("c1",),
+                gold_claim_ids=("g1", "g2"),
+                covered_gold_claim_ids=("g1", "g2"),
                 faithfulness=0.75,
                 answer_relevance=0.9,
             ),
@@ -91,6 +93,12 @@ def test_generation_metrics_keep_ragas_auxiliary_to_claim_and_citation_gates() -
         "provider_failure_count": 0,
         "provider_failure_rate": 0.0,
         "claim_coverage": 1.0,
+        "answer_claim_coverage": 1.0,
+        "answer_correctness": 1.0,
+        "gold_claim_case_count": 1,
+        "covered_gold_claim_count": 2,
+        "contradicted_gold_claim_count": 0,
+        "unsupported_gold_claim_count": 0,
         "unsupported_claim_rate": 0.25,
         "citation_correctness": 0.75,
         "false_acceptance_rate": 0.0,
@@ -105,6 +113,55 @@ def test_generation_metrics_keep_ragas_auxiliary_to_claim_and_citation_gates() -
         "faithfulness_labeled_count": 1,
         "answer_relevance_labeled_count": 1,
     }
+
+
+def test_generation_answer_correctness_requires_every_gold_claim_without_contradiction() -> None:
+    report = evaluate_generation(
+        (
+            GenerationEvalCase(
+                case_id="complete",
+                answerable=True,
+                final_decision="answer",
+                required_claims=(),
+                present_claims=(),
+                unsupported_claims=(),
+                answer_citations=("c1",),
+                supported_citations=("c1",),
+                gold_claim_ids=("g1", "g2"),
+                covered_gold_claim_ids=("g1", "g2"),
+            ),
+            GenerationEvalCase(
+                case_id="contradicted",
+                answerable=True,
+                final_decision="answer",
+                required_claims=(),
+                present_claims=(),
+                unsupported_claims=(),
+                answer_citations=("c2",),
+                supported_citations=("c2",),
+                gold_claim_ids=("g3",),
+                covered_gold_claim_ids=("g3",),
+                contradicted_gold_claim_ids=("g3",),
+            ),
+            GenerationEvalCase(
+                case_id="provider-error",
+                answerable=True,
+                final_decision="abstain",
+                required_claims=(),
+                present_claims=(),
+                unsupported_claims=(),
+                answer_citations=(),
+                supported_citations=(),
+                gold_claim_ids=("g4",),
+                evaluation_status="provider_error",
+            ),
+        )
+    )
+
+    assert report["metrics"]["answer_claim_coverage"] == 1.0
+    assert report["metrics"]["answer_correctness"] == 0.5
+    assert report["metrics"]["contradicted_gold_claim_count"] == 1
+    assert report["metrics"]["provider_failure_count"] == 1
 
 
 def test_generation_metrics_separate_provider_failures_from_quality_scores() -> None:
