@@ -157,6 +157,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
         "protocol": {
             "generator_model": args.generator_model,
             "judge_model": args.judge_model,
+            "top_k": args.top_k,
             "max_recovery_queries": args.max_recovery_queries,
             "request_timeout_seconds": args.request_timeout_seconds,
             "chain_of_thought_required": False,
