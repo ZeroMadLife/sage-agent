@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import tempfile
 import time
@@ -24,6 +25,11 @@ from core.knowledge.benchmark_runner import (
 )
 from core.knowledge.retrieval import KnowledgeAblationPolicy, KnowledgeSearchHit
 from core.llm import create_llm
+from evals.book_learning_claims import (
+    claim_eval_cases_from_report,
+    evaluate_claim_evidence,
+    load_claim_evidence_gold,
+)
 from evals.book_learning_stages import GenerationEvalCase, evaluate_generation
 
 
@@ -57,6 +63,11 @@ def main() -> int:
         "--provider-factory",
         default="scripts.benchmark_providers.fastembed_local:create_provider",
     )
+    parser.add_argument(
+        "--claim-gold",
+        type=Path,
+        default=repo_root / "evals" / "book_learning_claim_gold_v1.jsonl",
+    )
     parser.add_argument("--generator-model", default="doubao:Doubao-Seed-2.0-pro")
     parser.add_argument("--judge-model", default="deepseek:deepseek-v4-flash")
     parser.add_argument("--strategy", choices=_strategies(), default="contextual_chunk")
@@ -82,6 +93,13 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
     manifest = load_manifest(repo_root, args.manifest.resolve())
     source_queries = load_benchmark_v2(repo_root / manifest.dataset)
     queries = _select_queries(source_queries, args.case_id, args.max_cases)
+    all_claim_gold = {
+        case.query_id: case for case in load_claim_evidence_gold(args.claim_gold.resolve())
+    }
+    try:
+        claim_gold = tuple(all_claim_gold[query.query_id] for query in queries)
+    except KeyError as exc:
+        raise ValueError(f"claim gold is missing benchmark query: {exc.args[0]}") from exc
     provider = load_embedding_provider(args.provider_factory)
     policy = KnowledgeAblationPolicy(strategy=args.strategy)
     generator = create_llm(args.generator_model, temperature=0.0)
@@ -124,6 +142,10 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             records.append(record)
             eval_cases.append(eval_case)
 
+    claim_report_source = {"stage": "llmwiki_generation", "cases": records}
+    claim_observations = claim_eval_cases_from_report(claim_report_source)
+    claim_evidence = evaluate_claim_evidence(claim_gold, claim_observations)
+    claim_evidence["gold"] = _claim_gold_receipt(repo_root, args.claim_gold)
     result = {
         "schema_version": 1,
         "stage": "llmwiki_generation",
@@ -135,6 +157,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             "chain_of_thought_required": False,
             "answer_requires_citation_contract": True,
             "judge_is_auxiliary_to_server_gate": True,
+            "claim_evidence_online_gate_activated": False,
             "context_scope": "retrieved_candidate_passages",
         },
         "benchmark": {
@@ -155,6 +178,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
         "chunking": chunking,
         "runtime_metrics": _runtime_metrics(records),
         "observed_models": _observed_models(records),
+        "claim_evidence": claim_evidence,
         "metrics": evaluate_generation(eval_cases),
         "cases": records,
     }
@@ -745,6 +769,20 @@ def _git_value(root: Path, *args: str) -> str:
         ["git", *args], cwd=root, capture_output=True, text=True, check=False, timeout=10
     )
     return completed.stdout.strip() if completed.returncode == 0 else "unknown"
+
+
+def _claim_gold_receipt(repo_root: Path, path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    try:
+        dataset = resolved.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        dataset = str(resolved)
+    return {
+        "dataset": dataset,
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        "review_status": "seed_manual",
+        "production_claim_allowed": False,
+    }
 
 
 __all__ = ["main"]

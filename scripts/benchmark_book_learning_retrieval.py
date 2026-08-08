@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -14,6 +15,13 @@ from core.knowledge.benchmark_runner import (
     run_benchmark,
 )
 from core.knowledge.retrieval import KnowledgeAblationPolicy
+from evals.book_learning_claims import (
+    ClaimEvidenceEvalCase,
+    ClaimEvidenceGoldCase,
+    claim_eval_cases_from_report,
+    evaluate_claim_evidence,
+    load_claim_evidence_gold,
+)
 
 _STRATEGIES = (
     "baseline",
@@ -43,6 +51,11 @@ def main() -> int:
         "--provider-factory",
         help="Optional import path module:attribute returning a DenseEmbeddingProvider",
     )
+    parser.add_argument(
+        "--claim-gold",
+        type=Path,
+        default=repo_root / "evals" / "book_learning_claim_gold_v1.jsonl",
+    )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
         "--skip-fetch",
@@ -69,6 +82,11 @@ def main() -> int:
         "production_claim_allowed": False,
         "reason": "seed gold must be expanded and independently reviewed before activation",
     }
+    observed_claims = claim_eval_cases_from_report(result)
+    claim_gold = _select_claim_gold(args.claim_gold, observed_claims)
+    claim_report = evaluate_claim_evidence(claim_gold, observed_claims)
+    claim_report["gold"] = _claim_gold_receipt(repo_root, args.claim_gold)
+    result["claim_evidence"] = claim_report
     encoded = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output is not None:
         args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +104,30 @@ def _fetch_corpus(repo_root: Path) -> None:
     )
     if completed.returncode:
         raise RuntimeError("book corpus fetch or checksum verification failed")
+
+
+def _select_claim_gold(
+    path: Path, observed: tuple[ClaimEvidenceEvalCase, ...]
+) -> tuple[ClaimEvidenceGoldCase, ...]:
+    gold_by_id = {case.query_id: case for case in load_claim_evidence_gold(path)}
+    try:
+        return tuple(gold_by_id[str(case.query_id)] for case in observed)
+    except KeyError as exc:
+        raise ValueError(f"claim gold is missing benchmark query: {exc.args[0]}") from exc
+
+
+def _claim_gold_receipt(repo_root: Path, path: Path) -> dict[str, object]:
+    resolved = path.resolve()
+    try:
+        dataset = resolved.relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        dataset = str(resolved)
+    return {
+        "dataset": dataset,
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+        "review_status": "seed_manual",
+        "production_claim_allowed": False,
+    }
 
 
 if __name__ == "__main__":

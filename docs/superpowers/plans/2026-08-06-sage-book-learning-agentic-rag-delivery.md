@@ -1,7 +1,7 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A/B/C/D 已完成首轮交付；真实模型收据已在 clean source 上跑通，下一阶段转向 calibration gold、claim-aware sufficiency 与 provider timeout 优化
+> 状态：Slice A/B/C/D 已完成首轮交付，Slice E 已完成 claim-aware 离线诊断；下一阶段转向 gold 扩充、rewrite 优化、Gate 校准与 provider timeout 优化
 > 基线：`codex/book-learning-rag-design@d442b37`
 
 ## 产品目标
@@ -69,6 +69,16 @@ unsupported claim rate 0、citation correctness 1、unanswerable correct abstent
 answerable 最终回答率 4/7，context precision/recall 0.1420/0.6429，P50/P95 59,647/120,385 ms，
 token 171,486，cost 仍为 null（未冻结价格表）。这组数字是 seed 的端到端诊断，不是生产 SLA 或
 泛化准确率。完整结果保存在 ignored `.coding/evals/book-learning-generation-full-d442b37.json`。
+
+### Slice E：Claim-aware Sufficiency 离线诊断
+
+- 新增 14-case / 15-atomic-claim 独立 gold，支持 `any/all` passage 绑定；跨人物、跨章节、跨书问题不再压成一句模糊 claim。
+- 新增严格 loader、历史 retrieval/generation receipt adapter 和可单独复核的 CLI；provider failure 与质量分数分开。
+- 指标新增首轮/最终 claim evidence coverage、bundle completeness、claim recovery gain、recovery resolution、answer readiness precision/recall、insufficient acceptance。
+- clean retrieval Top-10 的 claim coverage / bundle completeness 为 `0.7333/0.7000`；真实 generation 完成子集为 `0.6190/0.5714`。
+- 本轮实际 rewrite 的 claim recovery gain / resolution 均为 `0`，说明触发 recovery 没有补回 gold claim；4 个完整 bundle 全部放行、3 个不完整 bundle 全部拒答，离线 readiness precision/recall 为 `1/1`。
+- Faithfulness 保持生成层独立 judge 指标：本轮为 `1.0`，但仅覆盖 4 个最终回答；不能用它替代检索完整性或 citation gate。
+- 当前只接入离线报告，`online_gate_activated=false`；等 gold 扩充和 calibration/test 稳定后再决定是否接入 Coordinator。
 
 ## 不在本阶段承诺
 

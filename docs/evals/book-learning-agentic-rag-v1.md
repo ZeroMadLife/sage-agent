@@ -1,7 +1,7 @@
 # Sage 长书学习 RAG / LLMWiki / Agentic RAG v1 收口
 
-> 日期：2026-08-07
-> 状态：真实公共领域 TXT、检索、有界 recovery 与真实 LLMWiki generation smoke/full 均已跑通；仍属于 seed 阶段，不是生产准确率
+> 日期：2026-08-08
+> 状态：真实公共领域 TXT、检索、有界 recovery、claim-aware sufficiency 与真实 LLMWiki generation 均已跑通；claim evaluator 暂为离线诊断，仍不是生产准确率
 
 ## 产品行为
 
@@ -83,6 +83,65 @@ FastEmbed + contextual chunk 的 4-case 收据（3 条 answerable、1 条 unansw
 
 运行时 `BookLearningCoordinator` 已把同一策略落到服务端：最多 2 个 research child、最多 2 轮检索、EvidenceBundle 绑定 parent run、无新 citation 或无 citation 生成就拒答。它不依赖模型自报 confidence；confidence 只能作为评测字段。
 
+## Claim-aware Sufficiency v1
+
+上一版 Gate 只能根据 citation/source 数量粗略推断 `primary_evidence`、`independent_evidence`，
+不能回答“问题要求的每个事实是否都已经有证据”。本轮新增独立离线层，暂不改变线上
+`BookLearningCoordinator` 的放行逻辑：
+
+```mermaid
+flowchart LR
+    Q["用户问题"] --> R1["首轮 Hybrid Retrieval"]
+    R1 --> P1["稳定 passage_id"]
+    G["原子 Claim Gold<br/>any / all 证据绑定"] --> CE["Claim Evidence Evaluator"]
+    P1 --> CE
+    CE -->|"缺少 claim"| RW["最多 2 条 Query Rewrite"]
+    RW --> R2["一次 Bounded Recovery"]
+    R2 --> B["最终 EvidenceBundle"]
+    CE --> B
+    B --> RG["离线 Readiness 诊断<br/>完整才应 answer"]
+    B --> A["LLMWiki 最终答案"]
+    A --> J["独立 Judge"]
+    J --> F["Faithfulness / Citation Correctness<br/>Unsupported Claim Rate"]
+```
+
+### Gold 怎么构造
+
+- 14 条 query 单独维护为 `evals/book_learning_claim_gold_v1.jsonl`，避免改动严格的 Benchmark v2 schema；当前共 15 个原子 claim。
+- `any` 表示多个候选 passage 命中任意一个即可支持 claim；`all` 表示多段证据必须全部找回。
+- `book-zh-003` 不再把悟空和八戒合成一句：悟空加入、八戒加入分别标注，其中八戒需要第十八、十九回共同覆盖。
+- 两条跨书问题各拆成“书 A 证据、书 B 证据、双侧比较”3 个 claim；只找到一侧不能算完整。
+- 4 条 unanswerable 不绑定正向 claim，预期决策固定为 `abstain`；检索到相似章节也不能把它变成可回答。
+
+### 首次真实收据
+
+| 阶段 | 核心结果 | 产品解释 |
+| --- | ---: | --- |
+| Top-10 首轮检索 | claim evidence coverage **0.7333**；bundle completeness **0.7000** | 10 条可回答问题中，7 条已经找齐全部必要 claim；它比“至少命中一个章节”更严格 |
+| 真实 generation 完成子集 | claim evidence coverage **0.6190**；bundle completeness **0.5714** | 排除 3 条 provider failure 后，7 条可回答 case 中 4 条证据完整 |
+| 实际 recovery | claim recovery gain **0.0000**；resolution **0.0000** | planner 虽触发 rewrite，但没有新增 gold claim 证据；证明触发 Agentic 不等于恢复有效 |
+| 离线 Readiness | precision / recall **1.0000 / 1.0000** | 4 个完整 bundle 均放行，3 个不完整 bundle 均拒答；只适用于本轮 7 条完成 answerable case |
+| 生成可信度 | Faithfulness **1.0000**；citation correctness **1.0000**；unsupported claim rate **0.0000** | 仅 4 个最终回答、10 个生成 claims 的独立 judge 标签，不能外推为生产忠实度 |
+| 无答案安全 | false acceptance **0.0000**；correct abstention **1.0000** | 4 条 hard negative 全部拒答，样本仍不足以激活线上 Gate |
+
+这里最重要的边界是：`claim evidence coverage` 只判断“必要 passage 是否找齐”；
+`Faithfulness` 判断“最终答案里的事实是否都能被 EvidenceBundle 支持”；`citation correctness`
+再判断“答案引用的具体 passage 是否真的支持对应 claim”。三者不能互相替代。
+
+可直接复核历史收据，无需重新调用模型：
+
+```bash
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
+  scripts/evaluate_book_learning_claims.py \
+  --report .coding/evals/book-learning-generation-full-d442b37.json \
+  --output .coding/evals/book-learning-claim-generation-v1.json
+```
+
+可提交的汇总收据为
+`evals/reports/book_learning_claim_evidence_v1_2026-08-08.json`；它记录 claim gold 和两个 ignored
+源收据的 SHA-256，不提交书籍原文、答案上下文或凭据。
+
 ## LLMWiki / Generation / E2E 阶段
 
 LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类：
@@ -111,7 +170,7 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 | judge faithfulness / answer relevance | **1.0000 / 1.0000** | 仅 4 条真实回答有独立标签，RAGAS-compatible 辅助指标，不能单独作为上线门禁 |
 | token / P50 / P95 | **171,486 / 59,647 / 120,385 ms** | 评测串行、包含 clean index 与 bounded recovery；成本因无冻结价格表保持 `null` |
 
-这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。它也明确了下一阶段不是继续调高 sparse/dense 阈值，而是扩充 calibration gold、做 claim-aware sufficiency，并降低长上下文导致的 provider timeout。
+这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。claim-aware 离线复核进一步确认，当前实际 rewrite 没有补回缺失 claim；下一阶段应先优化 query decomposition/rewrite 和跨书召回，再校准是否把 claim-aware 判断接入线上 Gate，同时降低长上下文导致的 provider timeout。
 
 推荐复现命令（Key 只注入单次进程，不写入报告）：
 
@@ -133,7 +192,9 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
   -m pytest tests/evals/test_book_learning_stages.py \
+  tests/evals/test_book_learning_claims.py \
   tests/evals/test_book_learning_agentic.py \
+  tests/scripts/test_evaluate_book_learning_claims.py \
   tests/scripts/test_evaluate_book_learning_generation.py \
   tests/scripts/test_evaluate_book_learning_recovery.py \
   tests/core/knowledge/parsing/test_txt.py \
@@ -154,4 +215,4 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
 
 ## 下一阶段
 
-先把 seed 扩展到 30-50 条并独立 review，特别补后半章节、跨书拆解、不可回答数值和相似 hard negative；再做 dev/calibration/test gate。随后把 claim-aware sufficiency 接入 planner 候选判断，比较 single-pass、bounded recovery、Agentic 多分支的端到端 claim coverage、faithfulness、citation support、provider failure、成本和 P95。意图小模型/SFT/RL 和更多 agent 协同留在这条离线回路稳定之后，避免在 gate 尚未校准时放大错误路由。
+先把 seed 扩展到 30-50 条并独立 review，特别补后半章节、跨书拆解、不可回答数值和相似 hard negative；再做 dev/calibration/test gate。优先用 `claim_recovery_gain` 定位 decomposition/rewrite 为什么没有补回缺失证据，稳定后才把 claim-aware sufficiency 作为线上 Gate 候选。随后比较 single-pass、bounded recovery、Agentic 多分支的端到端 claim coverage、Faithfulness、citation support、provider failure、成本和 P95。意图小模型/SFT/RL 和更多 agent 协同留在这条离线回路稳定之后，避免放大错误路由。
