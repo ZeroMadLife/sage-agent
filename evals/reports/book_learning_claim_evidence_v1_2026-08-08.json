@@ -23,9 +23,9 @@
     ]
   },
   "retrieval": {
-    "source_receipt": ".coding/evals/book-learning-retrieval-v1-fastembed-contextual-clean-e81ba1f.json",
-    "source_receipt_sha256": "8a54f6a230652704394008cb84601eacd2465f16901e044868fa3515a8123e2f",
-    "source_commit": "e81ba1fc540a9645637f390e808606603325e903",
+    "source_receipt": ".coding/evals/book-learning-retrieval-3902827-contextual_chunk.json",
+    "source_receipt_sha256": "9bfdbe4f555f045d153f978365a0171d0c48c7eb99c99b0e8c6ac4847ab9cd24",
+    "source_commit": "3902827aa6efc628b3193a3621dfc61a70bf0809",
     "top_k": 10,
     "claim_evidence_metrics": {
       "first_pass_claim_evidence_coverage": 0.7333,
@@ -36,33 +36,34 @@
     "interpretation": "Pure retrieval has no gate decision, so readiness metrics are intentionally null."
   },
   "generation": {
-    "source_receipt": ".coding/evals/book-learning-generation-full-d442b37.json",
-    "source_receipt_sha256": "514192cf20e07ef1942fdbf39c1c3cbb4ac0f4701a2afa09a2ab8a0fbb72df55",
-    "source_commit": "d442b37395a418bf11c1a03b753b8abe32989574",
+    "source_receipt": ".coding/evals/book-learning-generation-742f131-top10-full.json",
+    "source_receipt_sha256": "e792a725980c25ca4c9e10289d16c3c049debd5c0b339f2101394d99d1037e6f",
+    "source_commit": "742f1311f11853081310bb2a9dc73844a8d905a8",
+    "top_k": 10,
     "case_count": 14,
-    "evaluated_case_count": 11,
-    "provider_failure_count": 3,
+    "evaluated_case_count": 12,
+    "provider_failure_count": 2,
     "claim_evidence_metrics": {
-      "first_pass_claim_evidence_coverage": 0.619,
-      "final_claim_evidence_coverage": 0.619,
-      "bundle_completeness_rate": 0.5714,
+      "first_pass_claim_evidence_coverage": 0.6667,
+      "final_claim_evidence_coverage": 0.6667,
+      "bundle_completeness_rate": 0.625,
       "claim_recovery_gain": 0.0,
       "recovery_resolution_rate": 0.0,
       "answer_readiness_precision": 1.0,
-      "answer_readiness_recall": 1.0,
+      "answer_readiness_recall": 0.8,
       "insufficient_acceptance_rate": 0.0,
       "false_acceptance_rate": 0.0,
       "correct_abstention_rate": 1.0
     },
     "answer_metrics": {
       "accepted_answer_count": 4,
-      "generated_claim_count": 10,
-      "supported_generated_claim_count": 10,
+      "generated_claim_count": 12,
+      "supported_generated_claim_count": 12,
       "unsupported_claim_rate": 0.0,
       "citation_correctness": 1.0,
       "faithfulness": 1.0,
       "faithfulness_labeled_count": 4
     },
-    "interpretation": "The observed model rewrites added no new gold claim coverage. The offline gate labels accepted only complete bundles, while faithfulness covers four accepted answers and cannot be generalized."
+    "interpretation": "The observed model rewrites added no new gold claim coverage. The offline labels rejected every incomplete bundle, but one complete bundle was not accepted; faithfulness covers four accepted answers and cannot be generalized."
   }
 }

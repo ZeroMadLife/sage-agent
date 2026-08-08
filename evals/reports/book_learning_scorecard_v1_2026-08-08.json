@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "report_id": "sage-book-learning-scorecard-v1",
+  "report_date": "2026-08-08",
+  "source_commit": "742f1311f11853081310bb2a9dc73844a8d905a8",
+  "scope": {
+    "benchmark_id": "sage-book-learning-v1",
+    "benchmark_revision": "2026-08-06.1",
+    "dataset_sha256": "4c70b3755201945172b88c77ba1a7ae59da45e6a675f85082fb20428a84d03e1",
+    "gold_status": "seed_manual",
+    "case_count": 14,
+    "answerable_case_count": 10,
+    "unanswerable_case_count": 4,
+    "atomic_gold_claim_count": 15,
+    "production_claim_allowed": false,
+    "online_policy_mutated": false
+  },
+  "retrieval": {
+    "strategy": "contextual_chunk",
+    "embedding_provider": "fastembed.sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "top_k": 10,
+    "first_pass_claim_evidence_coverage": 0.7333,
+    "recall_at_k": 0.75,
+    "mrr": 0.5233333333,
+    "ndcg_at_k": 0.5822295529,
+    "p95_latency_ms": 521.865,
+    "strategy_selection": "offline_candidate",
+    "receipt_sha256": "9bfdbe4f555f045d153f978365a0171d0c48c7eb99c99b0e8c6ac4847ab9cd24"
+  },
+  "generation": {
+    "generator_model": "doubao:Doubao-Seed-2.0-pro",
+    "judge_model": "deepseek:deepseek-v4-flash",
+    "top_k": 10,
+    "request_timeout_seconds": 60,
+    "evaluated_case_count": 12,
+    "provider_failure_count": 2,
+    "provider_failure_rate": 0.1429,
+    "first_pass_claim_evidence_coverage": 0.6667,
+    "answer_claim_coverage": 0.5,
+    "answer_correctness": 0.5,
+    "correct_abstention": 1.0,
+    "false_acceptance": 0.0,
+    "claim_recovery_gain": 0.0,
+    "faithfulness": 1.0,
+    "citation_correctness": 1.0,
+    "unsupported_claim_rate": 0.0,
+    "answer_relevance": 1.0,
+    "p50_latency_ms": 49167,
+    "p95_latency_ms": 138752,
+    "receipt_sha256": "e792a725980c25ca4c9e10289d16c3c049debd5c0b339f2101394d99d1037e6f"
+  },
+  "quality_kpis": {
+    "first_pass_claim_evidence_coverage": 0.7333,
+    "answer_claim_coverage": 0.5,
+    "answer_correctness": 0.5,
+    "correct_abstention": 1.0,
+    "false_acceptance": 0.0,
+    "claim_recovery_gain": 0.0
+  },
+  "runtime_kpis": {
+    "provider_failure_rate": 0.1429,
+    "p95_latency_ms": 138752
+  },
+  "kpi_actions": {
+    "first_pass_coverage": "optimize chunking_embedding_or_reranker",
+    "answer_correctness": "optimize answer_prompt_or_answer_gate",
+    "abstention_safety": "hold sufficiency_gate",
+    "recovery_value": "optimize query_decomposition_or_rewrite",
+    "provider_reliability": "optimize provider_timeout_retry_or_fallback",
+    "latency": "optimize context_budget_index_or_provider"
+  },
+  "diagnostic_boundary": {
+    "ragas_metrics_are_auxiliary": true,
+    "faithfulness_does_not_prove_answer_correctness": true,
+    "provider_failures_excluded_from_quality_denominators": true,
+    "online_claim_gate_activated": false,
+    "scorecard_receipt_sha256": "1072c28fa205097f9479b69eafc9a0c1da4046251368fb1833f58b7a3ee83a2d",
+    "source_receipts": {
+      "retrieval": "book-learning-retrieval-3902827-contextual_chunk.json",
+      "generation": "book-learning-generation-742f131-top10-full.json",
+      "scorecard": "book-learning-scorecard-742f131-top10-full.json"
+    }
+  }
+}

@@ -113,15 +113,15 @@ flowchart LR
 - 两条跨书问题各拆成“书 A 证据、书 B 证据、双侧比较”3 个 claim；只找到一侧不能算完整。
 - 4 条 unanswerable 不绑定正向 claim，预期决策固定为 `abstain`；检索到相似章节也不能把它变成可回答。
 
-### 首次真实收据
+### 最新真实收据
 
 | 阶段 | 核心结果 | 产品解释 |
 | --- | ---: | --- |
 | Top-10 首轮检索 | claim evidence coverage **0.7333**；bundle completeness **0.7000** | 10 条可回答问题中，7 条已经找齐全部必要 claim；它比“至少命中一个章节”更严格 |
-| 真实 generation 完成子集 | claim evidence coverage **0.6190**；bundle completeness **0.5714** | 排除 3 条 provider failure 后，7 条可回答 case 中 4 条证据完整 |
+| 真实 generation 完成子集 | claim evidence coverage **0.6667**；bundle completeness **0.6250** | 排除 2 条 provider failure 后，8 条可回答 case 中 5 条证据完整 |
 | 实际 recovery | claim recovery gain **0.0000**；resolution **0.0000** | planner 虽触发 rewrite，但没有新增 gold claim 证据；证明触发 Agentic 不等于恢复有效 |
-| 离线 Readiness | precision / recall **1.0000 / 1.0000** | 4 个完整 bundle 均放行，3 个不完整 bundle 均拒答；只适用于本轮 7 条完成 answerable case |
-| 生成可信度 | Faithfulness **1.0000**；citation correctness **1.0000**；unsupported claim rate **0.0000** | 仅 4 个最终回答、10 个生成 claims 的独立 judge 标签，不能外推为生产忠实度 |
+| 离线 Readiness | precision / recall **1.0000 / 0.8000** | 5 个完整 bundle 中 4 个放行、1 个未放行，3 个不完整 bundle 均拒答；只适用于本轮 8 条完成 answerable case |
+| 生成可信度 | Faithfulness **1.0000**；citation correctness **1.0000**；unsupported claim rate **0.0000** | 仅 4 个最终回答、12 个生成 claims 的独立 judge 标签，不能外推为生产忠实度 |
 | 无答案安全 | false acceptance **0.0000**；correct abstention **1.0000** | 4 条 hard negative 全部拒答，样本仍不足以激活线上 Gate |
 
 这里最重要的边界是：`claim evidence coverage` 只判断“必要 passage 是否找齐”；
@@ -134,7 +134,7 @@ flowchart LR
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
   scripts/evaluate_book_learning_claims.py \
-  --report .coding/evals/book-learning-generation-full-d442b37.json \
+  --report .coding/evals/book-learning-generation-742f131-top10-full.json \
   --output .coding/evals/book-learning-claim-generation-v1.json
 ```
 
@@ -152,25 +152,25 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 
 `evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。新增 `scripts/evaluate_book_learning_generation.py` 作为真实 LLMWiki 入口：生成模型负责受限 planner/rewrite 和最终答案，独立 judge 只检查 claim、citation、faithfulness 与 answer relevance；服务端 citation contract 先于 judge 做 fail-closed。它不输出 CoT，也不把原文写入跟踪报告。
 
-### 首次真实模型收据（clean source）
+### 真实模型收据与答案正确率复跑（clean source）
 
-在 clean source `d442b37`、`sage-book-learning-v1@2026-08-06.1`、FastEmbed + `contextual_chunk` 上，使用 Doubao `Doubao-Seed-2.0-pro` 负责 planner/rewrite/answer，DeepSeek `deepseek-v4-flash` 负责独立 claim/citation judge，14 条完整跑通（10 answerable、4 unanswerable）。报告：`.coding/evals/book-learning-generation-full-d442b37.json`（ignored，本地不入 Git）。
+在 clean source `742f131`、`sage-book-learning-v1@2026-08-06.1`、FastEmbed + `contextual_chunk`、Top-10 上，使用 Doubao `Doubao-Seed-2.0-pro` 负责 planner/rewrite/answer，DeepSeek `deepseek-v4-flash` 负责独立 claim/citation judge，14 条完整跑通（10 answerable、4 unanswerable）。报告：`.coding/evals/book-learning-generation-742f131-top10-full.json`（ignored，本地不入 Git）。评测客户端显式关闭 SDK 隐式重试，并把 60 秒 timeout 写入每次收据；因此 provider failure 与质量分母可分开解释。
 
 | 维度 | 结果 | 产品解释 |
 | --- | ---: | --- |
-| provider failure | 3/14 = **0.2143** | 3 条均为 answerable，发生在 planner/answer，不能算作质量正确或错误；必须单独看供应商可用性 |
-| 已完成质量评测 | 11/14 | 质量指标只在完成 judge 的 case 上计算，避免网络故障污染分数 |
-| answerable 最终回答率 | 4/7 = **0.5714** | 4 条通过服务端 citation contract + judge；3 条跨书/证据不足安全拒答 |
+| provider failure | 2/14 = **0.1429** | 供应商失败不计入质量分母；仍高于 0.05 运行目标，先修 timeout/retry/fallback |
+| 已完成质量评测 | 12/14 | 质量指标只在完成 judge 的 case 上计算，避免网络故障污染分数 |
+| answerable 最终回答率 | 4/8 = **0.5000** | 4 条通过服务端 citation contract + judge；其余可回答 case 因证据不足或 provider failure 停止 |
 | 全部 case 接受回答率 | 4/14 = **0.2857** | 含 provider failure 和安全拒答，反映当前端到端可用性，不是检索 Recall |
-| claim coverage | **0.5714** | seed required-claim 覆盖仍不足，说明“找到了部分证据”不等于回答完成 |
-| unsupported claim rate | **0.0000** | 已生成的 10 个 claims 全部被独立 judge 支持；这是完成 case 的结果 |
+| Answer Claim Coverage / Correctness | **0.5000 / 0.5000** | 只有一半完成的可回答 case 覆盖全部必要 Gold Claim 且无矛盾，答案正确率不能由 Faithfulness 代替 |
+| unsupported claim rate | **0.0000** | 已生成的 12 个 claims 全部被独立 judge 支持；这是完成 case 的结果 |
 | citation correctness | **1.0000** | 已接受回答的 citation 均来自当前 EvidenceBundle 且被 judge 支持 |
 | unanswerable false acceptance / correct abstention | **0.0000 / 1.0000** | 4 条 hard negative 全部拒答；当前 gate 对无答案有效，但样本仍小 |
-| context precision / recall | **0.1420 / 0.6429** | 召回上下文噪声较高，跨书 case 仍是主要缺口 |
+| context precision / recall | **0.1441 / 0.6875** | Top-10 增加上下文但噪声仍高，跨书和缺失 claim 仍是主要缺口 |
 | judge faithfulness / answer relevance | **1.0000 / 1.0000** | 仅 4 条真实回答有独立标签，RAGAS-compatible 辅助指标，不能单独作为上线门禁 |
-| token / P50 / P95 | **171,486 / 59,647 / 120,385 ms** | 评测串行、包含 clean index 与 bounded recovery；成本因无冻结价格表保持 `null` |
+| token / P50 / P95 | **216,095 / 49,167 / 138,752 ms** | 评测串行、包含 clean index 与 bounded recovery；成本因无冻结价格表保持 `null` |
 
-这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。claim-aware 离线复核进一步确认，当前实际 rewrite 没有补回缺失 claim；下一阶段应先优化 query decomposition/rewrite 和跨书召回，再校准是否把 claim-aware 判断接入线上 Gate，同时降低长上下文导致的 provider timeout。
+这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。Top-10 相比 Top-8 没有提高 Answer Correctness，实际 rewrite 仍没有补回缺失 claim；下一阶段应先让 Planner 消费显式 `missing_claim_ids/statements`，再优化跨书召回和 context budget，最后才校准是否把 claim-aware 判断接入线上 Gate。
 
 推荐复现命令（Key 只注入单次进程，不写入报告）：
 

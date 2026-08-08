@@ -1,8 +1,8 @@
 # Sage 长书 RAG 四项核心 KPI 与策略选择 v1
 
 > 日期：2026-08-08
-> clean source：`3902827`
-> 状态：Scorecard、原子 Gold Claim Judge 与五策略 clean retrieval 已完成；真实答案正确率等待 provider 凭据复跑
+> clean source：`742f131`
+> 状态：Scorecard、原子 Gold Claim Judge、五策略 clean retrieval 与 Top-10 真实 generation 已完成；线上策略仍未修改
 > 数据边界：14 条 `seed_manual`、15 个原子 Gold Claim，不代表生产准确率或 SLA
 
 ## 产品结论
@@ -110,18 +110,19 @@ receipt，并拒绝 dirty source。交互 P95 预算冻结为 3,000 ms；在预�
 
 ## 当前 4+2 Scorecard
 
-在新版 Answer Judge 真实复跑前，系统明确保留 `null`，不把旧的 required-claim 或
-Faithfulness 伪装成 Answer Correctness：
+以下数字来自 clean source `742f131` 的 Top-10 真实 generation 收据；14 条 seed 中 12 条完成
+Judge，2 条 provider failure 被排除在答案质量分母之外。一次评测批次的 provider 波动仍然很大，
+所以这些数字是可复现诊断，不是生产准确率：
 
 | 类型 | 指标 | 当前值 | 组件结论 |
 | --- | --- | ---: | --- |
 | 质量 | First-pass Claim Evidence Coverage | 0.7333 | 低于 0.80，继续看 chunk/embedding/reranker |
-| 质量 | Answer Claim Coverage | null | 等待原子 Gold Judge 真实复跑 |
-| 质量 | Answer Correctness | null | 等待原子 Gold Judge 真实复跑 |
+| 质量 | Answer Claim Coverage | 0.5000 | 低于 0.80，检查 evidence completeness 与 answer gate |
+| 质量 | Answer Correctness | 0.5000 | 低于 0.80，检查 answer prompt / answer gate |
 | 质量 | Correct Abstention / False Acceptance | 1.0000 / 0.0000 | 当前 4 条 hard negative 守住，样本仍小 |
 | 质量 | Claim Recovery Gain | 0.0000 | 下一优先级为 decomposition/rewrite |
-| 运行 | Provider Failure Rate | 0.2143 | 优化 provider timeout/retry/fallback |
-| 运行 | P95 Latency | 120,385 ms | 优化 context budget、provider 与索引路径 |
+| 运行 | Provider Failure Rate | 0.1429 | 高于 0.05，优化 provider timeout/retry/fallback |
+| 运行 | P95 Latency | 138,752 ms | 远高于 5 秒，优化 context budget、provider 与索引路径 |
 
 阈值只用于离线归因：Coverage/Correctness 目标 0.80，Correct Abstention 目标 0.95，False
 Acceptance 上限 0.05，Recovery Gain 目标 0.05，Provider Failure 上限 0.05，端到端 P95
@@ -143,10 +144,11 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
 
 ## 下一阶段边界
 
-1. 用新版原子 Gold Judge 跑完 14 条，首次得到 Answer Claim Coverage 和 Answer Correctness。
-2. Planner 输入显式 `missing_claim_ids/statements`，按缺失事实生成最多两条 rewrite；用
+1. Planner 输入显式 `missing_claim_ids/statements`，按缺失事实生成最多两条 rewrite；用
    Claim Recovery Gain 判断是否真的补回，而不是只看新增 chunk。
-3. gold 扩展到 30-50 条并做独立 review，再划分 calibration/test，之后才讨论线上 Gate。
-4. parent-child 只有在 bounded projection、缓存或 PostgreSQL live 将 P95 压回预算，且 Claim
+2. gold 扩展到 30-50 条并做独立 review，再划分 calibration/test，之后才讨论线上 Gate。
+3. parent-child 只有在 bounded projection、缓存或 PostgreSQL live 将 P95 压回预算，且 Claim
    Coverage 真正超过 contextual 时才重新进入候选。
+4. 先降低 provider failure/P95，再比较 Top-K 和上下文预算；Top-10 没有改善 Answer Correctness，
+   不能通过继续堆叠上下文解决答案缺失。
 5. 意图小模型、SFT/RL 和更多 Agent 协同留在这条评测回路稳定后，避免放大错误路由。

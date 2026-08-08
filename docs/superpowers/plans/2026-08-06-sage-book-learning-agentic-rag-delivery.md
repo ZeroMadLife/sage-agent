@@ -1,8 +1,8 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A/B/C/D 已完成首轮交付，Slice E 已完成 claim-aware 离线诊断，Slice F 已交付 4+2 Scorecard 与 clean 策略选择；下一阶段转向原子答案 Judge 实测与 rewrite 优化
-> 基线：`codex/book-learning-rag-design@3902827`
+> 状态：Slice A/B/C/D 已完成首轮交付，Slice E 已完成 claim-aware 离线诊断，Slice F 已完成 4+2 Scorecard、clean 策略选择与 Top-10 原子答案 Judge 实测；下一阶段转向 missing-claim rewrite、Provider 稳定性与上下文预算优化
+> 基线：`codex/book-learning-rag-design@742f131`
 
 ## 产品目标
 
@@ -63,21 +63,22 @@ stop reason，并新增真实 LLMWiki generation runner：生成模型负责 bou
 独立 judge 负责 claim/citation/faithfulness/answer relevance 收据。未完成：seed 尚未扩展、
 独立 review 或冻结；score-only 证据充分性 gate 尚未在真实书籍上校准；意图小模型/SFT/RL 尚未接入线上路径。
 
-真实 LLMWiki full receipt（clean source `d442b37`，FastEmbed + contextual，Doubao generator +
-DeepSeek judge，14 case）已完成：11/14 case 完成 judge，provider failure 3/14，完成 case 的
-unsupported claim rate 0、citation correctness 1、unanswerable correct abstention 1；
-answerable 最终回答率 4/7，context precision/recall 0.1420/0.6429，P50/P95 59,647/120,385 ms，
-token 171,486，cost 仍为 null（未冻结价格表）。这组数字是 seed 的端到端诊断，不是生产 SLA 或
-泛化准确率。完整结果保存在 ignored `.coding/evals/book-learning-generation-full-d442b37.json`。
+真实 LLMWiki full receipt（clean source `742f131`，FastEmbed + contextual、Top-10，Doubao generator +
+DeepSeek judge，14 case）已完成：12/14 case 完成 judge，provider failure 2/14；完成 case 的
+Answer Claim Coverage / Answer Correctness 为 `0.5000/0.5000`，unsupported claim rate 0、
+citation correctness 1、unanswerable correct abstention 1；answerable 最终回答率 4/8，context
+precision/recall 0.1441/0.6875，P50/P95 49,167/138,752 ms，token 216,095，cost 仍为 null
+（未冻结价格表）。这组数字是 seed 的端到端诊断，不是生产 SLA 或泛化准确率。完整结果保存在
+ignored `.coding/evals/book-learning-generation-742f131-top10-full.json`。
 
 ### Slice E：Claim-aware Sufficiency 离线诊断
 
 - 新增 14-case / 15-atomic-claim 独立 gold，支持 `any/all` passage 绑定；跨人物、跨章节、跨书问题不再压成一句模糊 claim。
 - 新增严格 loader、历史 retrieval/generation receipt adapter 和可单独复核的 CLI；provider failure 与质量分数分开。
 - 指标新增首轮/最终 claim evidence coverage、bundle completeness、claim recovery gain、recovery resolution、answer readiness precision/recall、insufficient acceptance。
-- clean retrieval Top-10 的 claim coverage / bundle completeness 为 `0.7333/0.7000`；真实 generation 完成子集为 `0.6190/0.5714`。
-- 本轮实际 rewrite 的 claim recovery gain / resolution 均为 `0`，说明触发 recovery 没有补回 gold claim；4 个完整 bundle 全部放行、3 个不完整 bundle 全部拒答，离线 readiness precision/recall 为 `1/1`。
-- Faithfulness 保持生成层独立 judge 指标：本轮为 `1.0`，但仅覆盖 4 个最终回答；不能用它替代检索完整性或 citation gate。
+- clean retrieval Top-10 的 claim coverage / bundle completeness 为 `0.7333/0.7000`；真实 generation 完成子集为 `0.6667/0.6250`。
+- 本轮实际 rewrite 的 claim recovery gain / resolution 均为 `0`，说明触发 recovery 没有补回 gold claim；5 个完整 bundle 中 4 个放行、1 个未放行，3 个不完整 bundle 全部拒答，离线 readiness precision/recall 为 `1.0/0.8`。
+- Faithfulness 保持生成层独立 judge 指标：本轮为 `1.0`，但仅覆盖 4 个最终回答；不能用它替代检索完整性、Answer Correctness 或 citation gate。
 - 当前只接入离线报告，`online_gate_activated=false`；等 gold 扩充和 calibration/test 稳定后再决定是否接入 Coordinator。
 
 ### Slice F：四项核心 KPI 与检索策略选择
@@ -86,8 +87,9 @@ token 171,486，cost 仍为 null（未冻结价格表）。这组数字是 seed 
 - Answer Claim Coverage 计算最终答案覆盖的必要 Gold Claim；Answer Correctness 要求最终决策为 answer、全部 Gold Claim 覆盖且没有矛盾。Provider failure 不进入质量分母。
 - 新增 4+2 Scorecard：首轮证据覆盖、答案正确、拒答安全、二次检索收益，以及 Provider Failure/P95；其余指标降级为 diagnostics。
 - clean source `3902827` 上，同语料、FastEmbed、Top-10 的五策略复跑后，contextual Claim Coverage/Recall 为 `0.7333/0.7500`，P95 `521.865 ms`；parent-child 同覆盖但 P95 `3509.691 ms`、chunks `25836`。
-- 3 秒策略预算内，选择器将 `contextual_chunk` 标为 `offline_candidate`；没有修改线上默认 policy。Answer Correctness 首次真实数值仍等待新版 Judge full run。
-- 完整指标定义、架构图、策略表和下一阶段边界见 `docs/evals/book-learning-scorecard-v1.md`。
+- 3 秒策略预算内，选择器将 `contextual_chunk` 标为 `offline_candidate`；没有修改线上默认 policy。新版 Judge full run 已完成，Answer Correctness 仍低于离线目标。
+- Top-10 generation 已完成并写入 4+2 Scorecard：Answer Claim Coverage/Correctness `0.5000/0.5000`，Provider Failure `0.1429`，P95 `138,752 ms`；Top-10 没有改善答案正确率，不能通过继续扩大上下文解决缺失 Claim。
+- 完整指标定义、架构图、策略表、真实收据哈希和下一阶段边界见 `docs/evals/book-learning-scorecard-v1.md` 与 `evals/reports/book_learning_scorecard_v1_2026-08-08.json`。
 
 ## 不在本阶段承诺
 
