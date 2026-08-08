@@ -245,7 +245,8 @@ sage-agent/
 
 - `main` 只保留通过完整发布门禁的版本。
 - `dev/sage-v7` 是当前 V7 集成分支。
-- 功能和修复在独立 worktree 的 `codex/*` 分支完成，通过 PR 合入开发分支。
+- 功能、修复、文档和评测在独立 worktree 的 `feat/*`、`fix/*`、`docs/*`、`eval/*` 短期分支完成，通过 PR 合入开发分支。
+- 测试环境部署 `dev/sage-v7` 上选定的 commit SHA，不维护容易漂移的长期 `test` 分支；同一 SHA 通过发布门禁后再晋级到 `main`。
 
 提交前请保持职责单一，附中文 PR 说明，并提供与改动匹配的测试、构建和
 `git diff --check` 证据。
