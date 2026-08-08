@@ -926,14 +926,13 @@ async def _deerflow_timeline_events(
                     prompt_components=prompt_components,
                     rendered_system_prompt=rendered_system_prompt,
                     retrieval_gate=retrieval_gate,
-                    tool_bundle=tool_bundle,
+                    tool_snapshot=tool_bundle.snapshot,
                     sandbox_descriptor=sandbox.descriptor,
                     harness_config=effective_harness_config,
                     runtime_mode=runtime.runtime_mode,
                     permission_mode=runtime.permission_mode,
                     model_spec=runtime.model_spec,
                     mcp_snapshot=mcp_snapshot,
-                    active_skill_allowed_tools=active_skill_allowed_tools,
                 )
                 try:
                     # capture 复用已有选择；shadow 只审计，enforce 会提升为 Graph 门禁。
@@ -1049,14 +1048,13 @@ async def _deerflow_timeline_events(
                             rendered_system_prompt=rendered_system_prompt,
                             retrieval_sources=prepared_resume.retrieval_sources,
                             retrieval_tool_scope=prepared_resume.retrieval_tool_scope,
-                            tool_bundle=tool_bundle,
+                            tool_snapshot=tool_bundle.snapshot,
                             sandbox_descriptor=sandbox.descriptor,
                             harness_config=effective_harness_config,
                             runtime_mode=runtime.runtime_mode,
                             permission_mode=runtime.permission_mode,
                             model_spec=runtime.model_spec,
                             mcp_snapshot=mcp_snapshot,
-                            active_skill_allowed_tools=active_skill_allowed_tools,
                         ),
                     )
                 except Exception:

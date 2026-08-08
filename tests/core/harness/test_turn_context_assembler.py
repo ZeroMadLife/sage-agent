@@ -5,13 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sage_harness import DeferredToolSetup, HarnessConfig, SandboxCapabilities, SandboxDescriptor
+from sage_harness import HarnessConfig, SandboxCapabilities, SandboxDescriptor
 
 from core.coding.context import ContextUsage, PreparedContext
 from core.coding.persistence import TurnPlanStore
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
-from core.harness.tools_adapter import CodingToolBundle
+from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_assembler import (
     TurnContextAssembler,
     TurnContextAssemblyRequest,
@@ -73,12 +73,14 @@ def _request() -> TurnContextAssemblyRequest:
             latency_ms=1,
             tool_scope="retrieval_only",
         ),
-        tool_bundle=CodingToolBundle(
-            tools=(),
-            deferred_setup=DeferredToolSetup(catalog_hash="catalog-sha"),
+        tool_snapshot=ToolBundleSnapshot(
+            catalog_hash="catalog-sha",
             capability_revision="cap-r1",
-            capability_ids_by_tool_name={"read_file": "local:read_file"},
+            resident_ids=("local:read_file",),
+            deferred_ids=(),
             capability_count=1,
+            skill_scope_active=True,
+            skill_allowlist=("read_file",),
         ),
         sandbox_descriptor=SandboxDescriptor(
             sandbox_id="container:internal-id",
@@ -96,7 +98,6 @@ def _request() -> TurnContextAssemblyRequest:
         runtime_mode="default",
         permission_mode="default",
         model_spec="provider:model",
-        active_skill_allowed_tools=frozenset({"read_file"}),
     )
 
 
@@ -120,6 +121,7 @@ def test_shadow_capture_persists_only_references_digests_and_static_policy(tmp_p
     assert payload["budget"]["token_budget_by_source"] == {"knowledge": 3_000}
     assert payload["context_refs"]["memory_refs"][0]["memory_id"] == "memory-1"
     assert payload["execution"]["sandbox"]["provider"] == "container"
+    assert payload["tools"]["snapshot_hash"] == _request().tool_snapshot.snapshot_hash
     assert captured.plan.owner_fingerprint != "owner@example.test"
 
     for private_content in (

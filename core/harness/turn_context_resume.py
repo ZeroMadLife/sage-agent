@@ -17,7 +17,7 @@ from sage_harness import (
 )
 
 from core.harness.context_adapter import DeerFlowPromptComponents
-from core.harness.tools_adapter import CodingToolBundle
+from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_plan import TurnContextPlan
 
 
@@ -47,14 +47,13 @@ class TurnContextResumeExecutionRequest:
     rendered_system_prompt: str
     retrieval_sources: Set[str]
     retrieval_tool_scope: str
-    tool_bundle: CodingToolBundle
+    tool_snapshot: ToolBundleSnapshot
     sandbox_descriptor: SandboxDescriptor
     harness_config: HarnessConfig
     runtime_mode: str
     permission_mode: str
     model_spec: str
     mcp_snapshot: McpToolSnapshot | None
-    active_skill_allowed_tools: frozenset[str] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,34 +181,39 @@ def compare_turn_context_plan_resume(
             sorted(request.retrieval_sources),
         ),
         (
+            "tools.snapshot_hash",
+            tools.get("snapshot_hash"),
+            request.tool_snapshot.snapshot_hash,
+        ),
+        (
             "tools.catalog_hash",
             tools.get("catalog_hash"),
-            request.tool_bundle.deferred_setup.catalog_hash or "resident-only",
+            request.tool_snapshot.catalog_hash,
         ),
         (
             "tools.capability_revision",
             tools.get("capability_revision"),
-            request.tool_bundle.capability_revision,
+            request.tool_snapshot.capability_revision,
         ),
         (
             "tools.resident_ids",
             tools.get("resident_ids"),
-            sorted(set(request.tool_bundle.capability_ids_by_tool_name.values())),
+            list(request.tool_snapshot.resident_ids),
         ),
         (
             "tools.deferred_ids",
             tools.get("deferred_ids"),
-            _deferred_capability_ids(request.tool_bundle),
+            list(request.tool_snapshot.deferred_ids),
         ),
         (
             "tools.skill_scope_active",
             tools.get("skill_scope_active"),
-            request.active_skill_allowed_tools is not None,
+            request.tool_snapshot.skill_scope_active,
         ),
         (
             "tools.skill_allowlist",
             tools.get("skill_allowlist"),
-            sorted(request.active_skill_allowed_tools or ()),
+            list(request.tool_snapshot.skill_allowlist),
         ),
         ("tools.mcp_catalog", tools.get("mcp_catalog"), _mcp_catalog(request.mcp_snapshot)),
         (
@@ -275,17 +279,6 @@ def _sandbox_payload(descriptor: SandboxDescriptor) -> dict[str, object]:
             "shell": capabilities.shell,
         },
     }
-
-
-def _deferred_capability_ids(bundle: CodingToolBundle) -> list[str]:
-    selection_index = bundle.deferred_setup.selection_index
-    if selection_index is None:
-        return []
-    return sorted(
-        descriptor.capability_id
-        for descriptor in selection_index.registry.list()
-        if descriptor.deferred
-    )
 
 
 def _mcp_catalog(snapshot: McpToolSnapshot | None) -> dict[str, object] | None:

@@ -6,13 +6,13 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from sage_harness import DeferredToolSetup, HarnessConfig, SandboxCapabilities, SandboxDescriptor
+from sage_harness import HarnessConfig, SandboxCapabilities, SandboxDescriptor
 
 from core.coding.context import ContextUsage, PreparedContext
 from core.coding.persistence import TurnPlanStore
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
-from core.harness.tools_adapter import CodingToolBundle
+from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_assembler import TurnContextAssembler, TurnContextAssemblyRequest
 from core.harness.turn_context_comparator import compare_turn_context_plan
 from core.harness.turn_context_resume import (
@@ -74,12 +74,14 @@ def _request() -> TurnContextAssemblyRequest:
             latency_ms=1,
             tool_scope="retrieval_only",
         ),
-        tool_bundle=CodingToolBundle(
-            tools=(),
-            deferred_setup=DeferredToolSetup(catalog_hash="catalog-sha"),
+        tool_snapshot=ToolBundleSnapshot(
+            catalog_hash="catalog-sha",
             capability_revision="cap-r1",
-            capability_ids_by_tool_name={"read_file": "local:read_file"},
+            resident_ids=("local:read_file",),
+            deferred_ids=(),
             capability_count=1,
+            skill_scope_active=True,
+            skill_allowlist=("read_file",),
         ),
         sandbox_descriptor=SandboxDescriptor(
             sandbox_id="container:internal-id",
@@ -97,7 +99,6 @@ def _request() -> TurnContextAssemblyRequest:
         runtime_mode="default",
         permission_mode="default",
         model_spec="provider:model",
-        active_skill_allowed_tools=frozenset({"read_file"}),
     )
 
 
@@ -138,14 +139,13 @@ def test_a1_comparator_matches_the_actual_graph_inputs_without_exposing_content(
 def test_a1_comparator_reports_prompt_and_catalog_drift_as_codes_only(tmp_path: Path) -> None:
     original = _request()
     captured = _capture(tmp_path, original)
-    drifted_bundle = replace(
-        original.tool_bundle,
-        deferred_setup=DeferredToolSetup(catalog_hash="changed-catalog"),
+    drifted_snapshot = replace(
+        original.tool_snapshot, catalog_hash="changed-catalog", snapshot_hash=""
     )
     drifted = replace(
         original,
         rendered_system_prompt="changed private prompt",
-        tool_bundle=drifted_bundle,
+        tool_snapshot=drifted_snapshot,
     )
 
     comparison = compare_turn_context_plan(captured.plan, drifted)
@@ -154,6 +154,7 @@ def test_a1_comparator_reports_prompt_and_catalog_drift_as_codes_only(tmp_path: 
     assert comparison.matched is False
     assert comparison.mismatch_codes == (
         "prompt.rendered_hash",
+        "tools.snapshot_hash",
         "tools.catalog_hash",
     )
     assert "changed private prompt" not in serialized
@@ -166,14 +167,13 @@ def _resume_request(request: TurnContextAssemblyRequest) -> TurnContextResumeExe
         rendered_system_prompt=request.rendered_system_prompt,
         retrieval_sources=frozenset(request.retrieval_gate.selected_sources),
         retrieval_tool_scope=request.retrieval_gate.tool_scope,
-        tool_bundle=request.tool_bundle,
+        tool_snapshot=request.tool_snapshot,
         sandbox_descriptor=request.sandbox_descriptor,
         harness_config=request.harness_config,
         runtime_mode=request.runtime_mode,
         permission_mode=request.permission_mode,
         model_spec=request.model_spec,
         mcp_snapshot=request.mcp_snapshot,
-        active_skill_allowed_tools=request.active_skill_allowed_tools,
     )
 
 
