@@ -144,8 +144,9 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
 
 ## 下一阶段边界
 
-1. Planner 输入显式 `missing_claim_ids/statements`，按缺失事实生成最多两条 rewrite；用
-   Claim Recovery Gain 判断是否真的补回，而不是只看新增 chunk。
+1. 离线评测已把显式 `missing_claim_ids/statements` 传给 Planner，且不暴露 Gold passage ID；
+   下一次真实模型复跑用 Claim Recovery Gain 判断是否真的补回，而不是只看新增 chunk。该输入
+   当前是 gold-guided diagnostic，不接入线上 Gate。
 2. gold 扩展到 30-50 条并做独立 review，再划分 calibration/test，之后才讨论线上 Gate。
 3. parent-child 只有在 bounded projection、缓存或 PostgreSQL live 将 P95 压回预算，且 Claim
    Coverage 真正超过 contextual 时才重新进入候选。

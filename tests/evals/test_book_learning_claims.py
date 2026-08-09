@@ -13,6 +13,7 @@ from evals.book_learning_claims import (
     claim_eval_cases_from_report,
     evaluate_claim_evidence,
     load_claim_evidence_gold,
+    missing_claim_brief,
 )
 
 
@@ -135,6 +136,16 @@ def test_provider_failures_are_not_folded_into_claim_or_gate_quality() -> None:
     assert report["metrics"]["provider_failure_count"] == 1
     assert report["metrics"]["claim_evidence_coverage"] is None
     assert report["metrics"]["answer_readiness_precision"] is None
+
+
+def test_missing_claim_brief_is_atomic_and_never_contains_passage_ids() -> None:
+    gold = _gold()[0]
+
+    brief = missing_claim_brief(gold, ("book#a", "book#b"))
+
+    assert brief == ({"claim_id": "c-all", "statement": "该事实需要两段证据共同支持"},)
+    assert all("passage_ids" not in item for item in brief)
+    assert missing_claim_brief(_gold()[2], ("noise#similar",)) == ()
 
 
 def test_report_adapter_keeps_retrieval_and_generation_rounds_distinct() -> None:

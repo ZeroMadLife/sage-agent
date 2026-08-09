@@ -13,7 +13,7 @@ import hashlib
 import json
 import tempfile
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from evals.book_learning_claims import (
     claim_eval_cases_from_report,
     evaluate_claim_evidence,
     load_claim_evidence_gold,
+    missing_claim_brief,
 )
 from evals.book_learning_stages import GenerationEvalCase, evaluate_generation
 
@@ -164,6 +165,12 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             "answer_requires_citation_contract": True,
             "judge_is_auxiliary_to_server_gate": True,
             "claim_evidence_online_gate_activated": False,
+            "offline_missing_claim_brief": {
+                "enabled": True,
+                "source": "frozen_claim_gold",
+                "passage_ids_exposed_to_planner": False,
+                "online_runtime": False,
+            },
             "context_scope": "retrieved_candidate_passages",
         },
         "benchmark": {
@@ -217,7 +224,16 @@ async def _evaluate_case(
     first_hits = store.search(query.query, top_k=top_k)
     evidence = _evidence(first_hits)
     first_evidence = list(evidence)
-    planner_prompt = _planner_prompt(query.query, evidence, retry_available=True)
+    first_missing_claims = missing_claim_brief(
+        claim_gold,
+        _passage_ids(evidence),
+    )
+    planner_prompt = _planner_prompt(
+        query.query,
+        evidence,
+        retry_available=True,
+        missing_claims=first_missing_claims,
+    )
     planner, planner_usage, planner_model = await _invoke_json(
         generator,
         planner_prompt,
@@ -227,6 +243,7 @@ async def _evaluate_case(
     rewrite_queries = _rewrite_queries(planner, max_recovery_queries)
     recovery_records: list[dict[str, Any]] = []
     planner_rounds = 1
+    final_missing_claims = first_missing_claims
     if rewrite_queries and planner.get("decision") in {"retry", "delegate_research"}:
         for rewrite in rewrite_queries:
             rewrite_hits = store.search(rewrite, top_k=top_k)
@@ -234,6 +251,10 @@ async def _evaluate_case(
             recovery_records.append({"query": rewrite, "evidence": rewrite_evidence})
             evidence = _merge_evidence(evidence, rewrite_evidence)
         planner_rounds = 2
+        final_missing_claims = missing_claim_brief(
+            claim_gold,
+            _passage_ids(evidence),
+        )
 
     final_plan = planner
     final_planner_usage: dict[str, int] = {}
@@ -241,7 +262,12 @@ async def _evaluate_case(
     if recovery_records:
         final_plan, final_planner_usage, final_planner_model = await _invoke_json(
             generator,
-            _planner_prompt(query.query, evidence, retry_available=False),
+            _planner_prompt(
+                query.query,
+                evidence,
+                retry_available=False,
+                missing_claims=final_missing_claims,
+            ),
             "planner_final",
             timeout_seconds=request_timeout_seconds,
         )
@@ -305,9 +331,7 @@ async def _evaluate_case(
         if claim in _string_list(judge_payload.get("covered_required_claims"))
     )
     gold_claim_ids = tuple(claim.claim_id for claim in claim_gold.claims)
-    covered_gold_claim_ids = _known_ids(
-        judge_payload.get("covered_gold_claim_ids"), gold_claim_ids
-    )
+    covered_gold_claim_ids = _known_ids(judge_payload.get("covered_gold_claim_ids"), gold_claim_ids)
     contradicted_gold_claim_ids = _known_ids(
         judge_payload.get("contradicted_gold_claim_ids"), gold_claim_ids
     )
@@ -334,6 +358,8 @@ async def _evaluate_case(
         "accepted_decision": accepted_decision,
         "stop_reason": _stop_reason(model_decision, accepted_decision, evidence),
         "planner_rounds": planner_rounds,
+        "missing_claims_first_pass": list(first_missing_claims),
+        "missing_claims_before_final_plan": list(final_missing_claims),
         "rewrite_queries": rewrite_queries,
         "first_pass_evidence": first_evidence,
         "recovery": recovery_records,
@@ -390,7 +416,13 @@ async def _evaluate_case(
     )
 
 
-def _planner_prompt(query: str, evidence: list[dict[str, Any]], *, retry_available: bool) -> str:
+def _planner_prompt(
+    query: str,
+    evidence: list[dict[str, Any]],
+    *,
+    retry_available: bool,
+    missing_claims: Sequence[Mapping[str, str]] = (),
+) -> str:
     return _json_prompt(
         "You are Sage's bounded retrieval planner. Decide whether the supplied evidence is enough to answer the user. "
         "Use only the evidence; do not invent facts. If an aspect is missing and retry is available, return at most two precise search rewrites. "
@@ -398,6 +430,14 @@ def _planner_prompt(query: str, evidence: list[dict[str, Any]], *, retry_availab
         {
             "question": query,
             "retry_available": retry_available,
+            "missing_claims": [
+                {
+                    "claim_id": str(item.get("claim_id", "")),
+                    "statement": str(item.get("statement", "")),
+                }
+                for item in missing_claims
+                if str(item.get("claim_id", "")).strip() and str(item.get("statement", "")).strip()
+            ],
             "evidence": evidence,
             "output_schema": {
                 "decision": "answer|retry|delegate_research|abstain",
@@ -450,7 +490,9 @@ def _judge_prompt(
             "output_schema": {
                 "covered_gold_claim_ids": ["gold claim ids covered by the final answer"],
                 "contradicted_gold_claim_ids": ["gold claim ids contradicted by the final answer"],
-                "unsupported_gold_claim_ids": ["gold claim ids mentioned but unsupported by evidence"],
+                "unsupported_gold_claim_ids": [
+                    "gold claim ids mentioned but unsupported by evidence"
+                ],
                 "supported_claim_ids": ["claim ids fully supported by evidence"],
                 "unsupported_claim_ids": ["claim ids not fully supported"],
                 "supported_citation_ids": ["citation ids that support the cited claim"],
@@ -597,6 +639,16 @@ def _evidence(hits: Iterable[KnowledgeSearchHit]) -> list[dict[str, Any]]:
         }
         for hit in hits
     ]
+
+
+def _passage_ids(evidence: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            str(item.get("passage_id", "")).strip()
+            for item in evidence
+            if str(item.get("passage_id", "")).strip()
+        )
+    )
 
 
 def _merge_evidence(

@@ -195,7 +195,11 @@ class BookLearningCoordinator:
             )
 
         if first_assessment.decision == "retry":
-            retry_query = _retry_query(request.query, request.route)
+            retry_query = _retry_query(
+                request.query,
+                request.route,
+                missing_aspects=first_assessment.missing_aspects,
+            )
             try:
                 second = await self.knowledge_port.search(
                     retry_query,
@@ -291,7 +295,11 @@ class BookLearningCoordinator:
             )
 
         child_ids: list[str] = []
-        research_prompts = _research_prompts(request.query, request.route)
+        research_prompts = _research_prompts(
+            request.query,
+            request.route,
+            missing_aspects=first_assessment.missing_aspects,
+        )
         research_requests: list[SubagentRequest] = []
         for ordinal, prompt in enumerate(research_prompts[: self.config.max_research_children]):
             child_id = derive_child_run_id(
@@ -750,7 +758,12 @@ def _knowledge_evidence_context(item: object) -> dict[str, object]:
     }
 
 
-def _retry_query(query: str, route: LearningIntentRoute) -> str:
+def _retry_query(
+    query: str,
+    route: LearningIntentRoute,
+    *,
+    missing_aspects: Sequence[str] = (),
+) -> str:
     normalized = re.sub(
         r"(?:请|帮我|能否|可以|解释一下|简单说说|告诉我)",
         " ",
@@ -758,18 +771,28 @@ def _retry_query(query: str, route: LearningIntentRoute) -> str:
         flags=re.IGNORECASE,
     )
     topics = " ".join(route.candidate_topics[:3])
+    gap_hint = " ".join(str(item).strip() for item in missing_aspects if str(item).strip())
     candidate = " ".join(normalized.split())
     if topics and topics not in candidate:
         candidate = f"{candidate} {topics}".strip()
+    if gap_hint:
+        candidate = f"{candidate} {gap_hint}".strip()
     return candidate[:2_000] or query
 
 
-def _research_prompts(query: str, route: LearningIntentRoute) -> tuple[str, ...]:
+def _research_prompts(
+    query: str,
+    route: LearningIntentRoute,
+    *,
+    missing_aspects: Sequence[str] = (),
+) -> tuple[str, ...]:
     topic_hint = "、".join(route.candidate_topics[:3])
     suffix = f"关注主题：{topic_hint}" if topic_hint else ""
+    gap_hint = "、".join(str(item).strip() for item in missing_aspects if str(item).strip())
+    gap = f"当前缺口：{gap_hint}。" if gap_hint else ""
     return (
-        f"针对问题“{query}”，只寻找第一组直接原文证据，解释核心定义、机制和因果链。{suffix}",
-        f"针对问题“{query}”，寻找独立来源或另一章节的补充/对照证据，指出与第一组证据的共识或冲突。{suffix}",
+        f"针对问题“{query}”，只寻找第一组直接原文证据，解释核心定义、机制和因果链。{gap}{suffix}",
+        f"针对问题“{query}”，寻找独立来源或另一章节的补充/对照证据，指出与第一组证据的共识或冲突。{gap}{suffix}",
     )
 
 

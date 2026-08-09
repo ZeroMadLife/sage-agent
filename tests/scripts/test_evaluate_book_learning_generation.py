@@ -14,6 +14,7 @@ from scripts.evaluate_book_learning_generation import (
     _judge_prompt,
     _model_receipt,
     _parse_json_object,
+    _planner_prompt,
     _rewrite_queries,
     _runtime_metrics,
 )
@@ -92,6 +93,25 @@ def test_generation_rewrite_budget_is_bounded_and_requires_retry_decision() -> N
     assert _rewrite_queries(
         {"decision": "retry", "rewrite_queries": ["one", "two", "three"]}, 2
     ) == ("one", "two")
+
+
+def test_planner_prompt_receives_missing_atomic_claims_without_gold_passages() -> None:
+    prompt = _planner_prompt(
+        "问题",
+        [{"citation_id": "kcite_a", "passage_id": "book#a", "excerpt": "证据"}],
+        retry_available=True,
+        missing_claims=(
+            {
+                "claim_id": "c-missing",
+                "statement": "缺失的必要事实",
+                "passage_ids": "must-not-leak",
+            },
+        ),
+    )
+
+    assert '"claim_id":"c-missing"' in prompt
+    assert '"statement":"缺失的必要事实"' in prompt
+    assert "must-not-leak" not in prompt
 
 
 def test_generation_runtime_receipt_aggregates_tokens_latency_and_model_name() -> None:

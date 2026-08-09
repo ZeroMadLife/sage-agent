@@ -103,6 +103,30 @@ class ClaimEvidenceEvalCase:
             raise ValueError("provider errors cannot carry a quality decision")
 
 
+def missing_claim_brief(
+    gold_case: ClaimEvidenceGoldCase,
+    passage_ids: Iterable[str],
+) -> tuple[dict[str, str], ...]:
+    """Return the atomic facts not covered by the observed passages.
+
+    This helper is intentionally an offline evaluation seam. It exposes claim
+    IDs and statements to a bounded planner so recovery can be measured against
+    frozen gold; passage IDs stay private to the evaluator and are never sent
+    as rewrite instructions.
+    """
+
+    if not gold_case.answerable:
+        return ()
+    observed = {str(value).strip() for value in passage_ids if str(value).strip()}
+    missing: list[dict[str, str]] = []
+    for claim in gold_case.claims:
+        required = set(claim.passage_ids)
+        matched = required.intersection(observed)
+        if not _claim_complete(claim.coverage_mode, required, matched):
+            missing.append({"claim_id": claim.claim_id, "statement": claim.statement})
+    return tuple(missing)
+
+
 def load_claim_evidence_gold(path: Path) -> tuple[ClaimEvidenceGoldCase, ...]:
     """Load a strict JSONL claim dataset with line-addressable failures."""
 
@@ -437,4 +461,5 @@ __all__ = [
     "claim_eval_cases_from_report",
     "evaluate_claim_evidence",
     "load_claim_evidence_gold",
+    "missing_claim_brief",
 ]

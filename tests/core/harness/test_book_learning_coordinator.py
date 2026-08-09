@@ -235,6 +235,7 @@ async def test_agentic_gap_runs_research_and_citation_guarded_synthesis() -> Non
         "research",
         "synthesize",
     ]
+    assert all("independent_evidence" in request.prompt for request in executor.requests[:2])
     assert outcome.stop_reason == "evidence_sufficient"
 
 

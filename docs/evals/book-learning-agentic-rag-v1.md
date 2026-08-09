@@ -152,6 +152,32 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 
 `evals/book_learning_stages.py` 已提供 `evaluate_recovery` 和 `evaluate_generation`，要求 faithfulness/answer relevance 作为显式离线标签输入。新增 `scripts/evaluate_book_learning_generation.py` 作为真实 LLMWiki 入口：生成模型负责受限 planner/rewrite 和最终答案，独立 judge 只检查 claim、citation、faithfulness 与 answer relevance；服务端 citation contract 先于 judge 做 fail-closed。它不输出 CoT，也不把原文写入跟踪报告。
 
+### 本轮 recovery 定向化改进
+
+本轮把 recovery 的输入从“整包首轮证据”细化为结构化缺口：评测器先用冻结的 Gold Claim
+和首轮 `passage_id` 做确定性匹配，再向 Planner 提供缺失的 `claim_id + statement`。
+Planner 仍只负责生成最多两条查询改写，检索器仍只接受查询文本；Gold passage ID 不会进入
+改写提示，因此这是一项**离线 gold-guided diagnostic**，用于回答“分解/改写能力是否足够”，
+不是线上 Gate，也不代表生产检索可以看到答案。
+
+```mermaid
+flowchart LR
+    Q["问题"] --> R1["首轮检索"]
+    R1 --> M["确定性匹配 Gold Claim"]
+    G["冻结 Gold Claim<br/>ID + statement + passage binding"] --> M
+    M --> B["missing_claim_brief<br/>只保留 ID + statement"]
+    B --> P["Planner / Rewrite<br/>最多 2 条查询"]
+    P --> R2["二次检索"]
+    R2 --> E["Evidence 合并"]
+    E --> C["Claim Recovery Gain"]
+    E --> A["最终答案与 Citation Gate"]
+```
+
+服务端线上 coordinator 不读取 Gold；它只把 `primary_evidence`、`independent_evidence` 等
+结构化缺口传给受限 Research child，保持运行时和评测金标准的事实边界分离。每条 generation
+receipt 现在记录 `missing_claims_first_pass` 和 `missing_claims_before_final_plan`，便于定位
+是首轮召回、Planner 改写还是二次排序出了问题。
+
 ### 真实模型收据与答案正确率复跑（clean source）
 
 在 clean source `742f131`、`sage-book-learning-v1@2026-08-06.1`、FastEmbed + `contextual_chunk`、Top-10 上，使用 Doubao `Doubao-Seed-2.0-pro` 负责 planner/rewrite/answer，DeepSeek `deepseek-v4-flash` 负责独立 claim/citation judge，14 条完整跑通（10 answerable、4 unanswerable）。报告：`.coding/evals/book-learning-generation-742f131-top10-full.json`（ignored，本地不入 Git）。评测客户端显式关闭 SDK 隐式重试，并把 60 秒 timeout 写入每次收据；因此 provider failure 与质量分母可分开解释。
@@ -170,7 +196,7 @@ LLMWiki 负责把检索上下文变成可审计的学习答案，指标分三类
 | judge faithfulness / answer relevance | **1.0000 / 1.0000** | 仅 4 条真实回答有独立标签，RAGAS-compatible 辅助指标，不能单独作为上线门禁 |
 | token / P50 / P95 | **216,095 / 49,167 / 138,752 ms** | 评测串行、包含 clean index 与 bounded recovery；成本因无冻结价格表保持 `null` |
 
-这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。Top-10 相比 Top-8 没有提高 Answer Correctness，实际 rewrite 仍没有补回缺失 claim；下一阶段应先让 Planner 消费显式 `missing_claim_ids/statements`，再优化跨书召回和 context budget，最后才校准是否把 claim-aware 判断接入线上 Gate。
+这轮确认了完整闭环已经可运行：问题进入首轮 RAG，planner 判断是否 recovery，最多两条 rewrite 合并 EvidenceBundle，answer 生成后由 citation contract 和独立 judge 双重检查，证据不足或模型超时则 fail closed。Top-10 相比 Top-8 没有提高 Answer Correctness；本轮已把缺失 Claim 作为离线 Planner 输入，下一次真实模型复跑应比较 `Claim Recovery Gain` 是否从 **0.0000** 提升，再决定是继续优化 decomposition/rewrite，还是转向跨书召回和 context budget。该 gold-guided 输入仍未接入线上 Gate。
 
 推荐复现命令（Key 只注入单次进程，不写入报告）：
 
