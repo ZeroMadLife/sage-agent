@@ -10,6 +10,7 @@ from core.harness.retrieval_gate import (
     retrieval_sources_from_events,
     retrieval_tool_scope_from_events,
 )
+from core.harness.task_intent import TaskIntentEnvelope
 
 
 def test_fast_chat_skips_retrieval_without_leaking_query() -> None:
@@ -191,6 +192,46 @@ def test_explicit_no_tool_request_freezes_empty_tool_scope() -> None:
 
     assert receipt.decision == "skip"
     assert receipt.tool_scope == "no_tools"
+
+
+def test_intent_envelope_can_only_narrow_retrieval_candidates() -> None:
+    envelope = TaskIntentEnvelope(
+        intent_kind="research",
+        requested_effects=("read",),
+        capability_hints=("knowledge",),
+    )
+
+    receipt = decide_retrieval_gate(
+        "结合知识库和官网最新资料",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+        intent_envelope=envelope,
+    )
+
+    assert receipt.candidate_sources == ("knowledge",)
+    assert receipt.selected_sources == ("knowledge",)
+    assert receipt.reason_code == "intent_capability_scope"
+    assert envelope.can_only_narrow_capabilities is True
+
+
+def test_research_without_source_hint_preserves_existing_retrieval_candidates() -> None:
+    envelope = TaskIntentEnvelope(
+        intent_kind="research",
+        requested_effects=("read",),
+    )
+
+    receipt = decide_retrieval_gate(
+        "检索 Phoenix checkpoint 的当前修订证据",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=False,
+        intent_envelope=envelope,
+    )
+
+    assert receipt.candidate_sources == ("knowledge",)
+    assert receipt.selected_sources == ("knowledge",)
+    assert receipt.reason_code == "explicit_source_signal"
 
 
 def test_retrieval_result_projects_actual_hits_without_content() -> None:

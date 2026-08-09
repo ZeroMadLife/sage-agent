@@ -1,0 +1,37 @@
+digraph SageHarness {
+  graph [rankdir=LR, bgcolor="white", pad="0.25", nodesep="0.35", ranksep="0.6", fontname="STSong"];
+  node [shape=box, style="rounded,filled", fontname="STSong", fontsize=15, margin="0.18,0.12", color="#334155", penwidth=1.4];
+  edge [fontname="STSong", fontsize=11, color="#475569", arrowsize=0.7];
+
+  user [label="用户输入\nTurn", fillcolor="#fff7ed", color="#c2410c"];
+  analyzer [label="TaskIntentAnalyzer\n确定性规则", fillcolor="#fff7ed", color="#c2410c"];
+  envelope [label="TaskIntentEnvelope\n脱敏结构 / 无 CoT", fillcolor="#fff7ed", color="#c2410c"];
+  gate [label="Retrieval Gate\n候选来源收窄", fillcolor="#eff6ff", color="#2563eb"];
+  bundle [label="ToolBundleSnapshot\n本轮能力候选", fillcolor="#ecfdf5", color="#059669"];
+  assembler [label="TurnContextAssembler\n一次性组装", fillcolor="#eff6ff", color="#2563eb"];
+  context [label="Context / Memory / RAG\n已选择引用", fillcolor="#ecfdf5", color="#059669"];
+  mcp [label="MCP Manager\nconfig revision + scoped session", fillcolor="#ecfdf5", color="#059669"];
+  skill [label="Skill Registry\nprecedence + activation + allowlist", fillcolor="#ecfdf5", color="#059669"];
+  plan [label="TurnContextPlan\n不可变 hash / scope / budget", fillcolor="#eff6ff", color="#2563eb"];
+  store [label="TurnPlanStore\n持久化并校验", fillcolor="#eff6ff", color="#2563eb"];
+  frame [label="ModelContextFrameFactory\nPlan binding 校验", fillcolor="#f5f3ff", color="#7c3aed"];
+  graph_node [label="Graph / Model\nTool loop", fillcolor="#f5f3ff", color="#7c3aed"];
+  checkpoint [label="Checkpoint\n恢复绑定", fillcolor="#fef2f2", color="#dc2626"];
+  static [label="Static Policy\n服务端硬规则", fillcolor="#f5f3ff", color="#7c3aed"];
+  dynamic [label="Dynamic Authority\nscope / budget / sandbox", fillcolor="#f5f3ff", color="#7c3aed"];
+  untrusted [label="Untrusted Context Data\nTranscript / Memory / RAG / MCP 描述", fillcolor="#f5f3ff", color="#7c3aed"];
+  note1 [label="不授予 Permission / Policy / Approval / Sandbox 权限", style="rounded,dashed,filled", fillcolor="#f8fafc", color="#64748b"];
+  note2 [label="Receipt 只记录 hash、计数和 mismatch code", style="rounded,dashed,filled", fillcolor="#f8fafc", color="#64748b"];
+
+  user -> analyzer -> envelope -> gate -> assembler -> plan -> store -> frame -> graph_node;
+  envelope -> bundle -> assembler;
+  context -> assembler;
+  mcp -> bundle;
+  skill -> bundle;
+  graph_node -> checkpoint;
+  checkpoint -> store [style=dashed, label="Resume：只读冻结 Plan\n不重新分析意图"];
+  frame -> static; frame -> dynamic; frame -> untrusted;
+  static -> graph_node; dynamic -> graph_node; untrusted -> graph_node;
+  note1 -> envelope [style=dashed, arrowhead=none];
+  note2 -> plan [style=dashed, arrowhead=none];
+}

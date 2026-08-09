@@ -19,6 +19,7 @@ from core.harness.learning_intent import (
     resolve_learning_intent,
     retrieval_sources_for_intent,
 )
+from core.harness.task_intent import TaskIntentEnvelope
 
 RetrievalDecision = Literal[
     "skip",
@@ -146,8 +147,9 @@ def decide_retrieval_gate(
     knowledge_available: bool,
     web_available: bool,
     learning_intent_router: LearningIntentRouter | None = None,
+    intent_envelope: TaskIntentEnvelope | None = None,
 ) -> RetrievalGateReceipt:
-    """Route explicit retrieval signals before model/tool selection."""
+    """先路由显式检索信号，再应用冻结意图的候选范围。"""
     started_at = time.monotonic()
     normalized = " ".join(user_message.split())[:8_000]
     fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -196,11 +198,16 @@ def decide_retrieval_gate(
         candidates = [source for source in candidates if source != "web"]
 
     candidates = list(dict.fromkeys(candidates))
+    intent_scoped = False
+    if intent_envelope is not None:
+        scoped_candidates = list(intent_envelope.narrow_retrieval_sources(tuple(candidates)))
+        intent_scoped = scoped_candidates != candidates
+        candidates = scoped_candidates
     selected = [source for source in candidates if source in available]
     degraded = len(selected) != len(candidates)
     if not candidates:
         decision: RetrievalDecision = "skip"
-        reason_code = "no_retrieval_signal"
+        reason_code = "intent_scope_empty" if intent_scoped else "no_retrieval_signal"
     elif not selected:
         decision = "skip"
         reason_code = "requested_sources_unavailable"
@@ -213,11 +220,12 @@ def decide_retrieval_gate(
         )
     else:
         decision = cast(RetrievalDecision, selected[0])
-        reason_code = (
-            "explicit_source_signal"
-            if selected[0] in explicit_candidates
-            else "learning_intent_signal"
-        )
+        if intent_scoped:
+            reason_code = "intent_capability_scope"
+        elif selected[0] in explicit_candidates:
+            reason_code = "explicit_source_signal"
+        else:
+            reason_code = "learning_intent_signal"
 
     budgets = {source: _SOURCE_BUDGETS[source] for source in selected}
     tool_scope = _tool_scope(normalized)

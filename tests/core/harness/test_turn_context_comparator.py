@@ -19,6 +19,7 @@ from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.learning_intent import LearningIntentRoute
 from core.harness.retrieval_gate import RetrievalGateReceipt
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_assembler import TurnContextAssembler, TurnContextAssemblyRequest
 from core.harness.turn_context_comparator import compare_turn_context_plan
@@ -128,6 +129,12 @@ def _request() -> TurnContextAssemblyRequest:
         runtime_mode="default",
         permission_mode="default",
         model_spec="provider:model",
+        intent_envelope=TaskIntentEnvelope(
+            intent_kind="review",
+            requested_effects=("read",),
+            capability_hints=("files",),
+            explicit_constraints=("read_only",),
+        ),
     )
 
 
@@ -188,6 +195,24 @@ def test_a1_comparator_reports_prompt_and_catalog_drift_as_codes_only(tmp_path: 
     )
     assert "changed private prompt" not in serialized
     assert "changed-catalog" not in serialized
+
+
+def test_a1_comparator_rejects_task_intent_drift_without_echoing_input(tmp_path: Path) -> None:
+    original = _request()
+    captured = _capture(tmp_path, original)
+    drifted = replace(
+        original,
+        intent_envelope=TaskIntentEnvelope(
+            intent_kind="code_change",
+            requested_effects=("read", "write"),
+            capability_hints=("files",),
+        ),
+    )
+
+    comparison = compare_turn_context_plan(captured.plan, drifted)
+
+    assert comparison.mismatch_codes == ("admission.task_intent",)
+    assert "private user request" not in json.dumps(comparison.to_receipt())
 
 
 def test_resume_comparator_reports_typed_mcp_and_skill_lifecycle_drift(

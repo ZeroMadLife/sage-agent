@@ -1,8 +1,7 @@
 # Sage Harness 输入分层与扩展底座 PRD
 
-> 状态：总体设计冻结；F1 ModelContextFrame 与 F2 ToolBundleSnapshot 已合入
-> `dev/sage-v7`，F3 MCP/Skills 生命周期已在独立职责分支完成并待 PR 合入，F4 TaskIntentEnvelope
-> 仍待开发。每个切片独立测试、审查和收口，不在一个 PR 中同时改完。
+> 状态：总体设计冻结；F1 ModelContextFrame、F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期已
+> 合入 `dev/sage-v7`（F4 merge commit `09a175b1d9ac87164a2a2b098792df7463f3fc39`）；每个切片保持独立测试、审查和收口。
 
 ## 1. 一句话目标
 
@@ -157,7 +156,7 @@ CodingToolBundle
 - catalog 漂移在 Resume 前拒绝，不在工具调用时才发现；
 - Tool/MCP/Skill 正文继续作为不可信数据，不进入 Static Policy。
 
-#### F3 已实现（待 PR 合入）
+#### F3 已实现（已合入）
 
 ```text
 新 Turn
@@ -181,7 +180,7 @@ revision 和 allowlist；`ToolBundleSnapshot` 聚合两者，但不持有连接�
 执行闭包。旧 Plan 缺少 lifecycle 时返回固定 `resume_skill_lifecycle_missing` /
 `resume_mcp_lifecycle_missing`，不从当前状态补造快照。
 
-F3 当前 worktree 的验证证据：定向 `75 passed`；后端完整 `1794 passed, 11 skipped`；Ruff、
+F3 的合入验证证据：定向 `75 passed`；后端完整 `1794 passed, 11 skipped`；Ruff、
 格式、mypy（217 个源码文件）、`git diff --check` 通过；私有与 public 前端生产构建通过。
 生产构建仅保留既有 chunk 大小警告；前端依赖通过当前 worktree 的临时 `node_modules` 链接提供，
 该链接未进入 Git。
@@ -189,9 +188,42 @@ F3 当前 worktree 的验证证据：定向 `75 passed`；后端完整 `1794 pas
 ### F4：TaskIntentEnvelope
 
 - 先用确定性规则覆盖显式 slash skill、只读问答、代码修改、审查和危险副作用；
-- 不确定时允许受限结构化模型分类，输出固定 schema，不返回 CoT；
+- 不确定时回退 `general`，第一版不增加第二次模型调用；输出固定 schema，不返回 CoT；
 - 意图结果进入 Plan admission，并影响 Retrieval/ToolBundle 候选选择；
 - 权限仍由 Permission/Policy/Approval/Sandbox 最终裁决。
+
+#### F4 已实现
+
+```text
+新 Turn（shadow/enforce）
+  -> TaskIntentAnalyzer.analyze(content)
+  -> TaskIntentEnvelope（枚举 + 排序 tuple + classifier_version）
+  -> Retrieval Gate 收窄候选来源
+  -> ToolBundle 过滤本轮候选工具
+  -> TurnContextPlan.admission.task_intent
+  -> ModelContextFrame / Graph
+
+Resume
+  -> 读取 Plan admission.task_intent
+  -> TaskIntentEnvelope.from_mapping（不重新分析输入）
+  -> 复用已冻结 retrieval/tool scope
+```
+
+信封只保存 `intent_kind`、`task_shape`、`requested_effects`、`capability_hints`、`risk_hints`、
+显式约束和分类器版本；不保存用户正文、Skill/MCP 正文、模型草稿或私有 CoT。`general` 是
+模糊输入的兼容回退；即使被确定为 `research`，没有明确来源 hint 时也保持既有 Retrieval/Tool
+候选，避免“检索”被误收窄为空。`off` 模式完全不启用该收窄。意图可以减少候选，不能
+增加 Tool Registry 中不存在的能力，也不能改变 Permission、Policy、Approval 或 Sandbox。
+
+F4 定向验证覆盖：确定性分类与脱敏、危险副作用标记、并行候选提示、无工具约束、Plan admission
+持久化、A1 意图漂移码、review 只读工具候选、MCP 显式调用兼容、无来源 hint 的旧路由兼容，
+以及 Resume 不重新调用 Analyzer。
+
+F4 最终验证：受影响回归 `21 passed, 1 warning`；后端完整门禁 `1803 passed,
+11 skipped, 1 warning`；Ruff、格式、mypy（218 个源码文件）、`git diff --check` 通过；前端
+Vitest `69 files / 505 passed`；private/public production build 通过；PR #136 四个 GitHub
+checks 全部通过并已合入 `dev/sage-v7`。warning 为既有
+LangChain GPT-2 fallback tokenizer 提示，不是 F4 回归。
 
 ## 6. 核心函数
 
@@ -202,6 +234,9 @@ F3 当前 worktree 的验证证据：定向 `75 passed`；后端完整 `1794 pas
 | `ModelContextFrame.untrusted_message` | 生成隐藏、不可信数据消息 |
 | `ToolBundleSnapshot.from_runtime_bundle` | 从执行 Bundle 提取不可变 catalog 契约 |
 | `TaskIntentAnalyzer.analyze` | 输出固定 schema 的任务意图，不输出 CoT |
+| `TaskIntentEnvelope.from_mapping` | 从 Plan admission 恢复冻结意图，不重新读取用户正文 |
+| `TaskIntentEnvelope.narrow_retrieval_sources` | 只减少 Retrieval Gate 候选来源 |
+| `TaskIntentEnvelope.allows_tool_candidate` | 只减少本轮 ToolBundle 候选，不执行授权 |
 
 ## 7. 验收标准
 
@@ -211,6 +246,7 @@ F3 当前 worktree 的验证证据：定向 `75 passed`；后端完整 `1794 pas
 - shadow 模式不改变现有模型可见内容；
 - ToolBundle、MCP、Skills 的 catalog revision 可在 Plan/Resume 中精确比较；
 - 意图分析不能授予权限，任何隐式 CoT 不进入 Store、Timeline、Trace 或 Transcript；
+- F4 模糊输入回退 `general`，不因启用 shadow 而意外改变现有 MCP/Tool 流程；
 - 每个切片独立完成定向测试、完整门禁、中文 PRD/收口与 PR。
 
 ## 8. 当前不做

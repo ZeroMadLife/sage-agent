@@ -190,6 +190,7 @@ from core.harness.subagent_adapter import (
     CodingSubagentExecutor,
     build_coding_subagent_config,
 )
+from core.harness.task_intent import TaskIntentAnalyzer, TaskIntentEnvelope
 from core.harness.thread_goal import (
     ThreadGoalBusyError,
     ThreadGoalNotFoundError,
@@ -591,6 +592,13 @@ async def _deerflow_timeline_events(
     context_assembly_mode = normalize_context_assembly_mode(context_assembly_mode)
     async with runtime.harness_turn(run_id):
         is_resume = resume_value is not None
+        # 新 Turn 只分析一次；Resume 从 Plan admission 恢复冻结信封，不重新读取输入。
+        # off 是旧链路兼容模式，不改变旧的能力候选选择。
+        task_intent: TaskIntentEnvelope | None = (
+            None
+            if is_resume or context_assembly_mode == "off"
+            else TaskIntentAnalyzer().analyze(content)
+        )
         owner_id = runtime.owner_user_id or "local"
         workspace_id = workspace_id_from_path(runtime.workspace.root)
         resume_plan = None
@@ -617,6 +625,9 @@ async def _deerflow_timeline_events(
                 ):
                     yield event
                 return
+            raw_task_intent = resume_plan.to_payload().get("admission", {}).get("task_intent")
+            if isinstance(raw_task_intent, Mapping):
+                task_intent = TaskIntentEnvelope.from_mapping(raw_task_intent)
             try:
                 prepared_resume = prepare_turn_context_resume(
                     resume_plan,
@@ -725,6 +736,7 @@ async def _deerflow_timeline_events(
                 memory_available=True,
                 knowledge_available=knowledge_port.available,
                 web_available=_port_available(web_search_port),
+                intent_envelope=task_intent,
             )
             memory_source_budgets = {
                 source: budget
@@ -1008,6 +1020,7 @@ async def _deerflow_timeline_events(
                 graph_approvals=True,
                 retrieval_sources=retrieval_sources,
                 retrieval_tool_scope=retrieval_tool_scope,
+                intent_envelope=task_intent,
             )
             prompt_components = build_deerflow_prompt_components(
                 runtime,
@@ -1063,6 +1076,7 @@ async def _deerflow_timeline_events(
                     runtime_mode=runtime.runtime_mode,
                     permission_mode=runtime.permission_mode,
                     model_spec=runtime.model_spec,
+                    intent_envelope=task_intent,
                 )
                 try:
                     # capture 复用已有选择；shadow 只审计，enforce 会提升为 Graph 门禁。
