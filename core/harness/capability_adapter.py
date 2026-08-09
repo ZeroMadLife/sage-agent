@@ -204,6 +204,28 @@ def _explore_descriptor() -> CapabilityDescriptor:
     )
 
 
+def _task_dag_descriptor() -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        capability_id="subagent:task-dag",
+        name="Task DAG",
+        origin="subagent",
+        kind="delegate",
+        revision="bounded-ready-wave-v1",
+        description=(
+            "Server-validated bounded DAG over registered subagent profiles; "
+            "each node retains its own permission, approval, and sandbox boundary."
+        ),
+        surfaces=_ALL_SURFACES,
+        risk="high",
+        permission="runtime",
+        deferred=False,
+        remote_content=False,
+        availability="available",
+        timeout_seconds=1800.0,
+        tags=("dag", "bounded", "subagent"),
+    )
+
+
 def _research_descriptor(*, available: bool) -> CapabilityDescriptor:
     description = (
         "Read-only child agent for bounded Knowledge and public web research."
@@ -326,6 +348,7 @@ def build_sage_capability_registry(
     if mcp_catalog is not None:
         descriptors.extend(_mcp_descriptors(mcp_catalog))
     descriptors.append(_explore_descriptor())
+    descriptors.append(_task_dag_descriptor())
     descriptors.append(_research_descriptor(available=research_subagent_available))
     if practice_subagent_available:
         descriptors.append(_practice_descriptor())

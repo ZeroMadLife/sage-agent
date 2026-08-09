@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import AgentState
 
 GoalStatus = Literal["pending", "in_progress", "succeeded", "failed", "cancelled"]
 DelegationStatus = Literal["pending", "running", "succeeded", "failed", "cancelled", "timed_out"]
+TaskGraphStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
@@ -17,6 +18,7 @@ TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
 TERMINAL_APPROVAL_STATUSES: frozenset[str] = frozenset({"approved", "rejected", "expired"})
 MAX_ARTIFACTS = 100
 MAX_DELEGATIONS = 50
+MAX_TASK_GRAPHS = 16
 MAX_SKILL_CONTEXT = 8
 MAX_MEMORY_REFS = 32
 MAX_PROMOTED_TOOLS = 64
@@ -96,6 +98,35 @@ class DelegationEntry(TypedDict, total=False):
     source_fingerprints: list[str]
     mastery_evidence: list[dict[str, object]]
     created_at: str
+
+
+class TaskGraphNodeEntry(TypedDict, total=False):
+    """Checkpoint 中的 DAG 节点收据，不保存 prompt 或结果正文。"""
+
+    node_id: str
+    status: str
+    child_run_id: str
+    result_ref: str
+    error_code: str
+    evidence_count: int
+    token_usage: int
+    model_calls: int
+    tool_count: int
+
+
+class TaskGraphEntry(TypedDict, total=False):
+    """一个不可变 DAG 计划及其可恢复终态的脱敏绑定。"""
+
+    dag_id: str
+    dag_hash: str
+    run_id: str
+    tool_call_id: str
+    status: TaskGraphStatus
+    node_count: int
+    completed_count: int
+    failed_count: int
+    blocked_count: int
+    nodes: list[TaskGraphNodeEntry]
 
 
 class SkillRef(TypedDict, total=False):
@@ -336,6 +367,53 @@ def merge_delegations(
             entry = {**entry, "created_at": previous["created_at"]}
         by_id[entry_id] = entry
     return [by_id[entry_id] for entry_id in order[-MAX_DELEGATIONS:]]
+
+
+def merge_task_graphs(
+    existing: list[TaskGraphEntry] | None,
+    new: list[TaskGraphEntry] | None,
+) -> list[TaskGraphEntry]:
+    """按 DAG id 幂等合并收据，终态不能被恢复重放降级。"""
+    if new is None:
+        return list(existing or [])[-MAX_TASK_GRAPHS:]
+    if not new:
+        return []
+
+    by_id: dict[str, TaskGraphEntry] = {}
+    order: list[str] = []
+    terminal = {"succeeded", "partial", "failed", "cancelled"}
+    for raw_entry in [*(existing or []), *new]:
+        entry = dict(raw_entry)
+        dag_id = str(entry.get("dag_id", "")).strip()
+        dag_hash = str(entry.get("dag_hash", "")).strip()
+        status = str(entry.get("status", ""))
+        if not dag_id or not dag_hash or status not in {"running", *terminal}:
+            raise ValueError("Task graph entries require stable identity and status")
+        previous = by_id.get(dag_id)
+        if previous is not None and previous.get("dag_hash") != dag_hash:
+            raise ValueError(f"Conflicting task graph hash for {dag_id!r}")
+        if previous is not None and any(
+            previous.get(key) and entry.get(key) and previous.get(key) != entry.get(key)
+            for key in ("run_id", "tool_call_id")
+        ):
+            raise ValueError(f"Conflicting task graph scope for {dag_id!r}")
+        if (
+            previous is not None
+            and str(previous.get("status", "")) in terminal
+            and status == "running"
+        ):
+            continue
+        if (
+            previous is not None
+            and str(previous.get("status", "")) in terminal
+            and status in terminal
+            and previous.get("status") != status
+        ):
+            raise ValueError(f"Conflicting terminal task graph statuses for {dag_id!r}")
+        if dag_id not in by_id:
+            order.append(dag_id)
+        by_id[dag_id] = cast(TaskGraphEntry, entry)
+    return [by_id[dag_id] for dag_id in order[-MAX_TASK_GRAPHS:]]
 
 
 def merge_evidence_refs(
@@ -580,6 +658,7 @@ class SageThreadState(AgentState):
     todos: Annotated[NotRequired[list[TodoItem] | None], merge_todos]
     goal: Annotated[NotRequired[GoalState | None], merge_goal]
     delegations: Annotated[NotRequired[list[DelegationEntry] | None], merge_delegations]
+    task_graphs: Annotated[NotRequired[list[TaskGraphEntry] | None], merge_task_graphs]
     evidence_refs: Annotated[NotRequired[list[str] | None], merge_evidence_refs]
     evidence_query_fingerprints: Annotated[
         NotRequired[list[str] | None], merge_evidence_fingerprints
@@ -621,6 +700,9 @@ __all__ = [
     "SageThreadState",
     "SandboxState",
     "SkillRef",
+    "TaskGraphEntry",
+    "TaskGraphNodeEntry",
+    "TaskGraphStatus",
     "ThreadDataState",
     "TodoItem",
     "TurnContextPlanBinding",
@@ -635,6 +717,7 @@ __all__ = [
     "merge_promoted_tools",
     "merge_sandbox",
     "merge_skill_context",
+    "merge_task_graphs",
     "merge_thread_data",
     "merge_todos",
     "merge_turn_context_plan",

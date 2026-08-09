@@ -28,6 +28,16 @@ _CAPABILITY_EVENT_TYPES = frozenset(
         "capability_invocation_completed",
     }
 )
+_TASK_DAG_EVENT_TYPES = frozenset(
+    {
+        "task_dag_started",
+        "task_dag_node_started",
+        "task_dag_node_completed",
+        "task_dag_node_failed",
+        "task_dag_node_blocked",
+        "task_dag_completed",
+    }
+)
 _RUN_BUDGET_NOTICES = {
     "model_call_capped": "本轮已达到模型调用安全上限，已停止继续调用工具。",
     "token_capped": "本轮已达到 token 安全上限，已停止继续调用工具。",
@@ -213,7 +223,11 @@ class HarnessEventAdapter:
                 tool_call_id=str(projected.get("tool_call_id", "")),
                 tool_name=tool_name,
                 args=(
-                    self._public_task_args(result_payload) if tool_name == "task" else result_args
+                    self._public_task_args(result_payload)
+                    if tool_name == "task"
+                    else self._public_task_dag_args(result_payload)
+                    if tool_name == "task_dag"
+                    else result_args
                 ),
                 source_event_id=f"{source_event_id}:late-call",
             )
@@ -458,6 +472,8 @@ class HarnessEventAdapter:
                     source_event_id=source_event_id,
                 ),
             )
+        if event_type in _TASK_DAG_EVENT_TYPES:
+            return self._task_dag_events(payload, source_event_id)
         safe = {str(key): _bounded_value(value) for key, value in payload.items()}
         return (
             self._event(
@@ -501,6 +517,74 @@ class HarnessEventAdapter:
         if child_run_id and "operation_ref" not in public_args:
             public_args["operation_ref"] = {"kind": "coding_run", "id": child_run_id}
         return public_args
+
+    def _public_task_dag_args(self, result_payload: Mapping[str, Any]) -> dict[str, Any]:
+        graph = result_payload.get("task_dag")
+        if not isinstance(graph, Mapping):
+            graph = result_payload
+        return {
+            key: _bounded_value(graph[key])
+            for key in (
+                "dag_id",
+                "dag_hash",
+                "node_count",
+                "max_concurrent",
+            )
+            if key in graph
+        }
+
+    def _task_dag_events(
+        self,
+        payload: Mapping[str, Any],
+        source_event_id: str,
+    ) -> tuple[RunEvent, ...]:
+        """只把 DAG 身份、节点状态和计数公开到 Timeline。"""
+        event_type = str(payload.get("type", ""))
+        public = _public_task_dag_payload(payload)
+        if public is None:
+            return ()
+        events: list[RunEvent] = []
+        if event_type == "task_dag_started":
+            call_event = self._tool_call_event(
+                tool_call_id=str(public.get("tool_call_id", "")),
+                tool_name="task_dag",
+                args=self._public_task_dag_args(public),
+                source_event_id=f"{source_event_id}:call",
+            )
+            if call_event is not None:
+                events.append(call_event)
+        if event_type in {
+            "task_dag_node_started",
+            "task_dag_node_completed",
+            "task_dag_node_failed",
+            "task_dag_node_blocked",
+        }:
+            kind = "agent"
+            status = (
+                "running"
+                if event_type.endswith("started")
+                else "blocked"
+                if event_type.endswith("blocked")
+                else "error"
+                if event_type.endswith("failed")
+                else "completed"
+            )
+        else:
+            kind = "harness"
+            status = (
+                "error"
+                if public.get("status") in {"failed", "partial", "cancelled"}
+                else "completed"
+            )
+        events.append(
+            self._event(
+                kind,
+                status,
+                public,
+                source_event_id=source_event_id,
+            )
+        )
+        return tuple(events)
 
     def _budget_from_state(
         self,
@@ -636,7 +720,10 @@ class HarnessEventAdapter:
             return None
         payload = self._pending_model_tool_calls.pop(pending_id)
         pending_args = payload.get("args")
-        if (
+        if tool_name in {"task", "task_dag"} and isinstance(args, Mapping) and args:
+            # Parent-facing delegation prompts are execution data, never Timeline args.
+            payload["args"] = _bounded_value(args)
+        elif (
             isinstance(args, Mapping)
             and args
             and (not isinstance(pending_args, Mapping) or not pending_args)
@@ -760,6 +847,22 @@ def _tool_result_payload(
         }
         if operation_id:
             payload["operation_ref"] = {"kind": "coding_run", "id": operation_id}
+    task_dag = projected.get("sage_task_dag")
+    if tool_name == "task_dag" and isinstance(task_dag, Mapping):
+        payload["task_dag"] = {
+            key: _bounded_value(task_dag[key])
+            for key in (
+                "dag_id",
+                "dag_hash",
+                "status",
+                "error_code",
+                "node_count",
+                "completed_count",
+                "failed_count",
+                "blocked_count",
+            )
+            if key in task_dag
+        }
     return payload
 
 
@@ -886,6 +989,52 @@ def _public_subagent_progress(payload: Mapping[str, Any]) -> dict[str, Any]:
         identifier = _public_string(operation_ref.get("id"), 256)
         if kind and identifier:
             public["operation_ref"] = {"kind": kind, "id": identifier}
+    return public
+
+
+def _public_task_dag_payload(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Project DAG audit events without descriptions, prompts, args, or result bodies."""
+    event_type = _public_string(payload.get("type"), 64)
+    if event_type not in _TASK_DAG_EVENT_TYPES:
+        return None
+    dag_id = _public_string(payload.get("dag_id"), 256)
+    dag_hash = _public_string(payload.get("dag_hash"), 128)
+    if not dag_id or not dag_hash:
+        return None
+    public: dict[str, Any] = {
+        "type": event_type,
+        "dag_id": dag_id,
+        "dag_hash": dag_hash,
+        "status": _public_string(payload.get("status"), 32),
+    }
+    for key, maximum in (
+        ("tool_call_id", 256),
+        ("node_id", 64),
+        ("child_run_id", 256),
+        ("error_code", 128),
+    ):
+        value = _public_string(payload.get(key), maximum)
+        if value:
+            public[key] = value
+    for key in (
+        "node_count",
+        "max_concurrent",
+        "completed_count",
+        "failed_count",
+        "blocked_count",
+        "evidence_count",
+        "token_usage",
+        "model_calls",
+        "tool_count",
+    ):
+        if key in payload:
+            public[key] = _public_non_negative_int(payload.get(key))
+    if "child_run_id" in public:
+        public["agent_run_id"] = public["child_run_id"]
+        public["operation_ref"] = {
+            "kind": "coding_run",
+            "id": public["child_run_id"],
+        }
     return public
 
 

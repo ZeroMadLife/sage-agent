@@ -63,6 +63,7 @@ def test_adapter_projects_current_sources_without_paths_or_secrets(tmp_path) -> 
     assert "skill:project:review" in ids
     assert "skill:user:hidden" in ids
     assert "subagent:explore" in ids
+    assert "subagent:task-dag" in ids
     assert registry.get("local:run_shell").permission == "approval"
     assert registry.get("local:read_file").permission == "none"
     assert registry.get("skill:user:hidden").availability == "disabled"

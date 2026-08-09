@@ -293,6 +293,122 @@ def test_event_adapter_backfills_public_task_audit_args_from_child_receipt() -> 
     assert "private child prompt" not in str(events)
 
 
+def test_event_adapter_projects_task_dag_without_node_prompts() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    model_events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "messages",
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task_dag",
+                            "args": {
+                                "nodes": [
+                                    {
+                                        "node_id": "left",
+                                        "prompt": "private node prompt",
+                                    }
+                                ],
+                                "max_concurrent": 1,
+                            },
+                            "id": "call-dag",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                {},
+            ),
+            "source-model-dag",
+        )
+    )
+    started_events = adapter.adapt(
+        HarnessStreamItem(
+            2,
+            "custom",
+            {
+                "type": "task_dag_started",
+                "dag_id": "dagrun_1",
+                "dag_hash": "a" * 64,
+                "tool_call_id": "call-dag",
+                "status": "running",
+                "node_count": 1,
+                "max_concurrent": 1,
+                "prompt": "must-not-leak",
+            },
+            "source-dag-start",
+        )
+    )
+    completed_events = adapter.adapt(
+        HarnessStreamItem(
+            3,
+            "custom",
+            {
+                "type": "task_dag_completed",
+                "dag_id": "dagrun_1",
+                "dag_hash": "a" * 64,
+                "status": "succeeded",
+                "node_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "blocked_count": 0,
+            },
+            "source-dag-complete",
+        )
+    )
+    tool_events = adapter.adapt(
+        HarnessStreamItem(
+            4,
+            "messages",
+            (
+                ToolMessage(
+                    content="Task DAG succeeded.",
+                    tool_call_id="call-dag",
+                    name="task_dag",
+                    status="success",
+                    additional_kwargs={
+                        "sage_task_dag": {
+                            "dag_id": "dagrun_1",
+                            "dag_hash": "a" * 64,
+                            "status": "succeeded",
+                            "node_count": 1,
+                            "completed_count": 1,
+                            "failed_count": 0,
+                            "blocked_count": 0,
+                            "prompt": "must-not-leak",
+                        }
+                    },
+                ),
+                {},
+            ),
+            "source-dag-result",
+        )
+    )
+
+    assert model_events == ()
+    assert started_events[0].kind == "tool"
+    assert started_events[0].payload["args"] == {
+        "dag_id": "dagrun_1",
+        "dag_hash": "a" * 64,
+        "node_count": 1,
+        "max_concurrent": 1,
+    }
+    assert completed_events[0].payload["type"] == "task_dag_completed"
+    assert tool_events[-1].payload["task_dag"] == {
+        "dag_id": "dagrun_1",
+        "dag_hash": "a" * 64,
+        "status": "succeeded",
+        "node_count": 1,
+        "completed_count": 1,
+        "failed_count": 0,
+        "blocked_count": 0,
+    }
+    assert "private node prompt" not in str((*started_events, *completed_events, *tool_events))
+    assert "must-not-leak" not in str((*started_events, *completed_events, *tool_events))
+
+
 def test_event_adapter_projects_a_bounded_run_budget_stop_and_notice() -> None:
     adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
 

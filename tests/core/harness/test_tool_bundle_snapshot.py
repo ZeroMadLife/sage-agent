@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+from unittest.mock import MagicMock
 
 import pytest
 from sage_harness import (
@@ -14,9 +15,10 @@ from sage_harness import (
     McpLifecycleSnapshot,
 )
 
+from core.coding.runtime import CodingRuntime
 from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.tool_bundle import ToolBundleSnapshot
-from core.harness.tools_adapter import CodingToolBundle
+from core.harness.tools_adapter import CodingToolBundle, build_deerflow_coding_tool_bundle
 
 
 def _deferred_setup() -> DeferredToolSetup:
@@ -78,6 +80,26 @@ def test_runtime_bundle_caches_a_snapshot_and_does_not_expose_tools() -> None:
 
     assert first is second
     assert not hasattr(first, "tools")
+
+
+def test_coding_tool_bundle_registers_task_dag_as_existing_subagent_capability(tmp_path) -> None:
+    runtime = CodingRuntime(
+        session_id="dag-bundle",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    bundle = build_deerflow_coding_tool_bundle(
+        runtime,
+        run_id="dag-bundle-run",
+        subagent_executor=MagicMock(),
+        enable_deferred_tools=False,
+    )
+
+    assert {tool.name for tool in bundle.tools} >= {"task", "task_dag"}
+    assert bundle.capability_ids_by_tool_name["task"] == "subagent:explore"
+    assert bundle.capability_ids_by_tool_name["task_dag"] == "subagent:task-dag"
+    assert "task_dag" not in bundle.snapshot.as_dict().get("skill_allowlist", [])
 
 
 def test_snapshot_captures_skill_allowlist_without_skill_body() -> None:
