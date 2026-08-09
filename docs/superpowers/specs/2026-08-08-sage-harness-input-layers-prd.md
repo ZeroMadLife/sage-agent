@@ -1,8 +1,7 @@
 # Sage Harness 输入分层与扩展底座 PRD
 
 > 状态：总体设计冻结；F1 ModelContextFrame、F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期已
-> 合入 `dev/sage-v7`（集成基线 `b3118659`）；F4 TaskIntentEnvelope 已在
-> `feat/task-intent-envelope` 完成实现、回归修复和完整门禁，待最终 PR 合入。每个切片保持独立测试、审查和收口。
+> 合入 `dev/sage-v7`（F4 merge commit `09a175b1d9ac87164a2a2b098792df7463f3fc39`）；每个切片保持独立测试、审查和收口。
 
 ## 1. 一句话目标
 
@@ -220,9 +219,10 @@ F4 定向验证覆盖：确定性分类与脱敏、危险副作用标记、并�
 持久化、A1 意图漂移码、review 只读工具候选、MCP 显式调用兼容、无来源 hint 的旧路由兼容，
 以及 Resume 不重新调用 Analyzer。
 
-本轮最终验证（合入前）：F4 受影响回归 `21 passed, 1 warning`；后端完整门禁 `1803 passed,
+F4 最终验证：受影响回归 `21 passed, 1 warning`；后端完整门禁 `1803 passed,
 11 skipped, 1 warning`；Ruff、格式、mypy（218 个源码文件）、`git diff --check` 通过；前端
-Vitest `69 files / 505 passed`；private/public production build 通过。warning 为既有
+Vitest `69 files / 505 passed`；private/public production build 通过；PR #136 四个 GitHub
+checks 全部通过并已合入 `dev/sage-v7`。warning 为既有
 LangChain GPT-2 fallback tokenizer 提示，不是 F4 回归。
 
 ## 6. 核心函数

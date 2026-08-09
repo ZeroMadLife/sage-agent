@@ -2,8 +2,8 @@
 
 > 状态：A0 capture、A1 compare、B0 enforce new turn、B1 enforce resume 与 F1
 > `ModelContextFrame` 已实现；F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期已合入
-> `dev/sage-v7`，F4 TaskIntentEnvelope 在当前职责分支完成，待最终 PR 合入。默认仍为
-> `shadow`，需显式开启 `enforce`。
+> `dev/sage-v7`；F4 TaskIntentEnvelope 已通过 PR #136 合入，merge commit
+> `09a175b1d9ac87164a2a2b098792df7463f3fc39`。默认仍为 `shadow`，需显式开启 `enforce`。
 > 目标：把一次 Turn 的上下文选择和执行边界收敛为可验证的不可变快照，让新一轮执行和 Approval 恢复都能回答“本轮依据什么运行”。
 
 ## 1. 一句话目标
@@ -136,9 +136,12 @@ Receipt 是“发生过什么选择/比较”的脱敏收据，不是 Transcript
 | B0 enforce new turn（已完成） | Plan/receipt/compare 成功后才创建 Adapter；binding 随 Graph state 持久化 | capture、compare、hash 或 scope 失败即 fail closed |
 | B1 enforce resume（已完成） | Resume 先读 Plan + scoped Checkpoint，再按 Plan routing 比较当前依赖 | 缺失、篡改、错作用域、依赖漂移返回 `resume_plan_*`，不创建 Adapter、不调用模型/工具 |
 
-历史交付证据：Context Assembly 基础切片已完成聚焦回归、后端/前端门禁和生产构建；本轮
-F4 的最终证据以 `sage-harness-input-layers-prd.md`、PR 检查和收口记录为准。所有数字必须
-对应实际命令输出，不把本地候选分支或设计文档当成已合入能力。
+最终交付证据：F4 受影响回归 `21 passed, 1 warning`；后端完整门禁 `1803 passed, 11 skipped,
+1 warning`；Ruff、格式、mypy（218 个源码文件）、`git diff --check` 通过；前端 Vitest
+`69 files / 505 passed`；private/public production build 通过。PR #136 的四个 GitHub checks
+（`python`、`backend-quality`、`frontend-quality`、`public-release`）全部通过，并以
+`09a175b1d9ac87164a2a2b098792df7463f3fc39` 合入 `dev/sage-v7`。warning 为既有 LangChain
+GPT-2 fallback tokenizer 提示。
 
 ## 9. 设计结论
 

@@ -1,7 +1,8 @@
 # Sage Harness 与 Pi 侧 Prompt 对齐摘要
 
 > 用途：给 Pi 侧知识库一份短、可复制的当前事实，不替代代码、测试或完整 PRD。
-> 更新时间：2026-08-09；当前职责分支：`feat/task-intent-envelope`。
+> 更新时间：2026-08-09；F4 已合入 `dev/sage-v7`，merge commit：
+> `09a175b1d9ac87164a2a2b098792df7463f3fc39`。
 
 ## 一句话事实
 
@@ -15,7 +16,8 @@ Sage 把一次用户 Turn 分成四个层次：
   -> Graph / Runtime Tool Loop
 ```
 
-F1-F3 已合入 `dev/sage-v7`；F4 在当前职责分支完成，待 PR 合并后才称为主干能力。
+F1-F4 已合入 `dev/sage-v7`；当前主干事实以 merge commit
+`09a175b1d9ac87164a2a2b098792df7463f3fc39` 为准。
 
 ## 当前组件职责
 
@@ -48,8 +50,8 @@ load Plan -> 校验 plan_hash / owner / workspace / checkpoint binding
 ```text
 你维护的是 Sage Harness 的 Pi 侧知识库。请把以下内容视为“当前代码事实”，但以仓库代码和测试为最终权威：
 
-1. F1 ModelContextFrame、F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期已合入 dev/sage-v7；
-   F4 TaskIntentEnvelope 只有在 feat/task-intent-envelope 的 PR 合入后才算主干能力。
+1. F1 ModelContextFrame、F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期和 F4 TaskIntentEnvelope
+   已合入 dev/sage-v7；当前 F4 merge commit 为 09a175b1d9ac87164a2a2b098792df7463f3fc39。
 2. 新 Turn：TaskIntentAnalyzer -> Retrieval Gate/ToolBundle -> TurnContextAssembler
    -> TurnContextPlan/TurnPlanStore -> ModelContextFrameFactory -> Graph。
 3. Resume：只从 Plan admission 和 scoped Checkpoint 恢复，不重新分析用户输入，不从 Timeline
