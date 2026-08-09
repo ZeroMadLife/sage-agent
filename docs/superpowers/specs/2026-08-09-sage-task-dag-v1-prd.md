@@ -1,6 +1,6 @@
 # Sage Task DAG V1 阶段 PRD
 
-> 状态：V1 已实现并通过完整门禁，待 PR 合入 `dev/sage-v7`。本文只描述这一阶段已经落地的边界；Context Budget 是下一阶段决策，不在本次代码中重构。
+> 状态：V1 已通过 [PR #138](https://github.com/ZeroMadLife/sage-agent/pull/138) 合入 `dev/sage-v7`。本文只描述这一阶段已经落地的边界；Context Budget 是下一阶段决策，不在本次代码中重构。
 
 ## 1. 一句话目标
 
@@ -99,8 +99,11 @@ task_dag ToolCall
 
 定向验证覆盖：DAG schema/hash/拓扑/环检测、ready wave、失败传播、父级取消、practice 串行与 Resume、整图预算预约、旧 reservation 升级、非法图零 executor、稳定 child id、终态 Resume 幂等、ToolBundle capability 兼容和 Timeline prompt 脱敏。
 
-本分支最终证据：
+最终交付证据：
 
+- Source commit：`ff5348ab587f7a96352fcae969e8ca96a985124b`。
+- Merge commit：`34e4171f14b68d71e784781dd39a2216b20eb0fe`。
+- GitHub CI：`python`、`backend-quality`、`frontend-quality`、`public-release` 共 4 项通过。
 - DAG / Subagent / Runtime / Capability 定向回归：`123 passed`。
 - `scripts/check.sh`：`1824 passed, 11 skipped`；Ruff、Ruff format、Mypy（`218` 个源码文件）全部通过。
 - Harness package 额外 Mypy：`63` 个源码文件通过。
