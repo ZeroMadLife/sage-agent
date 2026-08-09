@@ -5,12 +5,15 @@ from types import SimpleNamespace
 import pytest
 
 from core.knowledge.benchmark import KnowledgeBenchmarkQueryV2, KnowledgeRelevanceJudgment
+from core.knowledge.postgres_index import PostgresKnowledgeIndex
+from core.knowledge.retrieval import HashingEmbeddingProvider, KnowledgeAblationPolicy
 from evals.book_learning_claims import ClaimEvidenceGoldCase, ClaimEvidenceRequirement
 from scripts.evaluate_book_learning_generation import (
     _DEFAULT_PROVIDER_FACTORY,
     ModelInvocationError,
     _accepted_decision,
     _evaluation_llm_options,
+    _generation_index_factory,
     _invoke_json,
     _judge_prompt,
     _merge_evidence,
@@ -26,6 +29,33 @@ def test_generation_defaults_to_selected_doubao_book_embedding() -> None:
     assert _DEFAULT_PROVIDER_FACTORY == (
         "scripts.benchmark_providers.doubao_multimodal:create_provider"
     )
+
+
+def test_generation_postgres_factory_is_injected_without_changing_sqlite_default() -> None:
+    assert (
+        _generation_index_factory(
+            backend="sqlite",
+            postgres_dsn="",
+            postgres_sparse="native",
+        )
+        is None
+    )
+    factory = _generation_index_factory(
+        backend="postgres",
+        postgres_dsn="postgresql://sage:secret@localhost:5432/sage",
+        postgres_sparse="bm25",
+    )
+
+    assert factory is not None
+    index = factory(
+        "generation-test",
+        HashingEmbeddingProvider(dimensions=64),
+        KnowledgeAblationPolicy(),
+    )
+
+    assert isinstance(index, PostgresKnowledgeIndex)
+    assert index.backend_id == "pg-textsearch-bm25+pgvector-exact+hashing"
+    index.close()
 
 
 def test_merged_evidence_is_bounded_and_keeps_passage_diversity() -> None:

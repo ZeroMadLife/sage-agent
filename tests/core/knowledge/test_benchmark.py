@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,13 @@ from core.knowledge.benchmark_runner import (
     read_manifest,
     run_benchmark,
 )
-from core.knowledge.retrieval import KnowledgeAblationPolicy
+from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.retrieval import (
+    DenseEmbeddingProvider,
+    KnowledgeAblationPolicy,
+    KnowledgeRetrievalMode,
+    KnowledgeSearchHit,
+)
 
 
 class _RoleAwareBenchmarkProvider:
@@ -48,6 +55,108 @@ class _RoleAwareBenchmarkProvider:
 
     def embed(self, text: str) -> tuple[float, ...]:
         return self.embed_document(text)
+
+
+class _FailingPrepareProvider(_RoleAwareBenchmarkProvider):
+    def prepare_documents(self, texts: tuple[str, ...]) -> None:
+        del texts
+        raise RuntimeError("simulated provider preparation failure")
+
+
+class _TrackingBenchmarkIndex(LocalKnowledgeIndex):
+    def __init__(
+        self,
+        *,
+        workspace_id: str,
+        embedding_provider: DenseEmbeddingProvider,
+        ablation_policy: KnowledgeAblationPolicy,
+        fail_search: bool = False,
+        fail_cleanup: bool = False,
+    ) -> None:
+        super().__init__(
+            workspace_id=workspace_id,
+            embedding_provider=embedding_provider,
+            ablation_policy=ablation_policy,
+        )
+        self.fail_search = fail_search
+        self.fail_cleanup = fail_cleanup
+        self.search_calls = 0
+        self.workspace_deleted = False
+        self.closed = False
+
+    @property
+    def backend_id(self) -> str:
+        return "test-tracking-index"
+
+    def search(
+        self,
+        connection: sqlite3.Connection,
+        query: str,
+        *,
+        top_k: int = 8,
+        visibility: str = "private",
+        source_ids: tuple[str, ...] = (),
+        page_revisions: tuple[str, ...] = (),
+        retrieval_mode: KnowledgeRetrievalMode = "hybrid",
+        round_index: int = 1,
+        trace_query: str | None = None,
+        rewrite: str | None = None,
+    ) -> tuple[KnowledgeSearchHit, ...]:
+        self.search_calls += 1
+        if self.fail_search:
+            raise RuntimeError("simulated benchmark query failure")
+        return super().search(
+            connection,
+            query,
+            top_k=top_k,
+            visibility=visibility,
+            source_ids=source_ids,
+            page_revisions=page_revisions,
+            retrieval_mode=retrieval_mode,
+            round_index=round_index,
+            trace_query=trace_query,
+            rewrite=rewrite,
+        )
+
+    def delete_workspace(self) -> None:
+        self.workspace_deleted = True
+        if self.fail_cleanup:
+            raise RuntimeError("simulated benchmark cleanup failure")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _small_benchmark_fixture(tmp_path: Path) -> BenchmarkManifest:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "book.txt"
+    source.write_text(
+        "CHAPTER I.\n\n" + "division of labour improves productive power. " * 20,
+        encoding="utf-8",
+    )
+    dataset = tmp_path / "dataset.jsonl"
+    dataset.write_text(
+        '{"id":"q1","query":"Why does division of labour help?",'
+        '"category":"real_user","split":"test","answerable":true,'
+        '"provenance":"test","relevant_passages":['
+        '{"source":"book.txt","section":"CHAPTER I.","relevance":3}],'
+        '"required_claims":[],"forbidden_claims":[]}\n',
+        encoding="utf-8",
+    )
+    return BenchmarkManifest(
+        benchmark_id="book-test",
+        benchmark_revision="1",
+        dataset="dataset.jsonl",
+        dataset_sha256=hashlib.sha256(dataset.read_bytes()).hexdigest(),
+        corpus_root="corpus",
+        files=(
+            BenchmarkCorpusFile(
+                path="book.txt",
+                sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            ),
+        ),
+    )
 
 
 def test_retrieval_metrics_use_source_relevance_and_rank() -> None:
@@ -294,6 +403,140 @@ def test_benchmark_prepares_role_aware_documents_and_queries_separately(
 
     assert provider.documents
     assert provider.queries == ("evidence query",)
+
+
+def test_benchmark_uses_custom_index_factory_and_cleans_it_on_success(tmp_path: Path) -> None:
+    manifest = _small_benchmark_fixture(tmp_path)
+    indexes: list[_TrackingBenchmarkIndex] = []
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> _TrackingBenchmarkIndex:
+        index = _TrackingBenchmarkIndex(
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+        )
+        indexes.append(index)
+        return index
+
+    report = run_benchmark(tmp_path, manifest, index_factory=factory)
+
+    assert report["index"]["backend"] == "test-tracking-index"
+    assert len(indexes) == 1
+    assert indexes[0].search_calls == 1
+    assert indexes[0].workspace_deleted
+    assert indexes[0].closed
+
+
+def test_benchmark_cleans_custom_index_when_query_fails(tmp_path: Path) -> None:
+    manifest = _small_benchmark_fixture(tmp_path)
+    indexes: list[_TrackingBenchmarkIndex] = []
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> _TrackingBenchmarkIndex:
+        index = _TrackingBenchmarkIndex(
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+            fail_search=True,
+        )
+        indexes.append(index)
+        return index
+
+    with pytest.raises(RuntimeError, match="simulated benchmark query failure"):
+        run_benchmark(tmp_path, manifest, index_factory=factory)
+
+    assert len(indexes) == 1
+    assert indexes[0].search_calls == 1
+    assert indexes[0].workspace_deleted
+    assert indexes[0].closed
+
+
+def test_benchmark_cleans_custom_index_when_provider_preparation_fails(
+    tmp_path: Path,
+) -> None:
+    manifest = _small_benchmark_fixture(tmp_path)
+    indexes: list[_TrackingBenchmarkIndex] = []
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> _TrackingBenchmarkIndex:
+        index = _TrackingBenchmarkIndex(
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+        )
+        indexes.append(index)
+        return index
+
+    with pytest.raises(RuntimeError, match="simulated provider preparation failure"):
+        run_benchmark(
+            tmp_path,
+            manifest,
+            provider=_FailingPrepareProvider(),
+            index_factory=factory,
+        )
+
+    assert len(indexes) == 1
+    assert indexes[0].workspace_deleted
+    assert indexes[0].closed
+
+
+def test_benchmark_preserves_query_error_when_cleanup_also_fails(tmp_path: Path) -> None:
+    manifest = _small_benchmark_fixture(tmp_path)
+    indexes: list[_TrackingBenchmarkIndex] = []
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> _TrackingBenchmarkIndex:
+        index = _TrackingBenchmarkIndex(
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+            fail_search=True,
+            fail_cleanup=True,
+        )
+        indexes.append(index)
+        return index
+
+    with pytest.raises(RuntimeError, match="simulated benchmark query failure"):
+        run_benchmark(tmp_path, manifest, index_factory=factory)
+
+    assert indexes[0].workspace_deleted
+    assert indexes[0].closed
+
+
+def test_benchmark_rejects_invalid_retrieval_mode_before_building(tmp_path: Path) -> None:
+    manifest = _small_benchmark_fixture(tmp_path)
+    indexes: list[_TrackingBenchmarkIndex] = []
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> _TrackingBenchmarkIndex:
+        index = _TrackingBenchmarkIndex(
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+        )
+        indexes.append(index)
+        return index
+
+    with pytest.raises(ValueError, match="invalid benchmark retrieval mode"):
+        run_benchmark(tmp_path, manifest, index_factory=factory, retrieval_mode="invalid")
+
+    assert indexes == []
 
 
 def test_manifest_uses_an_explicit_corpus_allowlist(tmp_path: Path) -> None:

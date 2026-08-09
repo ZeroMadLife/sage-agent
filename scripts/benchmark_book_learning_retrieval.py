@@ -6,9 +6,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from core.knowledge.benchmark_runner import (
@@ -16,7 +18,12 @@ from core.knowledge.benchmark_runner import (
     load_manifest,
     run_benchmark,
 )
-from core.knowledge.retrieval import KnowledgeAblationPolicy
+from core.knowledge.postgres_index import (
+    PostgresKnowledgeIndex,
+    PostgresKnowledgeIndexConfig,
+)
+from core.knowledge.postgres_retrieval import PgTextsearchBm25Retriever
+from core.knowledge.retrieval import DenseEmbeddingProvider, KnowledgeAblationPolicy
 from evals.book_learning_claims import (
     ClaimEvidenceEvalCase,
     ClaimEvidenceGoldCase,
@@ -44,6 +51,28 @@ def main() -> int:
     )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(
+        "--backend",
+        choices=("sqlite", "postgres"),
+        default="sqlite",
+        help="Canonical local index or PostgreSQL retrieval projection",
+    )
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("sparse", "dense", "hybrid"),
+        default="hybrid",
+    )
+    parser.add_argument(
+        "--postgres-sparse",
+        choices=("native", "bm25"),
+        default="native",
+        help="PostgreSQL sparse route; bm25 requires an isolated pg_textsearch server",
+    )
+    parser.add_argument(
+        "--postgres-dsn",
+        default=os.environ.get("SAGE_BOOK_BENCHMARK_POSTGRES_DSN", ""),
+        help="PostgreSQL DSN; prefer SAGE_BOOK_BENCHMARK_POSTGRES_DSN",
+    )
+    parser.add_argument(
         "--strategy",
         choices=_STRATEGIES,
         default="baseline",
@@ -70,6 +99,31 @@ def main() -> int:
         _fetch_corpus(repo_root)
     manifest = load_manifest(repo_root, args.manifest.resolve())
     provider = load_embedding_provider(args.provider_factory)
+    if args.backend == "postgres" and not args.postgres_dsn.strip():
+        raise SystemExit(
+            "--backend postgres requires --postgres-dsn or SAGE_BOOK_BENCHMARK_POSTGRES_DSN"
+        )
+
+    index_factory = None
+    workspace_id = f"sage-book-learning-benchmark-{uuid.uuid4().hex}"
+    if args.backend == "postgres":
+        sparse_retriever = PgTextsearchBm25Retriever() if args.postgres_sparse == "bm25" else None
+
+        def postgres_index_factory(
+            workspace: str,
+            embedding: DenseEmbeddingProvider,
+            policy: KnowledgeAblationPolicy,
+        ) -> PostgresKnowledgeIndex:
+            return PostgresKnowledgeIndex(
+                PostgresKnowledgeIndexConfig(dsn=args.postgres_dsn),
+                workspace_id=workspace,
+                embedding_provider=embedding,
+                ablation_policy=policy,
+                sparse_retriever=sparse_retriever,
+            )
+
+        index_factory = postgres_index_factory
+
     benchmark_started_at = time.perf_counter()
     result = run_benchmark(
         repo_root,
@@ -77,6 +131,9 @@ def main() -> int:
         top_k=args.top_k,
         provider=provider,
         ablation_policy=KnowledgeAblationPolicy(strategy=args.strategy),
+        index_factory=index_factory,
+        workspace_id=workspace_id,
+        retrieval_mode=args.retrieval_mode,
     )
     result["benchmark_wall_ms"] = round(
         (time.perf_counter() - benchmark_started_at) * 1_000,
@@ -89,6 +146,10 @@ def main() -> int:
         "human_gold_status": "seed_manual",
         "production_claim_allowed": False,
         "reason": "seed gold must be expanded and independently reviewed before activation",
+    }
+    result["postgres_strategy"] = {
+        "backend": args.backend,
+        "sparse": args.postgres_sparse if args.backend == "postgres" else None,
     }
     observed_claims = claim_eval_cases_from_report(result)
     claim_gold = _select_claim_gold(args.claim_gold, observed_claims)

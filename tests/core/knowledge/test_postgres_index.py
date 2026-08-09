@@ -22,6 +22,7 @@ from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
+from core.knowledge.postgres_retrieval import PgTextsearchBm25Retriever
 from core.knowledge.recovery import KnowledgeRecoveryPolicy
 from core.knowledge.retrieval import HashingEmbeddingProvider
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore
@@ -34,6 +35,14 @@ def postgres_dsn() -> str:
     value = os.environ.get("SAGE_TEST_POSTGRES_DSN", "").strip()
     if not value:
         pytest.skip("SAGE_TEST_POSTGRES_DSN is required for PostgreSQL integration tests")
+    return value
+
+
+@pytest.fixture
+def postgres_bm25_dsn() -> str:
+    value = os.environ.get("SAGE_TEST_POSTGRES_BM25_DSN", "").strip()
+    if not value:
+        pytest.skip("SAGE_TEST_POSTGRES_BM25_DSN is required for pg_textsearch integration tests")
     return value
 
 
@@ -147,6 +156,63 @@ def test_postgres_schema_has_gin_and_no_ann_indexes(postgres_store: KnowledgeSto
         "retrieval_description_revision",
     } <= chunk_columns
     assert idle_in_transaction == 0
+
+
+def test_pg_textsearch_bm25_retrieval_is_a_replaceable_sparse_route(
+    tmp_path: Path,
+    postgres_bm25_dsn: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main"],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    workspace_id = f"pg-bm25-test-{uuid.uuid4().hex}"
+    index = PostgresKnowledgeIndex(
+        PostgresKnowledgeIndexConfig(dsn=postgres_bm25_dsn),
+        workspace_id=workspace_id,
+        embedding_provider=HashingEmbeddingProvider(dimensions=64),
+        sparse_retriever=PgTextsearchBm25Retriever(
+            index_name=f"knowledge_bm25_{uuid.uuid4().hex}_idx"
+        ),
+    )
+    store = KnowledgeStore(
+        workspace,
+        tmp_path / "canonical.sqlite3",
+        {
+            "official": KnowledgeSourceRoot(
+                root_id="official",
+                kind="markdown",
+                label="Official",
+                path=source,
+            )
+        },
+        knowledge_index=index,
+    )
+    try:
+        (source / "book.md").write_text(
+            "# Division\n\nDivision of labour raises productive power.\n",
+            encoding="utf-8",
+        )
+        proposal = store.ingest("official", "book.md")
+        store.approve(proposal.proposal_id, proposal.revision)
+
+        hits = store.search("division labour productive", retrieval_mode="sparse", top_k=3)
+
+        assert hits
+        assert index.backend_id.startswith("pg-textsearch-bm25+")
+        with psycopg2.connect(postgres_bm25_dsn) as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT extversion FROM pg_extension WHERE extname='pg_textsearch'")
+            assert cursor.fetchone() is not None
+    finally:
+        index.delete_workspace()
+        index.close()
 
 
 def test_postgres_retrieval_trace_excludes_query_and_chunk_text(
