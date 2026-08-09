@@ -11,19 +11,34 @@ import argparse
 import asyncio
 import hashlib
 import json
+import os
 import tempfile
 import time
+import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from core.knowledge.benchmark import KnowledgeBenchmarkQueryV2, load_benchmark_v2, passage_id
 from core.knowledge.benchmark_runner import (
+    BenchmarkIndexFactory,
     build_benchmark_store,
+    cleanup_benchmark_store,
     load_embedding_provider,
     load_manifest,
 )
-from core.knowledge.retrieval import KnowledgeAblationPolicy, KnowledgeSearchHit
+from core.knowledge.postgres_index import (
+    PostgresKnowledgeIndex,
+    PostgresKnowledgeIndexConfig,
+)
+from core.knowledge.postgres_retrieval import PgTextsearchBm25Retriever
+from core.knowledge.retrieval import (
+    DenseEmbeddingProvider,
+    KnowledgeAblationPolicy,
+    KnowledgeRetrievalMode,
+    KnowledgeSearchHit,
+)
 from core.llm import create_llm
 from evals.book_learning_claims import (
     ClaimEvidenceGoldCase,
@@ -70,6 +85,26 @@ def main() -> int:
         default=_DEFAULT_PROVIDER_FACTORY,
     )
     parser.add_argument(
+        "--backend",
+        choices=("sqlite", "postgres"),
+        default="sqlite",
+    )
+    parser.add_argument(
+        "--postgres-sparse",
+        choices=("native", "bm25"),
+        default="native",
+    )
+    parser.add_argument(
+        "--retrieval-mode",
+        choices=("sparse", "dense", "hybrid"),
+        default="hybrid",
+    )
+    parser.add_argument(
+        "--postgres-dsn",
+        default=os.environ.get("SAGE_BOOK_BENCHMARK_POSTGRES_DSN", ""),
+        help="PostgreSQL DSN; prefer SAGE_BOOK_BENCHMARK_POSTGRES_DSN",
+    )
+    parser.add_argument(
         "--claim-gold",
         type=Path,
         default=repo_root / "evals" / "book_learning_claim_gold_v1.jsonl",
@@ -91,8 +126,42 @@ def main() -> int:
         raise ValueError("max recovery queries must be between 1 and 2")
     if args.request_timeout_seconds <= 0:
         raise ValueError("request timeout seconds must be positive")
+    if args.backend == "postgres" and not args.postgres_dsn.strip():
+        raise ValueError("PostgreSQL generation evaluation requires a DSN")
 
     return asyncio.run(_run(args, repo_root))
+
+
+def _generation_index_factory(
+    *,
+    backend: str,
+    postgres_dsn: str,
+    postgres_sparse: str,
+) -> BenchmarkIndexFactory | None:
+    if backend == "sqlite":
+        return None
+    if backend != "postgres":
+        raise ValueError("unknown generation evaluation backend")
+    if not postgres_dsn.strip():
+        raise ValueError("PostgreSQL generation evaluation requires a DSN")
+    if postgres_sparse not in {"native", "bm25"}:
+        raise ValueError("unknown PostgreSQL sparse strategy")
+    sparse_retriever = PgTextsearchBm25Retriever() if postgres_sparse == "bm25" else None
+
+    def factory(
+        workspace_id: str,
+        provider: DenseEmbeddingProvider,
+        policy: KnowledgeAblationPolicy,
+    ) -> PostgresKnowledgeIndex:
+        return PostgresKnowledgeIndex(
+            PostgresKnowledgeIndexConfig(dsn=postgres_dsn),
+            workspace_id=workspace_id,
+            embedding_provider=provider,
+            ablation_policy=policy,
+            sparse_retriever=sparse_retriever,
+        )
+
+    return factory
 
 
 async def _run(args: argparse.Namespace, repo_root: Path) -> int:
@@ -113,6 +182,13 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
     llm_options = _evaluation_llm_options(args.request_timeout_seconds)
     generator = create_llm(args.generator_model, temperature=0.0, **llm_options)
     judge = create_llm(args.judge_model, temperature=0.0, **llm_options)
+    index_factory = _generation_index_factory(
+        backend=args.backend,
+        postgres_dsn=args.postgres_dsn,
+        postgres_sparse=args.postgres_sparse,
+    )
+    workspace_id = f"sage-book-generation-{uuid.uuid4().hex}"
+    retrieval_mode = cast(KnowledgeRetrievalMode, args.retrieval_mode)
 
     with tempfile.TemporaryDirectory(
         prefix="sage-book-generation-", dir=repo_root / ".coding"
@@ -125,32 +201,39 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             embedding_provider=provider,
             ablation_policy=policy,
             query_texts=tuple(query.query for query in source_queries),
+            index_factory=index_factory,
+            workspace_id=workspace_id,
         )
-        records: list[dict[str, Any]] = []
-        eval_cases: list[GenerationEvalCase] = []
-        for query in queries:
-            case_started = time.perf_counter()
-            try:
-                record, eval_case = await _evaluate_case(
-                    query,
-                    claim_gold=all_claim_gold[query.query_id],
-                    store=store,
-                    generator=generator,
-                    judge=judge,
-                    top_k=args.top_k,
-                    max_recovery_queries=args.max_recovery_queries,
-                    request_timeout_seconds=args.request_timeout_seconds,
-                    available_passages=available_passages,
-                )
-            except ModelInvocationError as failure:
-                record, eval_case = _failed_case(
-                    query,
-                    failure,
-                    latency_ms=round((time.perf_counter() - case_started) * 1_000),
-                    available_passage_count=len(available_passages),
-                )
-            records.append(record)
-            eval_cases.append(eval_case)
+        try:
+            records: list[dict[str, Any]] = []
+            eval_cases: list[GenerationEvalCase] = []
+            for query in queries:
+                case_started = time.perf_counter()
+                try:
+                    record, eval_case = await _evaluate_case(
+                        query,
+                        claim_gold=all_claim_gold[query.query_id],
+                        store=store,
+                        generator=generator,
+                        judge=judge,
+                        top_k=args.top_k,
+                        retrieval_mode=retrieval_mode,
+                        max_recovery_queries=args.max_recovery_queries,
+                        request_timeout_seconds=args.request_timeout_seconds,
+                        available_passages=available_passages,
+                    )
+                except ModelInvocationError as failure:
+                    record, eval_case = _failed_case(
+                        query,
+                        failure,
+                        latency_ms=round((time.perf_counter() - case_started) * 1_000),
+                        available_passage_count=len(available_passages),
+                    )
+                records.append(record)
+                eval_cases.append(eval_case)
+            index_summary = asdict(store.index_summary())
+        finally:
+            cleanup_benchmark_store(store)
 
     claim_report_source = {"stage": "llmwiki_generation", "cases": records}
     claim_observations = claim_eval_cases_from_report(claim_report_source)
@@ -176,6 +259,9 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
                 "online_runtime": False,
             },
             "context_scope": "retrieved_candidate_passages",
+            "retrieval_backend": args.backend,
+            "postgres_sparse": args.postgres_sparse if args.backend == "postgres" else None,
+            "retrieval_mode": retrieval_mode,
         },
         "benchmark": {
             "benchmark_id": manifest.benchmark_id,
@@ -193,6 +279,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
             "supports_semantic_recall": provider.supports_semantic_recall,
         },
         "chunking": chunking,
+        "index": index_summary,
         "runtime_metrics": _runtime_metrics(records),
         "observed_models": _observed_models(records),
         "claim_evidence": claim_evidence,
@@ -206,7 +293,7 @@ async def _run(args: argparse.Namespace, repo_root: Path) -> int:
     return 0
 
 
-def _evaluation_llm_options(timeout_seconds: float) -> dict[str, float | int]:
+def _evaluation_llm_options(timeout_seconds: float) -> dict[str, Any]:
     """Return bounded client options for deterministic provider receipts."""
 
     return {"max_retries": 0, "timeout": timeout_seconds}
@@ -220,12 +307,13 @@ async def _evaluate_case(
     generator: Any,
     judge: Any,
     top_k: int,
+    retrieval_mode: KnowledgeRetrievalMode,
     max_recovery_queries: int,
     request_timeout_seconds: float,
     available_passages: set[str],
 ) -> tuple[dict[str, Any], GenerationEvalCase]:
     started = time.perf_counter()
-    first_hits = store.search(query.query, top_k=top_k)
+    first_hits = store.search(query.query, top_k=top_k, retrieval_mode=retrieval_mode)
     evidence = _evidence(first_hits)
     first_evidence = list(evidence)
     first_missing_claims = missing_claim_brief(
@@ -250,7 +338,7 @@ async def _evaluate_case(
     final_missing_claims = first_missing_claims
     if rewrite_queries and planner.get("decision") in {"retry", "delegate_research"}:
         for rewrite in rewrite_queries:
-            rewrite_hits = store.search(rewrite, top_k=top_k)
+            rewrite_hits = store.search(rewrite, top_k=top_k, retrieval_mode=retrieval_mode)
             rewrite_evidence = _evidence(rewrite_hits)
             recovery_records.append({"query": rewrite, "evidence": rewrite_evidence})
             evidence = _merge_evidence(evidence, rewrite_evidence)

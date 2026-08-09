@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "report_id": "book_learning_postgres_strategy_v1_2026-08-10",
+  "source_commit": "2a2e7a0",
+  "source_dirty": true,
+  "branch": "feat/book-rag-postgres-strategies",
+  "scope": {
+    "corpus": "2 public-domain long books",
+    "contextual_chunk_count": 5220,
+    "seed_query_count": 14,
+    "gold_claim_count": 15,
+    "gold_status": "seed_manual",
+    "production_claim_allowed": false,
+    "top_k": 10,
+    "embedding": "doubao-embedding-vision-250615",
+    "embedding_dimensions": 2048,
+    "retrieval_database": "PostgreSQL projection",
+    "canonical_database": "SQLite"
+  },
+  "retrieval_strategies": {
+    "native_hybrid": {
+      "sparse": "native GIN + ts_rank_cd",
+      "dense": "pgvector exact cosine",
+      "fusion": "RRF",
+      "recall_at_10": 0.8333,
+      "mrr": 0.7833,
+      "ndcg_at_10": 0.7629,
+      "first_pass_claim_evidence_coverage": 0.8,
+      "p95_latency_ms": 157.5
+    },
+    "dense_first": {
+      "sparse": null,
+      "dense": "pgvector exact cosine",
+      "fusion": null,
+      "recall_at_10": 0.8833,
+      "mrr": 0.8083,
+      "ndcg_at_10": 0.7778,
+      "first_pass_claim_evidence_coverage": 0.8333,
+      "p95_latency_ms": 101.9,
+      "recommendation": "offline_candidate_default"
+    },
+    "bm25_sparse": {
+      "sparse": "pg_textsearch BM25",
+      "dense": null,
+      "fusion": null,
+      "recall_at_10": 0.7,
+      "mrr": 0.55,
+      "ndcg_at_10": 0.5856,
+      "first_pass_claim_evidence_coverage": 0.7,
+      "p95_latency_ms": 58.8,
+      "recommendation": "keyword_dense_diagnostic"
+    },
+    "bm25_hybrid": {
+      "sparse": "pg_textsearch BM25",
+      "dense": "pgvector exact cosine",
+      "fusion": "RRF",
+      "recall_at_10": 0.8333,
+      "mrr": 0.72,
+      "ndcg_at_10": 0.6977,
+      "first_pass_claim_evidence_coverage": 0.8,
+      "p95_latency_ms": 2056.6,
+      "recommendation": "not_default"
+    }
+  },
+  "e2e": {
+    "harness_dag_ancestor": "34e4171f",
+    "harness_dag_docs_ancestor": "0189cb4",
+    "native_hybrid": {
+      "case_count": 14,
+      "completed_case_count": 12,
+      "answer_correctness": 0.625,
+      "correct_abstention": 1.0,
+      "false_acceptance": 0.0,
+      "claim_recovery_gain": 0.0833,
+      "provider_failure_rate": 0.1429,
+      "p95_latency_seconds": 239.847,
+      "faithfulness": 1.0,
+      "citation_correctness": 1.0,
+      "answer_relevance": 1.0
+    },
+    "dense_first": {
+      "case_count": 14,
+      "completed_case_count": 11,
+      "answer_correctness": 0.5714,
+      "correct_abstention": 1.0,
+      "false_acceptance": 0.0,
+      "claim_recovery_gain": 0.0,
+      "provider_failure_rate": 0.2143,
+      "p95_latency_seconds": 229.74,
+      "faithfulness": 1.0,
+      "citation_correctness": 0.9091,
+      "answer_relevance": 0.8
+    }
+  },
+  "architecture": "docs/assets/book-rag-postgres/book-rag-postgres-agentic-architecture-v1-zh.png"
+}

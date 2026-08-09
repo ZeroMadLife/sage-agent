@@ -7,8 +7,11 @@ import importlib
 import json
 import math
 import subprocess
+import sys
 import tempfile
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -20,6 +23,7 @@ from core.knowledge.benchmark import (
     passage_id,
 )
 from core.knowledge.index import LocalKnowledgeIndex
+from core.knowledge.index_backend import KnowledgeIndexBackend
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
@@ -28,6 +32,11 @@ from core.knowledge.retrieval import (
     embedding_text,
 )
 from core.knowledge.store import KnowledgeSourceRoot, KnowledgeStore, PreparedKnowledgeSource
+
+BenchmarkIndexFactory = Callable[
+    [str, DenseEmbeddingProvider, KnowledgeAblationPolicy],
+    KnowledgeIndexBackend,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,9 +148,14 @@ def run_benchmark(
     top_k: int = 10,
     provider: DenseEmbeddingProvider | None = None,
     ablation_policy: KnowledgeAblationPolicy | None = None,
+    index_factory: BenchmarkIndexFactory | None = None,
+    workspace_id: str = "sage-knowledge-benchmark-v2",
+    retrieval_mode: str = "hybrid",
 ) -> dict[str, Any]:
     if top_k < 1 or top_k > 50:
         raise ValueError("benchmark top_k must be between 1 and 50")
+    if retrieval_mode not in {"sparse", "dense", "hybrid"}:
+        raise ValueError("invalid benchmark retrieval mode")
     queries = load_benchmark_v2(_inside(repo_root, manifest.dataset))
     embedding_provider = provider or HashingEmbeddingProvider()
     policy = ablation_policy or KnowledgeAblationPolicy()
@@ -155,82 +169,124 @@ def run_benchmark(
             embedding_provider=embedding_provider,
             ablation_policy=policy,
             query_texts=tuple(query.query for query in queries),
+            index_factory=index_factory,
+            workspace_id=workspace_id,
         )
-        _validate_judgments(queries, available_passages)
-
-        ranked: dict[str, tuple[str, ...]] = {}
-        latencies: list[float] = []
-        latency_by_query: dict[str, float] = {}
-        raw_hits: dict[str, list[dict[str, Any]]] = {}
-        for query in queries:
-            started = time.perf_counter()
-            hits = store.search(query.query, top_k=top_k)
-            elapsed_ms = (time.perf_counter() - started) * 1_000
-            latencies.append(elapsed_ms)
-            latency_by_query[query.query_id] = elapsed_ms
-            documents = tuple(
-                dict.fromkeys(
-                    passage_id(
-                        hit.chunk.source_relative_path,
-                        _passage_section(
-                            hit.chunk.source_relative_path,
-                            hit.chunk.heading_path or (hit.chunk.title,),
-                        ),
-                    )
-                    for hit in hits
-                )
+        try:
+            return _evaluate_benchmark_store(
+                repo_root=repo_root,
+                manifest=manifest,
+                store=store,
+                queries=queries,
+                available_passages=available_passages,
+                chunking=chunking,
+                embedding_provider=embedding_provider,
+                policy=policy,
+                top_k=top_k,
+                retrieval_mode=retrieval_mode,
             )
-            ranked[query.query_id] = documents
-            raw_hits[query.query_id] = [
-                {
-                    "passage_id": passage_id(
-                        hit.chunk.source_relative_path,
-                        _passage_section(
-                            hit.chunk.source_relative_path,
-                            hit.chunk.heading_path or (hit.chunk.title,),
-                        ),
-                    ),
-                    "chunk_id": hit.chunk.chunk_id,
-                    "citation_id": hit.citation_id,
-                    "rank": hit.rank,
-                    "rrf_score": hit.rrf_score,
-                    "sparse_rank": hit.sparse_rank,
-                    "sparse_score": hit.sparse_score,
-                    "dense_rank": hit.dense_rank,
-                    "dense_score": hit.dense_score,
-                    "route_agreement": hit.sparse_rank is not None and hit.dense_rank is not None,
-                }
-                for hit in hits
-            ]
-        report = evaluate_retrieval_v2(queries, ranked, top_k=top_k)
-        result = asdict(report)
-        for case in result["cases"]:
-            case["hits"] = raw_hits[str(case["query_id"])]
-            case["latency_ms"] = round(latency_by_query[str(case["query_id"])], 3)
-        result.update(
-            {
-                "benchmark_id": manifest.benchmark_id,
-                "benchmark_revision": manifest.benchmark_revision,
-                "dataset_sha256": manifest.dataset_sha256,
-                "corpus_file_count": len(manifest.files),
-                "source_commit": _git_value(repo_root, "rev-parse", "HEAD"),
-                "source_dirty": bool(_git_value(repo_root, "status", "--porcelain")),
-                "provider": {
-                    "model_id": embedding_provider.model_id,
-                    "model_revision": embedding_provider.model_revision,
-                    "dimensions": embedding_provider.dimensions,
-                    "supports_semantic_recall": embedding_provider.supports_semantic_recall,
-                },
-                "ablation_policy": asdict(policy),
-                "chunking": chunking,
-                "latency_ms": {
-                    "p50": _percentile(latencies, 0.50),
-                    "p95": _percentile(latencies, 0.95),
-                },
-                "index": asdict(store.index_summary()),
-            }
+        finally:
+            active_error = sys.exc_info()[0] is not None
+            try:
+                cleanup_benchmark_store(store)
+            except Exception:
+                if not active_error:
+                    raise
+
+
+def _evaluate_benchmark_store(
+    *,
+    repo_root: Path,
+    manifest: BenchmarkManifest,
+    store: KnowledgeStore,
+    queries: tuple[KnowledgeBenchmarkQueryV2, ...],
+    available_passages: set[str],
+    chunking: dict[str, int | float | bool],
+    embedding_provider: DenseEmbeddingProvider,
+    policy: KnowledgeAblationPolicy,
+    top_k: int,
+    retrieval_mode: str,
+) -> dict[str, Any]:
+    _validate_judgments(queries, available_passages)
+
+    ranked: dict[str, tuple[str, ...]] = {}
+    latencies: list[float] = []
+    latency_by_query: dict[str, float] = {}
+    raw_hits: dict[str, list[dict[str, Any]]] = {}
+    for query in queries:
+        started = time.perf_counter()
+        hits = store.search(
+            query.query,
+            top_k=top_k,
+            retrieval_mode=cast(Any, retrieval_mode),
         )
-        return result
+        elapsed_ms = (time.perf_counter() - started) * 1_000
+        latencies.append(elapsed_ms)
+        latency_by_query[query.query_id] = elapsed_ms
+        documents = tuple(
+            dict.fromkeys(
+                passage_id(
+                    hit.chunk.source_relative_path,
+                    _passage_section(
+                        hit.chunk.source_relative_path,
+                        hit.chunk.heading_path or (hit.chunk.title,),
+                    ),
+                )
+                for hit in hits
+            )
+        )
+        ranked[query.query_id] = documents
+        raw_hits[query.query_id] = [
+            {
+                "passage_id": passage_id(
+                    hit.chunk.source_relative_path,
+                    _passage_section(
+                        hit.chunk.source_relative_path,
+                        hit.chunk.heading_path or (hit.chunk.title,),
+                    ),
+                ),
+                "chunk_id": hit.chunk.chunk_id,
+                "citation_id": hit.citation_id,
+                "rank": hit.rank,
+                "rrf_score": hit.rrf_score,
+                "sparse_rank": hit.sparse_rank,
+                "sparse_score": hit.sparse_score,
+                "dense_rank": hit.dense_rank,
+                "dense_score": hit.dense_score,
+                "route_agreement": hit.sparse_rank is not None and hit.dense_rank is not None,
+            }
+            for hit in hits
+        ]
+    report = evaluate_retrieval_v2(queries, ranked, top_k=top_k)
+    result = asdict(report)
+    for case in result["cases"]:
+        case["hits"] = raw_hits[str(case["query_id"])]
+        case["latency_ms"] = round(latency_by_query[str(case["query_id"])], 3)
+    result.update(
+        {
+            "benchmark_id": manifest.benchmark_id,
+            "benchmark_revision": manifest.benchmark_revision,
+            "dataset_sha256": manifest.dataset_sha256,
+            "corpus_file_count": len(manifest.files),
+            "source_commit": _git_value(repo_root, "rev-parse", "HEAD"),
+            "source_dirty": bool(_git_value(repo_root, "status", "--porcelain")),
+            "provider": {
+                "model_id": embedding_provider.model_id,
+                "model_revision": embedding_provider.model_revision,
+                "dimensions": embedding_provider.dimensions,
+                "supports_semantic_recall": embedding_provider.supports_semantic_recall,
+            },
+            "retrieval_mode": retrieval_mode,
+            "ablation_policy": asdict(policy),
+            "chunking": chunking,
+            "latency_ms": {
+                "p50": _percentile(latencies, 0.50),
+                "p95": _percentile(latencies, 0.95),
+            },
+            "index": asdict(store.index_summary()),
+        }
+    )
+    return result
 
 
 def build_benchmark_store(
@@ -242,6 +298,8 @@ def build_benchmark_store(
     embedding_provider: DenseEmbeddingProvider,
     ablation_policy: KnowledgeAblationPolicy,
     query_texts: tuple[str, ...] = (),
+    index_factory: BenchmarkIndexFactory | None = None,
+    workspace_id: str = "sage-knowledge-benchmark-v2",
 ) -> tuple[KnowledgeStore, dict[str, int | float | bool], set[str]]:
     """Build an approved benchmark store for retrieval and generation evals.
 
@@ -251,6 +309,38 @@ def build_benchmark_store(
     """
 
     corpus_root = _inside(repo_root, manifest.corpus_root)
+    factory = index_factory or _local_index_factory
+    index = factory(workspace_id, embedding_provider, ablation_policy)
+    try:
+        return _populate_benchmark_store(
+            manifest=manifest,
+            corpus_root=corpus_root,
+            workspace_path=workspace_path,
+            database_path=database_path,
+            embedding_provider=embedding_provider,
+            ablation_policy=ablation_policy,
+            query_texts=query_texts,
+            workspace_id=workspace_id,
+            index=index,
+        )
+    except BaseException:
+        with suppress(Exception):
+            _cleanup_benchmark_index(index)
+        raise
+
+
+def _populate_benchmark_store(
+    *,
+    manifest: BenchmarkManifest,
+    corpus_root: Path,
+    workspace_path: Path,
+    database_path: Path,
+    embedding_provider: DenseEmbeddingProvider,
+    ablation_policy: KnowledgeAblationPolicy,
+    query_texts: tuple[str, ...],
+    workspace_id: str,
+    index: KnowledgeIndexBackend,
+) -> tuple[KnowledgeStore, dict[str, int | float | bool], set[str]]:
     store = KnowledgeStore(
         workspace_path,
         database_path,
@@ -262,11 +352,7 @@ def build_benchmark_store(
                 path=corpus_root,
             )
         },
-        knowledge_index=LocalKnowledgeIndex(
-            workspace_id="sage-knowledge-benchmark-v2",
-            embedding_provider=embedding_provider,
-            ablation_policy=ablation_policy,
-        ),
+        knowledge_index=index,
         ablation_policy=ablation_policy,
     )
     prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]] = []
@@ -284,11 +370,41 @@ def build_benchmark_store(
         prepared_sources,
         query_texts,
         ablation_policy=ablation_policy,
+        workspace_id=workspace_id,
     )
     for _item, prepared in prepared_sources:
         proposal = store.ingest_prepared(prepared)
         store.approve(proposal.proposal_id, proposal.revision)
     return store, chunking, available_passages
+
+
+def _local_index_factory(
+    workspace_id: str,
+    provider: DenseEmbeddingProvider,
+    policy: KnowledgeAblationPolicy,
+) -> KnowledgeIndexBackend:
+    return LocalKnowledgeIndex(
+        workspace_id=workspace_id,
+        embedding_provider=provider,
+        ablation_policy=policy,
+    )
+
+
+def _cleanup_benchmark_index(index: KnowledgeIndexBackend) -> None:
+    delete_workspace = getattr(index, "delete_workspace", None)
+    try:
+        if callable(delete_workspace):
+            delete_workspace()
+    finally:
+        close = getattr(index, "close", None)
+        if callable(close):
+            close()
+
+
+def cleanup_benchmark_store(store: KnowledgeStore) -> None:
+    """Delete an external benchmark projection and close its resources."""
+
+    _cleanup_benchmark_index(store.knowledge_index)
 
 
 def _validate_judgments(
@@ -308,6 +424,7 @@ def _prepare_provider(
     queries: tuple[str, ...],
     *,
     ablation_policy: KnowledgeAblationPolicy,
+    workspace_id: str,
 ) -> dict[str, int | float | bool]:
     prepare = getattr(provider, "prepare", None)
     document_texts: list[str] = []
@@ -322,7 +439,7 @@ def _prepare_provider(
         )
         chunks = chunk_document(
             prepared.document,
-            workspace_id="sage-knowledge-benchmark-v2",
+            workspace_id=workspace_id,
             page_id=item.path,
             page_revision=prepared.source_revision,
             page_path=item.path,
@@ -416,8 +533,10 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 
 __all__ = [
+    "BenchmarkIndexFactory",
     "BenchmarkManifest",
     "build_benchmark_store",
+    "cleanup_benchmark_store",
     "load_embedding_provider",
     "load_manifest",
     "run_benchmark",

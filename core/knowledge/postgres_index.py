@@ -22,6 +22,14 @@ from core.knowledge.observability import (
     build_retrieval_trace,
 )
 from core.knowledge.parsing import MarkdownParser, ParseRequest, deserialize_document
+from core.knowledge.postgres_retrieval import (
+    DenseCandidateRetriever,
+    NativePostgresFtsRetriever,
+    PgvectorExactRetriever,
+    RankFusionPolicy,
+    ReciprocalRankFusionPolicy,
+    SparseCandidateRetriever,
+)
 from core.knowledge.relevance import KnowledgeRelevancePolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
@@ -36,10 +44,8 @@ from core.knowledge.retrieval import (
     embed_document_text,
     embed_query_text,
     embedding_text,
-    fts_query,
     index_text,
     prepare_document_embeddings,
-    reciprocal_rank_fusion,
 )
 
 POSTGRES_INDEX_SCHEMA_REVISION = "20260727_rag_postgres_exact_v1"
@@ -236,6 +242,9 @@ class PostgresKnowledgeIndex:
         relevance_policy: KnowledgeRelevancePolicy | None = None,
         observability: KnowledgeRetrievalObservabilityConfig | None = None,
         ablation_policy: KnowledgeAblationPolicy | None = None,
+        sparse_retriever: SparseCandidateRetriever | None = None,
+        dense_retriever: DenseCandidateRetriever | None = None,
+        fusion_policy: RankFusionPolicy | None = None,
     ) -> None:
         if not workspace_id.strip() or len(workspace_id) > 128:
             raise ValueError("invalid Knowledge PostgreSQL workspace id")
@@ -250,6 +259,9 @@ class PostgresKnowledgeIndex:
         self.relevance_policy = relevance_policy
         self.observability = observability or KnowledgeRetrievalObservabilityConfig()
         self.ablation_policy = ablation_policy or KnowledgeAblationPolicy()
+        self.sparse_retriever = sparse_retriever or NativePostgresFtsRetriever()
+        self.dense_retriever = dense_retriever or PgvectorExactRetriever()
+        self.fusion_policy = fusion_policy or ReciprocalRankFusionPolicy()
         self._markdown_parser = MarkdownParser()
         self._pool: Any | None = None
         self._pool_lock = RLock()
@@ -261,7 +273,7 @@ class PostgresKnowledgeIndex:
     @property
     def backend_id(self) -> str:
         dense = "semantic" if self.embedding_provider.supports_semantic_recall else "hashing"
-        return f"postgres-tsvector+pgvector-exact+{dense}"
+        return f"{self.sparse_retriever.backend_id}+" f"{self.dense_retriever.backend_id}+{dense}"
 
     def ensure_schema(self, connection: sqlite3.Connection) -> None:
         del connection
@@ -277,6 +289,7 @@ class PostgresKnowledgeIndex:
             self._register_vector(postgres)
             with postgres.cursor() as cursor:
                 cursor.execute(_POSTGRES_INDEX_SCHEMA)
+                self.sparse_retriever.ensure_schema(cursor)
                 cursor.execute(
                     """
                     ALTER TABLE knowledge_index_source_revisions
@@ -616,26 +629,13 @@ class PostgresKnowledgeIndex:
         with self._connection() as postgres:
             if retrieval_mode in {"sparse", "hybrid"}:
                 with postgres.cursor(cursor_factory=self._psycopg2_extras.RealDictCursor) as cursor:
-                    cursor.execute(
-                        f"""
-                        WITH query AS (
-                            SELECT websearch_to_tsquery('simple'::regconfig, %s) AS value
-                        )
-                        SELECT chunk.chunk_id,
-                               ts_rank_cd(chunk.search_tsv, query.value, 33) AS score,
-                               chunk.source_relative_path, chunk.source_revision,
-                               chunk.ordinal, chunk.content_hash
-                        FROM knowledge_index_chunks AS chunk
-                        CROSS JOIN query
-                        WHERE chunk.search_tsv @@ query.value AND {where}
-                        ORDER BY score DESC, chunk.source_relative_path,
-                                 chunk.source_revision, chunk.ordinal,
-                                 chunk.content_hash, chunk.chunk_id
-                        LIMIT %s
-                        """,
-                        (fts_query(normalized), *filter_params, candidate_limit),
+                    sparse_rows = self.sparse_retriever.search(
+                        cursor,
+                        query=normalized,
+                        where_sql=where,
+                        filter_params=filter_params,
+                        candidate_limit=candidate_limit,
                     )
-                    sparse_rows = tuple(cursor.fetchall())
             if retrieval_mode in {"dense", "hybrid"}:
                 try:
                     query_vector = tuple(
@@ -661,30 +661,14 @@ class PostgresKnowledgeIndex:
                     raise ValueError("Knowledge PostgreSQL query embedding dimensions do not match")
                 vector = self._database_vector(query_vector)
                 with postgres.cursor(cursor_factory=self._psycopg2_extras.RealDictCursor) as cursor:
-                    cursor.execute(
-                        f"""
-                        WITH query AS (SELECT %s::vector AS value)
-                        SELECT chunk.chunk_id,
-                               1 - (chunk.embedding <=> query.value) AS score,
-                               chunk.source_relative_path, chunk.source_revision,
-                               chunk.ordinal, chunk.content_hash
-                        FROM knowledge_index_chunks AS chunk
-                        CROSS JOIN query
-                        WHERE {where}
-                          AND chunk.embedding_dimensions=%s
-                        ORDER BY chunk.embedding <=> query.value,
-                                 chunk.source_relative_path, chunk.source_revision,
-                                 chunk.ordinal, chunk.content_hash, chunk.chunk_id
-                        LIMIT %s
-                        """,
-                        (
-                            vector,
-                            *filter_params,
-                            self.embedding_provider.dimensions,
-                            candidate_limit,
-                        ),
+                    dense_rows = self.dense_retriever.search(
+                        cursor,
+                        query_vector=vector,
+                        dimensions=self.embedding_provider.dimensions,
+                        where_sql=where,
+                        filter_params=filter_params,
+                        candidate_limit=candidate_limit,
                     )
-                    dense_rows = tuple(cursor.fetchall())
 
         sparse = [(str(row["chunk_id"]), float(row["score"])) for row in sparse_rows]
         dense = [
@@ -707,7 +691,7 @@ class PostgresKnowledgeIndex:
             )
             for row in stable_rows
         }
-        ranked = reciprocal_rank_fusion(sparse, dense, tie_breakers=tie_breakers)
+        ranked = self.fusion_policy.fuse(sparse, dense, tie_breakers=tie_breakers)
         fused = ranked[:top_k]
         if self.relevance_policy is not None:
             fused = [
