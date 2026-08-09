@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from core.knowledge.benchmark_runner import (
@@ -68,6 +70,7 @@ def main() -> int:
         _fetch_corpus(repo_root)
     manifest = load_manifest(repo_root, args.manifest.resolve())
     provider = load_embedding_provider(args.provider_factory)
+    benchmark_started_at = time.perf_counter()
     result = run_benchmark(
         repo_root,
         manifest,
@@ -75,6 +78,11 @@ def main() -> int:
         provider=provider,
         ablation_policy=KnowledgeAblationPolicy(strategy=args.strategy),
     )
+    result["benchmark_wall_ms"] = round(
+        (time.perf_counter() - benchmark_started_at) * 1_000,
+        3,
+    )
+    result["provider_runtime"] = _provider_runtime(provider)
     result["evaluation_scope"] = {
         "stage": "retrieval",
         "corpus": "real_public_domain_books",
@@ -128,6 +136,33 @@ def _claim_gold_receipt(repo_root: Path, path: Path) -> dict[str, object]:
         "review_status": "seed_manual",
         "production_claim_allowed": False,
     }
+
+
+def _provider_runtime(provider: object) -> dict[str, object]:
+    latencies = getattr(provider, "request_latencies_ms", ())
+    numeric_latencies = [float(value) for value in latencies]
+    return {
+        "protocol_mode": str(getattr(provider, "protocol_mode", "unspecified")),
+        "request_count": _non_negative_int(getattr(provider, "request_count", 0)),
+        "input_tokens": _non_negative_int(getattr(provider, "input_tokens", 0)),
+        "estimated_cost_usd": getattr(provider, "estimated_cost_usd", None),
+        "request_latency_ms": {
+            "p50": _percentile(numeric_latencies, 0.50),
+            "p95": _percentile(numeric_latencies, 0.95),
+        },
+    }
+
+
+def _non_negative_int(value: object) -> int:
+    return int(value) if isinstance(value, int) and value >= 0 else 0
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = max(0, math.ceil(len(ordered) * percentile) - 1)
+    return round(ordered[index], 3)
 
 
 if __name__ == "__main__":
