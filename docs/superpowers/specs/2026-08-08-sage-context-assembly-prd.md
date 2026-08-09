@@ -1,6 +1,9 @@
 # Sage Context Assembly 总 PRD
 
-> 阶段：A0 capture、A1 compare、B0 enforce new turn、B1 enforce resume 已实现；默认仍为 `shadow`，需显式开启 `enforce`。
+> 状态：A0 capture、A1 compare、B0 enforce new turn、B1 enforce resume 与 F1
+> `ModelContextFrame` 已实现；F2 ToolBundleSnapshot、F3 MCP/Skills 生命周期已合入
+> `dev/sage-v7`，F4 TaskIntentEnvelope 在当前职责分支完成，待最终 PR 合入。默认仍为
+> `shadow`，需显式开启 `enforce`。
 > 目标：把一次 Turn 的上下文选择和执行边界收敛为可验证的不可变快照，让新一轮执行和 Approval 恢复都能回答“本轮依据什么运行”。
 
 ## 1. 一句话目标
@@ -15,7 +18,8 @@
 ```
 
 `TurnContextPlan` 是“本 Turn 的上下文与执行边界快照”，不是任务 DAG，也不是完整 Prompt
-副本。后续 `ModelContextFrameFactory` 才会用 Plan 加最新 Graph Checkpoint 生成短命模型输入；本 PR 不把该后续组件写成已交付。
+副本。`ModelContextFrameFactory` 已用 Plan 校验并生成短命模型输入；它不持久化完整 Prompt，
+也不取代 Plan、Checkpoint 或 Transcript 的事实职责。
 
 ## 2. 顶层执行链
 
@@ -31,7 +35,9 @@
 3. Assembler 把大正文净化为 ref/revision/digest，把静态服务端 Policy 作为唯一可保存的规则正文，构造 frozen `TurnContextPlan`。
 4. `TurnPlanStore` 以 `run_id` 幂等落库；canonical JSON 的 SHA-256 为 `plan_hash`。落库后写一条不含正文的 Timeline receipt。
 5. A1 Comparator 核对真正交给 Graph 的 system prompt、Gate/scope、Tool/MCP catalog、Sandbox 和运行限制；只产出 mismatch code，不改变本轮执行。
-6. `shadow` 继续走原 Graph 输入；`enforce` 新 Turn 只有 Plan、receipt 和 Comparator 都成功且匹配后才创建 Runtime Adapter，并把四元 binding 写入 Checkpoint。当前切片尚未实现 `ModelContextFrameFactory`，不把它虚假标记为已交付。
+6. `shadow` 继续走原 Graph 输入；`enforce` 新 Turn 只有 Plan、receipt、Comparator 和
+   `ModelContextFrameFactory` 都成功且匹配后才创建 Runtime Adapter，并把四元 binding 写入
+   Checkpoint。Resume 同样先完成 Plan/依赖比较，再生成 Frame。
 
 ### Approval / 重启恢复
 
@@ -60,8 +66,8 @@ fail closed 的含义是“执行停止在最后可信 Checkpoint，等待修复
 | `TurnPlanStore` | 同 run 幂等写入、冲突拒绝、读取完整性校验 | 不更新已存在的 Plan |
 | `SessionEventJournal` | 维护 Plan 专用表和 schema 迁移；提供 Timeline receipt | 不用 Timeline replay 重建执行权威 |
 | `Graph Checkpoint` | 保存工具循环、pending Approval、动态状态和最小四元 Plan binding | 不保存整份 Plan |
-| `SageHarnessRuntimeAdapter` | 通过 enforce 门禁后创建 Graph Adapter，并把 binding 传入 Graph | 不自行放宽 Plan scope |
-| `ModelContextFrameFactory`（后续切片） | 未来用 Plan + 最新 Checkpoint 生成一次模型调用的上下文 | 本 PR 未实现，不是当前恢复权威 |
+| `SageHarnessRuntimeAdapter` | 通过 enforce 门禁后创建 Graph Adapter，把 Frame 与 binding 传入 Graph | 不自行放宽 Plan scope |
+| `ModelContextFrameFactory` | 校验 Plan 与 Prompt 三层 digest，生成一次模型调用的短命 Frame | 不持久化完整 Prompt，不授予新的权限 |
 
 ## 4. Plan 保存的边界
 
@@ -130,8 +136,10 @@ Receipt 是“发生过什么选择/比较”的脱敏收据，不是 Transcript
 | B0 enforce new turn（已完成） | Plan/receipt/compare 成功后才创建 Adapter；binding 随 Graph state 持久化 | capture、compare、hash 或 scope 失败即 fail closed |
 | B1 enforce resume（已完成） | Resume 先读 Plan + scoped Checkpoint，再按 Plan routing 比较当前依赖 | 缺失、篡改、错作用域、依赖漂移返回 `resume_plan_*`，不创建 Adapter、不调用模型/工具 |
 
-当前交付证据：Context Assembly 相关聚焦回归 `192 passed`；完整后端 `1775 passed, 11 skipped`，Ruff、格式和 215 个源码文件 mypy 通过；前端 Vitest `69` 个文件、`505 passed`；private/public 生产构建通过；`git diff --check` 通过。该 worktree 在本轮收口前尚未提交或创建 PR，提交和 PR 状态以最终 Git 证据为准。
+历史交付证据：Context Assembly 基础切片已完成聚焦回归、后端/前端门禁和生产构建；本轮
+F4 的最终证据以 `sage-harness-input-layers-prd.md`、PR 检查和收口记录为准。所有数字必须
+对应实际命令输出，不把本地候选分支或设计文档当成已合入能力。
 
 ## 9. 设计结论
 
-这次改造的核心不是再增加一个“大上下文字符串”，而是建立清晰的事实边界：选择模块产生局部结果，Assembler 负责一次性收敛，Plan 负责不可变和可验证，Checkpoint 负责动态执行状态，Transcript 负责对话事实，Timeline/Trace 负责观察。B0/B1 已把 Plan 和 scoped Checkpoint 变成执行前置条件；后续再独立推进 Context Budget、ModelContextFrame、Tool Bundle/Router、MCP 生命周期和 Task DAG。
+这次改造的核心不是再增加一个“大上下文字符串”，而是建立清晰的事实边界：选择模块产生局部结果，Assembler 负责一次性收敛，Plan 负责不可变和可验证，Frame 负责一次模型调用的三层投影，Checkpoint 负责动态执行状态，Transcript 负责对话事实，Timeline/Trace 负责观察。B0/B1 已把 Plan 和 scoped Checkpoint 变成执行前置条件；F1-F4 已补齐 Frame、ToolBundle、MCP/Skills 生命周期和任务意图 admission。后续再独立推进 Context Budget 的更细粒度治理与 Task DAG。

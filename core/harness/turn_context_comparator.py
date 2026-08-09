@@ -54,6 +54,7 @@ def compare_turn_context_plan(
     execution = _mapping(payload.get("execution"))
     budget = _mapping(payload.get("budget"))
     resume = _mapping(payload.get("resume"))
+    admission = _mapping(payload.get("admission"))
     user_content = str(request.user_message.get("content", "")).strip()
     usage = request.prepared_context.usage
     sandbox = request.sandbox_descriptor
@@ -86,8 +87,13 @@ def compare_turn_context_plan(
         ("identity.surface", plan.surface, request.surface),
         (
             "admission.input_fingerprint",
-            _nested(payload, "admission", "input_fingerprint"),
+            admission.get("input_fingerprint"),
             _digest_text(user_content),
+        ),
+        (
+            "admission.task_intent",
+            admission.get("task_intent"),
+            request.intent_envelope.as_dict() if request.intent_envelope is not None else None,
         ),
         (
             "prompt.rendered_hash",

@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
+from core.harness.task_intent import TaskIntentEnvelope
+
 PLAN_SCHEMA_VERSION = 1
 MAX_PLAN_BYTES = 512 * 1024
 
@@ -333,6 +335,14 @@ def _validate_payload(payload: Mapping[str, Any]) -> None:
             raise TurnContextPlanValidationError(f"plan section is not an object: {section}")
     if "budget" in payload and not isinstance(payload["budget"], dict):
         raise TurnContextPlanValidationError("plan section is not an object: budget")
+    raw_task_intent = cast(Mapping[str, Any], payload["admission"]).get("task_intent")
+    if raw_task_intent is not None:
+        if not isinstance(raw_task_intent, Mapping):
+            raise TurnContextPlanValidationError("admission task intent must be an object")
+        try:
+            TaskIntentEnvelope.from_mapping(raw_task_intent)
+        except (TypeError, ValueError) as exc:
+            raise TurnContextPlanValidationError("invalid admission task intent") from exc
 
 
 def _reject_secret_keys(value: Any) -> None:
