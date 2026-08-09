@@ -93,6 +93,7 @@ def test_qwen_uses_non_fused_batches_and_separates_query_instruction(
 ) -> None:
     monkeypatch.setenv("BAILIAN_EMBEDDING_KEY", "test-only")
     monkeypatch.setenv("SAGE_QWEN3_VL_BATCH_SIZE", "2")
+    monkeypatch.setenv("SAGE_QWEN3_VL_MAX_WORKERS", "1")
     client = _Client()
     client.responses = [
         _Response(

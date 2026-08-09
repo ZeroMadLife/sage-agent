@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import math
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 import httpx
@@ -46,9 +48,11 @@ class Qwen3VLEmbeddingProvider:
             },
             timeout=90.0,
         )
-        self._batch_size = _positive_int_env("SAGE_QWEN3_VL_BATCH_SIZE", default=10)
+        self._batch_size = _positive_int_env("SAGE_QWEN3_VL_BATCH_SIZE", default=10, maximum=10)
+        self._max_workers = _positive_int_env("SAGE_QWEN3_VL_MAX_WORKERS", default=4, maximum=16)
         self._document_cache: dict[str, tuple[float, ...]] = {}
         self._query_cache: dict[str, tuple[float, ...]] = {}
+        self._metrics_lock = threading.Lock()
         self.request_count = 0
         self.input_tokens = 0
         self.request_latencies_ms: list[float] = []
@@ -74,9 +78,15 @@ class Qwen3VLEmbeddingProvider:
     def _prepare(self, texts: tuple[str, ...], *, role: Literal["document", "query"]) -> None:
         cache = self._cache(role)
         pending = tuple(text for text in dict.fromkeys(texts) if text not in cache)
-        for offset in range(0, len(pending), self._batch_size):
-            batch = pending[offset : offset + self._batch_size]
-            vectors = self._request(batch, role=role)
+        batches = tuple(
+            pending[offset : offset + self._batch_size]
+            for offset in range(0, len(pending), self._batch_size)
+        )
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            vectors_by_batch = tuple(
+                executor.map(lambda batch: self._request(batch, role=role), batches)
+            )
+        for batch, vectors in zip(batches, vectors_by_batch, strict=True):
             cache.update(zip(batch, vectors, strict=True))
 
     def _embed(self, text: str, *, role: Literal["document", "query"]) -> tuple[float, ...]:
@@ -131,9 +141,10 @@ class Qwen3VLEmbeddingProvider:
             input_tokens = raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError("Qwen3-VL embedding response is invalid") from exc
-        self.request_count += 1
-        self.input_tokens += input_tokens
-        self.request_latencies_ms.append((time.perf_counter() - started_at) * 1_000)
+        with self._metrics_lock:
+            self.request_count += 1
+            self.input_tokens += input_tokens
+            self.request_latencies_ms.append((time.perf_counter() - started_at) * 1_000)
         return vectors
 
 
@@ -177,13 +188,13 @@ def _normalized_vector(raw: object, dimensions: int) -> tuple[float, ...]:
     return tuple(value / norm for value in vector)
 
 
-def _positive_int_env(name: str, *, default: int) -> int:
+def _positive_int_env(name: str, *, default: int, maximum: int) -> int:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default
     value = int(raw)
-    if not 1 <= value <= 10:
-        raise ValueError(f"{name} must be between 1 and 10")
+    if not 1 <= value <= maximum:
+        raise ValueError(f"{name} must be between 1 and {maximum}")
     return value
 
 
