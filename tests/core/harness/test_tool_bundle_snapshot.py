@@ -11,8 +11,10 @@ from sage_harness import (
     CapabilityRegistry,
     CapabilitySelectionIndex,
     DeferredToolSetup,
+    McpLifecycleSnapshot,
 )
 
+from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.tools_adapter import CodingToolBundle
 
@@ -93,3 +95,38 @@ def test_snapshot_captures_skill_allowlist_without_skill_body() -> None:
     assert snapshot.skill_scope_active is True
     assert snapshot.skill_allowlist == ("read_file", "tool_search")
     assert "prompt" not in snapshot.as_dict()
+
+
+def test_snapshot_aggregates_mcp_and_skill_lifecycle_without_runtime_objects() -> None:
+    mcp = McpLifecycleSnapshot(
+        config_revision="mcp-r1",
+        scope_fingerprint="sha256:" + "1" * 64,
+        catalog_hash="mcp-catalog-r1",
+        tool_ids=("docs:lookup",),
+    )
+    skill = SkillLifecycleSnapshot(
+        catalog_revision="skill-catalog-r1",
+        activation_ref="skill://project/review",
+        activation_revision="skill-r1",
+        allowed_tools=("read_file",),
+    )
+    bundle = CodingToolBundle(
+        tools=(),
+        deferred_setup=DeferredToolSetup(),
+        capability_revision="cap-r1",
+        capability_ids_by_tool_name={"read_file": "local:read_file"},
+        capability_count=1,
+        active_skill_allowed_tools=frozenset({"read_file"}),
+        mcp_lifecycle=mcp,
+        skill_lifecycle=skill,
+    )
+
+    snapshot = bundle.snapshot
+    payload = snapshot.as_dict()
+
+    assert snapshot.mcp_lifecycle is mcp
+    assert snapshot.skill_lifecycle is skill
+    assert payload["mcp_lifecycle"] == mcp.as_dict()
+    assert payload["skill_lifecycle"] == skill.as_dict()
+    assert "connection" not in repr(payload)
+    assert "prompt" not in repr(payload)

@@ -10,12 +10,13 @@ from typing import Any
 
 from sage_harness import (
     HarnessConfig,
-    McpToolSnapshot,
+    McpLifecycleSnapshot,
     SandboxDescriptor,
     TurnContextPlanBinding,
     normalize_turn_context_plan_binding,
 )
 
+from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_plan import TurnContextPlan
@@ -37,6 +38,8 @@ class PreparedTurnContextResume:
     retrieval_sources: frozenset[str]
     retrieval_tool_scope: str
     active_skill_allowed_tools: frozenset[str] | None
+    mcp_lifecycle: McpLifecycleSnapshot | None
+    skill_lifecycle: SkillLifecycleSnapshot | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +56,6 @@ class TurnContextResumeExecutionRequest:
     runtime_mode: str
     permission_mode: str
     model_spec: str
-    mcp_snapshot: McpToolSnapshot | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,11 +133,25 @@ def prepare_turn_context_resume(
         raise TurnContextResumeError("resume_plan_tool_scope_invalid")
     if not skill_scope_active and raw_allowlist:
         raise TurnContextResumeError("resume_plan_tool_scope_invalid")
+    try:
+        mcp_lifecycle = _optional_mcp_lifecycle(tools.get("mcp_lifecycle"))
+        skill_lifecycle = _optional_skill_lifecycle(tools.get("skill_lifecycle"))
+    except ValueError as exc:
+        raise TurnContextResumeError("resume_plan_lifecycle_invalid") from exc
+    if skill_lifecycle is None:
+        raise TurnContextResumeError("resume_skill_lifecycle_missing")
+    if skill_lifecycle is not None and (
+        bool(skill_lifecycle.activation_ref) != skill_scope_active
+        or list(skill_lifecycle.allowed_tools) != raw_allowlist
+    ):
+        raise TurnContextResumeError("resume_plan_skill_lifecycle_mismatch")
     return PreparedTurnContextResume(
         binding=normalize_turn_context_plan_binding(plan.checkpoint_binding()),
         retrieval_sources=frozenset(selected_sources),
         retrieval_tool_scope=str(retrieval_tool_scope),
         active_skill_allowed_tools=(frozenset(raw_allowlist) if skill_scope_active else None),
+        mcp_lifecycle=mcp_lifecycle,
+        skill_lifecycle=skill_lifecycle,
     )
 
 
@@ -215,7 +231,16 @@ def compare_turn_context_plan_resume(
             tools.get("skill_allowlist"),
             list(request.tool_snapshot.skill_allowlist),
         ),
-        ("tools.mcp_catalog", tools.get("mcp_catalog"), _mcp_catalog(request.mcp_snapshot)),
+        (
+            "tools.mcp_lifecycle",
+            tools.get("mcp_lifecycle"),
+            _lifecycle_payload(request.tool_snapshot.mcp_lifecycle),
+        ),
+        (
+            "tools.skill_lifecycle",
+            tools.get("skill_lifecycle"),
+            _lifecycle_payload(request.tool_snapshot.skill_lifecycle),
+        ),
         (
             "execution.runtime",
             (
@@ -281,15 +306,25 @@ def _sandbox_payload(descriptor: SandboxDescriptor) -> dict[str, object]:
     }
 
 
-def _mcp_catalog(snapshot: McpToolSnapshot | None) -> dict[str, object] | None:
-    if snapshot is None:
+def _lifecycle_payload(value: object) -> object:
+    render = getattr(value, "as_dict", None)
+    return render() if callable(render) else None
+
+
+def _optional_mcp_lifecycle(value: object) -> McpLifecycleSnapshot | None:
+    if value is None:
         return None
-    catalog = snapshot.catalog
-    return {
-        "revision": catalog.revision,
-        "catalog_hash": catalog.catalog_hash,
-        "tool_ids": sorted(tool.tool_id for tool in catalog.tools),
-    }
+    if not isinstance(value, Mapping):
+        raise ValueError("MCP lifecycle must be an object")
+    return McpLifecycleSnapshot.from_mapping(value)
+
+
+def _optional_skill_lifecycle(value: object) -> SkillLifecycleSnapshot | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("Skill lifecycle must be an object")
+    return SkillLifecycleSnapshot.from_mapping(value)
 
 
 __all__ = [

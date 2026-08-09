@@ -1,7 +1,8 @@
 # Sage Harness 输入分层与扩展底座 PRD
 
-> 状态：总体设计冻结；第一切片实现 `TurnContextPlan -> ModelContextFrame`。ToolBundle、MCP/Skills
-> 生命周期与任务意图分析按独立小版本继续，不在一个 PR 中同时改完。
+> 状态：总体设计冻结；F1 ModelContextFrame 与 F2 ToolBundleSnapshot 已合入
+> `dev/sage-v7`，F3 MCP/Skills 生命周期已在独立职责分支完成并待 PR 合入，F4 TaskIntentEnvelope
+> 仍待开发。每个切片独立测试、审查和收口，不在一个 PR 中同时改完。
 
 ## 1. 一句话目标
 
@@ -155,6 +156,35 @@ CodingToolBundle
 - Skills：固定 discover precedence、revision、activation 和 tool allowlist；
 - catalog 漂移在 Resume 前拒绝，不在工具调用时才发现；
 - Tool/MCP/Skill 正文继续作为不可信数据，不进入 Static Policy。
+
+#### F3 已实现（待 PR 合入）
+
+```text
+新 Turn
+  -> McpManager.acquire_tools(scope)
+  -> SkillRegistry.lifecycle_snapshot(input)
+  -> ToolBundleSnapshot(mcp_lifecycle + skill_lifecycle)
+  -> TurnContextPlan / receipt
+
+Approval / 重启 Resume
+  -> 读取并验证 Plan + scoped Checkpoint
+  -> 校验 Skill precedence/catalog/activation/allowlist
+  -> 校验 MCP config revision/scope
+  -> acquire/reuse scoped catalog
+  -> catalog mismatch 时 close_scope 并 fail closed
+  -> 通过后才创建 Sandbox / Runtime Adapter
+```
+
+组件职责：`McpLifecycleSnapshot` 只保存 revision、scope fingerprint、catalog hash 和稳定
+tool IDs；`SkillLifecycleSnapshot` 只保存发现覆盖顺序、catalog revision、激活引用、执行
+revision 和 allowlist；`ToolBundleSnapshot` 聚合两者，但不持有连接、凭据、Skill/MCP 正文或
+执行闭包。旧 Plan 缺少 lifecycle 时返回固定 `resume_skill_lifecycle_missing` /
+`resume_mcp_lifecycle_missing`，不从当前状态补造快照。
+
+F3 当前 worktree 的验证证据：定向 `75 passed`；后端完整 `1794 passed, 11 skipped`；Ruff、
+格式、mypy（217 个源码文件）、`git diff --check` 通过；私有与 public 前端生产构建通过。
+生产构建仅保留既有 chunk 大小警告；前端依赖通过当前 worktree 的临时 `node_modules` 链接提供，
+该链接未进入 Git。
 
 ### F4：TaskIntentEnvelope
 

@@ -161,9 +161,14 @@ def compare_turn_context_plan(
             list(request.tool_snapshot.skill_allowlist),
         ),
         (
-            "tools.mcp_catalog",
-            tools.get("mcp_catalog"),
-            _mcp_catalog(request),
+            "tools.mcp_lifecycle",
+            tools.get("mcp_lifecycle"),
+            _lifecycle_payload(request.tool_snapshot.mcp_lifecycle),
+        ),
+        (
+            "tools.skill_lifecycle",
+            tools.get("skill_lifecycle"),
+            _lifecycle_payload(request.tool_snapshot.skill_lifecycle),
         ),
         (
             "execution.runtime",
@@ -242,15 +247,9 @@ def _digest_json(value: object) -> str:
     return _digest_text(encoded)
 
 
-def _mcp_catalog(request: TurnContextAssemblyRequest) -> dict[str, object] | None:
-    if request.mcp_snapshot is None:
-        return None
-    catalog = request.mcp_snapshot.catalog
-    return {
-        "revision": catalog.revision,
-        "catalog_hash": catalog.catalog_hash,
-        "tool_ids": sorted(tool.tool_id for tool in catalog.tools),
-    }
+def _lifecycle_payload(value: object) -> object:
+    render = getattr(value, "as_dict", None)
+    return render() if callable(render) else None
 
 
 __all__ = ["TurnContextComparison", "compare_turn_context_plan"]

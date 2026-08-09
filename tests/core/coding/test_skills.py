@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from core.coding.skills import SkillRegistry, discover_skills, parse_slash_command
+import pytest
+
+from core.coding.skills import (
+    SkillLifecycleError,
+    SkillRegistry,
+    discover_skills,
+    parse_slash_command,
+)
 from core.coding.skills.skill import Skill, parse_frontmatter
 
 
@@ -107,6 +114,56 @@ def test_skill_registry_resolve_non_slash(tmp_path: Path) -> None:
     assert skill is None
     assert command == ""
     assert args == ""
+
+
+def test_skill_lifecycle_snapshot_freezes_precedence_activation_and_allowlist(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / ".coding" / "skills" / "review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: review\nallowed-tools: search, read_file\n---\nReview body.",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry(root=tmp_path, home=tmp_path / "home")
+
+    snapshot = registry.lifecycle_snapshot("/review staged")
+
+    assert snapshot.discovery_precedence == (
+        "builtin",
+        "user",
+        "project:skills",
+        "project:.coding/skills",
+    )
+    assert snapshot.catalog_revision == registry.revision
+    assert snapshot.activation_ref == "skill://project/review"
+    assert len(snapshot.activation_revision) == 16
+    assert snapshot.allowed_tools == ("read_file", "search")
+    assert "Review body" not in repr(snapshot)
+    assert registry.validate_lifecycle(snapshot) is snapshot
+
+
+def test_skill_lifecycle_rejects_catalog_drift_after_restart(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "deploy"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\nname: deploy\nallowed-tools: read_file\n---\nDeploy v1.",
+        encoding="utf-8",
+    )
+    expected = SkillRegistry(root=tmp_path, home=tmp_path / "home").lifecycle_snapshot(
+        "/deploy staging"
+    )
+    skill_file.write_text(
+        "---\nname: deploy\nallowed-tools: read_file, run_shell\n---\nDeploy v2.",
+        encoding="utf-8",
+    )
+    resumed = SkillRegistry(root=tmp_path, home=tmp_path / "home")
+
+    with pytest.raises(SkillLifecycleError) as caught:
+        resumed.validate_lifecycle(expected)
+
+    assert caught.value.code == "skill_catalog_revision_mismatch"
 
 
 def test_planmode_skill_discovered(tmp_path):

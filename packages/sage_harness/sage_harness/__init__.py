@@ -27,6 +27,8 @@ from sage_harness.deferred_tools import (
 from sage_harness.mcp import (
     McpCatalogSnapshot,
     McpConfigSnapshot,
+    McpLifecycleError,
+    McpLifecycleSnapshot,
     McpManager,
     McpScope,
     McpServerConfig,
@@ -100,7 +102,9 @@ from sage_harness.skills import (
     SkillActivationMiddleware,
     SkillCatalog,
     parse_skill_activation,
+    resolve_skill_activation,
     resolve_skill_allowed_tools,
+    skill_revision,
 )
 from sage_harness.state import (
     SageThreadState,
@@ -176,6 +180,8 @@ __all__ = [
     "McpCatalogSnapshot",
     "McpConfigSnapshot",
     "McpConnectionStatus",
+    "McpLifecycleError",
+    "McpLifecycleSnapshot",
     "McpManager",
     "McpScope",
     "McpServerConfig",
@@ -233,6 +239,8 @@ __all__ = [
     "open_sqlite_checkpointer",
     "parse_skill_activation",
     "render_deferred_tool_index",
+    "resolve_skill_activation",
     "resolve_skill_allowed_tools",
+    "skill_revision",
     "thread_config",
 ]

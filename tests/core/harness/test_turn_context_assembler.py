@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sage_harness import HarnessConfig, SandboxCapabilities, SandboxDescriptor
+from sage_harness import (
+    HarnessConfig,
+    McpLifecycleSnapshot,
+    SandboxCapabilities,
+    SandboxDescriptor,
+)
 
 from core.coding.context import ContextUsage, PreparedContext
 from core.coding.persistence import TurnPlanStore
+from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.learning_intent import LearningIntentRoute
 from core.harness.retrieval_gate import RetrievalGateReceipt
@@ -92,6 +98,18 @@ def _request() -> TurnContextAssemblyRequest:
             capability_count=1,
             skill_scope_active=True,
             skill_allowlist=("read_file",),
+            mcp_lifecycle=McpLifecycleSnapshot(
+                config_revision="mcp-r1",
+                scope_fingerprint="sha256:" + "1" * 64,
+                catalog_hash="mcp-catalog-r1",
+                tool_ids=("docs:lookup",),
+            ),
+            skill_lifecycle=SkillLifecycleSnapshot(
+                catalog_revision="skill-catalog-r1",
+                activation_ref="skill://project/review",
+                activation_revision="skill-r1",
+                allowed_tools=("read_file",),
+            ),
         ),
         sandbox_descriptor=SandboxDescriptor(
             sandbox_id="container:internal-id",
@@ -133,6 +151,8 @@ def test_shadow_capture_persists_only_references_digests_and_static_policy(tmp_p
     assert payload["context_refs"]["memory_refs"][0]["memory_id"] == "memory-1"
     assert payload["execution"]["sandbox"]["provider"] == "container"
     assert payload["tools"]["snapshot_hash"] == _request().tool_snapshot.snapshot_hash
+    assert payload["tools"]["mcp_lifecycle"]["config_revision"] == "mcp-r1"
+    assert payload["tools"]["skill_lifecycle"]["activation_ref"] == ("skill://project/review")
     assert captured.plan.owner_fingerprint != "owner@example.test"
 
     for private_content in (

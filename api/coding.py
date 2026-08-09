@@ -31,6 +31,7 @@ from sage_harness import (
     HarnessConfig,
     HarnessRunContext,
     McpCatalogPort,
+    McpLifecycleError,
     McpManager,
     McpScope,
     McpToolSnapshot,
@@ -39,7 +40,6 @@ from sage_harness import (
     WebFetchPort,
     WebSearchPort,
     load_scoped_checkpoint,
-    resolve_skill_allowed_tools,
 )
 from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
@@ -151,6 +151,7 @@ from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.provider_settings import SageProviderSettings, SageProviderSettingsStore
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
+from core.coding.skills import SkillLifecycleError
 from core.coding.usage_store import normalize_usage
 from core.harness import RuntimeProfile, normalize_runtime_profile
 from core.harness.book_learning_coordinator import (
@@ -798,18 +799,75 @@ async def _deerflow_timeline_events(
             )
             return
 
+        skill_lifecycle = None
+        try:
+            if prepared_resume is not None and prepared_resume.skill_lifecycle is not None:
+                skill_lifecycle = runtime.skill_registry.validate_lifecycle(
+                    prepared_resume.skill_lifecycle
+                )
+            else:
+                skill_lifecycle = runtime.skill_registry.lifecycle_snapshot(content)
+        except SkillLifecycleError as exc:
+            for event in _turn_context_plan_failure_events(
+                run_id,
+                error_code=exc.code,
+                phase="resume_skill_lifecycle",
+                plan_id=resume_plan.plan_id if resume_plan is not None else None,
+                plan_hash=resume_plan.plan_hash if resume_plan is not None else None,
+            ):
+                yield event
+            return
+
         mcp_tools: tuple[BaseTool, ...] = ()
         mcp_snapshot: McpToolSnapshot | None = None
+        mcp_lifecycle = None
         mcp_servers = None
         if isinstance(mcp_catalog, McpManager):
+            if prepared_resume is not None and prepared_resume.mcp_lifecycle is None:
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code="resume_mcp_lifecycle_missing",
+                    phase="resume_mcp_lifecycle",
+                    plan_id=resume_plan.plan_id if resume_plan is not None else None,
+                    plan_hash=resume_plan.plan_hash if resume_plan is not None else None,
+                ):
+                    yield event
+                return
             mcp_scope = McpScope(
                 owner_id=owner_id,
                 workspace_id=workspace_id,
                 thread_id=runtime.session_id,
             )
-            mcp_snapshot = await mcp_catalog.load_tools(mcp_scope)
+            try:
+                mcp_snapshot = await mcp_catalog.acquire_tools(
+                    mcp_scope,
+                    expected=(
+                        prepared_resume.mcp_lifecycle if prepared_resume is not None else None
+                    ),
+                )
+            except McpLifecycleError as exc:
+                for event in _turn_context_plan_failure_events(
+                    run_id,
+                    error_code=exc.code,
+                    phase="resume_mcp_lifecycle" if is_resume else "mcp_lifecycle",
+                    plan_id=resume_plan.plan_id if resume_plan is not None else None,
+                    plan_hash=resume_plan.plan_hash if resume_plan is not None else None,
+                ):
+                    yield event
+                return
             mcp_tools = mcp_snapshot.tools
+            mcp_lifecycle = mcp_snapshot.lifecycle
             mcp_servers = mcp_snapshot.catalog.servers
+        elif prepared_resume is not None and prepared_resume.mcp_lifecycle is not None:
+            for event in _turn_context_plan_failure_events(
+                run_id,
+                error_code="resume_mcp_manager_missing",
+                phase="resume_mcp_lifecycle",
+                plan_id=resume_plan.plan_id if resume_plan is not None else None,
+                plan_hash=resume_plan.plan_hash if resume_plan is not None else None,
+            ):
+                yield event
+            return
         if mcp_catalog is not None and not is_resume:
             yield await mcp_catalog_event(
                 mcp_catalog,
@@ -920,7 +978,11 @@ async def _deerflow_timeline_events(
             active_skill_allowed_tools = (
                 prepared_resume.active_skill_allowed_tools
                 if prepared_resume is not None
-                else resolve_skill_allowed_tools(runtime.skill_registry, content)
+                else (
+                    frozenset(skill_lifecycle.allowed_tools)
+                    if skill_lifecycle.activation_ref
+                    else None
+                )
             )
             tool_bundle = build_deerflow_coding_tool_bundle(
                 runtime,
@@ -931,6 +993,8 @@ async def _deerflow_timeline_events(
                 extra_deferred_tools=mcp_tools,
                 mcp_catalog=mcp_snapshot.catalog if mcp_snapshot is not None else None,
                 active_skill_allowed_tools=active_skill_allowed_tools,
+                mcp_lifecycle=mcp_lifecycle,
+                skill_lifecycle=skill_lifecycle,
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
                 web_fetch_port=web_fetch_port,
@@ -999,7 +1063,6 @@ async def _deerflow_timeline_events(
                     runtime_mode=runtime.runtime_mode,
                     permission_mode=runtime.permission_mode,
                     model_spec=runtime.model_spec,
-                    mcp_snapshot=mcp_snapshot,
                 )
                 try:
                     # capture 复用已有选择；shadow 只审计，enforce 会提升为 Graph 门禁。
@@ -1121,7 +1184,6 @@ async def _deerflow_timeline_events(
                             runtime_mode=runtime.runtime_mode,
                             permission_mode=runtime.permission_mode,
                             model_spec=runtime.model_spec,
-                            mcp_snapshot=mcp_snapshot,
                         ),
                     )
                 except Exception:
