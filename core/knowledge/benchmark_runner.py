@@ -310,7 +310,7 @@ def _prepare_provider(
     ablation_policy: KnowledgeAblationPolicy,
 ) -> dict[str, int | float | bool]:
     prepare = getattr(provider, "prepare", None)
-    texts: list[str] = []
+    document_texts: list[str] = []
     eligible_block_count = 0
     indexed_block_ids: set[tuple[str, str]] = set()
     planned_chunk_count = 0
@@ -341,10 +341,18 @@ def _prepare_provider(
         planned_chunk_count += len(chunks)
         capacity_reached_source_count += int(len(chunks) >= ablation_policy.max_chunks_per_revision)
         indexed_block_ids.update((item.path, chunk.block_id) for chunk in chunks)
-        texts.extend(embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks)
-    texts.extend(queries)
-    if callable(prepare):
-        prepare(tuple(dict.fromkeys(texts)))
+        document_texts.extend(
+            embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks
+        )
+    unique_documents = tuple(dict.fromkeys(document_texts))
+    prepare_documents = getattr(provider, "prepare_documents", None)
+    if callable(prepare_documents):
+        prepare_documents(unique_documents)
+    elif callable(prepare):
+        prepare(unique_documents)
+    prepare_queries = getattr(provider, "prepare_queries", None)
+    if callable(prepare_queries):
+        prepare_queries(tuple(dict.fromkeys(queries)))
     indexed_block_count = len(indexed_block_ids)
     block_coverage = (
         round(indexed_block_count / eligible_block_count, 6) if eligible_block_count else 1.0

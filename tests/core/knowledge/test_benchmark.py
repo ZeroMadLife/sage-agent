@@ -24,6 +24,32 @@ from core.knowledge.benchmark_runner import (
 from core.knowledge.retrieval import KnowledgeAblationPolicy
 
 
+class _RoleAwareBenchmarkProvider:
+    model_id = "test.role-aware"
+    model_revision = "1"
+    dimensions = 2
+    supports_semantic_recall = True
+
+    def __init__(self) -> None:
+        self.documents: tuple[str, ...] = ()
+        self.queries: tuple[str, ...] = ()
+
+    def prepare_documents(self, texts: tuple[str, ...]) -> None:
+        self.documents = texts
+
+    def prepare_queries(self, texts: tuple[str, ...]) -> None:
+        self.queries = texts
+
+    def embed_document(self, _text: str) -> tuple[float, ...]:
+        return (1.0, 0.0)
+
+    def embed_query(self, _text: str) -> tuple[float, ...]:
+        return (1.0, 0.0)
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        return self.embed_document(text)
+
+
 def test_retrieval_metrics_use_source_relevance_and_rank() -> None:
     golden = (
         KnowledgeGoldenQuery("q1", "memory", "memory", ("memory.md",)),
@@ -232,6 +258,42 @@ def test_benchmark_runs_and_reports_the_requested_chunk_strategy(tmp_path: Path)
         "index_truncated": False,
     }
     assert report["cases"][0]["latency_ms"] >= 0
+
+
+def test_benchmark_prepares_role_aware_documents_and_queries_separately(
+    tmp_path: Path,
+) -> None:
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    source = corpus / "book.txt"
+    source.write_text("CHAPTER I.\n\nEvidence for the query.", encoding="utf-8")
+    dataset = tmp_path / "dataset.jsonl"
+    dataset.write_text(
+        '{"id":"q1","query":"evidence query", "category":"real_user",'
+        '"split":"test","answerable":true,"provenance":"test",'
+        '"relevant_passages":[{"source":"book.txt","section":"CHAPTER I.",'
+        '"relevance":3}],"required_claims":[],"forbidden_claims":[]}\n',
+        encoding="utf-8",
+    )
+    manifest = BenchmarkManifest(
+        benchmark_id="book-role-test",
+        benchmark_revision="1",
+        dataset="dataset.jsonl",
+        dataset_sha256=hashlib.sha256(dataset.read_bytes()).hexdigest(),
+        corpus_root="corpus",
+        files=(
+            BenchmarkCorpusFile(
+                path="book.txt",
+                sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            ),
+        ),
+    )
+    provider = _RoleAwareBenchmarkProvider()
+
+    run_benchmark(tmp_path, manifest, provider=provider)
+
+    assert provider.documents
+    assert provider.queries == ("evidence query",)
 
 
 def test_manifest_uses_an_explicit_corpus_allowlist(tmp_path: Path) -> None:
