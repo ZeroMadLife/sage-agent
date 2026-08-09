@@ -1425,6 +1425,8 @@ async def test_v2_book_learning_synthesis_finishes_without_running_parent_adapte
     assert events[-2].payload["content"] == "综合结论 [kcite_a] [kcite_b]"
     assert events[-1].payload["route"] == "book_learning"
     assert any(event.payload.get("type") == "agentic_rag_completed" for event in events)
+    assert any(event.payload.get("type") == "turn_context_plan_prepared" for event in events)
+    assert any(event.payload.get("type") == "turn_context_plan_compared" for event in events)
 
 
 @pytest.mark.asyncio
@@ -1508,6 +1510,8 @@ async def test_v2_book_learning_abstention_bypasses_parent_adapter(
 
     assert events[-2].payload["content"] == "证据不足，暂不作答。"
     assert events[-1].payload["route"] == "book_learning"
+    assert any(event.payload.get("type") == "turn_context_plan_prepared" for event in events)
+    assert any(event.payload.get("type") == "turn_context_plan_compared" for event in events)
 
 
 @pytest.mark.asyncio

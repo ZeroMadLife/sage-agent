@@ -960,28 +960,6 @@ async def _deerflow_timeline_events(
                             payload=event_payload,
                             event_id=f"harness:{run_id}:book-learning:{ordinal}:{event_type}",
                         )
-                    if book_learning_outcome.final_answer:
-                        answer = book_learning_outcome.final_answer.strip()
-                        runtime.append_harness_message(
-                            role="assistant", content=answer, run_id=run_id
-                        )
-                        yield RunEvent(
-                            kind="assistant",
-                            status="completed",
-                            payload={"type": "final", "content": answer, "run_id": run_id},
-                            event_id=f"harness:{run_id}:final",
-                        )
-                        yield RunEvent(
-                            kind="terminal",
-                            status="completed",
-                            payload={
-                                "event": "run_completed",
-                                "runtime_profile": "deerflow_v2",
-                                "route": "book_learning",
-                            },
-                            event_id=f"harness:{run_id}:terminal",
-                        )
-                        return
             artifact_store = ToolResultStore(
                 runtime.storage_root,
                 runtime.session_id,
@@ -1244,6 +1222,26 @@ async def _deerflow_timeline_events(
                         yield event
                     return
                 turn_context_plan_binding = prepared_resume.binding
+            if book_learning_outcome is not None and book_learning_outcome.final_answer:
+                answer = book_learning_outcome.final_answer.strip()
+                runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
+                yield RunEvent(
+                    kind="assistant",
+                    status="completed",
+                    payload={"type": "final", "content": answer, "run_id": run_id},
+                    event_id=f"harness:{run_id}:final",
+                )
+                yield RunEvent(
+                    kind="terminal",
+                    status="completed",
+                    payload={
+                        "event": "run_completed",
+                        "runtime_profile": "deerflow_v2",
+                        "route": "book_learning",
+                    },
+                    event_id=f"harness:{run_id}:terminal",
+                )
+                return
             adapter = SageHarnessRuntimeAdapter(
                 model=runtime.model,
                 checkpointer=checkpointer,
