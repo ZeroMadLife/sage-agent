@@ -13,6 +13,7 @@ from typing import Any, Literal, cast
 from sage_harness import MemoryRetrievalResult
 
 from core.coding.run_coordinator import RunEvent
+from core.harness.task_intent import TaskIntentEnvelope
 
 RetrievalDecision = Literal[
     "skip",
@@ -136,8 +137,9 @@ def decide_retrieval_gate(
     memory_available: bool,
     knowledge_available: bool,
     web_available: bool,
+    intent_envelope: TaskIntentEnvelope | None = None,
 ) -> RetrievalGateReceipt:
-    """Route explicit retrieval signals before model/tool selection."""
+    """先路由显式检索信号，再应用冻结意图的候选范围。"""
     started_at = time.monotonic()
     normalized = " ".join(user_message.split())[:8_000]
     fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
@@ -168,11 +170,16 @@ def decide_retrieval_gate(
         candidates = [explicit_source]
 
     candidates = list(dict.fromkeys(candidates))
+    intent_scoped = False
+    if intent_envelope is not None:
+        scoped_candidates = list(intent_envelope.narrow_retrieval_sources(tuple(candidates)))
+        intent_scoped = scoped_candidates != candidates
+        candidates = scoped_candidates
     selected = [source for source in candidates if source in available]
     degraded = len(selected) != len(candidates)
     if not candidates:
         decision: RetrievalDecision = "skip"
-        reason_code = "no_retrieval_signal"
+        reason_code = "intent_scope_empty" if intent_scoped else "no_retrieval_signal"
     elif not selected:
         decision = "skip"
         reason_code = "requested_sources_unavailable"
@@ -181,7 +188,7 @@ def decide_retrieval_gate(
         reason_code = "multiple_explicit_sources"
     else:
         decision = cast(RetrievalDecision, selected[0])
-        reason_code = "explicit_source_signal"
+        reason_code = "intent_capability_scope" if intent_scoped else "explicit_source_signal"
 
     budgets = {source: _SOURCE_BUDGETS[source] for source in selected}
     tool_scope = _tool_scope(normalized)

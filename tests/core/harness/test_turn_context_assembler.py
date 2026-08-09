@@ -17,6 +17,7 @@ from core.coding.persistence import TurnPlanStore
 from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_assembler import (
     TurnContextAssembler,
@@ -116,6 +117,12 @@ def _request() -> TurnContextAssemblyRequest:
         runtime_mode="default",
         permission_mode="default",
         model_spec="provider:model",
+        intent_envelope=TaskIntentEnvelope(
+            intent_kind="review",
+            requested_effects=("read",),
+            capability_hints=("files",),
+            explicit_constraints=("read_only",),
+        ),
     )
 
 
@@ -142,6 +149,8 @@ def test_shadow_capture_persists_only_references_digests_and_static_policy(tmp_p
     assert payload["tools"]["snapshot_hash"] == _request().tool_snapshot.snapshot_hash
     assert payload["tools"]["mcp_lifecycle"]["config_revision"] == "mcp-r1"
     assert payload["tools"]["skill_lifecycle"]["activation_ref"] == ("skill://project/review")
+    assert payload["admission"]["task_intent"]["intent_kind"] == "review"
+    assert payload["admission"]["task_intent"]["authority"] == "narrow_only"
     assert captured.plan.owner_fingerprint != "owner@example.test"
 
     for private_content in (

@@ -16,6 +16,7 @@ from core.coding.context import PreparedContext
 from core.coding.persistence.turn_plan_store import TurnPlanStore
 from core.harness.context_adapter import DeerFlowPromptComponents
 from core.harness.retrieval_gate import RetrievalGateReceipt
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.turn_context_plan import TurnContextPlan, build_turn_context_plan_receipt
 
@@ -60,6 +61,7 @@ class TurnContextAssemblyRequest:
     permission_mode: str
     model_spec: str = ""
     surface: str = "coding"
+    intent_envelope: TaskIntentEnvelope | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +139,8 @@ def _admission(request: TurnContextAssemblyRequest) -> dict[str, object]:
             "revision": _non_negative_int(request.thread_goal.get("revision")),
             "digest": _digest_json(request.thread_goal),
         }
+    if request.intent_envelope is not None:
+        admission["task_intent"] = request.intent_envelope.as_dict()
     return admission
 
 

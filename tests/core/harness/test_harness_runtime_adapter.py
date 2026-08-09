@@ -34,6 +34,7 @@ from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.model_context_frame import ModelContextFrameFactory
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tools_adapter import (
     build_deerflow_coding_tool_bundle,
     build_deerflow_coding_tools,
@@ -1219,6 +1220,29 @@ def test_deerflow_tools_reuse_sage_workspace_registry(tmp_path: Path) -> None:
     }
     listing = next(tool for tool in tools if tool.name == "list_files")
     assert "README.md" in str(asyncio.run(listing.ainvoke({"path": "."})))
+
+
+def test_intent_review_only_narrows_candidates_without_granting_write_tools(tmp_path: Path) -> None:
+    runtime = CodingRuntime(
+        session_id="s-review-intent",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    bundle = build_deerflow_coding_tool_bundle(
+        runtime,
+        run_id="r-review-intent",
+        intent_envelope=TaskIntentEnvelope(
+            intent_kind="review",
+            requested_effects=("read",),
+            capability_hints=("files",),
+            explicit_constraints=("read_only",),
+        ),
+        enable_deferred_tools=False,
+    )
+
+    assert {tool.name for tool in bundle.tools} == {"list_files", "read_file", "search"}
+    assert runtime.permission_mode == "default"
 
 
 def test_runtime_adapter_promotes_deferred_tool_before_execution(tmp_path: Path) -> None:

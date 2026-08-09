@@ -1,7 +1,8 @@
 # Sage Context Assembly v1 设计
 
-> 状态：A0 capture、A1 comparator、B0 enforce new turn 与 B1 enforce resume 已在独立
-> worktree 实现并通过完整门禁；默认仍为 `shadow`，尚未提交或创建 PR。本文同时记录设计边界和当前交付事实。
+> 状态：历史设计稿。A0 capture、A1 comparator、B0 enforce new turn、B1 enforce resume 与
+> F1 ModelContextFrame 已完成；F2/F3 已合入 `dev/sage-v7`，F4 以同日的输入分层 PRD 为准。
+> 本文保留当时的 A-B 渐进方案，不再作为最新交付证据。
 >
 > 基线：`dev/sage-v7@53a6a3c`。
 
@@ -85,9 +86,9 @@ enforce new turn       -> Plan + receipt + compare 通过后才创建 Adapter，
 enforce resume         -> Plan + scoped Checkpoint + 当前依赖比较通过后恢复同一 Graph
 ```
 
-这里的“原 Graph 输入”是硬边界：A0 没有让 Plan 生成 Prompt、Tool Bundle 或
-`ModelContextFrameFactory` 仍未实现；B0/B1 只把 Plan、比较结果和最小 binding 接入执行前置门禁。
-`enforce` 只在服务端显式开启时生效，默认 `shadow` 不改变原 Graph 输入。
+这里的“原 Graph 输入”是 A0 阶段的硬边界：F1 已在 enforce 路径加入
+`ModelContextFrameFactory`，将 Static/Dynamic/Untrusted 三层投影交给 Runtime；默认
+`shadow` 仍不改变原 Graph 输入。
 
 ### A0 验证证据
 
@@ -428,9 +429,8 @@ sequenceDiagram
 | B1: enforce resume（已实现） | resume 只按 Plan + scoped Checkpoint，再比较当前依赖；禁止 Timeline 反推执行权威 | 任一依赖缺失/漂移 fail closed | Approval、重启、catalog drift、binding mismatch 回归通过 |
 
 开关为 `off | shadow | enforce`，默认配置仍为 `shadow`。shadow 不增加新的网络、Memory 或 MCP discovery；
-收集结果通过局部变量交给 Plan builder，而不是再调用一次 Port。B0/B1 保留当前 Tool Bundle
-构建函数，并在 enforce 前后比较其 catalog/scope；统一 Budget、Tool Router 和 MCP 生命周期，
-以及 ModelContextFrameFactory，将在本切片稳定后独立推进。
+收集结果通过局部变量交给 Plan builder，而不是再调用一次 Port。F1-F3 已分别收敛 Frame、
+ToolBundleSnapshot 和 MCP/Skills 生命周期；F4 再以确定性 TaskIntentEnvelope 收窄候选，不授予权限。
 
 ## 验收矩阵
 
@@ -446,9 +446,8 @@ sequenceDiagram
 | receipt 数据泄漏 | 断言 Timeline 中不出现 prompt、Memory 正文、MCP config、工具参数或 artifact 原文 |
 | 现有上下文回归 | Context compaction 的 Tool 边界、canonical transcript、Graph interrupt/terminal 与现有 suite 保持通过 |
 
-完整实现收口证据：Context Assembly 聚焦 `192 passed`；后端完整 `1775 passed, 11 skipped`，
-Ruff、格式、215 个源码文件 mypy 通过；前端 `69 files / 505 passed`；private/public 生产
-构建通过；`git diff --check` 通过。该证据来自当前独立 worktree，不表示已经合入 `dev/sage-v7`。
+历史收口证据见同日的总 PRD；F4 的最终测试、提交和合入证据以输入分层 PRD 与本阶段 Obsidian
+记录为准。
 
 ## 后续边界
 

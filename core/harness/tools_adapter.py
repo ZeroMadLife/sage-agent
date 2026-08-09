@@ -39,6 +39,7 @@ from core.harness.capability_adapter import (
     local_tool_capability_id,
     mcp_tool_capability_id,
 )
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.web_fetch import build_web_fetch_tool
 from core.harness.web_search import build_web_search_tool
@@ -149,12 +150,23 @@ def build_deerflow_coding_tool_bundle(
     enable_deferred_tools: bool = True,
     retrieval_sources: frozenset[str] | None = None,
     retrieval_tool_scope: str = "default",
+    intent_envelope: TaskIntentEnvelope | None = None,
 ) -> CodingToolBundle:
-    """Build V2 tools while preserving Sage execution and approval boundaries."""
+    """构造 V2 工具并保留 Sage 的执行、Permission 和 Approval 边界。"""
     resident_tools: list[BaseTool] = []
     deferred_tools: list[BaseTool] = []
     strict_retrieval = retrieval_tool_scope == "retrieval_only"
-    no_tools = retrieval_tool_scope == "no_tools"
+    no_tools = retrieval_tool_scope == "no_tools" or (
+        intent_envelope is not None and "no_tools" in intent_envelope.explicit_constraints
+    )
+    # Skill allowlist 是更具体的既有契约；激活 Skill 时保持它的工具选择优先级。
+    intent_scope = (
+        None
+        if intent_envelope is None
+        or intent_envelope.intent_kind == "general"
+        or active_skill_allowed_tools is not None
+        else intent_envelope
+    )
     from core.coding.tools.registry import registered_tool_definitions
 
     definitions = registered_tool_definitions()
@@ -176,11 +188,25 @@ def build_deerflow_coding_tool_bundle(
             and name not in _DEERFLOW_TOOLS
             and name not in _LEGACY_AGENT_TOOLS
             and not (name == "remember" and memory_port is not None)
+            and (
+                intent_scope is None
+                or intent_scope.allows_tool_candidate(
+                    origin="local",
+                    category=registered.category,
+                    tool_name=name,
+                )
+            )
         )
     for name in sorted(tool_names):
         registered = runtime.tools.get(name)
         definition = definitions.get(name)
         if registered is None or definition is None:
+            continue
+        if intent_scope is not None and not intent_scope.allows_tool_candidate(
+            origin="local",
+            category=definition.category,
+            tool_name=name,
+        ):
             continue
         tool = _build_runtime_tool(
             runtime,
@@ -199,7 +225,15 @@ def build_deerflow_coding_tool_bundle(
         target.append(tool)
     knowledge_routed = retrieval_sources is None or "knowledge" in retrieval_sources
     web_routed = retrieval_sources is None or "web" in retrieval_sources
-    if knowledge_port is not None and knowledge_routed and not no_tools:
+    if (
+        knowledge_port is not None
+        and knowledge_routed
+        and not no_tools
+        and (
+            intent_scope is None
+            or intent_scope.allows_tool_candidate(origin="local", category="knowledge")
+        )
+    ):
         search_definition = definitions.get("knowledge_search")
         if search_definition is not None:
             knowledge_queries: set[str] = set()
@@ -288,7 +322,15 @@ def build_deerflow_coding_tool_bundle(
                     },
                 )
             )
-    if memory_port is not None and not strict_retrieval and not no_tools:
+    if (
+        memory_port is not None
+        and not strict_retrieval
+        and not no_tools
+        and (
+            intent_scope is None
+            or intent_scope.allows_tool_candidate(origin="local", category="memory")
+        )
+    ):
         remember_definition = definitions.get("remember")
         if remember_definition is not None:
 
@@ -332,14 +374,29 @@ def build_deerflow_coding_tool_bundle(
             )
             (deferred_tools if enable_deferred_tools else resident_tools).append(remember_tool)
 
-    if subagent_executor is not None and not strict_retrieval and not no_tools:
+    if (
+        subagent_executor is not None
+        and not strict_retrieval
+        and not no_tools
+        and (
+            intent_scope is None
+            or intent_scope.allows_tool_candidate(origin="subagent", category="agent")
+        )
+    ):
         task_tool = build_task_tool(subagent_executor, subagent_config)
         task_metadata = dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
         task_metadata["capability_id"] = "subagent:explore"
         resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
 
+    web_allowed = intent_scope is None or intent_scope.allows_tool_candidate(
+        origin="web", category="web"
+    )
     web_search_available = bool(
-        not no_tools and web_routed and web_search_port is not None and web_search_port.available
+        web_allowed
+        and not no_tools
+        and web_routed
+        and web_search_port is not None
+        and web_search_port.available
     )
     if web_search_available and web_search_port is not None and not no_tools:
         web_search_tool = build_web_search_tool(
@@ -348,7 +405,8 @@ def build_deerflow_coding_tool_bundle(
         )
         (resident_tools if strict_retrieval else deferred_tools).append(web_search_tool)
     web_fetch_available = bool(
-        not no_tools
+        web_allowed
+        and not no_tools
         and web_routed
         and web_fetch_port is not None
         and web_fetch_port.available
@@ -367,13 +425,15 @@ def build_deerflow_coding_tool_bundle(
         )
         (resident_tools if strict_retrieval else deferred_tools).append(web_fetch_tool)
     web_source_proposal_available = bool(
-        not strict_retrieval
+        web_allowed
+        and not strict_retrieval
         and not no_tools
         and knowledge_source_proposal_port is not None
         and knowledge_source_proposal_port.available
     )
     if (
         web_source_proposal_available
+        and web_allowed
         and knowledge_source_proposal_port is not None
         and not strict_retrieval
         and not no_tools
@@ -430,7 +490,10 @@ def build_deerflow_coding_tool_bundle(
         )
 
     allow_network_retrieval = retrieval_sources is None or "web" in retrieval_sources
-    if not strict_retrieval and not no_tools:
+    mcp_allowed = intent_scope is None or intent_scope.allows_tool_candidate(
+        origin="mcp", category="mcp"
+    )
+    if mcp_allowed and not strict_retrieval and not no_tools:
         deferred_tools.extend(
             _with_mcp_capability_ids(
                 extra_deferred_tools,
@@ -439,7 +502,7 @@ def build_deerflow_coding_tool_bundle(
         )
     routed_mcp_catalog = (
         None
-        if strict_retrieval or no_tools
+        if strict_retrieval or no_tools or not mcp_allowed
         else _route_mcp_catalog(
             mcp_catalog,
             allow_network_retrieval=allow_network_retrieval,

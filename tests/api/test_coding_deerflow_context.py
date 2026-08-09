@@ -335,6 +335,7 @@ async def test_v2_compacts_before_graph_and_injects_new_summary(
     event_types = [str(event.payload.get("type", "")) for event in events]
     assert event_types.count("turn_context_plan_prepared") == 1
     assert event_types.count("turn_context_plan_compared") == 1
+    assert not any("task_intent" in repr(event.payload) for event in events)
     comparison_event = next(
         event for event in events if event.payload.get("type") == "turn_context_plan_compared"
     )
@@ -358,6 +359,7 @@ async def test_v2_compacts_before_graph_and_injects_new_summary(
     assert runtime.context_snapshot()["context_operation_active"] is False
     plan = TurnPlanStore(runtime.storage_root, runtime.session_id).load_for_run("run-context")
     assert plan is not None
+    assert plan.to_payload()["admission"]["task_intent"]["intent_kind"] == "general"
     assert plan.to_payload()["context_refs"]["user_message_ref"]["sequence"] == 2
     assert [item["role"] for item in runtime.session["history"][-2:]] == [
         "user",
@@ -624,6 +626,11 @@ async def test_v2_external_resume_preserves_checkpoint_retrieval_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     runtime = _runtime(tmp_path)
+    monkeypatch.setattr(
+        coding_api,
+        "TaskIntentAnalyzer",
+        lambda: (_ for _ in ()).throw(AssertionError("resume must not analyze intent")),
+    )
     RecordingAdapter.runtime = runtime
     monkeypatch.setattr(coding_api, "SageHarnessRuntimeAdapter", RecordingAdapter)
 
