@@ -16,6 +16,8 @@ from typing import Any
 
 import httpx
 
+from scripts.benchmark_providers._disk_cache import EmbeddingDiskCache
+
 _ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
 _MODEL = "doubao-embedding-vision-250615"
 _DIMENSIONS = 2_048
@@ -44,17 +46,30 @@ class DoubaoMultimodalEmbeddingProvider:
         )
         self._max_workers = _positive_int_env("SAGE_DOUBAO_EMBEDDING_MAX_WORKERS", default=8)
         self._cache: dict[str, tuple[float, ...]] = {}
+        self._disk_cache = EmbeddingDiskCache(
+            namespace=self.model_revision, dimensions=self.dimensions
+        )
         self._metrics_lock = threading.Lock()
+        self.cache_hit_count = 0
         self.request_count = 0
         self.input_tokens = 0
         self.request_latencies_ms: list[float] = []
 
     def prepare(self, texts: tuple[str, ...]) -> None:
-        pending = tuple(text for text in dict.fromkeys(texts) if text not in self._cache)
+        pending: list[str] = []
+        for text in dict.fromkeys(texts):
+            if text in self._cache:
+                continue
+            cached = self._disk_cache.get(text, role="symmetric")
+            if cached is None:
+                pending.append(text)
+            else:
+                self._cache[text] = cached
+                self.cache_hit_count += 1
         if not pending:
             return
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
-            vectors = tuple(executor.map(self._request, pending))
+            vectors = tuple(executor.map(self._request_and_cache, pending))
         self._cache.update(zip(pending, vectors, strict=True))
 
     def prepare_documents(self, texts: tuple[str, ...]) -> None:
@@ -67,7 +82,12 @@ class DoubaoMultimodalEmbeddingProvider:
         cached = self._cache.get(text)
         if cached is not None:
             return cached
-        vector = self._request(text)
+        cached = self._disk_cache.get(text, role="symmetric")
+        if cached is not None:
+            self._cache[text] = cached
+            self.cache_hit_count += 1
+            return cached
+        vector = self._request_and_cache(text)
         self._cache[text] = vector
         return vector
 
@@ -76,6 +96,11 @@ class DoubaoMultimodalEmbeddingProvider:
 
     def embed_query(self, text: str) -> tuple[float, ...]:
         return self.embed(text)
+
+    def _request_and_cache(self, text: str) -> tuple[float, ...]:
+        vector = self._request(text)
+        self._disk_cache.put(text, vector, role="symmetric")
+        return vector
 
     def _request(self, text: str) -> tuple[float, ...]:
         started_at = time.perf_counter()

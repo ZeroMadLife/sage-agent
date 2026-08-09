@@ -15,6 +15,8 @@ from typing import Any, Literal
 
 import httpx
 
+from scripts.benchmark_providers._disk_cache import EmbeddingDiskCache
+
 _ENDPOINT = (
     "https://dashscope.aliyuncs.com/api/v1/services/embeddings/"
     "multimodal-embedding/multimodal-embedding"
@@ -49,10 +51,14 @@ class Qwen3VLEmbeddingProvider:
             timeout=90.0,
         )
         self._batch_size = _positive_int_env("SAGE_QWEN3_VL_BATCH_SIZE", default=10, maximum=10)
-        self._max_workers = _positive_int_env("SAGE_QWEN3_VL_MAX_WORKERS", default=4, maximum=16)
+        self._max_workers = _positive_int_env("SAGE_QWEN3_VL_MAX_WORKERS", default=2, maximum=16)
         self._document_cache: dict[str, tuple[float, ...]] = {}
         self._query_cache: dict[str, tuple[float, ...]] = {}
+        self._disk_cache = EmbeddingDiskCache(
+            namespace=self.model_revision, dimensions=self.dimensions
+        )
         self._metrics_lock = threading.Lock()
+        self.cache_hit_count = 0
         self.request_count = 0
         self.input_tokens = 0
         self.request_latencies_ms: list[float] = []
@@ -77,14 +83,23 @@ class Qwen3VLEmbeddingProvider:
 
     def _prepare(self, texts: tuple[str, ...], *, role: Literal["document", "query"]) -> None:
         cache = self._cache(role)
-        pending = tuple(text for text in dict.fromkeys(texts) if text not in cache)
+        pending: list[str] = []
+        for text in dict.fromkeys(texts):
+            if text in cache:
+                continue
+            cached = self._disk_cache.get(text, role=role)
+            if cached is None:
+                pending.append(text)
+            else:
+                cache[text] = cached
+                self.cache_hit_count += 1
         batches = tuple(
             pending[offset : offset + self._batch_size]
             for offset in range(0, len(pending), self._batch_size)
         )
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             vectors_by_batch = tuple(
-                executor.map(lambda batch: self._request(batch, role=role), batches)
+                executor.map(lambda batch: self._request_and_cache(batch, role=role), batches)
             )
         for batch, vectors in zip(batches, vectors_by_batch, strict=True):
             cache.update(zip(batch, vectors, strict=True))
@@ -94,7 +109,12 @@ class Qwen3VLEmbeddingProvider:
         cached = cache.get(text)
         if cached is not None:
             return cached
-        vector = self._request((text,), role=role)[0]
+        cached = self._disk_cache.get(text, role=role)
+        if cached is not None:
+            cache[text] = cached
+            self.cache_hit_count += 1
+            return cached
+        vector = self._request_and_cache((text,), role=role)[0]
         cache[text] = vector
         return vector
 
@@ -147,12 +167,23 @@ class Qwen3VLEmbeddingProvider:
             self.request_latencies_ms.append((time.perf_counter() - started_at) * 1_000)
         return vectors
 
+    def _request_and_cache(
+        self,
+        texts: tuple[str, ...],
+        *,
+        role: Literal["document", "query"],
+    ) -> tuple[tuple[float, ...], ...]:
+        vectors = self._request(texts, role=role)
+        for text, vector in zip(texts, vectors, strict=True):
+            self._disk_cache.put(text, vector, role=role)
+        return vectors
+
 
 def _post_with_retry(
     client: httpx.Client,
     *,
     request_json: dict[str, Any],
-    max_attempts: int = 3,
+    max_attempts: int = 5,
 ) -> dict[str, Any]:
     failure: Exception | None = None
     for attempt in range(max_attempts):

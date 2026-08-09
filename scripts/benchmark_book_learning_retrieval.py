@@ -145,6 +145,7 @@ def _provider_runtime(provider: object) -> dict[str, object]:
         "protocol_mode": str(getattr(provider, "protocol_mode", "unspecified")),
         "request_count": _non_negative_int(getattr(provider, "request_count", 0)),
         "input_tokens": _non_negative_int(getattr(provider, "input_tokens", 0)),
+        "cache_hit_count": _non_negative_int(getattr(provider, "cache_hit_count", 0)),
         "estimated_cost_usd": getattr(provider, "estimated_cost_usd", None),
         "request_latency_ms": {
             "p50": _percentile(numeric_latencies, 0.50),

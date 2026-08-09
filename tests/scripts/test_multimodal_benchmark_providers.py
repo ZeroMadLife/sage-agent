@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -41,9 +42,11 @@ class _Client:
 
 def test_doubao_keeps_one_text_per_fused_request_and_caches(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("DOUBAO_EMBEDDING_KEY", "test-only")
     monkeypatch.setenv("SAGE_DOUBAO_EMBEDDING_MAX_WORKERS", "1")
+    monkeypatch.setenv("SAGE_BOOK_EMBEDDING_CACHE_DIR", str(tmp_path))
     client = _Client()
     client.responses = [
         _Response(
@@ -72,9 +75,17 @@ def test_doubao_keeps_one_text_per_fused_request_and_caches(
     assert provider.request_count == 2
     assert provider.input_tokens == 18
 
+    resumed = doubao_multimodal.DoubaoMultimodalEmbeddingProvider()
+    assert resumed.embed("first") == provider.embed("first")
+    assert resumed.request_count == 0
+    assert resumed.cache_hit_count == 1
+    cache_bytes = (tmp_path / "book-learning-cloud-v1.sqlite3").read_bytes()
+    assert b"first" not in cache_bytes
 
-def test_doubao_retries_transient_status(monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_doubao_retries_transient_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("DOUBAO_EMBEDDING_KEY", "test-only")
+    monkeypatch.setenv("SAGE_BOOK_EMBEDDING_CACHE_DIR", str(tmp_path))
     client = _Client()
     client.responses = [
         _Response({}, status_code=429),
@@ -90,10 +101,12 @@ def test_doubao_retries_transient_status(monkeypatch: pytest.MonkeyPatch) -> Non
 
 def test_qwen_uses_non_fused_batches_and_separates_query_instruction(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("BAILIAN_EMBEDDING_KEY", "test-only")
     monkeypatch.setenv("SAGE_QWEN3_VL_BATCH_SIZE", "2")
     monkeypatch.setenv("SAGE_QWEN3_VL_MAX_WORKERS", "1")
+    monkeypatch.setenv("SAGE_BOOK_EMBEDDING_CACHE_DIR", str(tmp_path))
     client = _Client()
     client.responses = [
         _Response(
@@ -129,8 +142,11 @@ def test_qwen_uses_non_fused_batches_and_separates_query_instruction(
     assert provider.input_tokens == 18
 
 
-def test_qwen_rejects_fused_or_missing_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_qwen_rejects_fused_or_missing_rows(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setenv("BAILIAN_EMBEDDING_KEY", "test-only")
+    monkeypatch.setenv("SAGE_BOOK_EMBEDDING_CACHE_DIR", str(tmp_path))
     client = _Client()
     client.responses = [
         _Response({"output": {"embeddings": [{"index": 0, "embedding": [1.0] * 1024}]}})
