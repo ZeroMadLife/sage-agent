@@ -7,7 +7,7 @@ from typing import Any, cast
 
 from .types import BlockKind, ParsedBlock, ParsedDocument, ParseProvenance
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 
 def serialize_document(document: ParsedDocument) -> str:
@@ -37,6 +37,12 @@ def serialize_document(document: ParsedDocument) -> str:
                 "bbox": list(block.bbox) if block.bbox else None,
                 "media_ref": block.media_ref,
                 "confidence": block.confidence,
+                "line_start": block.line_start,
+                "line_end": block.line_end,
+                "char_start": block.char_start,
+                "char_end": block.char_end,
+                "byte_start": block.byte_start,
+                "byte_end": block.byte_end,
             }
             for block in document.blocks
         ],
@@ -46,7 +52,7 @@ def serialize_document(document: ParsedDocument) -> str:
 
 def deserialize_document(value: str) -> ParsedDocument:
     payload: Any = json.loads(value)
-    if not isinstance(payload, dict) or payload.get("format_version") != _FORMAT_VERSION:
+    if not isinstance(payload, dict) or payload.get("format_version") not in {1, _FORMAT_VERSION}:
         raise ValueError("unsupported parse artifact format")
     provenance = payload["provenance"]
     blocks = payload["blocks"]
@@ -110,4 +116,18 @@ def _deserialize_block(value: object) -> ParsedBlock:
         bbox=bbox,
         media_ref=str(value["media_ref"]) if value.get("media_ref") else None,
         confidence=float(value["confidence"]),
+        line_start=_optional_int(value.get("line_start")),
+        line_end=_optional_int(value.get("line_end")),
+        char_start=_optional_int(value.get("char_start")),
+        char_end=_optional_int(value.get("char_end")),
+        byte_start=_optional_int(value.get("byte_start")),
+        byte_end=_optional_int(value.get("byte_end")),
     )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("invalid parse artifact locator")
+    return value

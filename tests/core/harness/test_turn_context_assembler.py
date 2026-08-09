@@ -16,6 +16,7 @@ from core.coding.context import ContextUsage, PreparedContext
 from core.coding.persistence import TurnPlanStore
 from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.context_adapter import DeerFlowPromptComponents
+from core.harness.learning_intent import LearningIntentRoute
 from core.harness.retrieval_gate import RetrievalGateReceipt
 from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
@@ -78,6 +79,16 @@ def _request() -> TurnContextAssemblyRequest:
             token_budget_by_source={"knowledge": 3_000},
             query_fingerprint="query-sha",
             latency_ms=1,
+            intent_route=LearningIntentRoute(
+                intent_family="explain",
+                knowledge_scope="workspace",
+                depth="direct",
+                learning_stage="understand",
+                routing_confidence=0.9,
+                recommended_mode="single_pass",
+                provider_id="sage.test-router",
+                provider_revision="1",
+            ),
             tool_scope="retrieval_only",
         ),
         tool_snapshot=ToolBundleSnapshot(

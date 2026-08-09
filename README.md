@@ -115,7 +115,12 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | **RAG Cloud Embedding Selection v2** | 同一 PostgreSQL selection 上，FastEmbed 384、百炼 v4 1024、豆包 vision 2048 的 Recall@10 均为 1.0；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final，并在 frozen test 将 Recall@10 0.889→1.000、MRR 0.683→0.806 | frozen test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；豆包逐 token 成本未知；这些不是线上指标 |
 | **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下的 pgvector exact Recall@10 均为 1.0，P95 为 1.403/2.838/93.906 ms；100k 未超过冻结的 100 ms，因此保持 exact、不触发 HNSW | 100k 已接近门限，扩容前必须在目标硬件重跑；合成向量不代表真实生产查询分布或 SLA |
 | **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
-| **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上对 Contextual metadata、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 做 selection/frozen-test 单变量消融；Cross-Encoder selection NDCG +0.045，但 Recall -0.043、P95 1436 ms，四个候选均不默认开启 | 当前语料无超过 4000 字符的 block，Semantic Boundary 未被正式数据触发；Parent-Child selection 增益低于门禁 |
+| **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上完成 Contextual、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 单变量消融；真实长书 seed 又触发了 32 个超长 block，Semantic Boundary 仍未显示净增益 | 旧 frozen 语料没有超长 block，真实长书 gold 也尚未冻结；所有候选继续保持默认关闭 |
+| **RAG Described Parent-Child v2（实验候选）** | 已实现句向量语义 parent、bounded child、revision-bound extractive description，以及“description + child 检索、parent 正文引用”的 SQLite/PostgreSQL 投影；真实长书 seed 已可消融 | 真实书籍诊断没有优于普通 Parent-Child；PostgreSQL live、selection/frozen-test 与生成质量仍未完成，不能声称提升准确率 |
+| **长书 TXT 摄取与定位 v1** | 两本公共领域真实长书共 4.73 MB；TXT 保留 `BOOK -> CHAPTER -> PART` 与行/字符/字节 locator，5,185/5,185 个正文 block 已进入索引；14 条 `seed_manual` 上 FastEmbed + contextual Recall@10 为 0.750、MRR 为 0.523 | seed 尚未独立 review 或冻结，跨书召回仍弱；这些数字不是生产准确率 |
+| **有界长书 Agentic RAG v1** | 主对话首轮 RAG 不足时最多并行 2 个只读 Research child；clean source `3ee7111` 的豆包 bounded E2E 中，Correct Abstention 为 1、False Acceptance 为 0、Claim Recovery Gain 为 0.1296、Recovery Resolution 为 0.5 | Answer Correctness 仅 0.4444 且同配置复跑方差明显，Provider Failure 1/14、P95 227.8s；Judge 只属于离线 Eval，下一步是答案稳定性与调用预算 |
+| **长书 Claim-aware Sufficiency v1（离线）** | 14 条 seed 拆为 15 个原子 claim，支持 `any/all` passage 绑定；Top-10 首轮 claim coverage / bundle completeness 为 0.733/0.700，真实 generation 完成子集为 0.667/0.625；完整 bundle 的离线 Readiness Precision/Recall 为 1.0/0.8 | 实际 rewrite 的 claim recovery gain 为 0，Faithfulness 1.0 仅覆盖 4 个最终回答；gold 尚未独立 review，线上 Gate 保持未激活 |
+| **长书 4+2 KPI + Provider Tradeoff v1（离线）** | 同一 Gold/contextual/Top-10 下，FastEmbed/豆包/百炼 Claim Coverage 为 0.733/0.833/0.700；豆包以最高 Claim Coverage、Recall 和 NDCG 成为长书质量优先模型，FastEmbed 保留为无 Key 回退 | clean SQLite P95 为 5.174s，14 条 seed 未冻结，不能写成生产准确率；下一步是 PostgreSQL/降维、重复运行置信区间和 chunk/excerpt 级 Gold |
 | **RAG Local Semantic Gate v1（历史候选）** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771 | 已由 Cloud Embedding Selection v2 接续；test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；generation quality 尚未评测 |
 | **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
 | **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
@@ -129,6 +134,10 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 [RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
 [RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
 [RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
+[长书 TXT Parser v1 报告](docs/evals/book-txt-parser-v1.md)、
+[长书 Agentic RAG v1 收口](docs/evals/book-learning-agentic-rag-v1.md)、
+[长书 4+2 KPI 与策略选择 v1](docs/evals/book-learning-scorecard-v1.md)、
+[长书 Embedding Provider 与 Agentic RAG 收口 v1](docs/evals/book-learning-embedding-provider-tradeoff-v1.md)、
 [RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
 [历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
 [拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、
@@ -224,7 +233,8 @@ sage-agent/
 
 - `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
 - Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
-- Knowledge 已完成本地来源工作流；云端租户级来源与元数据隔离尚未开放。
+- Knowledge 已完成 Markdown/HTML/PDF/DOCX/PNG/TXT 本地来源工作流；TXT 第一版只支持
+  UTF-8/BOM，云端租户级来源与元数据隔离尚未开放。
 - RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。
 - 多模态当前只完成 DOCX/PNG 结构化解析与 VLM 区域 citation；没有真实 VLM 质量分数，也没有视觉向量召回。
 - Relation retrieval 当前只扩展带原文 citation 的显式一跳链接；实体三元组、多跳路径、PPR 与 community GraphRAG 尚未实现。

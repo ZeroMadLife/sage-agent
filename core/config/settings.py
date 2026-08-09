@@ -169,6 +169,7 @@ class Settings(BaseSettings):
         le=100.0,
     )
     knowledge_dashscope_batch_size: int = Field(default=10, ge=1, le=10)
+    knowledge_doubao_max_workers: int = Field(default=8, ge=1, le=32)
     knowledge_fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     knowledge_fastembed_repository: str = "qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q"
     knowledge_fastembed_model_revision: str = "faf4aa4225822f3bc6376869cb1164e8e3feedd0"

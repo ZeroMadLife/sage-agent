@@ -129,6 +129,16 @@ def test_local_index_migrates_existing_chunks_to_multimodal_contract() -> None:
         "confidence",
         "parser_id",
         "parser_version",
+        "line_start",
+        "line_end",
+        "char_start",
+        "char_end",
+        "byte_start",
+        "byte_end",
+        "parent_chunk_id",
+        "retrieval_description",
+        "retrieval_description_provider",
+        "retrieval_description_revision",
     } <= (columns.keys())
     assert columns["block_kind"] == "'paragraph'"
     assert columns["confidence"] == "1.0"

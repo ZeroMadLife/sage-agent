@@ -24,13 +24,14 @@ from core.knowledge.datasets import (
 )
 from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.postgres_index import (
-    POSTGRES_INDEX_SCHEMA_REVISION,
+    POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION,
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
 from core.knowledge.recovery import KnowledgeRecoveryOutcome, KnowledgeRecoveryPolicy
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
+    ExtractiveParentDescriptionProvider,
     HashingEmbeddingProvider,
     KnowledgeAblationPolicy,
     KnowledgeReranker,
@@ -469,7 +470,7 @@ def run_postgres_layered_eval(
             },
             "source": {"commit": source_commit, "dirty": source_dirty},
             "backend": "postgres-tsvector+pgvector-exact",
-            "backend_schema_revision": POSTGRES_INDEX_SCHEMA_REVISION,
+            "backend_schema_revision": POSTGRES_DESCRIBED_PARENT_CHILD_SCHEMA_REVISION,
             "provider": {
                 "model_id": embedding_provider.model_id,
                 "model_revision": embedding_provider.model_revision,
@@ -681,6 +682,11 @@ def compare_retrieval_ablation_reports(
         ),
         ("backend", baseline_report["backend"], candidate_report["backend"]),
         (
+            "backend_schema_revision",
+            baseline_report.get("backend_schema_revision"),
+            candidate_report.get("backend_schema_revision"),
+        ),
+        (
             "provider_model",
             baseline_report["provider"]["model_id"],
             candidate_report["provider"]["model_id"],
@@ -722,6 +728,7 @@ def compare_retrieval_ablation_reports(
     if strategy not in {
         "contextual_chunk",
         "parent_child",
+        "described_parent_child",
         "semantic_boundary",
         "cross_encoder",
     }:
@@ -749,7 +756,7 @@ def compare_retrieval_ablation_reports(
     if strategy == "cross_encoder":
         target_name = "ndcg_delta"
         target_delta = ndcg_delta
-    elif strategy == "parent_child":
+    elif strategy in {"parent_child", "described_parent_child"}:
         target_name = "max_recall_ndcg_or_claim_delta"
         target_delta = max(recall_delta, ndcg_delta, claim_delta)
     else:
@@ -777,7 +784,11 @@ def compare_retrieval_ablation_reports(
     eligible_semantic_blocks = int(
         candidate_report["ablation"]["corpus_profile"]["semantic_boundary_eligible_block_count"]
     )
-    strategy_exercised = eligible_semantic_blocks if strategy == "semantic_boundary" else 1
+    strategy_exercised = (
+        eligible_semantic_blocks
+        if strategy in {"semantic_boundary", "described_parent_child"}
+        else 1
+    )
     gates: dict[str, dict[str, str | float | int | bool | None]] = {
         "target_gain": target_metric,
         "recall_no_regression": {
@@ -1242,6 +1253,14 @@ def _ablation_metadata(
     return {
         "strategy": strategy,
         "parameters": policy_values,
+        "description_provider": (
+            {
+                "provider_id": ExtractiveParentDescriptionProvider.provider_id,
+                "provider_revision": ExtractiveParentDescriptionProvider.provider_revision,
+            }
+            if strategy == "described_parent_child"
+            else None
+        ),
         "reranker": (
             {
                 "model_id": reranker.model_id,

@@ -85,6 +85,62 @@ def test_knowledge_retrieval_word_routes_to_knowledge() -> None:
     assert receipt.selected_sources == ("knowledge",)
 
 
+def test_plain_learning_question_uses_learning_intent_to_select_knowledge() -> None:
+    receipt = decide_retrieval_gate(
+        "久期为什么会随着利率变化？",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.decision == "knowledge"
+    assert receipt.reason_code == "learning_intent_signal"
+    assert receipt.intent_route.intent_family == "explain"
+    assert receipt.intent_route.knowledge_scope == "workspace"
+    assert receipt.intent_route.recommended_mode == "single_pass"
+
+
+def test_complex_book_comparison_marks_agentic_candidate_without_exposing_ids() -> None:
+    receipt = decide_retrieval_gate(
+        "比较这两本书对风险的定义",
+        surface_context={"book_context": {"book_ids": ["private-a", "private-b"]}},
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    payload = receipt.to_payload(run_id="run-learning")
+    assert receipt.selected_sources == ("knowledge",)
+    assert receipt.intent_route.recommended_mode == "agentic_candidate"
+    assert payload["intent_route"]["candidate_book_count"] == 2  # type: ignore[index]
+    assert "private-a" not in repr(payload)
+
+
+def test_no_tools_clears_explicit_knowledge_candidates() -> None:
+    receipt = decide_retrieval_gate(
+        "根据知识库解释久期，但不要调用任何工具",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert receipt.decision == "skip"
+    assert receipt.selected_sources == ()
+    assert receipt.tool_scope == "no_tools"
+
+
+def test_no_web_wins_over_a_conflicting_web_only_request() -> None:
+    receipt = decide_retrieval_gate(
+        "只搜索官网的利率数据，但不要联网",
+        memory_available=True,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    assert "web" not in receipt.selected_sources
+    assert "web_forbidden" in receipt.intent_route.risk_flags
+
+
 def test_ephemeral_history_only_request_suppresses_negated_web_and_all_tools() -> None:
     receipt = decide_retrieval_gate(
         "上次 shell 审批恢复那轮做了什么？只根据历史运行记录概括，不要联网。",

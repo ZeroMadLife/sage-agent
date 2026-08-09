@@ -1,0 +1,11 @@
+{
+  "benchmark_id": "sage-book-learning-v1",
+  "benchmark_revision": "2026-08-06.1",
+  "dataset": "evals/book_learning_benchmark_v1.jsonl",
+  "dataset_sha256": "4c70b3755201945172b88c77ba1a7ae59da45e6a675f85082fb20428a84d03e1",
+  "corpus_root": ".coding/corpora/book-learning-public-domain-v1",
+  "files": [
+    {"path": "gutenberg-23962-journey-to-the-west-zh.txt", "sha256": "af3c9e408c0c58595b666ed9981b6fa1e9343f4bbc78309b1cb0818c32fc1f58"},
+    {"path": "gutenberg-3300-wealth-of-nations-en.txt", "sha256": "e91d52dca43fd0fd69baf7776b00a5d8e74b69675b6b608ca8a0378aaf3ae58d"}
+  ]
+}

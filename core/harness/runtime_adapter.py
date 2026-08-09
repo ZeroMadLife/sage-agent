@@ -231,6 +231,10 @@ class SageHarnessRuntimeAdapter:
                     "sandbox": {"sandbox_id": sandbox.sandbox_id},
                 }
             )
+        if durable_context:
+            # Keep host-owned evidence available to middleware after checkpoint/resume.
+            # The middleware applies its own bounded normalization before model injection.
+            state_update["book_learning"] = dict(durable_context.get("book_learning", {}))
         compaction_event: RunEvent | None = None
         if graph_compaction is not None:
             compaction_request = GraphMessageCompactionRequest(

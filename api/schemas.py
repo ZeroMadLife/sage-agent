@@ -258,6 +258,12 @@ class KnowledgeEvidenceResponse(BaseModel):
     confidence: float = Field(ge=0, le=1)
     parser_id: str
     parser_version: str
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=0)
+    byte_start: int | None = Field(default=None, ge=0)
+    byte_end: int | None = Field(default=None, ge=0)
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool
@@ -331,6 +337,12 @@ class KnowledgeCitationResponse(BaseModel):
     confidence: float = Field(ge=0, le=1)
     parser_id: str
     parser_version: str
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=0)
+    byte_start: int | None = Field(default=None, ge=0)
+    byte_end: int | None = Field(default=None, ge=0)
     excerpt: str
     token_count: int = Field(ge=0)
     truncated: bool
@@ -570,6 +582,12 @@ class KnowledgeParseBlockResponse(BaseModel):
     bbox: tuple[float, float, float, float] | None = None
     media_ref: str | None = None
     confidence: float = Field(ge=0.0, le=1.0)
+    line_start: int | None = Field(default=None, ge=1)
+    line_end: int | None = Field(default=None, ge=1)
+    char_start: int | None = Field(default=None, ge=0)
+    char_end: int | None = Field(default=None, ge=0)
+    byte_start: int | None = Field(default=None, ge=0)
+    byte_end: int | None = Field(default=None, ge=0)
 
 
 class KnowledgeParseArtifactResponse(BaseModel):

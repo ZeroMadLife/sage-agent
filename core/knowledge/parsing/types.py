@@ -51,6 +51,14 @@ class ParsedBlock:
     bbox: tuple[float, float, float, float] | None = None
     media_ref: str | None = None
     confidence: float = 1.0
+    # Source locators use 1-based inclusive lines and 0-based half-open offsets.
+    # Byte offsets are measured against the original UTF-8 payload.
+    line_start: int | None = None
+    line_end: int | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    byte_start: int | None = None
+    byte_end: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

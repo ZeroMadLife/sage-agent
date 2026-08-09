@@ -188,6 +188,12 @@ def _knowledge_items(
                     "confidence": citation.get("confidence"),
                     "parser_id": str(citation.get("parser_id", ""))[:160],
                     "parser_version": str(citation.get("parser_version", ""))[:80],
+                    "line_start": citation.get("line_start"),
+                    "line_end": citation.get("line_end"),
+                    "char_start": citation.get("char_start"),
+                    "char_end": citation.get("char_end"),
+                    "byte_start": citation.get("byte_start"),
+                    "byte_end": citation.get("byte_end"),
                 },
             )
         )

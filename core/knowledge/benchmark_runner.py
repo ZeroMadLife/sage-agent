@@ -23,6 +23,7 @@ from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     HashingEmbeddingProvider,
+    KnowledgeAblationPolicy,
     chunk_document,
     embedding_text,
 )
@@ -46,6 +47,14 @@ class BenchmarkManifest:
 
 
 def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
+    manifest = read_manifest(path)
+    validate_manifest(repo_root, manifest)
+    return manifest
+
+
+def read_manifest(path: Path) -> BenchmarkManifest:
+    """Read and validate a manifest contract without requiring the corpus cache."""
+
     raw: Any = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict) or set(raw) != {
         "benchmark_id",
@@ -70,7 +79,7 @@ def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
         if len(digest) != 64:
             raise ValueError("invalid benchmark corpus digest")
         parsed_files.append(BenchmarkCorpusFile(relative, digest))
-    manifest = BenchmarkManifest(
+    return BenchmarkManifest(
         benchmark_id=str(raw["benchmark_id"]),
         benchmark_revision=str(raw["benchmark_revision"]),
         dataset=str(raw["dataset"]),
@@ -78,8 +87,6 @@ def load_manifest(repo_root: Path, path: Path) -> BenchmarkManifest:
         corpus_root=str(raw["corpus_root"]),
         files=tuple(parsed_files),
     )
-    validate_manifest(repo_root, manifest)
-    return manifest
 
 
 def validate_manifest(repo_root: Path, manifest: BenchmarkManifest) -> None:
@@ -88,9 +95,13 @@ def validate_manifest(repo_root: Path, manifest: BenchmarkManifest) -> None:
         raise ValueError("benchmark dataset revision does not match manifest")
     corpus_root = _inside(repo_root, manifest.corpus_root)
     expected = {item.path for item in manifest.files}
+    # The frozen Benchmark v2 corpus is Markdown today, while the book
+    # benchmark deliberately exercises the same runner with UTF-8 TXT.
+    # Compare the explicit allowlist against all regular files so a new
+    # parser-backed corpus cannot silently bypass manifest validation.
     actual = {
         path.relative_to(corpus_root).as_posix()
-        for path in corpus_root.rglob("*.md")
+        for path in corpus_root.rglob("*")
         if path.is_file()
     }
     missing = expected - actual
@@ -127,62 +138,44 @@ def run_benchmark(
     *,
     top_k: int = 10,
     provider: DenseEmbeddingProvider | None = None,
+    ablation_policy: KnowledgeAblationPolicy | None = None,
 ) -> dict[str, Any]:
     if top_k < 1 or top_k > 50:
         raise ValueError("benchmark top_k must be between 1 and 50")
     queries = load_benchmark_v2(_inside(repo_root, manifest.dataset))
     embedding_provider = provider or HashingEmbeddingProvider()
-    corpus_root = _inside(repo_root, manifest.corpus_root)
+    policy = ablation_policy or KnowledgeAblationPolicy()
     with tempfile.TemporaryDirectory(prefix="sage-rag-v2-") as temp:
         temporary = Path(temp)
-        store = KnowledgeStore(
-            temporary / "workspace",
-            temporary / "knowledge.sqlite3",
-            {
-                "benchmark": KnowledgeSourceRoot(
-                    root_id="benchmark",
-                    kind="markdown",
-                    label="Sage Benchmark v2",
-                    path=corpus_root,
-                )
-            },
-            knowledge_index=LocalKnowledgeIndex(
-                workspace_id="sage-knowledge-benchmark-v2",
-                embedding_provider=embedding_provider,
-            ),
+        store, chunking, available_passages = build_benchmark_store(
+            repo_root,
+            manifest,
+            workspace_path=temporary / "workspace",
+            database_path=temporary / "knowledge.sqlite3",
+            embedding_provider=embedding_provider,
+            ablation_policy=policy,
+            query_texts=tuple(query.query for query in queries),
         )
-        available_passages: set[str] = set()
-        prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]] = []
-        for item in manifest.files:
-            prepared = store.prepare_ingest("benchmark", item.path)
-            prepared_sources.append((item, prepared))
-            available_passages.update(
-                passage_id(item.path, block.heading_path[-1])
-                for block in prepared.document.blocks
-                if block.heading_path
-            )
-        _prepare_provider(
-            embedding_provider,
-            prepared_sources,
-            tuple(query.query for query in queries),
-        )
-        for _item, prepared in prepared_sources:
-            proposal = store.ingest_prepared(prepared)
-            store.approve(proposal.proposal_id, proposal.revision)
         _validate_judgments(queries, available_passages)
 
         ranked: dict[str, tuple[str, ...]] = {}
         latencies: list[float] = []
+        latency_by_query: dict[str, float] = {}
         raw_hits: dict[str, list[dict[str, Any]]] = {}
         for query in queries:
             started = time.perf_counter()
             hits = store.search(query.query, top_k=top_k)
-            latencies.append((time.perf_counter() - started) * 1_000)
+            elapsed_ms = (time.perf_counter() - started) * 1_000
+            latencies.append(elapsed_ms)
+            latency_by_query[query.query_id] = elapsed_ms
             documents = tuple(
                 dict.fromkeys(
                     passage_id(
                         hit.chunk.source_relative_path,
-                        hit.chunk.heading_path[-1] if hit.chunk.heading_path else hit.chunk.title,
+                        _passage_section(
+                            hit.chunk.source_relative_path,
+                            hit.chunk.heading_path or (hit.chunk.title,),
+                        ),
                     )
                     for hit in hits
                 )
@@ -192,7 +185,10 @@ def run_benchmark(
                 {
                     "passage_id": passage_id(
                         hit.chunk.source_relative_path,
-                        hit.chunk.heading_path[-1] if hit.chunk.heading_path else hit.chunk.title,
+                        _passage_section(
+                            hit.chunk.source_relative_path,
+                            hit.chunk.heading_path or (hit.chunk.title,),
+                        ),
                     ),
                     "chunk_id": hit.chunk.chunk_id,
                     "citation_id": hit.citation_id,
@@ -210,6 +206,7 @@ def run_benchmark(
         result = asdict(report)
         for case in result["cases"]:
             case["hits"] = raw_hits[str(case["query_id"])]
+            case["latency_ms"] = round(latency_by_query[str(case["query_id"])], 3)
         result.update(
             {
                 "benchmark_id": manifest.benchmark_id,
@@ -224,6 +221,8 @@ def run_benchmark(
                     "dimensions": embedding_provider.dimensions,
                     "supports_semantic_recall": embedding_provider.supports_semantic_recall,
                 },
+                "ablation_policy": asdict(policy),
+                "chunking": chunking,
                 "latency_ms": {
                     "p50": _percentile(latencies, 0.50),
                     "p95": _percentile(latencies, 0.95),
@@ -232,6 +231,64 @@ def run_benchmark(
             }
         )
         return result
+
+
+def build_benchmark_store(
+    repo_root: Path,
+    manifest: BenchmarkManifest,
+    *,
+    workspace_path: Path,
+    database_path: Path,
+    embedding_provider: DenseEmbeddingProvider,
+    ablation_policy: KnowledgeAblationPolicy,
+    query_texts: tuple[str, ...] = (),
+) -> tuple[KnowledgeStore, dict[str, int | float | bool], set[str]]:
+    """Build an approved benchmark store for retrieval and generation evals.
+
+    The caller owns ``workspace_path`` and ``database_path``. This keeps the
+    corpus/index lifecycle explicit while allowing the generation evaluator to
+    inspect the same citation-bound chunks that retrieval returns.
+    """
+
+    corpus_root = _inside(repo_root, manifest.corpus_root)
+    store = KnowledgeStore(
+        workspace_path,
+        database_path,
+        {
+            "benchmark": KnowledgeSourceRoot(
+                root_id="benchmark",
+                kind="markdown",
+                label="Sage Benchmark v2",
+                path=corpus_root,
+            )
+        },
+        knowledge_index=LocalKnowledgeIndex(
+            workspace_id="sage-knowledge-benchmark-v2",
+            embedding_provider=embedding_provider,
+            ablation_policy=ablation_policy,
+        ),
+        ablation_policy=ablation_policy,
+    )
+    prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]] = []
+    available_passages: set[str] = set()
+    for item in manifest.files:
+        prepared = store.prepare_ingest("benchmark", item.path)
+        prepared_sources.append((item, prepared))
+        available_passages.update(
+            passage_id(item.path, _passage_section(item.path, block.heading_path))
+            for block in prepared.document.blocks
+            if block.heading_path
+        )
+    chunking = _prepare_provider(
+        embedding_provider,
+        prepared_sources,
+        query_texts,
+        ablation_policy=ablation_policy,
+    )
+    for _item, prepared in prepared_sources:
+        proposal = store.ingest_prepared(prepared)
+        store.approve(proposal.proposal_id, proposal.revision)
+    return store, chunking, available_passages
 
 
 def _validate_judgments(
@@ -249,12 +306,20 @@ def _prepare_provider(
     provider: DenseEmbeddingProvider,
     prepared_sources: list[tuple[BenchmarkCorpusFile, PreparedKnowledgeSource]],
     queries: tuple[str, ...],
-) -> None:
+    *,
+    ablation_policy: KnowledgeAblationPolicy,
+) -> dict[str, int | float | bool]:
     prepare = getattr(provider, "prepare", None)
-    if not callable(prepare):
-        return
-    texts: list[str] = []
+    document_texts: list[str] = []
+    eligible_block_count = 0
+    indexed_block_ids: set[tuple[str, str]] = set()
+    planned_chunk_count = 0
+    capacity_reached_source_count = 0
     for item, prepared in prepared_sources:
+        eligible_block_count += sum(
+            block.kind not in {"frontmatter", "heading"} and bool(block.text.strip())
+            for block in prepared.document.blocks
+        )
         chunks = chunk_document(
             prepared.document,
             workspace_id="sage-knowledge-benchmark-v2",
@@ -270,10 +335,46 @@ def _prepare_provider(
             title=prepared.document.title or item.path,
             visibility="private",
             active=True,
+            ablation_policy=ablation_policy,
+            semantic_provider=provider,
         )
-        texts.extend(embedding_text(chunk) for chunk in chunks)
-    texts.extend(queries)
-    prepare(tuple(dict.fromkeys(texts)))
+        planned_chunk_count += len(chunks)
+        capacity_reached_source_count += int(len(chunks) >= ablation_policy.max_chunks_per_revision)
+        indexed_block_ids.update((item.path, chunk.block_id) for chunk in chunks)
+        document_texts.extend(
+            embedding_text(chunk, ablation_policy=ablation_policy) for chunk in chunks
+        )
+    unique_documents = tuple(dict.fromkeys(document_texts))
+    prepare_documents = getattr(provider, "prepare_documents", None)
+    if callable(prepare_documents):
+        prepare_documents(unique_documents)
+    elif callable(prepare):
+        prepare(unique_documents)
+    prepare_queries = getattr(provider, "prepare_queries", None)
+    if callable(prepare_queries):
+        prepare_queries(tuple(dict.fromkeys(queries)))
+    indexed_block_count = len(indexed_block_ids)
+    block_coverage = (
+        round(indexed_block_count / eligible_block_count, 6) if eligible_block_count else 1.0
+    )
+    return {
+        "eligible_block_count": eligible_block_count,
+        "indexed_block_count": indexed_block_count,
+        "block_coverage": block_coverage,
+        "planned_chunk_count": planned_chunk_count,
+        "capacity_reached_source_count": capacity_reached_source_count,
+        "index_truncated": (
+            indexed_block_count < eligible_block_count or capacity_reached_source_count > 0
+        ),
+    }
+
+
+def _passage_section(source_path: str, heading_path: tuple[str, ...]) -> str:
+    if not heading_path:
+        raise ValueError("benchmark passage requires a heading path")
+    if Path(source_path).suffix.lower() == ".txt":
+        return " / ".join(heading_path)
+    return heading_path[-1]
 
 
 def _inside(root: Path, relative: str) -> Path:
@@ -316,6 +417,7 @@ def _percentile(values: list[float], percentile: float) -> float:
 
 __all__ = [
     "BenchmarkManifest",
+    "build_benchmark_store",
     "load_embedding_provider",
     "load_manifest",
     "run_benchmark",

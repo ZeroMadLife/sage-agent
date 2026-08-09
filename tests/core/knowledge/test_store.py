@@ -104,6 +104,32 @@ def test_ingest_is_content_addressed_idempotent_and_does_not_write_wiki(
     assert "parser_id: sage.markdown" in first.proposed_content
 
 
+def test_txt_ingest_keeps_raw_bytes_and_parse_locators(tmp_path: Path) -> None:
+    store, vault, repository = _store(tmp_path)
+    payload = "\ufeff第一章\r\n\r\n正文证据。\r\n".encode()
+    source = vault / "book.txt"
+    source.write_bytes(payload)
+
+    proposal = store.ingest("sage-learning", "book.txt")
+    artifact = store.get_parse_artifact(proposal.proposal_id)
+
+    assert artifact is not None
+    assert artifact.document.provenance.parser_id == "sage.txt"
+    body = next(block for block in artifact.document.blocks if block.kind == "paragraph")
+    assert body.line_start == 3
+    assert body.byte_start is not None and body.byte_end is not None
+    assert payload[body.byte_start : body.byte_end].decode("utf-8") == "正文证据。"
+    assert (repository / proposal.raw_path).read_bytes() == payload
+
+
+def test_txt_ingest_does_not_bypass_secret_scan(tmp_path: Path) -> None:
+    store, vault, _ = _store(tmp_path)
+    (vault / "secret.txt").write_text("API_KEY=abcdefghijklmnopqrstuv\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="secret material"):
+        store.ingest("sage-learning", "secret.txt")
+
+
 def test_v1_metadata_database_migrates_to_v6_without_rewriting_existing_rows(
     tmp_path: Path,
 ) -> None:
