@@ -1,9 +1,22 @@
 # Sage 长书 RAG 四项核心 KPI 与策略选择 v1
 
 > 日期：2026-08-08
-> clean source：`742f131`
-> 状态：Scorecard、原子 Gold Claim Judge、五策略 clean retrieval 与 Top-10 真实 generation 已完成；线上策略仍未修改
+> 最新 clean source：`0123456`
+> 状态：Scorecard、原子 Gold Claim Judge、五策略 clean retrieval、真实多 Provider 与 missing-claim generation 已完成；线上策略仍未修改
 > 数据边界：14 条 `seed_manual`、15 个原子 Gold Claim，不代表生产准确率或 SLA
+
+## 2026-08-09 最新结果
+
+同一 contextual/Top-10/Gold 下，FastEmbed、豆包、百炼首轮 Claim Coverage 为
+`0.7333/0.8333/0.7000`，隔离检索 P95 为 `0.930/6.724/3.415s`。3 秒预算下继续保持
+FastEmbed 默认；豆包是质量更高但延迟阻塞的候选，百炼当前纯 TXT 场景不选。完整协议与
+收据见 `docs/evals/book-learning-embedding-provider-tradeoff-v1.md`。
+
+missing-claim 真实 generation 的 Answer Claim Coverage/Correctness 从 `0.500/0.500` 提升到
+`0.600/0.600`，Provider Failure 从 `0.1429` 降到 `0`，Correct Abstention/False Acceptance
+保持 `1.0/0.0`，Claim Recovery Gain 从 `0` 变为 `0.0333`。Recovery Resolution 仍为 `0`，
+端到端 P95 升到 `150.772s`，因此下一责任模块是 recovery admission、Planner/Generator/Judge
+调用与上下文预算，不是继续增大 Top-K。
 
 ## 产品结论
 
@@ -108,7 +121,7 @@ receipt，并拒绝 dirty source。交互 P95 预算冻结为 3,000 ms；在预�
 再比较 Recall、NDCG、MRR 和延迟。因此本轮推荐 `contextual_chunk`，状态仅为
 `offline_candidate`，没有修改线上默认 policy。
 
-## 当前 4+2 Scorecard
+## 2026-08-08 历史 4+2 基线
 
 以下数字来自 clean source `742f131` 的 Top-10 真实 generation 收据；14 条 seed 中 12 条完成
 Judge，2 条 provider failure 被排除在答案质量分母之外。一次评测批次的 provider 波动仍然很大，
