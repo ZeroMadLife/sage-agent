@@ -1,22 +1,22 @@
 # Sage 长书 RAG 四项核心 KPI 与策略选择 v1
 
 > 日期：2026-08-08
-> 最新 clean source：`0123456`
-> 状态：Scorecard、原子 Gold Claim Judge、五策略 clean retrieval、真实多 Provider 与 missing-claim generation 已完成；线上策略仍未修改
+> 最新 clean eval source：`3ee7111`
+> 状态：Scorecard、原子 Gold Claim Judge、五策略 retrieval、豆包质量选型与 bounded Agentic generation 已完成
 > 数据边界：14 条 `seed_manual`、15 个原子 Gold Claim，不代表生产准确率或 SLA
 
-## 2026-08-09 最新结果
+## 2026-08-09 最终 clean 结果
 
 同一 contextual/Top-10/Gold 下，FastEmbed、豆包、百炼首轮 Claim Coverage 为
-`0.7333/0.8333/0.7000`，隔离检索 P95 为 `0.930/6.724/3.415s`。3 秒预算下继续保持
-FastEmbed 默认；豆包是质量更高但延迟阻塞的候选，百炼当前纯 TXT 场景不选。完整协议与
-收据见 `docs/evals/book-learning-embedding-provider-tradeoff-v1.md`。
+`0.7333/0.8333/0.7000`。豆包以最高必要事实覆盖、Recall 和 NDCG 成为长书质量优先模型；
+最新 clean SQLite P95 为 `5.174s`，所以部署优化仍需 PostgreSQL pgvector 或经评测的降维。
+FastEmbed 保留为无 Key 回退和消融基线，百炼当前纯 TXT 场景不选。
 
-missing-claim 真实 generation 的 Answer Claim Coverage/Correctness 从 `0.500/0.500` 提升到
-`0.600/0.600`，Provider Failure 从 `0.1429` 降到 `0`，Correct Abstention/False Acceptance
-保持 `1.0/0.0`，Claim Recovery Gain 从 `0` 变为 `0.0333`。Recovery Resolution 仍为 `0`，
-端到端 P95 升到 `150.772s`，因此下一责任模块是 recovery admission、Planner/Generator/Judge
-调用与上下文预算，不是继续增大 Top-K。
+豆包 bounded generation 的 4+2 为：First-pass Claim Evidence Coverage `0.8333`、Answer
+Correctness `0.4444`、Correct Abstention/False Acceptance `1.0/0.0`、Claim Recovery Gain
+`0.1296`、Provider Failure `1/14`、P95 `227.836s`。另一轮相同配置的 Correctness 为
+`0.6667`，说明生成/Judge 方差仍大；当前不能声称答案质量稳定提升。完整协议与 clean 收据哈希
+见 `docs/evals/book-learning-embedding-provider-tradeoff-v1.md`。
 
 ## 产品结论
 

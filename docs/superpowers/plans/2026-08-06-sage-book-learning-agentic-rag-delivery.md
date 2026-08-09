@@ -1,8 +1,8 @@
 # Sage 长书学习与有界 Agentic RAG 实施计划
 
 > 日期：2026-08-06
-> 状态：Slice A-F 已完成；Slice G 已完成真实多 Provider 长书对比、可恢复云向量评测和 missing-claim generation 复跑；下一阶段转向 PostgreSQL/降维与 recovery admission
-> 基线：`codex/book-learning-rag-design@742f131`
+> 状态：Slice A-G 已完成；豆包质量选型、bounded EvidenceBundle、Task DAG/Context 联合接线和 clean E2E 已收口
+> clean eval 基线：`codex/book-learning-rag-design@3ee7111`
 
 ## 产品目标
 
@@ -96,9 +96,11 @@ ignored `.coding/evals/book-learning-generation-742f131-top10-full.json`。
 - 新增豆包 `doubao-embedding-vision-250615` 与百炼 `qwen3-vl-embedding` 的评测候选；纯 TXT 固定一个 chunk 一个向量，百炼显式 `enable_fusion=false`。
 - 云向量使用模型 revision、role 和文本 SHA-256 绑定的 ignored SQLite 缓存支持断点恢复；缓存不保存正文、查询明文或凭据。
 - 修正 benchmark runner 的 role-aware 预热，document/query 分开准备，避免把云 query 请求错误计入本地检索 P95。
-- 同一 clean source `0123456`、contextual、Top-10 上，FastEmbed/豆包/百炼 Claim Coverage 为 `0.7333/0.8333/0.7000`，隔离 P95 为 `0.930/6.724/3.415s`。
-- 保持 FastEmbed 默认；豆包标记为受 3 秒预算阻塞的质量候选；百炼当前纯 TXT 不选。线上 policy 没有修改。
-- 真实 missing-claim generation 14/14 完成，Answer Correctness `0.6000`、Correct Abstention `1.0000`、Provider Failure `0`、Claim Recovery Gain `0.0333`；Recovery Resolution 仍为 `0`，端到端 P95 `150.772s`。
+- 同一 Gold/contextual/Top-10 下，FastEmbed/豆包/百炼 Claim Coverage 为 `0.7333/0.8333/0.7000`；豆包选为长书质量优先模型，FastEmbed 保留为无 Key 回退和消融基线。
+- clean 豆包 retrieval 绑定 `3ee7111`：Recall@10 `0.8833`、MRR `0.7200`、NDCG@10 `0.7204`、SQLite P95 `5.174s`；质量选择成立，延迟门禁未通过。
+- EvidenceBundle 限制为最多 12 条 evidence、每条 excerpt 最多 1,200 字符，优先覆盖不同 passage；它不改变 Top-K 和 citation 粒度。
+- clean bounded generation 完成 13/14 case：Answer Correctness `0.4444`、Correct Abstention `1.0`、False Acceptance `0`、Claim Recovery Gain `0.1296`、Provider Failure `0.0714`、P95 `227.836s`。相同配置另一轮 Correctness 为 `0.6667`，答案质量尚未稳定。
+- BookLearningCoordinator 的最终回答现在先完成 TurnContextPlan capture/compare 再返回，不增加父模型调用；Resume 仍不重复执行 Coordinator。
 - 机器可读收据、架构图和指标解释见 `docs/evals/book-learning-embedding-provider-tradeoff-v1.md` 与 `evals/reports/book_learning_embedding_provider_tradeoff_v1_2026-08-09.json`。
 
 ## 不在本阶段承诺
@@ -107,7 +109,7 @@ ignored `.coding/evals/book-learning-generation-742f131-top10-full.json`。
 - 不把模型 confidence 当作事实正确率或忠实度；
 - 不训练在线 SFT/RL；先建立标注 schema、可复现基线和离线评测入口；
 - 不把实验候选或 seed benchmark 包装成线上准确率。
-- 不因豆包在 14 条 seed 上覆盖更高就直接切换默认；必须先通过 PostgreSQL/降维后的 3 秒 P95 门禁。
+- 不把豆包质量选型写成生产 SLA；便携默认仍可离线启动，部署 profile 必须显式配置并继续承担 3 秒检索门禁。
 
 ## 收口门槛
 
