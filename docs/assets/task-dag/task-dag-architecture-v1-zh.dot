@@ -1,0 +1,55 @@
+digraph SageTaskDAG {
+  graph [rankdir=LR, bgcolor="#F8FAFC", pad="0.25", nodesep="0.34", ranksep="0.68", fontname="PingFang SC"];
+  node [shape=box, style="rounded,filled", color="#CBD5E1", fillcolor="#FFFFFF", fontname="PingFang SC", fontsize=12, margin="0.14,0.08"];
+  edge [color="#64748B", penwidth=1.3, arrowsize=0.7, fontname="PingFang SC", fontsize=10];
+
+  request [label="用户 Turn\n规范化输入", fillcolor="#EFF6FF", color="#60A5FA"];
+  intent [label="TaskIntentAnalyzer\n确定性规则 v1\n只收窄候选，不授予权限", fillcolor="#F0FDFA", color="#2DD4BF"];
+  model [label="主模型\nDeepSeek / 当前模型供应方\n提出 task_dag JSON", fillcolor="#FFF7ED", color="#FB923C"];
+
+  subgraph cluster_admission {
+    label="服务端 Admission / 编排控制面";
+    color="#94A3B8"; style="rounded,dashed"; fontname="PingFang SC";
+    schema [label="TaskDAGPlan\n节点/依赖/环检测\n最多 6 节点、深度 8"];
+    budget [label="SubagentLifecycleMiddleware\n整图预算预约\n总数/并发/token/model/tool"];
+    hash [label="规范化 SHA-256\n不可变计划 + 稳定 dag_run_id"];
+    scheduler [label="TaskDAGScheduler\n就绪波次异步调度\n最大并发 3；practice 独占波次"];
+    schema -> budget [label="校验通过"];
+    budget -> hash [label="预算已预约"];
+    hash -> scheduler [label="任务图已冻结"];
+  }
+
+  bundle [label="ToolBundle\ntask + task_dag\nsubagent:task-dag capability", fillcolor="#F5F3FF", color="#A78BFA"];
+
+  subgraph cluster_children {
+    label="Child Runtime（每个节点独立经过既有安全闭环）";
+    color="#94A3B8"; style="rounded,dashed"; fontname="PingFang SC";
+    req [label="SubagentRequest\n稳定 child_run_id\n能力范围 / 证据引用"];
+    executor [label="SubagentExecutorPort\nCodingSubagentExecutor\n结果缓存 / 子运行追踪"];
+    safety [label="Permission → Policy\n→ Approval → Sandbox\nDAG 不增加权限", fillcolor="#FEF2F2", color="#F87171"];
+    req -> executor;
+    executor -> safety [label="写型节点 / Shell / 文件修改"];
+  }
+
+  state [label="Graph Checkpoint\nTaskGraphEntry / delegations\n不保存 prompt 正文", fillcolor="#ECFDF5", color="#34D399"];
+  evidence [label="结果 / 证据存储\nresult_ref、artifact、citation\n大正文外置", fillcolor="#ECFDF5", color="#34D399"];
+  events [label="HarnessEventAdapter\n脱敏 Timeline / Trace\ndag_id/hash、节点状态、计数", fillcolor="#F1F5F9", color="#64748B"];
+  resume [label="Resume\n校验 dag_hash + scope\n复用 child_run_id / cache", fillcolor="#EFF6FF", color="#60A5FA"];
+
+  request -> intent -> model;
+  model -> schema [label="task_dag 工具调用"];
+  bundle -> schema [label="已注册能力配置"];
+  scheduler -> req [label="节点波次"];
+  safety -> evidence [label="结果 / 差异 / 追踪"];
+  executor -> state [label="节点终态收据"];
+  scheduler -> state [label="任务图状态"];
+  state -> resume [label="作用域绑定的检查点"];
+  resume -> hash [label="仅允许同一计划"];
+  state -> events [label="公开投影"];
+  evidence -> events [label="仅引用与计数"];
+
+  deny [label="失败关闭\n非法图 / 预算不足 / 哈希漂移\n不执行、不审批、不进入沙盒", shape=note, fillcolor="#FFF1F2", color="#FB7185"];
+  schema -> deny [style=dashed, color="#EF4444", label="拒绝"];
+  budget -> deny [style=dashed, color="#EF4444", label="预算不足"];
+  resume -> deny [style=dashed, color="#EF4444", label="发生漂移"];
+}

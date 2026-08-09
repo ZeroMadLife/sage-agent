@@ -126,8 +126,20 @@ from sage_harness.subagents import (
     SubagentResult,
     SubagentTerminalStatus,
     SubagentToolConfig,
+    build_task_dag_tool,
     build_task_tool,
     derive_child_run_id,
+)
+from sage_harness.task_dag import (
+    TaskDAGNode,
+    TaskDAGNodeResult,
+    TaskDAGNodeStatus,
+    TaskDAGPlan,
+    TaskDAGPlanValidationError,
+    TaskDAGRunStatus,
+    TaskDAGScheduler,
+    derive_task_dag_run_id,
+    task_dag_run_status,
 )
 
 __all__ = [
@@ -213,6 +225,13 @@ __all__ = [
     "SubagentResult",
     "SubagentTerminalStatus",
     "SubagentToolConfig",
+    "TaskDAGNode",
+    "TaskDAGNodeResult",
+    "TaskDAGNodeStatus",
+    "TaskDAGPlan",
+    "TaskDAGPlanValidationError",
+    "TaskDAGRunStatus",
+    "TaskDAGScheduler",
     "ToolArtifactPort",
     "ToolArtifactReceipt",
     "ToolBudgetFinalizationMiddleware",
@@ -229,9 +248,11 @@ __all__ = [
     "assemble_deferred_tools",
     "build_graph_message_compaction_plan",
     "build_memory_checkpointer",
+    "build_task_dag_tool",
     "build_task_tool",
     "create_sage_agent",
     "derive_child_run_id",
+    "derive_task_dag_run_id",
     "load_graph_message_compaction_plan",
     "load_scoped_checkpoint",
     "normalize_stream_item",
@@ -242,5 +263,6 @@ __all__ = [
     "resolve_skill_activation",
     "resolve_skill_allowed_tools",
     "skill_revision",
+    "task_dag_run_status",
     "thread_config",
 ]
