@@ -7,17 +7,50 @@ import pytest
 from core.knowledge.benchmark import KnowledgeBenchmarkQueryV2, KnowledgeRelevanceJudgment
 from evals.book_learning_claims import ClaimEvidenceGoldCase, ClaimEvidenceRequirement
 from scripts.evaluate_book_learning_generation import (
+    _DEFAULT_PROVIDER_FACTORY,
     ModelInvocationError,
     _accepted_decision,
     _evaluation_llm_options,
     _invoke_json,
     _judge_prompt,
+    _merge_evidence,
     _model_receipt,
     _parse_json_object,
     _planner_prompt,
     _rewrite_queries,
     _runtime_metrics,
 )
+
+
+def test_generation_defaults_to_selected_doubao_book_embedding() -> None:
+    assert _DEFAULT_PROVIDER_FACTORY == (
+        "scripts.benchmark_providers.doubao_multimodal:create_provider"
+    )
+
+
+def test_merged_evidence_is_bounded_and_keeps_passage_diversity() -> None:
+    first = [
+        {
+            "citation_id": f"first-{index}",
+            "passage_id": "book#chapter-one",
+            "excerpt": "a" * 2_000,
+        }
+        for index in range(10)
+    ]
+    second = [
+        {
+            "citation_id": f"second-{index}",
+            "passage_id": f"book#chapter-{index + 2}",
+            "excerpt": "b" * 2_000,
+        }
+        for index in range(5)
+    ]
+
+    merged = _merge_evidence(first, second)
+
+    assert len(merged) == 12
+    assert {item["passage_id"] for item in second}.issubset({item["passage_id"] for item in merged})
+    assert max(len(str(item["excerpt"])) for item in merged) == 1_200
 
 
 class _NeverRespondingLLM:

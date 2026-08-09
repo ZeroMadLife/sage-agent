@@ -34,6 +34,10 @@ from evals.book_learning_claims import (
 )
 from evals.book_learning_stages import GenerationEvalCase, evaluate_generation
 
+_DEFAULT_PROVIDER_FACTORY = "scripts.benchmark_providers.doubao_multimodal:create_provider"
+_MAX_EVIDENCE_ITEMS = 12
+_MAX_EVIDENCE_EXCERPT_CHARS = 1_200
+
 
 class ModelInvocationError(RuntimeError):
     """Bounded, secret-free receipt for one failed model stage."""
@@ -63,7 +67,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--provider-factory",
-        default="scripts.benchmark_providers.fastembed_local:create_provider",
+        default=_DEFAULT_PROVIDER_FACTORY,
     )
     parser.add_argument(
         "--claim-gold",
@@ -624,21 +628,23 @@ def _parse_json_object(text: str, stage: str) -> dict[str, Any]:
 
 
 def _evidence(hits: Iterable[KnowledgeSearchHit]) -> list[dict[str, Any]]:
-    return [
-        {
-            "citation_id": hit.citation_id,
-            "passage_id": passage_id(
-                hit.chunk.source_relative_path,
-                " / ".join(hit.chunk.heading_path or (hit.chunk.title,)),
-            ),
-            "section": " / ".join(hit.chunk.heading_path),
-            "excerpt": hit.chunk.text[:2_000],
-            "rank": hit.rank,
-            "sparse_score": hit.sparse_score,
-            "dense_score": hit.dense_score,
-        }
-        for hit in hits
-    ]
+    return _bounded_evidence(
+        [
+            {
+                "citation_id": hit.citation_id,
+                "passage_id": passage_id(
+                    hit.chunk.source_relative_path,
+                    " / ".join(hit.chunk.heading_path or (hit.chunk.title,)),
+                ),
+                "section": " / ".join(hit.chunk.heading_path),
+                "excerpt": hit.chunk.text,
+                "rank": hit.rank,
+                "sparse_score": hit.sparse_score,
+                "dense_score": hit.dense_score,
+            }
+            for hit in hits
+        ]
+    )
 
 
 def _passage_ids(evidence: Iterable[Mapping[str, Any]]) -> tuple[str, ...]:
@@ -661,7 +667,39 @@ def _merge_evidence(
         if citation_id not in seen:
             seen.add(citation_id)
             merged.append(item)
-    return merged
+    return _bounded_evidence(merged)
+
+
+def _bounded_evidence(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized = [
+        {
+            **item,
+            "excerpt": str(item.get("excerpt", ""))[:_MAX_EVIDENCE_EXCERPT_CHARS],
+        }
+        for item in evidence
+    ]
+    selected: list[dict[str, Any]] = []
+    selected_citations: set[str] = set()
+    selected_passages: set[str] = set()
+    for item in normalized:
+        passage = str(item.get("passage_id", ""))
+        citation = str(item.get("citation_id", ""))
+        if passage in selected_passages or citation in selected_citations:
+            continue
+        selected.append(item)
+        selected_passages.add(passage)
+        selected_citations.add(citation)
+        if len(selected) >= _MAX_EVIDENCE_ITEMS:
+            return selected
+    for item in normalized:
+        citation = str(item.get("citation_id", ""))
+        if citation in selected_citations:
+            continue
+        selected.append(item)
+        selected_citations.add(citation)
+        if len(selected) >= _MAX_EVIDENCE_ITEMS:
+            break
+    return selected
 
 
 def _claims(value: Any) -> list[dict[str, Any]]:

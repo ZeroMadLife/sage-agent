@@ -15,6 +15,7 @@ from api.main import create_app
 from core.config.settings import get_settings
 from core.knowledge import (
     DashScopeEmbeddingProvider,
+    DoubaoMultimodalEmbeddingProvider,
     FastEmbedEmbeddingProvider,
     KnowledgeSourceRoot,
 )
@@ -116,6 +117,32 @@ def test_dashscope_runtime_configuration_preserves_role_policy(
     assert provider.config.query_instruct.startswith("Given a technical documentation query")
     assert provider.config.cost_per_1k_tokens_usd == pytest.approx(0.0001)
     assert "asymmetric-query-document" in provider.model_revision
+
+
+def test_doubao_runtime_configuration_preserves_chunk_citation_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_PROVIDER", "doubao_multimodal")
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_API_KEY", "test-only")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_BASE_URL",
+        "https://ark.cn-beijing.volces.com/api/v3",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_MODEL", "doubao-embedding-vision-250615")
+    monkeypatch.setenv(
+        "KNOWLEDGE_EMBEDDING_MODEL_REVISION",
+        "doubao-embedding-vision-250615@2026-08-09",
+    )
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_DIMENSIONS", "2048")
+    get_settings.cache_clear()
+
+    app, _vault, _knowledge = _app(tmp_path)
+
+    provider = app.state.knowledge_store.knowledge_index.embedding_provider
+    assert isinstance(provider, DoubaoMultimodalEmbeddingProvider)
+    assert provider.dimensions == 2048
+    assert provider.protocol_mode == "multimodal-text-single-vector"
 
 
 def test_mastery_projection_and_invalidation_use_current_learning_goal(tmp_path: Path) -> None:

@@ -11,6 +11,8 @@ from core.knowledge.embeddings import (
     FASTEMBED_RUNTIME_REVISION,
     DashScopeEmbeddingConfig,
     DashScopeEmbeddingProvider,
+    DoubaoMultimodalEmbeddingConfig,
+    DoubaoMultimodalEmbeddingProvider,
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
     OpenAICompatibleEmbeddingConfig,
@@ -71,6 +73,58 @@ def test_openai_compatible_provider_batches_normalizes_and_caches(
     ]
     assert all(call["headers"]["Authorization"] == "Bearer secret" for call in calls)
     assert provider.estimated_cost_usd == pytest.approx(0.000015)
+
+
+def test_doubao_multimodal_provider_keeps_one_text_per_vector_and_caches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+
+    def fake_post(*_args: Any, **kwargs: Any) -> _Response:
+        calls.append({"url": _args[0], **kwargs})
+        return _Response(
+            {
+                "data": {"embedding": [3.0, 4.0]},
+                "usage": {"prompt_tokens": 5},
+            }
+        )
+
+    monkeypatch.setattr("core.knowledge.embeddings.httpx.post", fake_post)
+    provider = DoubaoMultimodalEmbeddingProvider(
+        DoubaoMultimodalEmbeddingConfig(
+            api_key="secret",
+            base_url="https://ark.example/api/v3",
+            model="doubao-embedding-vision-250615",
+            model_revision="doubao-embedding-vision-250615@2026-08-09",
+            dimensions=2,
+            max_workers=1,
+            cost_per_1k_tokens_usd=0.001,
+        )
+    )
+
+    provider.prepare_documents(("first", "second", "first"))
+
+    assert provider.embed_query("first") == pytest.approx((0.6, 0.8))
+    assert [call["json"]["input"] for call in calls] == [
+        [{"type": "text", "text": "first"}],
+        [{"type": "text", "text": "second"}],
+    ]
+    assert all(call["url"] == "https://ark.example/api/v3/embeddings/multimodal" for call in calls)
+    assert provider.request_count == 2
+    assert provider.input_tokens == 10
+    assert provider.estimated_cost_usd == pytest.approx(0.00001)
+    assert provider.protocol_mode == "multimodal-text-single-vector"
+
+
+def test_doubao_multimodal_provider_rejects_unsafe_remote_base_url() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        DoubaoMultimodalEmbeddingConfig(
+            api_key="secret",
+            base_url="http://ark.example/api/v3",
+            model="doubao-embedding-vision-250615",
+            model_revision="doubao-embedding-vision-250615@2026-08-09",
+            dimensions=2048,
+        )
 
 
 def test_openai_compatible_provider_retries_transient_transport_errors(
