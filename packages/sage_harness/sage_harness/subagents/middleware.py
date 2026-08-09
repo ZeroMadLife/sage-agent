@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, override
 
 from langchain.agents.middleware import AgentMiddleware
@@ -16,6 +16,8 @@ from sage_harness.subagents.contracts import (
     SubagentToolConfig,
     derive_child_run_id,
 )
+from sage_harness.subagents.dag_tool import _plan_from_arguments
+from sage_harness.task_dag import derive_task_dag_run_id
 
 _DESCRIPTION_MAX = 200
 _DEFAULT_CHILD_TOKEN_BUDGET = 24_000
@@ -131,6 +133,8 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
             return None
         message = messages[-1]
         calls = list(message.tool_calls or [])
+        if any(_tool_call_name(call) == "task_dag" for call in calls):
+            return self._after_model_task_dag(state, runtime, message, calls)
         if not any(_tool_call_name(call) == "task" for call in calls):
             return None
 
@@ -184,9 +188,7 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
                 current_run_id,
                 call_id,
             )
-            if child_run_id not in prior_ids or _needs_reservation(
-                prior_by_id[child_run_id]
-            ):
+            if child_run_id not in prior_ids or _needs_reservation(prior_by_id[child_run_id]):
                 reservation_candidate_ids.add(child_run_id)
         reservation_slots = min(
             self.limits.max_concurrent,
@@ -236,10 +238,7 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
                     requested_type != "practice"
                     or (
                         not kept_practice_ids
-                        and (
-                            not active_practice_ids
-                            or child_run_id in active_practice_ids
-                        )
+                        and (not active_practice_ids or child_run_id in active_practice_ids)
                     )
                 )
             )
@@ -341,6 +340,232 @@ class SubagentLifecycleMiddleware(AgentMiddleware[SageThreadState, HarnessRunCon
                 )
             ]
         return update or None
+
+    def _after_model_task_dag(
+        self,
+        state: SageThreadState,
+        runtime: Runtime[HarnessRunContext],
+        message: AIMessage,
+        calls: Sequence[Mapping[str, Any]],
+    ) -> dict[str, object] | None:
+        """对整张 DAG 原子预约子 Agent 预算，防止 Tool 绕过父级上限。"""
+        current_run_id = runtime.context.run_id
+        prior = [
+            entry
+            for entry in state.get("delegations", []) or []
+            if entry.get("run_id") == current_run_id
+        ]
+        prior_by_id = {str(entry["id"]): entry for entry in prior if entry.get("id")}
+        dag_calls = [call for call in calls if _tool_call_name(call) == "task_dag"]
+        chosen = dag_calls[0] if dag_calls else None
+        if chosen is None:
+            return None
+        args = _tool_call_args(chosen)
+        raw_nodes = args.get("nodes")
+        raw_max_concurrent = args.get("max_concurrent")
+        chosen_id = str(chosen.get("id") or "").strip()
+        if type(raw_max_concurrent) is not int or not chosen_id:
+            # 留给 Tool/ToolNode 返回结构化错误；无稳定 call id 时不能创建 reservation。
+            return None
+        try:
+            plan = _plan_from_arguments(
+                raw_nodes if isinstance(raw_nodes, list) else [],
+                raw_max_concurrent,
+                self.tool_config,
+            )
+        except (TypeError, ValueError):
+            # 留给 Tool 返回结构化 is_error ToolMessage；这里不启动任何 child。
+            return None
+
+        child_ids = {
+            node.node_id: derive_child_run_id(
+                runtime.context.thread_id,
+                current_run_id,
+                f"{chosen_id}:{node.node_id}",
+            )
+            for node in plan.nodes
+        }
+        prior_ids = set(prior_by_id)
+        new_nodes = [node for node in plan.nodes if child_ids[node.node_id] not in prior_ids]
+        reservation_nodes = [
+            node
+            for node in plan.nodes
+            if child_ids[node.node_id] not in prior_ids
+            or _needs_reservation(prior_by_id[child_ids[node.node_id]])
+        ]
+        remaining_total = max(0, self.limits.max_total_per_run - len(prior_ids))
+        if len(new_nodes) > remaining_total:
+            return self._drop_dag_call(message, calls, chosen)
+        planned_practice_ids = {
+            child_ids[node.node_id] for node in plan.nodes if node.subagent_type == "practice"
+        }
+        if any(
+            entry.get("status") in {"pending", "running"}
+            for entry in prior
+            if entry.get("subagent_type") == "practice"
+            and entry.get("id") not in planned_practice_ids
+        ):
+            return self._drop_dag_call(message, calls, chosen)
+
+        parent_token_usage = _non_negative_int(state.get("run_token_usage"))
+        parent_token_limit = _non_negative_int(state.get("run_token_limit"))
+        parent_model_usage = _non_negative_int(state.get("run_model_calls"))
+        parent_model_limit = _non_negative_int(state.get("run_model_call_limit"))
+        parent_tool_usage = _non_negative_int(state.get("run_tool_calls"))
+        parent_tool_limit = _non_negative_int(state.get("run_tool_call_limit"))
+        child_token_usage, child_model_calls, child_tool_calls = _child_usage(
+            state,
+            current_run_id,
+        )
+        remaining_tokens = max(
+            0,
+            parent_token_limit - parent_token_usage - child_token_usage,
+        )
+        remaining_model_calls = max(
+            0,
+            parent_model_limit - parent_model_usage - child_model_calls - 1,
+        )
+        remaining_tool_calls = max(
+            0,
+            parent_tool_limit - parent_tool_usage - child_tool_calls,
+        )
+        slots = len(reservation_nodes)
+        if parent_token_limit > 0 and remaining_tokens < _MIN_CHILD_RESERVATION * slots:
+            return self._drop_dag_call(message, calls, chosen)
+        if (
+            parent_model_limit > 0
+            and parent_tool_limit > 0
+            and (remaining_model_calls < 3 * slots or remaining_tool_calls < slots)
+        ):
+            return self._drop_dag_call(message, calls, chosen)
+
+        entries: list[dict[str, object]] = []
+        reserved_tokens_remaining = remaining_tokens
+        reserved_models_remaining = remaining_model_calls
+        reserved_tools_remaining = remaining_tool_calls
+        for index, node in enumerate(reservation_nodes):
+            child_run_id = child_ids[node.node_id]
+            profile = self.tool_config.resolve(node.subagent_type)
+            assert profile is not None
+            previous = prior_by_id.get(child_run_id)
+            remaining_slots = max(1, slots - index)
+            if parent_token_limit > 0:
+                reserved_tokens = min(
+                    profile.token_budget,
+                    reserved_tokens_remaining // remaining_slots,
+                )
+                if reserved_tokens < _MIN_CHILD_RESERVATION:
+                    return self._drop_dag_call(message, calls, chosen)
+                reserved_tokens_remaining -= reserved_tokens
+            else:
+                reserved_tokens = profile.token_budget
+            if parent_model_limit > 0 and parent_tool_limit > 0:
+                reserved_steps = min(
+                    profile.max_steps,
+                    reserved_tools_remaining // remaining_slots,
+                    max(0, reserved_models_remaining // remaining_slots - 2),
+                )
+                if reserved_steps < 1:
+                    return self._drop_dag_call(message, calls, chosen)
+                reserved_model_calls = reserved_steps + 2
+                reserved_tool_calls = reserved_steps
+                reserved_models_remaining -= reserved_model_calls
+                reserved_tools_remaining -= reserved_tool_calls
+            else:
+                reserved_model_calls = profile.max_steps + 2
+                reserved_tool_calls = profile.max_steps
+            entries.append(
+                {
+                    **(previous or {}),
+                    "id": child_run_id,
+                    "run_id": current_run_id,
+                    "description": node.description,
+                    "subagent_type": node.subagent_type,
+                    "status": "running",
+                    "reserved_tokens": reserved_tokens,
+                    "reserved_model_calls": reserved_model_calls,
+                    "reserved_tool_calls": reserved_tool_calls,
+                    "token_usage": 0,
+                    "model_calls": 0,
+                    "tool_count": 0,
+                    "evidence_refs": [],
+                    "task_graph_node_id": node.node_id,
+                }
+            )
+
+        dag_id = derive_task_dag_run_id(
+            runtime.context.thread_id,
+            current_run_id,
+            chosen_id,
+            plan.dag_hash,
+        )
+        running_graph = {
+            "dag_id": dag_id,
+            "dag_hash": plan.dag_hash,
+            "run_id": current_run_id,
+            "tool_call_id": chosen_id,
+            "status": "running",
+            "node_count": len(plan.nodes),
+            "completed_count": 0,
+            "failed_count": 0,
+            "blocked_count": 0,
+            "nodes": [
+                {
+                    "node_id": node.node_id,
+                    "status": "pending",
+                    "child_run_id": child_ids[node.node_id],
+                }
+                for node in plan.nodes
+            ],
+        }
+        kept: list[Mapping[str, Any]] = []
+        dropped = 0
+        for call in calls:
+            if _tool_call_name(call) == "task_dag":
+                if call is chosen:
+                    kept.append(call)
+                else:
+                    dropped += 1
+            elif _tool_call_name(call) == "task":
+                dropped += 1
+            else:
+                kept.append(call)
+        update: dict[str, object] = {"task_graphs": [running_graph]}
+        if entries:
+            update["delegations"] = entries
+        if dropped:
+            update["messages"] = [
+                message.model_copy(
+                    update={
+                        "content": _append_limit_notice(message.content),
+                        "tool_calls": kept,
+                    }
+                )
+            ]
+        return update
+
+    def _drop_dag_call(
+        self,
+        message: AIMessage,
+        calls: Sequence[Mapping[str, Any]],
+        chosen: Mapping[str, Any],
+    ) -> dict[str, object]:
+        """预算/并发不足时删除 DAG 调用，不让它进入 Tool/Executor。"""
+        kept = [
+            call
+            for call in calls
+            if call is not chosen and _tool_call_name(call) not in {"task", "task_dag"}
+        ]
+        return {
+            "messages": [
+                message.model_copy(
+                    update={
+                        "content": _append_limit_notice(message.content),
+                        "tool_calls": kept,
+                    }
+                )
+            ]
+        }
 
     @override
     def after_model(

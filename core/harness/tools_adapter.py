@@ -25,6 +25,7 @@ from sage_harness import (
     WebFetchPort,
     WebSearchPort,
     assemble_deferred_tools,
+    build_task_dag_tool,
     build_task_tool,
 )
 
@@ -387,6 +388,13 @@ def build_deerflow_coding_tool_bundle(
         task_metadata = dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
         task_metadata["capability_id"] = "subagent:explore"
         resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
+        task_dag_tool = build_task_dag_tool(subagent_executor, subagent_config)
+        task_dag_metadata = (
+            dict(task_dag_tool.metadata) if isinstance(task_dag_tool.metadata, Mapping) else {}
+        )
+        # DAG 只新增编排入口；每个节点仍由 server-owned profile 决定权限和 scope。
+        task_dag_metadata["capability_id"] = "subagent:task-dag"
+        resident_tools.append(task_dag_tool.model_copy(update={"metadata": task_dag_metadata}))
 
     web_allowed = intent_scope is None or intent_scope.allows_tool_candidate(
         origin="web", category="web"
