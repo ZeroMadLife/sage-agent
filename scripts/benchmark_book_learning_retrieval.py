@@ -22,7 +22,7 @@ from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
-from core.knowledge.postgres_retrieval import PgTextsearchBm25Retriever
+from core.knowledge.postgres_retrieval import build_sparse_retriever
 from core.knowledge.retrieval import DenseEmbeddingProvider, KnowledgeAblationPolicy
 from evals.book_learning_claims import (
     ClaimEvidenceEvalCase,
@@ -63,9 +63,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--postgres-sparse",
-        choices=("native", "bm25"),
+        choices=("auto", "native", "bm25"),
         default="native",
-        help="PostgreSQL sparse route; bm25 requires an isolated pg_textsearch server",
+        help="Default native GIN + ts_rank_cd; auto probes BM25 and falls back when unavailable",
     )
     parser.add_argument(
         "--postgres-dsn",
@@ -107,7 +107,7 @@ def main() -> int:
     index_factory = None
     workspace_id = f"sage-book-learning-benchmark-{uuid.uuid4().hex}"
     if args.backend == "postgres":
-        sparse_retriever = PgTextsearchBm25Retriever() if args.postgres_sparse == "bm25" else None
+        sparse_retriever = build_sparse_retriever(args.postgres_sparse)
 
         def postgres_index_factory(
             workspace: str,

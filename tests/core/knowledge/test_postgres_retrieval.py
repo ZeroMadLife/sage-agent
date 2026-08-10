@@ -5,9 +5,11 @@ from typing import Any
 import pytest
 
 from core.knowledge.postgres_retrieval import (
+    FallbackSparseRetriever,
     NativePostgresFtsRetriever,
     PgTextsearchBm25Retriever,
     ReciprocalRankFusionPolicy,
+    build_sparse_retriever,
 )
 
 
@@ -15,14 +17,19 @@ class RecordingCursor:
     def __init__(self, rows: tuple[dict[str, Any], ...]) -> None:
         self.rows = rows
         self.sql = ""
+        self.statements: list[str] = []
         self.params: tuple[object, ...] = ()
 
     def execute(self, sql: str, params: tuple[object, ...] = ()) -> None:
         self.sql = sql
+        self.statements.append(sql)
         self.params = params
 
     def fetchall(self) -> tuple[dict[str, Any], ...]:
         return self.rows
+
+    def fetchone(self) -> tuple[bool]:
+        return (False,)
 
 
 def test_native_sparse_retriever_owns_postgres_fts_sql() -> None:
@@ -77,6 +84,57 @@ def test_pg_textsearch_retriever_bounds_query_terms() -> None:
     )
 
     assert len(str(cursor.params[0]).split()) <= 8
+
+
+def test_pg_textsearch_retriever_probes_extension_availability() -> None:
+    cursor = RecordingCursor(())
+    retriever = PgTextsearchBm25Retriever()
+
+    assert retriever.is_available(cursor) is False
+    assert "pg_available_extensions" in cursor.sql
+    assert cursor.params == ("pg_textsearch",)
+
+
+def test_fallback_sparse_retriever_selects_native_when_bm25_is_unavailable() -> None:
+    cursor = RecordingCursor(())
+    retriever = FallbackSparseRetriever(
+        preferred=PgTextsearchBm25Retriever(),
+        fallback=NativePostgresFtsRetriever(),
+    )
+
+    retriever.ensure_schema(cursor)
+
+    assert retriever.backend_id == "postgres-tsvector"
+
+
+def test_fallback_sparse_retriever_keeps_bm25_when_extension_is_available() -> None:
+    class AvailableCursor(RecordingCursor):
+        def fetchone(self) -> tuple[bool]:
+            return (True,)
+
+    cursor = AvailableCursor(())
+    retriever = FallbackSparseRetriever(
+        preferred=PgTextsearchBm25Retriever(index_name="sage_bm25_eval_idx"),
+        fallback=NativePostgresFtsRetriever(),
+    )
+
+    retriever.ensure_schema(cursor)
+
+    assert retriever.backend_id == "pg-textsearch-bm25"
+    assert any("CREATE EXTENSION IF NOT EXISTS pg_textsearch" in sql for sql in cursor.statements)
+
+
+@pytest.mark.parametrize(
+    ("strategy", "backend_id"),
+    [("native", "postgres-tsvector"), ("bm25", "pg-textsearch-bm25")],
+)
+def test_build_sparse_retriever_exposes_explicit_routes(strategy: str, backend_id: str) -> None:
+    assert build_sparse_retriever(strategy).backend_id == backend_id
+
+
+def test_build_sparse_retriever_rejects_unknown_routes() -> None:
+    with pytest.raises(ValueError, match="unknown PostgreSQL sparse strategy"):
+        build_sparse_retriever("unknown")
 
 
 @pytest.mark.parametrize("index_name", ["1_bm25", "bm25-index", "索引_bm25"])

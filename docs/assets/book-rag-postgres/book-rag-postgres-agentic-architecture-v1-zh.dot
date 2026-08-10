@@ -16,14 +16,20 @@ digraph SageBookRAG {
     color="#3B82F6"; style="rounded"; fontname="PingFang SC";
     sparse [label="Sparse 策略接口", fillcolor="#EFF6FF", color="#60A5FA"];
     native [label="默认\nnative GIN + ts_rank_cd", fillcolor="#F0FDFA", color="#2DD4BF"];
-    bm25 [label="可选实验\npg_textsearch BM25", fillcolor="#FFF7ED", color="#FB923C"];
+    auto [label="auto\n探测扩展并回退", fillcolor="#FFF7ED", color="#FDBA74"];
+    bm25 [label="强制实验\npg_textsearch BM25", fillcolor="#FFF7ED", color="#FB923C"];
     dense [label="Dense 策略接口\npgvector exact + 豆包 2048", fillcolor="#F5F3FF", color="#A78BFA"];
     rrf [label="RRF Fusion", fillcolor="#FFFFFF", color="#64748B"];
+    reranker [label="候选后重排\n未启用的扩展插槽", style="rounded,dashed,filled", fillcolor="#F8FAFC", color="#94A3B8"];
     sparse -> native [label="默认实现"];
-    sparse -> bm25 [label="可替换实现"];
+    sparse -> auto [label="显式实验"];
+    sparse -> bm25 [label="强制实验"];
+    auto -> bm25 [label="扩展可用"];
+    auto -> native [label="扩展不可用"];
     native -> rrf;
     bm25 -> rrf;
     dense -> rrf;
+    rrf -> reranker [style=dashed, label="后续可插入", color="#94A3B8"];
   }
 
   bundle [label="EvidenceBundle\n有界证据 + citation", fillcolor="#ECFDF5", color="#34D399"];
@@ -36,6 +42,7 @@ digraph SageBookRAG {
   sqlite -> sparse [style=dashed, label="rebuildable projection"];
   sqlite -> dense [style=dashed];
   rrf -> bundle -> gate;
+  reranker -> bundle [style=dashed, label="启用后替代直连", color="#94A3B8"];
   gate -> answer [label="证据充分", color="#10B981"];
   gate -> rewrite [label="缺失事实", color="#3B82F6"];
   rewrite -> sparse [label="最多一轮", color="#3B82F6"];

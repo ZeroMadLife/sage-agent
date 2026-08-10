@@ -10,8 +10,12 @@ SAGE_PG_TEXTSEARCH_IMAGE='dockerproxy.net/pgvector/pgvector:pg17' \
 
 SAGE_BOOK_BENCHMARK_POSTGRES_DSN='postgresql://sage_eval:sage_eval_dev@localhost:55432/sage_eval' \
   PYTHONPATH=. python scripts/benchmark_book_learning_retrieval.py \
-  --backend postgres --postgres-sparse bm25 --skip-fetch
+  --backend postgres --postgres-sparse auto --skip-fetch
 ```
+
+`auto` 会先探测 `pg_textsearch`：扩展可用时使用 BM25，不可用时自动使用 native
+GIN + `ts_rank_cd`。`--postgres-sparse bm25` 是强制 BM25 的隔离实验；`native` 是强制
+GIN 的对照路线。产品默认仍是已通过长书 Gold 的 native hybrid，不因扩展存在就自动升级。
 
 默认宿主端口是 `55432`；冲突时可在两个命令中同时设置
 `SAGE_PG_TEXTSEARCH_PORT=55433`，并把 DSN 端口改为 `55433`。
