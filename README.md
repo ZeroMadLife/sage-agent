@@ -1,16 +1,8 @@
 <h1 align="center">Sage</h1>
 
-<p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的学习执行链。</strong></p>
+<p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的 Agent 执行链。</strong></p>
 
-<p align="center"><strong>80-case versioned RAG Eval</strong> · <strong>100k synthetic exact P95 93.906 ms</strong> · <strong>Sandbox live audit 10/10</strong></p>
-
-![Sage 控制面、状态面与证据面架构](release/v1.0.0/learning/assets/01-overall-architecture.png)
-
-<p align="center">
-  <a href="release/v1.0.0/SHOWCASE.md"><strong>3 分钟了解项目</strong></a>
-  · <a href="release/v1.0.0/learning/00-reading-map.md">架构学习手册</a>
-  · <a href="docs/GETTING-STARTED.md">开发指南</a>
-</p>
+<p align="center"><strong>模块化 Agent Harness</strong> · <strong>PostgreSQL Agentic RAG</strong> · <strong>Sandbox 纵深防御</strong> · <strong>分层 Eval</strong></p>
 
 <p align="center">
   <a href="https://github.com/ZeroMadLife/sage-agent/actions/workflows/quality.yml"><img src="https://github.com/ZeroMadLife/sage-agent/actions/workflows/quality.yml/badge.svg" alt="Sage Quality" /></a>
@@ -20,145 +12,109 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-![Sage Assistant：从目标、知识或练习进入统一工作台](docs/assets/readme/screenshots/assistant-desktop.webp)
+![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/readme/sage-harness-agentic-rag-overall.png)
 
-## Sage 做什么
+<p align="center">
+  <a href="docs/evals/sage-harness-rag-stage-closeout-v1.md"><strong>阶段总复盘</strong></a>
+  · <a href="docs/resume/sage-project-experience-v3-draft.md">简历版项目经历</a>
+  · <a href="docs/resume/sage-harness-rag-interview-guide-v1.md">面试题单</a>
+  · <a href="docs/GETTING-STARTED.md">开发指南</a>
+</p>
 
-Sage 不是给聊天框增加几个工具，而是一个**本地优先的个人 AI 学习与实践工作台**。
-用户从一个目标或问题开始，Sage 在同一套 Agent Harness 中组织对话、Markdown/Obsidian、
-代码仓库、模型 Provider、Skills 与 MCP 工具，并把执行过程沉淀为可以恢复和复核的证据。
+## Sage 是什么
+
+Sage 不是给聊天框加几个工具，而是一个本地优先的个人 AI 学习与实践工作台。它把对话、个人知识、代码仓库、工具执行、审批、Sandbox 和评测放进同一个 Agent Harness，并把运行过程沉淀为可恢复、可复核的证据。
 
 ```text
 目标 Goal
   -> 探索 Explore：对话、网页、代码与个人资料
-  -> 知识 Knowledge：来源、revision、proposal、检索与 citation
-  -> 实践 Practice：工具、审批、工作区、测试与 diff
-  -> 证据 Evidence：timeline、artifact、trace 与 benchmark
+  -> 知识 Knowledge：来源、revision、检索与 citation
+  -> 实践 Practice：工具、审批、工作区与测试
+  -> 证据 Evidence：Timeline、Artifact、Trace 与 Eval
   -> 演进 Evolve：复盘、记忆与下一轮目标
 ```
 
-三个产品表面共用同一条运行事实：
+三个产品表面共享同一条运行事实，不各自复制 Agent runtime：
 
-| 产品表面 | 解决的问题 | 核心边界 |
+| 产品表面 | 解决的问题 | 当前边界 |
 | --- | --- | --- |
-| **Assistant** | 从目标、研究或练习进入统一任务 | 不为每个页面重复创建一套 Agent runtime |
-| **Knowledge** | 把个人资料变成可检索、可引用、可审阅的知识 | 模型只能提出 proposal，不能静默改写长期事实 |
-| **Practice Engine** | 阅读源码、修改代码、运行工具并验证理解 | 路径、权限、审批、Sandbox 与运行证据共同约束动作 |
+| **Assistant** | 从目标、问题或研究进入统一任务 | 负责进入运行链，不单独维护另一套执行状态 |
+| **Knowledge** | 把来源变成可检索、可引用、可审阅的知识 | 原始事实、revision 和模型 proposal 分开保存 |
+| **Practice Engine** | 阅读源码、修改代码、运行工具并验证理解 | 工具动作必须经过权限、策略、审批和 Sandbox |
 
-> **运行方式**：v1.0.0 当前仅供本地自用，不提供在线入口，也不执行自动 Canary 部署。
-> 仓库保留独立 Public Agent 与公开构建能力，后续重新开放前仍需完成生产环境、安全与
-> 域名验收。
+当前仓库面向本地开发与学习使用，不提供私人工作区的公网入口，也不把公开 Agent 当成私人 Harness。
 
-## 真实产品界面
+## 一次请求如何运行
 
-### Knowledge：从来源到可引用知识
+```text
+用户 Turn
+  -> TaskIntent / LearningIntent admission
+  -> Retrieval Gate + ToolBundle
+  -> immutable TurnContextPlan / plan_hash
+  -> Harness Graph / bounded Task DAG
+  -> Model / Tool execution
+  -> Permission -> Policy -> Approval -> Container Sandbox
+  -> PostgreSQL hybrid retrieval
+  -> EvidenceBundle + Claim Sufficiency
+  -> Answer / bounded Research child / honest abstention
+  -> Checkpoint / Timeline / Trace / Artifact
+```
 
-![Sage Knowledge：来源、Wiki、混合检索与知识图谱](docs/assets/readme/screenshots/knowledge-desktop.webp)
+意图识别只负责收窄候选，不授予权限。真正的授权边界在服务端 Permission、Policy、Approval 与 Sandbox；Resume 也必须重新验证 frozen Plan 和 scoped Checkpoint，不能从 Timeline 反推权限。
 
-Knowledge 管理来源快照、revision、Wiki proposal、混合检索与稳定 citation。原始来源、
-模型提案和已批准知识彼此分离，长期事实的变化可以审阅和追踪。
+## 四个关键工程决策
 
-### Practice：让理解接受真实执行验证
+### 1. 模块化 Harness 与有界编排
 
-![Sage Practice：计划、工具、审批、终端与可恢复时间线](docs/assets/readme/screenshots/practice-desktop.webp)
+通用 `packages/sage_harness/` 通过 ports、middleware 和 capability registry 接入 Model、Tool、MCP 与 Skill，Sage 产品层只负责适配。复杂任务由模型提出受限 JSON `task_dag`，服务端校验 schema、依赖、环、预算和 canonical hash 后按 ready wave 执行；子任务继续复用原有权限链。
 
-Practice Engine 在同一条 Timeline 中呈现 context、model、tool、approval、answer 与 terminal；
-断线或刷新后从持久化事件恢复，而不是由前端猜测 Agent 进行到了哪里。
+`TurnContextPlan` 固化本轮 scope，Checkpoint 保存 Graph 的动态状态，Timeline 保存可重放事件，Artifact 保存大结果，lease/fencing 拒绝过期 writer。订阅断开不等于运行取消。
 
-## 架构：让 Agent 可约束、可恢复、可验证
+### 2. PostgreSQL Agentic RAG 与证据门禁
 
-一次请求从 Vue 进入 FastAPI，由 Runtime 选择执行路径，再经 Engine / LangGraph 和受控工具
-推进。模型负责提出下一步，系统负责校验、授权、执行、持久化与留下证据。
+SQLite 仍是便携默认和 canonical truth；真实长书与质量优先路径使用可重建的 PostgreSQL search projection：
 
-| 架构部分 | 当前职责 |
+```text
+GIN + tsvector + ts_rank_cd  ->  sparse retrieval
+pgvector exact cosine        ->  dense retrieval
+RRF                          ->  fused ranking
+```
+
+检索结果先组成 citation-bound `EvidenceBundle`，再由 Claim Sufficiency Gate 决定直接回答、进入只读 Research child，或诚实拒答。可选 `pg_textsearch BM25`、HNSW 和 Query Rewrite 都必须重新通过质量、延迟、成本和稳定性门禁。
+
+### 3. 分层 Eval 与架构决策门禁
+
+Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/latency` 分层，避免把一次 Demo 的结果误认为系统质量。面试主指标是 First-pass Claim Evidence Coverage、Answer Correctness、Correct Abstention/False Acceptance 和 Claim Recovery Gain；Faithfulness 只回答生成 Claim 是否被现有证据支持，不能代替 Answer Correctness。
+
+### 4. Sandbox 纵深防御
+
+动作依次经过参数 schema、workspace path containment、Permission、Policy、Approval，再进入 Container Sandbox。Sandbox 当前使用 seccomp、`cap-drop ALL`、`no-new-privileges`、只读 rootfs、禁网、CPU/RAM/PID/ulimit 和 mount 漂移校验。workspace 仍是可写 bind mount，生产 image digest、rootless live audit 和内核级隔离尚未宣称完成。
+
+## 当前可复核证据
+
+以下结果基于 `dev/sage-v7@9b8c8de1` 的阶段收口；它们是受控工程证据，不是统一的线上准确率。
+
+| 证据 | 已验证结果 | 解释边界 |
+| --- | --- | --- |
+| Harness deterministic benchmark | 10 个 Runtime + Tool Stack 场景；task completion/policy compliance `1.0`；本地 P95 `382ms` | 使用 `ScriptedApiClient`，不是实时模型质量或公网 SLA |
+| 80-case versioned RAG Eval | 9 份 snapshot，`dev/calibration/frozen-test=40/20/20`；Recall@10 `0.889 -> 1.000`、MRR `0.683 -> 0.806`、NDCG@10 `0.701 -> 0.852` | 固定语料的离线检索/排序结果；frozen test 尚未覆盖 `semantic_paraphrase` |
+| Query Rewrite 消融 | 4 个困难 case：Claim Coverage `0.4444 -> 0.8333`，Recall@10 `0.6111 -> 0.8889`，串行 P95 `11.397s -> 20.861s` | `oracle_manual` 上界，不代表真实模型改写；仅条件触发 |
+| HNSW 门禁 | 两本真实长书、`5,220` chunks；exact P95 `101.878ms`；四档 Oracle Recall@10 都是 `1.0` | 没有稳定延迟净收益，当前保持 exact，HNSW 未上线 |
+| Sandbox live audit | Docker Desktop Level 1 `10/10` | 不等于内核级逃逸证明或生产 rootless 已验收 |
+| 完整质量门禁 | `1956 passed, 12 skipped`；PR #143 合入后 RAG/Knowledge + Harness 回归 `334 passed, 12 skipped` | 当前代码与 CI 收据；本地 `.env` 漂移不属于代码结论 |
+
+14-case 长书 E2E 仍是 `seed_manual`，Answer Correctness、Provider Failure 与 P95 用来暴露问题，不能包装成生产准确率。下一阶段需要扩大 Gold 到 30-50 条并独立 review、接入真实复杂度 Gate、降低 Provider Failure/P95，再考虑替换简历中的端到端表述。
+
+## 能力矩阵
+
+| 能力 | 当前实现 |
 | --- | --- |
-| **上下文管理** | 组织指令、代码、知识与预算，长输出转为有界 preview + artifact 引用 |
-| **运行编排** | 推进模型、工具、多步任务、checkpoint 与可恢复终态 |
-| **工具治理** | schema 校验、能力发现、permission、policy、approval 与 Sandbox |
-| **状态与记忆** | Session、Transcript、Memory、Checkpoint、Todo 与 Subagent 各守生命周期 |
-| **知识与引用** | 来源快照、DOCX/PNG/PDF/Markdown 解析、Wiki proposal、SQLite baseline / PostgreSQL GIN + pgvector exact + RRF、页面/区域级 citation |
-| **证据与恢复** | Timeline、RunStore、Diff、Artifact 与 Evaluation 支撑重放和回归 |
-
-通用 Harness 独立维护在 [`packages/sage_harness/`](packages/sage_harness/)；Sage 产品层负责把
-用户、Workspace、Knowledge、Sandbox 和前端事件协议适配到稳定端口，避免通用运行时反向
-依赖业务模块。完整请求链、模块入口和设计权衡见
-[总体架构](release/v1.0.0/learning/01-overall-architecture.md)。
-
-## 事实为什么要分层
-
-![Sage 三层事实边界](release/v1.0.0/learning/assets/02-three-planes-fact-boundary.png)
-
-- **控制面**决定下一步做什么、谁可以执行：Vue → FastAPI → Runtime → Engine → Tool。
-- **状态面**保存任务如何继续、长期事实是什么：Session、Checkpoint、Transcript、Knowledge、Memory。
-- **证据面**回答刚才发生了什么、结果如何复核：Timeline、Run trace、Diff、Artifact、Benchmark。
-
-实时 UI 不是事实源，压缩摘要不能覆盖 canonical transcript，模型生成内容不能自动升级为
-Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id` 与 `artifact_ref`
-连接，而不是复制一份万能对象。详细边界见
-[三层架构与事实边界](release/v1.0.0/learning/02-three-planes-fact-boundary.md)。
-
-## 核心能力
-
-| 能力 | 已实现的工程机制 |
-| --- | --- |
-| **Chat Harness** | SSE / WebSocket 流式事件、durable timeline、checkpoint、context budget 与 usage |
+| **Chat Harness** | SSE/WebSocket 事件、durable Timeline、Checkpoint、Context Budget、Artifact 与 usage |
 | **Practice Engine** | 文件、搜索、Shell、Patch、Diff、Git、审批、测试与运行工件 |
-| **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL exact 后端、可插拔 Embedding、RRF、校准拒答、失败 trace、显式一跳关系检索与 citation |
+| **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL 检索投影、Embedding、RRF 与 citation |
 | **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
-| **Safety Boundary** | 路径 containment、fresh-read、权限模式、危险操作审批与 Container Sandbox |
-| **Release Engineering** | 前后端质量门禁、不可变镜像、同 SHA Canary、公开/私有隔离与共同回滚 |
-
-## 可复现工程证据
-
-| 能力 | 当前证据 | 仍未解决 |
-| --- | --- | --- |
-| **RAG Cloud Embedding Selection v2** | 同一 PostgreSQL selection 上，FastEmbed 384、百炼 v4 1024、豆包 vision 2048 的 Recall@10 均为 1.0；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final，并在 frozen test 将 Recall@10 0.889→1.000、MRR 0.683→0.806 | frozen test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；豆包逐 token 成本未知；这些不是线上指标 |
-| **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下 exact P95 为 1.403/2.838/93.906 ms；真实长书 2048 维豆包向量通过 `halfvec` 表达式索引完成 `ef_search` 曲线，四档 Oracle Recall@10 均为 1.0 | synthetic 100k 与真实长书均没有给出稳定 ANN 净收益；当前保持 exact，HNSW 不代表已上线或生产 SLA |
-| **RAG Query Rewrite + ANN Gate v1** | 4 个人工审计困难 case 上，original+rewrite RRF 将 Claim Evidence Coverage `0.4444 -> 0.8333`、Recall@10 `0.6111 -> 0.8889`；同一 5,220-chunk 长书上 HNSW 未通过 P95/加速门禁 | rewrite 仍是 `oracle_manual` 上界，未证明真实模型改写；Gold 尚未独立 review，复杂问题条件门控保持 offline candidate |
-| **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
-| **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上完成 Contextual、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 单变量消融；真实长书 seed 又触发了 32 个超长 block，Semantic Boundary 仍未显示净增益 | 旧 frozen 语料没有超长 block，真实长书 gold 也尚未冻结；所有候选继续保持默认关闭 |
-| **RAG Described Parent-Child v2（实验候选）** | 已实现句向量语义 parent、bounded child、revision-bound extractive description，以及“description + child 检索、parent 正文引用”的 SQLite/PostgreSQL 投影；真实长书 seed 已可消融 | 真实书籍诊断没有优于普通 Parent-Child；PostgreSQL live、selection/frozen-test 与生成质量仍未完成，不能声称提升准确率 |
-| **长书 TXT 摄取与定位 v1** | 两本公共领域真实长书共 4.73 MB；TXT 保留 `BOOK -> CHAPTER -> PART` 与行/字符/字节 locator，5,185/5,185 个正文 block 已进入索引；14 条 `seed_manual` 上 FastEmbed + contextual Recall@10 为 0.750、MRR 为 0.523 | seed 尚未独立 review 或冻结，跨书召回仍弱；这些数字不是生产准确率 |
-| **有界长书 Agentic RAG v1** | 主对话首轮 RAG 不足时最多并行 2 个只读 Research child；clean source `3ee7111` 的豆包 bounded E2E 中，Correct Abstention 为 1、False Acceptance 为 0、Claim Recovery Gain 为 0.1296、Recovery Resolution 为 0.5 | Answer Correctness 仅 0.4444 且同配置复跑方差明显，Provider Failure 1/14、P95 227.8s；Judge 只属于离线 Eval，下一步是答案稳定性与调用预算 |
-| **长书 Claim-aware Sufficiency v1（离线）** | 14 条 seed 拆为 15 个原子 claim，支持 `any/all` passage 绑定；Top-10 首轮 claim coverage / bundle completeness 为 0.733/0.700，真实 generation 完成子集为 0.667/0.625；完整 bundle 的离线 Readiness Precision/Recall 为 1.0/0.8 | 实际 rewrite 的 claim recovery gain 为 0，Faithfulness 1.0 仅覆盖 4 个最终回答；gold 尚未独立 review，线上 Gate 保持未激活 |
-| **长书 4+2 KPI + Provider Tradeoff v1（离线）** | 同一 Gold/contextual/Top-10 下，FastEmbed/豆包/百炼 Claim Coverage 为 0.733/0.833/0.700；豆包以最高 Claim Coverage、Recall 和 NDCG 成为长书质量优先模型，FastEmbed 保留为无 Key 回退 | clean SQLite P95 为 5.174s，14 条 seed 未冻结，不能写成生产准确率；下一步是 PostgreSQL/降维、重复运行置信区间和 chunk/excerpt 级 Gold |
-| **RAG Local Semantic Gate v1（历史候选）** | 当前官方语料的冻结 test 上，本地 ONNX semantic + PostgreSQL hybrid 将 Recall@10 从 0.889 提升到 0.944、MRR 从 0.683 提升到 0.771 | 已由 Cloud Embedding Selection v2 接续；test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；generation quality 尚未评测 |
-| **RAG Failure Trace v1** | SQLite/PostgreSQL 使用 HMAC query 指纹与有界候选 trace；80 case x 3 route 的 41 个失败行全部归入唯一主要类型，且三路 Recall/MRR/NDCG 与未观测 baseline 完全相同 | 默认关闭；线上没有金标，不能把 `gate_rejected` 直接称为误拒；长期 retention 尚未实现 |
-| **Abstention + Relation v1** | 当前 `2026-07-27.1` 语料上，Hashing test 无答案准确率从 0 提升到 0.50（Recall@10：0.66 → 0.62）；14 条显式链接切片 AllRecall@10 从 0.25 提升到 1.00 | Relation 仅 12 条可回答、2 条无答案；只证明 citation-bound 1-hop，不代表完整 GraphRAG |
-| **Sandbox Level 1 v2** | 10/10 live audit；禁网、只读 rootfs、`CapEff=0`、`NoNewPrivs=1`、资源限制与终态清理 | workspace 仍整体可写，生产 image digest 尚未固定 |
-| **Memory Lifecycle v1** | 40/40 确定性场景；proposal 隔离、supersession、retraction、consolidation 门禁与 workspace 恢复 | 自动事实抽取、语义 consolidation 与 TTL 尚未完成 |
-
-评测协议、复现命令和 clean source commit 见
-[RAG 工程化总复盘](docs/evals/sage-rag-engineering-retrospective-v1.md)、
-[多 Embedding Provider Selection v2](docs/evals/knowledge-embedding-provider-selection-v2.md)、
-[RAG HNSW 规模门禁报告](docs/evals/knowledge-hnsw-scale-gate-v1.md)、
-[RAG 多模态证据链报告](docs/evals/knowledge-multimodal-evidence-v1.md)、
-[RAG 语义门禁报告](docs/evals/knowledge-semantic-gate-v1.md)、
-[RAG 分块与重排消融报告](docs/evals/knowledge-retrieval-ablation-v1.md)、
-[长书 TXT Parser v1 报告](docs/evals/book-txt-parser-v1.md)、
-[长书 Agentic RAG v1 收口](docs/evals/book-learning-agentic-rag-v1.md)、
-[长书 4+2 KPI 与策略选择 v1](docs/evals/book-learning-scorecard-v1.md)、
-[长书 Embedding Provider 与 Agentic RAG 收口 v1](docs/evals/book-learning-embedding-provider-tradeoff-v1.md)、
-[长书 Query Rewrite 与 HNSW 门禁收口 v1](docs/evals/book-learning-query-rewrite-hnsw-v1.md)、
-[RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
-[历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
-[拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、
-[Sandbox 报告](docs/evals/container-sandbox-level1-v2.md) 与
-[Memory 报告](docs/evals/memory-lifecycle-v1.md)。这里的 case 数证明对应工程不变量，不把
-确定性回归包装成真实用户准确率。
-
-## 技术栈
-
-- **前端**：Vue 3、TypeScript、Pinia、Vite、Vitest
-- **后端与 Agent**：Python 3.12、FastAPI、LangChain、LangGraph、Pydantic、pytest
-- **状态与检索**：PostgreSQL、Redis、SQLite FTS5、可插拔 Embedding、RRF、evidence graph
-- **协议与扩展**：REST、WebSocket、SSE、MCP、Skills
-- **部署与质量**：Docker Compose、GitHub Actions、Ruff、mypy、Canary controller
-
-> 仓库的可移植默认仍是 SQLite FTS5 + deterministic hashing，便于离线启动与确定性回归；
-> 日常自用可以显式启用 PostgreSQL GIN + pgvector exact、百炼/豆包/FastEmbed 与对应 Gate。
-> 云 Provider 仍是 config-revision-bound opt-in，供应商 alias 不等同不可变权重 commit；运行时未创建
-> HNSW，也不把评测候选写成线上能力。
+| **Safety Boundary** | 路径 containment、权限模式、审批、Container Sandbox 与终态清理 |
+| **Evaluation** | versioned corpus、retrieval/claim/generation/recovery 分层指标与 release gate |
 
 ## 快速开始
 
@@ -177,12 +133,6 @@ cd sage-agent
 bash scripts/bootstrap-dev-env.sh
 cd frontend && npm ci && cd ..
 cp .env.example .env
-```
-
-在根目录 `.env` 中至少配置一个模型 Provider，例如 `DEEPSEEK_API_KEY`。不要提交 `.env`、
-Provider key、OAuth secret 或任何运行凭据。
-
-```bash
 bash scripts/dev.sh
 ```
 
@@ -191,10 +141,10 @@ bash scripts/dev.sh
 - Web：`http://127.0.0.1:5173`
 - API：`http://127.0.0.1:8000`
 - Health：`http://127.0.0.1:8000/health`
-- Search：`http://127.0.0.1:8088`（仅本机，供 Harness `search_web` 使用）
 
-完整环境变量、数据库迁移和 worktree 联调说明见
-[Getting Started](docs/GETTING-STARTED.md)。
+至少配置一个模型 Provider。`.env`、Provider key、OAuth secret 和运行凭据不得提交。
+
+完整环境变量和 worktree 联调说明见 [Getting Started](docs/GETTING-STARTED.md)。
 
 ## 验证
 
@@ -202,7 +152,7 @@ bash scripts/dev.sh
 # 后端测试、Ruff 与 mypy
 bash scripts/check.sh
 
-# 前端测试和两套生产构建
+# 前端测试与生产构建
 npm --prefix frontend run test -- --run
 npm --prefix frontend run build
 npm --prefix frontend run build:public
@@ -211,57 +161,53 @@ npm --prefix frontend run build:public
 git diff --check
 ```
 
-GitHub Actions 会在 PR 与集成分支上重复执行后端、前端和公开镜像隔离门禁。完整发布验收见
-[v1.0.0 验收清单](release/v1.0.0/TESTING.md)。
+PR 与 `dev/sage-v7` 会重复执行质量门禁；发布到 `main` 前还需要使用同一个 commit SHA 完成发布、部署、回滚和人工验收。
 
 ## 仓库结构
 
 ```text
 sage-agent/
-├── api/                         # FastAPI routes、SSE 与云控制面
-├── core/
-│   ├── coding/                  # Practice Engine、工具与运行协调
-│   ├── harness/                 # Sage 到通用 Harness 的适配层
-│   └── knowledge/               # 摄取、图谱、检索、Wiki 与学习证据
-├── packages/sage_harness/       # 可复用 Chat Harness package
-├── frontend/                    # Vue 3 产品界面与公开工程主页
-├── public_agent/                # 只读 PublishedPackage 的受限公开 Agent
+├── api/                         # FastAPI routes、SSE 与控制面
+├── core/coding/                 # Practice Engine、工具与运行协调
+├── core/harness/                # Sage 到通用 Harness 的适配层
+├── core/knowledge/              # 摄取、检索、Wiki 与学习证据
+├── packages/sage_harness/       # 可复用 Harness package
+├── frontend/                    # Vue 3 产品界面
+├── public_agent/                # 受限公开 Agent
 ├── tests/                       # 后端、API、契约与集成测试
-├── release/v1.0.0/             # 正式版本说明、架构图与持续学习手册
-└── docs/                        # 产品、设计、开发与运维文档
+├── docs/                        # 产品、设计、Eval、Resume 与开发文档
+└── release/                     # 版本说明、验收与学习材料
 ```
 
 ## 当前边界
 
-- `local_workspace` 只适合可信开发机；公网任务必须使用经过 admission 和资源限制验证的 Sandbox。
-- Container Sandbox 的 workspace 仍是可写 bind mount，生产 rootless 环境需复跑 live audit 并固定 image digest。
-- Knowledge 已完成 Markdown/HTML/PDF/DOCX/PNG/TXT 本地来源工作流；TXT 第一版只支持
-  UTF-8/BOM，云端租户级来源与元数据隔离尚未开放。
-- RAG 已加入固定 snapshot 的本地语义 Provider 与 route-specific Gate v2；当前 test 缺少 semantic-paraphrase 覆盖，candidate 保持 opt-in，回答生成质量尚未评测。
-- 多模态当前只完成 DOCX/PNG 结构化解析与 VLM 区域 citation；没有真实 VLM 质量分数，也没有视觉向量召回。
-- Relation retrieval 当前只扩展带原文 citation 的显式一跳链接；实体三元组、多跳路径、PPR 与 community GraphRAG 尚未实现。
-- 公开主页不是公网 Harness，不具备私人应用的文件、知识、记忆或工具权限。
-- 飞书入口与自动 Canary 部署当前均已停止；`v1.0.0` tag 不代表服务器已经部署。
+- SQLite 是便携 canonical/default 路径；PostgreSQL 是真实长书与质量优先的可重建 search projection。
+- BM25、HNSW、Query Rewrite 和 Cross-Encoder 都是可插拔候选，不因为出现在技术栈里就默认启用。
+- E2E Gold 仍需扩大并独立 review；当前 `seed_manual` 指标不能写成生产准确率。
+- workspace 仍为可写 bind mount；生产 image digest、rootless live audit 和更强隔离仍待收口。
+- 公开 Agent 只访问 PublishedPackage 与受限资料，不具备私人工作区的文件、知识、记忆或工具权限。
+- 本地 `.env` 的知识源路径、Web Search 与 PostgreSQL 测试配置可能漂移，联调前需要单独校正。
 
 ## 深入阅读
 
-- [v1.0.0 Showcase](release/v1.0.0/SHOWCASE.md)：3 分钟理解产品与工程亮点
-- [v1.0.0 正式版本入口](release/v1.0.0/README.md)：版本事实、可用能力与发布边界
-- [持续学习手册](release/v1.0.0/learning/00-reading-map.md)：从架构边界到验证证据
-- [工具执行闭环](release/v1.0.0/learning/05-tools-execution-pipeline.md)：工具如何被发现、校验、授权和执行
-- [Knowledge 与 RAG](release/v1.0.0/learning/09-knowledge-rag-retrieval.md)：来源、proposal、检索与 citation
-- [安全与审计](release/v1.0.0/learning/12-security-audit.md)：权限、Sandbox 与公网边界
+- [阶段总复盘](docs/evals/sage-harness-rag-stage-closeout-v1.md)：当前 Harness、RAG、Eval 与 Sandbox 的共同事实源
+- [Harness 输入分层 PRD](docs/superpowers/specs/2026-08-08-sage-harness-input-layers-prd.md)
+- [Task DAG V1 PRD](docs/superpowers/specs/2026-08-09-sage-task-dag-v1-prd.md)
+- [Query Rewrite 与 HNSW PRD](docs/superpowers/specs/2026-08-10-sage-book-rag-query-rewrite-hnsw-prd.md)
+- [最终 Query Rewrite/HNSW 评测](docs/evals/book-learning-query-rewrite-hnsw-v1.md)
+- [PostgreSQL 检索实现](core/knowledge/postgres_retrieval.py)
+- [简历版项目经历](docs/resume/sage-project-experience-v3-draft.md)
+- [Harness/RAG/Sandbox 面试题单](docs/resume/sage-harness-rag-interview-guide-v1.md)
 - [开发协作约定](AGENTS.md)
 
 ## 分支与贡献
 
-- `main` 只保留通过完整发布门禁的版本。
-- `dev/sage-v7` 是当前 V7 集成分支。
+- `main` 只保留通过完整发布门禁、可部署上线的版本。
+- `dev/sage-v7` 是当前开发集成分支。
 - 功能、修复、文档和评测在独立 worktree 的 `feat/*`、`fix/*`、`docs/*`、`eval/*` 短期分支完成，通过 PR 合入开发分支。
-- 测试环境部署 `dev/sage-v7` 上选定的 commit SHA，不维护容易漂移的长期 `test` 分支；同一 SHA 通过发布门禁后再晋级到 `main`。
+- 测试/ staging 使用 `dev/sage-v7` 上的不可变 commit SHA；同一个 SHA 通过发布门禁后再晋级到 `main`。
 
-提交前请保持职责单一，附中文 PR 说明，并提供与改动匹配的测试、构建和
-`git diff --check` 证据。
+提交前请保持职责单一，并附中文 PR 说明、匹配改动的测试/构建证据和 `git diff --check` 结果。
 
 ## License
 
