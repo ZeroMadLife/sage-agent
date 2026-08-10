@@ -35,10 +35,11 @@ def test_scans_one_thousand_markdown_files_deterministically(
         pipeline_version="pipeline-v1",
     )
 
-    assert len(scanned) == 1000
+    assert len(scanned) == 1001
     assert scanned[0].relative_path == "notes/0000.md"
-    assert scanned[-1].relative_path == "notes/0999.md"
-    assert len({item.idempotency_key for item in scanned}) == 1000
+    assert scanned[-2].relative_path == "notes/0999.md"
+    assert scanned[-1].relative_path == "notes/ignored.txt"
+    assert len({item.idempotency_key for item in scanned}) == 1001
 
 
 def test_rejects_traversal_and_skips_symlinks(
@@ -106,6 +107,7 @@ def test_scans_supported_markdown_html_and_pdf_files(
     )
 
     assert [item.relative_path for item in scanned] == [
+        "ignored.txt",
         "manual.pdf",
         "note.md",
         "page.html",

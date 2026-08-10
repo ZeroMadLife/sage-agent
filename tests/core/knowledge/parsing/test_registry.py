@@ -88,4 +88,5 @@ def test_default_registry_is_fresh_and_contains_markdown() -> None:
         "sage.markdown",
         "sage.pdf.text",
         "sage.png",
+        "sage.txt",
     )

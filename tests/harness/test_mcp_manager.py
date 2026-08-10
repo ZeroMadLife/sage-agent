@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 
+import pytest
 from sage_harness.mcp import (
     McpConfigSnapshot,
+    McpLifecycleError,
+    McpLifecycleSnapshot,
     McpManager,
     McpScope,
     McpServerConfig,
@@ -169,6 +172,58 @@ def test_config_replacement_invalidates_old_revision_and_catalog_hash() -> None:
 
     assert transport.invalidated == ["config-r1"]
     assert first_hash != second_hash
+
+
+def test_acquire_rejects_config_or_scope_drift_before_discovery() -> None:
+    async def run() -> FakeTransport:
+        transport = FakeTransport()
+        manager = _manager(transport)
+        expected = McpLifecycleSnapshot(
+            config_revision="config-r0",
+            scope_fingerprint="sha256:" + "0" * 64,
+            catalog_hash="catalog-r0",
+            tool_ids=("docs:lookup",),
+        )
+
+        with pytest.raises(McpLifecycleError) as caught:
+            await manager.acquire_tools(
+                McpScope("owner", "workspace", "thread"),
+                expected=expected,
+            )
+
+        assert caught.value.code == "mcp_config_revision_mismatch"
+        return transport
+
+    transport = asyncio.run(run())
+
+    assert transport.discoveries == []
+
+
+def test_acquire_reuses_matching_lifecycle_and_closes_scope_on_catalog_drift() -> None:
+    async def run() -> tuple[FakeTransport, object, object]:
+        transport = FakeTransport()
+        manager = _manager(transport)
+        scope = McpScope("owner", "workspace", "thread")
+        first = await manager.acquire_tools(scope)
+        matching = await manager.acquire_tools(scope, expected=first.lifecycle)
+        drifted = McpLifecycleSnapshot(
+            config_revision=first.lifecycle.config_revision,
+            scope_fingerprint=first.lifecycle.scope_fingerprint,
+            catalog_hash="catalog-drifted",
+            tool_ids=first.lifecycle.tool_ids,
+        )
+
+        with pytest.raises(McpLifecycleError) as caught:
+            await manager.acquire_tools(scope, expected=drifted)
+
+        assert caught.value.code == "mcp_catalog_mismatch"
+        return transport, first, matching
+
+    transport, first, matching = asyncio.run(run())
+
+    assert matching.catalog is first.catalog
+    assert transport.discoveries == [("docs", ("owner", "workspace", "thread"))]
+    assert transport.closed_scopes == [("owner", "workspace", "thread")]
 
 
 def test_invalid_unprefixed_tool_fails_closed_for_the_server() -> None:

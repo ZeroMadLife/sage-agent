@@ -6,6 +6,7 @@ import pytest
 
 from core.knowledge.parsing import MarkdownParser, ParseRequest
 from core.knowledge.retrieval import (
+    ExtractiveParentDescriptionProvider,
     KnowledgeAblationPolicy,
     KnowledgeSearchHit,
     chunk_document,
@@ -62,10 +63,22 @@ def _hit(chunk, *, rank: int, score: float = 0.03) -> KnowledgeSearchHit:
 
 def test_ablation_policy_allows_exactly_one_named_strategy() -> None:
     assert KnowledgeAblationPolicy().strategy == "baseline"
+    assert KnowledgeAblationPolicy().max_chunks_per_revision == 20_000
     assert KnowledgeAblationPolicy(strategy="cross_encoder").rerank_top_n == 20
+    assert KnowledgeAblationPolicy(strategy="described_parent_child").description_max_chars == 320
 
     with pytest.raises(ValueError, match="unsupported Knowledge ablation strategy"):
         KnowledgeAblationPolicy(strategy="contextual_chunk+cross_encoder")  # type: ignore[arg-type]
+
+
+def test_long_book_chunking_preserves_more_than_two_thousand_blocks() -> None:
+    markdown = "# Long Book\n\n" + "\n\n".join(
+        f"paragraph number {index}" for index in range(2_001)
+    )
+
+    chunks = _chunks(markdown, KnowledgeAblationPolicy())
+
+    assert len(chunks) == 2_001
 
 
 def test_contextual_chunk_adds_source_context_only_to_index_inputs() -> None:
@@ -118,6 +131,69 @@ def test_parent_child_retrieves_children_but_returns_one_citable_parent() -> Non
     assert all(hit.chunk.text == parent for hit in processed)
 
 
+def test_described_parent_child_keeps_semantic_parents_citable_and_descriptions_retrieval_only() -> (
+    None
+):
+    text = (
+        "检索阶段需要召回候选。检索阶段还要记录排序。检索失败需要扩大候选范围。"
+        "部署阶段需要不可变镜像。部署阶段还要验证回滚。部署失败必须保留旧版本。"
+    )
+    policy = KnowledgeAblationPolicy(
+        strategy="described_parent_child",
+        parent_child_max_chars=64,
+        parent_child_overlap_chars=8,
+        semantic_min_chars=40,
+        semantic_min_chunk_chars=20,
+        semantic_breakpoint_percentile=50.0,
+        description_max_chars=80,
+    )
+
+    chunks = chunk_document(
+        _document(f"# Sage\n\n## Long Block\n\n{text}\n"),
+        workspace_id="knowledge-local",
+        page_id="page_test",
+        page_revision="krev_test",
+        page_path="wiki/sources/guide.md",
+        source_id="src_test",
+        source_revision="sha256:test",
+        source_kind="official",
+        source_relative_path="guide.md",
+        proposal_id="kprop_test",
+        artifact_id="part_test",
+        title="Sage Guide",
+        visibility="private",
+        active=True,
+        ablation_policy=policy,
+        semantic_provider=_SemanticProvider(),
+        description_provider=ExtractiveParentDescriptionProvider(),
+    )
+
+    parent_ids = {chunk.parent_chunk_id for chunk in chunks}
+    assert None not in parent_ids
+    assert len(parent_ids) == 2
+    assert {chunk.text.startswith("检索阶段") for chunk in chunks} == {True, False}
+    assert all(chunk.retrieval_description for chunk in chunks)
+    assert all("Summary:" in (chunk.retrieval_description or "") for chunk in chunks)
+    assert all(
+        (chunk.retrieval_description or "") in (chunk.retrieval_text or "") for chunk in chunks
+    )
+    assert all("Summary:" not in chunk.text for chunk in chunks)
+    assert {chunk.retrieval_description_provider for chunk in chunks} == {
+        "sage.extractive-parent-description"
+    }
+    assert {chunk.retrieval_description_revision for chunk in chunks} == {"1.0.0"}
+
+    processed = postprocess_search_hits(
+        "检索与部署边界",
+        tuple(_hit(chunk, rank=index) for index, chunk in enumerate(chunks, start=1)),
+        policy=policy,
+    )
+
+    assert len(processed) == 2
+    assert len({hit.chunk.parent_chunk_id for hit in processed}) == 2
+    assert all("Summary:" not in hit.chunk.text for hit in processed)
+
+
 class _SemanticProvider:
     model_id = "test.semantic"
     model_revision = "1"
@@ -129,6 +205,58 @@ class _SemanticProvider:
 
     def embed(self, text: str) -> tuple[float, ...]:
         return (1.0, 0.0) if "检索" in text else (0.0, 1.0)
+
+
+class _FailingDescriptionProvider:
+    provider_id = "test.failing-description"
+    provider_revision = "1"
+
+    def describe(
+        self,
+        text: str,
+        *,
+        title: str,
+        heading_path: tuple[str, ...],
+        max_chars: int,
+    ) -> str:
+        del text, title, heading_path, max_chars
+        raise RuntimeError("description unavailable")
+
+
+def test_described_parent_child_falls_back_to_plain_children_when_description_fails() -> None:
+    parent = "第一段保留原文证据。第二段只负责检索。第三段验证降级不丢内容。" * 3
+    policy = KnowledgeAblationPolicy(
+        strategy="described_parent_child",
+        parent_child_max_chars=64,
+        parent_child_overlap_chars=8,
+        semantic_min_chars=len(parent) + 1,
+        semantic_min_chunk_chars=20,
+    )
+
+    chunks = chunk_document(
+        _document(f"# Sage\n\n## Fallback\n\n{parent}\n"),
+        workspace_id="knowledge-local",
+        page_id="page_test",
+        page_revision="krev_test",
+        page_path="wiki/sources/guide.md",
+        source_id="src_test",
+        source_revision="sha256:test",
+        source_kind="official",
+        source_relative_path="guide.md",
+        proposal_id="kprop_test",
+        artifact_id="part_test",
+        title="Sage Guide",
+        visibility="private",
+        active=True,
+        ablation_policy=policy,
+        description_provider=_FailingDescriptionProvider(),
+    )
+
+    assert len(chunks) > 1
+    assert {chunk.text for chunk in chunks} == {parent}
+    assert all(chunk.retrieval_text for chunk in chunks)
+    assert all(chunk.retrieval_description is None for chunk in chunks)
+    assert all(chunk.retrieval_description_provider is None for chunk in chunks)
 
 
 def test_semantic_boundary_uses_embedding_breakpoint_only_for_oversized_blocks() -> None:

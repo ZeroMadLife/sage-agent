@@ -29,6 +29,21 @@ async def test_filesystem_adapter_pages_and_fetches_pinned_revisions(tmp_path: P
     assert artifact.metadata == {"adapter_id": "filesystem", "adapter_version": "1"}
 
 
+async def test_filesystem_adapter_scans_and_fetches_txt_books(tmp_path: Path) -> None:
+    payload = "第一章\n\n正文。\n".encode()
+    (tmp_path / "book.txt").write_bytes(payload)
+    source = KnowledgeSourceRoot("vault", "obsidian", "Vault", tmp_path)
+    adapter = FilesystemKnowledgeSourceAdapter()
+
+    page = await adapter.scan(source, ".", None, None, 10)
+
+    assert [item.source_key for item in page.items] == ["book.txt"]
+    assert page.items[0].media_type == "text/plain"
+    artifact = await adapter.fetch(source, page.items[0])
+    assert artifact.content == payload
+    assert artifact.media_type == "text/plain"
+
+
 async def test_filesystem_adapter_rejects_cursor_after_source_changes(tmp_path: Path) -> None:
     (tmp_path / "a.md").write_text("# A\n", encoding="utf-8")
     (tmp_path / "b.md").write_text("# B\n", encoding="utf-8")

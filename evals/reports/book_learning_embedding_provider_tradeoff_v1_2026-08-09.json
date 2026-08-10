@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "report_id": "sage-book-learning-embedding-provider-tradeoff-v1",
+  "report_date": "2026-08-09",
+  "source_commit": "3ee7111e6968355996b43ec053812f232412c15f",
+  "scope": {
+    "benchmark_id": "sage-book-learning-v1",
+    "benchmark_revision": "2026-08-06.1",
+    "dataset_sha256": "4c70b3755201945172b88c77ba1a7ae59da45e6a675f85082fb20428a84d03e1",
+    "corpus": "2 public-domain books",
+    "chunk_strategy": "contextual_chunk",
+    "chunk_count": 5220,
+    "top_k": 10,
+    "case_count": 14,
+    "atomic_gold_claim_count": 15,
+    "gold_status": "seed_manual",
+    "production_claim_allowed": false,
+    "online_policy_mutated": false
+  },
+  "providers": {
+    "fastembed": {
+      "model_id": "fastembed.sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+      "dimensions": 384,
+      "first_pass_claim_evidence_coverage": 0.7333,
+      "bundle_completeness_rate": 0.7,
+      "recall_at_10": 0.75,
+      "mrr": 0.5233333333,
+      "ndcg_at_10": 0.5822295529,
+      "isolated_retrieval_p95_ms": 929.711,
+      "estimated_cost_usd": 0.0,
+      "selection": "current_default",
+      "receipt_sha256": "b11c95e31a133b94fbb9b4023a8f43acbf8f82a92c053208568f9d3d91dc54e3"
+    },
+    "doubao": {
+      "model_id": "doubao-multimodal.doubao-embedding-vision-250615",
+      "protocol_mode": "multimodal-text-single-vector",
+      "dimensions": 2048,
+      "first_pass_claim_evidence_coverage": 0.8333,
+      "bundle_completeness_rate": 0.8,
+      "recall_at_10": 0.8833333333,
+      "mrr": 0.72,
+      "ndcg_at_10": 0.7203974747,
+      "isolated_retrieval_p95_ms": 5174.488,
+      "first_cloud_run": {
+        "request_count": 5234,
+        "input_tokens": 1618383,
+        "request_p50_ms": 193.873,
+        "request_p95_ms": 294.427,
+        "benchmark_wall_ms": 341657.578,
+        "cost_usd": null,
+        "receipt_sha256": "c3ffcf78d4696e8df98bf659ed94bb1f72457c478a3e10e006d9cb5233e96d76"
+      },
+      "selection": "long_book_quality_profile_with_latency_risk",
+      "receipt_sha256": "de54e24882185552092840fc2a5f8cf8d756c05c6b7b75f9938263caedd0927e",
+      "receipt_source_commit": "3ee7111e6968355996b43ec053812f232412c15f",
+      "receipt_source_dirty": false,
+      "cache_hit_count": 5234
+    },
+    "qwen3_vl": {
+      "model_id": "dashscope-multimodal.qwen3-vl-embedding",
+      "protocol_mode": "multimodal-text-batch-non-fusion",
+      "dimensions": 1024,
+      "first_pass_claim_evidence_coverage": 0.7,
+      "bundle_completeness_rate": 0.7,
+      "recall_at_10": 0.7333333333,
+      "mrr": 0.75,
+      "ndcg_at_10": 0.7172871883,
+      "isolated_retrieval_p95_ms": 3414.668,
+      "transport_observation": {
+        "initial_parallel_run_failed_closed": true,
+        "resumed_completion_request_p95_ms": 18918.376,
+        "resumable_hash_only_cache_required": true,
+        "receipt_scope": "resumed_completion_only",
+        "receipt_sha256": "ed477e8182b18ed91501c184f26aba7df4079f000f0d38cebee6124cb656d97d"
+      },
+      "selection": "not_selected_for_text_only_books",
+      "receipt_sha256": "6aea63b204e35da67b24180101e8a13346b9a2ae05b1f0d3b85a18628b847b75"
+    }
+  },
+  "bounded_oracle_recovery": {
+    "boundary": "manual rewrite upper-bound diagnostic; not online model evidence",
+    "fastembed": {
+      "first_pass_evidence_recall": 0.1667,
+      "final_evidence_recall": 0.8889,
+      "incremental_gain": 0.7222,
+      "receipt_sha256": "ff6417b3a15a0ed243c580ae6231f3a86949a54040d2fef3e47fe23d55753d54"
+    },
+    "doubao": {
+      "first_pass_evidence_recall": 0.6111,
+      "final_evidence_recall": 0.8889,
+      "incremental_gain": 0.2778,
+      "receipt_sha256": "256dd80ed644fd3440c904e88f51e543fb681c23e792dd09ea5ccb565e064955"
+    },
+    "qwen3_vl": {
+      "first_pass_evidence_recall": 0.1111,
+      "final_evidence_recall": 1.0,
+      "incremental_gain": 0.8889,
+      "receipt_sha256": "c6ef5cec494834d6f7c16c6f1e4f3df331e8a2f1f5b89f87321906e6f87923d5"
+    },
+    "safety_warning": "all three oracle runs used a nonempty-result decision proxy and falsely accepted the hard negative; use the real generation gate for abstention evidence"
+  },
+  "agentic_generation": {
+    "embedding_provider": "doubao_multimodal",
+    "evaluated_case_count": 13,
+    "provider_failure_count": 1,
+    "answerable_case_count": 9,
+    "first_pass_claim_evidence_coverage": 0.8333,
+    "generation_first_pass_claim_evidence_coverage": 0.8148,
+    "final_claim_evidence_coverage": 0.9444,
+    "answer_claim_coverage": 0.5556,
+    "answer_correctness": 0.4444,
+    "correct_abstention": 1.0,
+    "false_acceptance": 0.0,
+    "claim_recovery_gain": 0.1296,
+    "recovery_resolution_rate": 0.5,
+    "provider_failure_rate": 0.0714,
+    "p95_latency_ms": 227836,
+    "faithfulness": 1.0,
+    "faithfulness_labeled_count": 7,
+    "total_tokens": 238789,
+    "evidence_budget": {
+      "max_items": 12,
+      "max_excerpt_chars": 1200,
+      "prefer_distinct_passages": true
+    },
+    "same_config_answer_correctness_observed": [
+      0.4444,
+      0.6667
+    ],
+    "stability_conclusion": "answer correctness is not stable across repeated provider and judge runs",
+    "receipt_sha256": "09c6be88681843422297f4ff9d3b407420becb87e21790aa27a55dba4c1d40b7",
+    "receipt_source_commit": "3ee7111e6968355996b43ec053812f232412c15f",
+    "receipt_source_dirty": false
+  },
+  "decision": {
+    "long_book_quality_profile": "doubao_multimodal",
+    "portable_offline_fallback": "fastembed",
+    "repository_portable_default_unchanged": true,
+    "reason": "Doubao has the highest claim coverage, recall, and NDCG; its 2048-dimensional SQLite exact-scan latency remains an explicit deployment risk",
+    "multimodal_fusion_for_txt": false,
+    "next_experiment": "Doubao with PostgreSQL pgvector exact or evaluated dimension reduction, repeated generation runs, and chunk-level Gold",
+    "gold_expansion_required": true
+  }
+}

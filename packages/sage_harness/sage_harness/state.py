@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Annotated, Literal, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import AgentState
 
 GoalStatus = Literal["pending", "in_progress", "succeeded", "failed", "cancelled"]
 DelegationStatus = Literal["pending", "running", "succeeded", "failed", "cancelled", "timed_out"]
+TaskGraphStatus = Literal["running", "succeeded", "partial", "failed", "cancelled"]
 ApprovalStatus = Literal["pending", "approved", "rejected", "expired"]
 TERMINAL_GOAL_STATUSES: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
 TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
@@ -17,6 +18,7 @@ TERMINAL_DELEGATION_STATUSES: frozenset[str] = frozenset(
 TERMINAL_APPROVAL_STATUSES: frozenset[str] = frozenset({"approved", "rejected", "expired"})
 MAX_ARTIFACTS = 100
 MAX_DELEGATIONS = 50
+MAX_TASK_GRAPHS = 16
 MAX_SKILL_CONTEXT = 8
 MAX_MEMORY_REFS = 32
 MAX_PROMOTED_TOOLS = 64
@@ -98,6 +100,35 @@ class DelegationEntry(TypedDict, total=False):
     created_at: str
 
 
+class TaskGraphNodeEntry(TypedDict, total=False):
+    """Checkpoint 中的 DAG 节点收据，不保存 prompt 或结果正文。"""
+
+    node_id: str
+    status: str
+    child_run_id: str
+    result_ref: str
+    error_code: str
+    evidence_count: int
+    token_usage: int
+    model_calls: int
+    tool_count: int
+
+
+class TaskGraphEntry(TypedDict, total=False):
+    """一个不可变 DAG 计划及其可恢复终态的脱敏绑定。"""
+
+    dag_id: str
+    dag_hash: str
+    run_id: str
+    tool_call_id: str
+    status: TaskGraphStatus
+    node_count: int
+    completed_count: int
+    failed_count: int
+    blocked_count: int
+    nodes: list[TaskGraphNodeEntry]
+
+
 class SkillRef(TypedDict, total=False):
     """Reference to a loaded skill; skill bodies never enter checkpoint state."""
 
@@ -136,6 +167,21 @@ class RetrievalGateState(TypedDict, total=False):
     degraded: bool
 
 
+class BookLearningState(TypedDict, total=False):
+    """Bounded evidence and stopping receipt for an automatic book-learning turn."""
+
+    version: int
+    decision: str
+    stop_reason: str
+    round_index: int
+    retrieval_rounds: int
+    child_count: int
+    required_aspects: list[str]
+    covered_aspects: list[str]
+    missing_aspects: list[str]
+    evidence: list[dict[str, object]]
+
+
 class ApprovalContext(TypedDict, total=False):
     """Pending or resolved approval bound to one exact tool call."""
 
@@ -152,6 +198,15 @@ class PromotedTools(TypedDict):
     catalog_hash: str
     names: list[str]
     capability_ids: NotRequired[list[str]]
+
+
+class TurnContextPlanBinding(TypedDict):
+    """Checkpoint 只保存本 run 的不可变 Plan 身份，不保存完整 Plan。"""
+
+    version: int
+    run_id: str
+    plan_id: str
+    plan_hash: str
 
 
 def _usage_count(entry: Mapping[str, object], key: str) -> int:
@@ -327,6 +382,53 @@ def merge_delegations(
             entry = {**entry, "created_at": previous["created_at"]}
         by_id[entry_id] = entry
     return [by_id[entry_id] for entry_id in order[-MAX_DELEGATIONS:]]
+
+
+def merge_task_graphs(
+    existing: list[TaskGraphEntry] | None,
+    new: list[TaskGraphEntry] | None,
+) -> list[TaskGraphEntry]:
+    """按 DAG id 幂等合并收据，终态不能被恢复重放降级。"""
+    if new is None:
+        return list(existing or [])[-MAX_TASK_GRAPHS:]
+    if not new:
+        return []
+
+    by_id: dict[str, TaskGraphEntry] = {}
+    order: list[str] = []
+    terminal = {"succeeded", "partial", "failed", "cancelled"}
+    for raw_entry in [*(existing or []), *new]:
+        entry = dict(raw_entry)
+        dag_id = str(entry.get("dag_id", "")).strip()
+        dag_hash = str(entry.get("dag_hash", "")).strip()
+        status = str(entry.get("status", ""))
+        if not dag_id or not dag_hash or status not in {"running", *terminal}:
+            raise ValueError("Task graph entries require stable identity and status")
+        previous = by_id.get(dag_id)
+        if previous is not None and previous.get("dag_hash") != dag_hash:
+            raise ValueError(f"Conflicting task graph hash for {dag_id!r}")
+        if previous is not None and any(
+            previous.get(key) and entry.get(key) and previous.get(key) != entry.get(key)
+            for key in ("run_id", "tool_call_id")
+        ):
+            raise ValueError(f"Conflicting task graph scope for {dag_id!r}")
+        if (
+            previous is not None
+            and str(previous.get("status", "")) in terminal
+            and status == "running"
+        ):
+            continue
+        if (
+            previous is not None
+            and str(previous.get("status", "")) in terminal
+            and status in terminal
+            and previous.get("status") != status
+        ):
+            raise ValueError(f"Conflicting terminal task graph statuses for {dag_id!r}")
+        if dag_id not in by_id:
+            order.append(dag_id)
+        by_id[dag_id] = cast(TaskGraphEntry, entry)
+    return [by_id[dag_id] for dag_id in order[-MAX_TASK_GRAPHS:]]
 
 
 def merge_evidence_refs(
@@ -519,6 +621,48 @@ def merge_promoted_tools(
     return merged_result
 
 
+def normalize_turn_context_plan_binding(
+    value: Mapping[str, object],
+) -> TurnContextPlanBinding:
+    """校验并净化 Plan binding，防止完整 Plan 或额外正文进入 checkpoint。"""
+    expected_fields = {"version", "run_id", "plan_id", "plan_hash"}
+    if set(value) != expected_fields:
+        raise ValueError("Turn context plan binding must contain only identity fields")
+    version = value.get("version")
+    if isinstance(version, bool) or version != 1:
+        raise ValueError("Turn context plan binding version must be 1")
+    normalized: TurnContextPlanBinding = {
+        "version": 1,
+        "run_id": str(value.get("run_id", "")).strip(),
+        "plan_id": str(value.get("plan_id", "")).strip(),
+        "plan_hash": str(value.get("plan_hash", "")).strip(),
+    }
+    if not normalized["run_id"] or not normalized["plan_id"] or not normalized["plan_hash"]:
+        raise ValueError("Turn context plan binding identity must not be empty")
+    return normalized
+
+
+def merge_turn_context_plan(
+    existing: TurnContextPlanBinding | None,
+    new: TurnContextPlanBinding | None,
+) -> TurnContextPlanBinding | None:
+    """同一 run 的 Plan 不可漂移；新 run 可以替换上一 Turn 的 binding。"""
+    if new is None:
+        return existing
+    normalized_new = normalize_turn_context_plan_binding(new)
+    if existing is None:
+        return normalized_new
+    normalized_existing = normalize_turn_context_plan_binding(existing)
+    if normalized_existing["run_id"] != normalized_new["run_id"]:
+        return normalized_new
+    if normalized_existing != normalized_new:
+        raise ValueError(
+            "Conflicting turn context plan bindings: "
+            f"{normalized_existing['run_id']!r} cannot be rebound"
+        )
+    return normalized_existing
+
+
 class SageThreadState(AgentState):
     """Checkpoint-safe state shared by Sage's future harness surfaces."""
 
@@ -529,6 +673,7 @@ class SageThreadState(AgentState):
     todos: Annotated[NotRequired[list[TodoItem] | None], merge_todos]
     goal: Annotated[NotRequired[GoalState | None], merge_goal]
     delegations: Annotated[NotRequired[list[DelegationEntry] | None], merge_delegations]
+    task_graphs: Annotated[NotRequired[list[TaskGraphEntry] | None], merge_task_graphs]
     evidence_refs: Annotated[NotRequired[list[str] | None], merge_evidence_refs]
     evidence_query_fingerprints: Annotated[
         NotRequired[list[str] | None], merge_evidence_fingerprints
@@ -539,8 +684,12 @@ class SageThreadState(AgentState):
     skill_context: Annotated[NotRequired[list[SkillRef] | None], merge_skill_context]
     memory_refs: Annotated[NotRequired[list[MemoryRef] | None], merge_memory_refs]
     retrieval_gate: NotRequired[RetrievalGateState | None]
+    book_learning: NotRequired[BookLearningState | None]
     approval_context: Annotated[NotRequired[ApprovalContext | None], merge_approval_context]
     promoted_tools: Annotated[NotRequired[PromotedTools | None], merge_promoted_tools]
+    turn_context_plan: Annotated[
+        NotRequired[TurnContextPlanBinding | None], merge_turn_context_plan
+    ]
     summary_text: NotRequired[str | None]
     budget_run_id: NotRequired[str]
     run_token_usage: NotRequired[int]
@@ -557,6 +706,7 @@ class SageThreadState(AgentState):
 __all__ = [
     "ApprovalContext",
     "ArtifactRef",
+    "BookLearningState",
     "DelegationEntry",
     "DelegationStatus",
     "GoalState",
@@ -567,8 +717,12 @@ __all__ = [
     "SageThreadState",
     "SandboxState",
     "SkillRef",
+    "TaskGraphEntry",
+    "TaskGraphNodeEntry",
+    "TaskGraphStatus",
     "ThreadDataState",
     "TodoItem",
+    "TurnContextPlanBinding",
     "delegation_budget_usage",
     "merge_approval_context",
     "merge_artifacts",
@@ -580,6 +734,9 @@ __all__ = [
     "merge_promoted_tools",
     "merge_sandbox",
     "merge_skill_context",
+    "merge_task_graphs",
     "merge_thread_data",
     "merge_todos",
+    "merge_turn_context_plan",
+    "normalize_turn_context_plan_binding",
 ]

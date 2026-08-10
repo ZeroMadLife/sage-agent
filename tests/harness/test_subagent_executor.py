@@ -17,6 +17,7 @@ from sage_harness import (
     SubagentRequest,
     SubagentResult,
     SubagentToolConfig,
+    build_task_dag_tool,
     build_task_tool,
     derive_child_run_id,
 )
@@ -123,6 +124,15 @@ def _task_call(call_id: str, description: str = "inspect code") -> dict[str, obj
     }
 
 
+def _task_dag_call(call_id: str, nodes: list[dict[str, object]]) -> dict[str, object]:
+    return {
+        "name": "task_dag",
+        "args": {"nodes": nodes, "max_concurrent": 2},
+        "id": call_id,
+        "type": "tool_call",
+    }
+
+
 def test_subagent_limits_record_only_allowed_task_calls() -> None:
     middleware = SubagentLifecycleMiddleware(SubagentLimits(max_concurrent=2, max_total_per_run=2))
     message = AIMessage(
@@ -144,6 +154,493 @@ def test_subagent_limits_record_only_allowed_task_calls() -> None:
     assert isinstance(replacement, AIMessage)
     assert [call["id"] for call in replacement.tool_calls] == ["call-0", "call-1"]
     assert "SUBAGENT LIMIT REACHED" in str(replacement.content)
+
+
+def test_real_graph_runs_task_dag_waves_with_stable_child_ids() -> None:
+    executor = FakeExecutor(delay=0.05)
+    call = _task_dag_call(
+        "call-dag",
+        [
+            {
+                "node_id": "left",
+                "description": "inspect left",
+                "prompt": "Inspect left.",
+                "subagent_type": "explore",
+                "depends_on": [],
+            },
+            {
+                "node_id": "right",
+                "description": "inspect right",
+                "prompt": "Inspect right.",
+                "subagent_type": "explore",
+                "depends_on": [],
+            },
+            {
+                "node_id": "join",
+                "description": "combine evidence",
+                "prompt": "Combine the evidence.",
+                "subagent_type": "synthesize",
+                "depends_on": ["left", "right"],
+            },
+        ],
+    )
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "synthesize"}),
+        profiles=(
+            SubagentProfile(
+                name="synthesize",
+                tool_scope=("read_evidence_bundle",),
+                token_budget=16_000,
+                timeout_seconds=90,
+                max_steps=8,
+            ),
+        ),
+    )
+    model = ToolModel(
+        responses=[
+            AIMessage(content="", tool_calls=[call]),
+            AIMessage(content="DAG complete."),
+        ]
+    )
+    graph = create_sage_agent(
+        model,
+        tools=[build_task_dag_tool(executor, config)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(tool_config=config),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Inspect both sides and synthesize")]},
+            context=_context(),
+        )
+    )
+
+    assert len(executor.requests) == 3
+    assert executor.max_active == 2
+    assert [request.child_run_id for request in executor.requests[:2]] == [
+        derive_child_run_id("thread-parent", "run-parent", "call-dag:left"),
+        derive_child_run_id("thread-parent", "run-parent", "call-dag:right"),
+    ]
+    assert executor.requests[2].child_run_id == derive_child_run_id(
+        "thread-parent", "run-parent", "call-dag:join"
+    )
+    assert result["task_graphs"][0]["status"] == "succeeded"  # type: ignore[index]
+    assert "prompt" not in str(result["task_graphs"])
+
+
+def test_task_dag_rejects_invalid_graph_before_executor_start() -> None:
+    executor = FakeExecutor()
+    call = _task_dag_call(
+        "call-invalid-dag",
+        [
+            {
+                "node_id": "left",
+                "description": "inspect left",
+                "prompt": "private-left-prompt",
+                "subagent_type": "explore",
+                "depends_on": ["right"],
+            },
+            {
+                "node_id": "right",
+                "description": "inspect right",
+                "prompt": "private-right-prompt",
+                "subagent_type": "explore",
+                "depends_on": ["left"],
+            },
+        ],
+    )
+    graph = create_sage_agent(
+        ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[call]),
+                AIMessage(content="Invalid DAG was rejected."),
+            ]
+        ),
+        tools=[build_task_dag_tool(executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Run an invalid graph")]},
+            context=_context(),
+        )
+    )
+
+    assert executor.requests == []
+    tool_message = next(
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    )
+    assert tool_message.name == "task_dag"
+    assert tool_message.status == "error"
+    assert tool_message.additional_kwargs["sage_task_dag"]["error_code"] == ("task_dag_invalid")
+
+
+def test_task_dag_rejects_coerced_node_fields_before_executor_start() -> None:
+    executor = FakeExecutor()
+    call = _task_dag_call(
+        "call-coerced-dag",
+        [
+            {
+                "node_id": "inspect",
+                "description": "inspect input",
+                "prompt": 42,
+                "subagent_type": "explore",
+                "depends_on": [],
+            }
+        ],
+    )
+    graph = create_sage_agent(
+        ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[call]),
+                AIMessage(content="Rejected invalid DAG."),
+            ]
+        ),
+        tools=[build_task_dag_tool(executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    result = asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Run invalid DAG")]},
+            context=_context(),
+        )
+    )
+
+    assert executor.requests == []
+    tool_message = next(
+        message for message in result["messages"] if isinstance(message, ToolMessage)
+    )
+    assert tool_message.additional_kwargs["sage_task_dag"]["error_code"] == ("task_dag_invalid")
+
+
+def test_subagent_limits_reserve_task_dag_atomically_without_prompt() -> None:
+    middleware = SubagentLifecycleMiddleware()
+    call = _task_dag_call(
+        "call-budgeted-dag",
+        [
+            {
+                "node_id": f"node-{index}",
+                "description": f"inspect {index}",
+                "prompt": f"private-prompt-{index}",
+                "subagent_type": "explore",
+                "depends_on": [],
+            }
+            for index in range(3)
+        ],
+    )
+
+    update = middleware.after_model(
+        {
+            "messages": [AIMessage(content="", tool_calls=[call])],
+            "run_token_usage": 70_000,
+            "run_token_limit": 100_000,
+            "run_model_calls": 1,
+            "run_model_call_limit": 24,
+            "run_tool_calls": 3,
+            "run_tool_call_limit": 64,
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    assert len(update["delegations"]) == 3
+    assert sum(entry["reserved_tokens"] for entry in update["delegations"]) == 30_000
+    assert sum(entry["reserved_model_calls"] for entry in update["delegations"]) <= 22
+    assert update["task_graphs"][0]["status"] == "running"
+    assert "private-prompt" not in str(update["task_graphs"])
+
+
+def test_subagent_limits_upgrade_legacy_task_dag_reservation_on_resume() -> None:
+    middleware = SubagentLifecycleMiddleware()
+    call = _task_dag_call(
+        "call-legacy-dag",
+        [
+            {
+                "node_id": "inspect",
+                "description": "inspect legacy child",
+                "prompt": "Inspect the existing child result.",
+                "subagent_type": "explore",
+                "depends_on": [],
+            }
+        ],
+    )
+    child_run_id = derive_child_run_id(
+        "thread-parent",
+        "run-parent",
+        "call-legacy-dag:inspect",
+    )
+
+    update = middleware.after_model(
+        {
+            "messages": [AIMessage(content="", tool_calls=[call])],
+            "delegations": [
+                {
+                    "id": child_run_id,
+                    "run_id": "run-parent",
+                    "subagent_type": "explore",
+                    "status": "running",
+                }
+            ],
+            "run_token_limit": 100_000,
+            "run_model_call_limit": 24,
+            "run_tool_call_limit": 64,
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    assert update["delegations"] == [
+        {
+            "id": child_run_id,
+            "run_id": "run-parent",
+            "description": "inspect legacy child",
+            "subagent_type": "explore",
+            "status": "running",
+            "reserved_tokens": 24_000,
+            "reserved_model_calls": 14,
+            "reserved_tool_calls": 12,
+            "token_usage": 0,
+            "model_calls": 0,
+            "tool_count": 0,
+            "evidence_refs": [],
+            "task_graph_node_id": "inspect",
+        }
+    ]
+
+
+def test_subagent_limits_drop_whole_task_dag_when_total_limit_is_insufficient() -> None:
+    middleware = SubagentLifecycleMiddleware(SubagentLimits(max_concurrent=3, max_total_per_run=2))
+    call = _task_dag_call(
+        "call-too-large-dag",
+        [
+            {
+                "node_id": f"node-{index}",
+                "description": f"inspect {index}",
+                "prompt": f"Inspect {index}.",
+                "subagent_type": "explore",
+                "depends_on": [],
+            }
+            for index in range(3)
+        ],
+    )
+
+    update = middleware.after_model(
+        {"messages": [AIMessage(content="", tool_calls=[call])]},
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    replacement = update["messages"][0]
+    assert isinstance(replacement, AIMessage)
+    assert replacement.tool_calls == []
+    assert "SUBAGENT LIMIT REACHED" in str(replacement.content)
+    assert "delegations" not in update
+
+
+def test_real_graph_serializes_independent_practice_dag_nodes() -> None:
+    executor = FakeExecutor(delay=0.05)
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "practice"}),
+        profiles=(
+            SubagentProfile(
+                name="practice",
+                tool_scope=("read_file", "write_file", "run_shell"),
+                token_budget=24_000,
+                timeout_seconds=300,
+                max_steps=20,
+            ),
+        ),
+    )
+    call = _task_dag_call(
+        "call-practice-dag",
+        [
+            {
+                "node_id": f"write-{index}",
+                "description": f"practice {index}",
+                "prompt": f"Run practice {index}.",
+                "subagent_type": "practice",
+                "depends_on": [],
+            }
+            for index in range(2)
+        ],
+    )
+    graph = create_sage_agent(
+        ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[call]),
+                AIMessage(content="Practice DAG complete."),
+            ]
+        ),
+        tools=[build_task_dag_tool(executor, config)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(tool_config=config),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    asyncio.run(
+        graph.ainvoke(
+            {"messages": [HumanMessage(content="Run two practice nodes")]},
+            context=_context(),
+        )
+    )
+
+    assert len(executor.requests) == 2
+    assert executor.max_active == 1
+
+
+def test_subagent_limits_resume_same_multi_practice_dag_without_false_conflict() -> None:
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"explore", "practice"}),
+        profiles=(
+            SubagentProfile(
+                name="practice",
+                tool_scope=("read_file", "write_file", "run_shell"),
+                token_budget=24_000,
+                timeout_seconds=300,
+                max_steps=20,
+            ),
+        ),
+    )
+    middleware = SubagentLifecycleMiddleware(tool_config=config)
+    call = _task_dag_call(
+        "call-practice-resume",
+        [
+            {
+                "node_id": f"write-{index}",
+                "description": f"practice {index}",
+                "prompt": f"Run practice {index}.",
+                "subagent_type": "practice",
+                "depends_on": [],
+            }
+            for index in range(2)
+        ],
+    )
+    child_ids = [
+        derive_child_run_id(
+            "thread-parent",
+            "run-parent",
+            f"call-practice-resume:write-{index}",
+        )
+        for index in range(2)
+    ]
+
+    update = middleware.after_model(
+        {
+            "messages": [AIMessage(content="", tool_calls=[call])],
+            "delegations": [
+                {
+                    "id": child_run_id,
+                    "run_id": "run-parent",
+                    "subagent_type": "practice",
+                    "status": "running",
+                    "reserved_tokens": 24_000,
+                    "reserved_model_calls": 22,
+                    "reserved_tool_calls": 20,
+                }
+                for child_run_id in child_ids
+            ],
+        },
+        MagicMock(context=_context()),
+    )
+
+    assert update is not None
+    assert "messages" not in update
+    assert "delegations" not in update
+    assert update["task_graphs"][0]["status"] == "running"
+
+
+def test_task_dag_resume_reuses_terminal_receipt_without_reexecution() -> None:
+    call = _task_dag_call(
+        "call-resume-dag",
+        [
+            {
+                "node_id": "left",
+                "description": "inspect left",
+                "prompt": "Inspect left.",
+                "subagent_type": "explore",
+                "depends_on": [],
+            }
+        ],
+    )
+    first_executor = FakeExecutor()
+    first_graph = create_sage_agent(
+        ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[call]),
+                AIMessage(content="First DAG complete."),
+            ]
+        ),
+        tools=[build_task_dag_tool(first_executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+    first = asyncio.run(
+        first_graph.ainvoke(
+            {"messages": [HumanMessage(content="Run once")]},
+            context=_context(),
+        )
+    )
+    replay_executor = FakeExecutor()
+    replay_graph = create_sage_agent(
+        ToolModel(
+            responses=[
+                AIMessage(content="", tool_calls=[call]),
+                AIMessage(content="Terminal DAG receipt reused."),
+            ]
+        ),
+        tools=[build_task_dag_tool(replay_executor)],
+        registry=build_default_registry().with_spec(
+            MiddlewareSpec(
+                "subagent_lifecycle",
+                lambda _: SubagentLifecycleMiddleware(),
+            ),
+            before="durable_context",
+        ),
+    )
+
+    replay = asyncio.run(
+        replay_graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="Resume same DAG")],
+                "task_graphs": first["task_graphs"],
+                "delegations": first["delegations"],
+            },
+            context=_context(),
+        )
+    )
+
+    assert replay_executor.requests == []
+    assert replay["task_graphs"][0]["status"] == "succeeded"
+    assert replay["delegations"] == first["delegations"]
 
 
 def test_subagent_limits_allow_only_one_concurrent_practice_child() -> None:

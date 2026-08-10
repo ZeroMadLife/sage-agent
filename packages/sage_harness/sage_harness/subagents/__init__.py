@@ -16,6 +16,7 @@ from sage_harness.subagents.contracts import (
     SubagentToolConfig,
     derive_child_run_id,
 )
+from sage_harness.subagents.dag_tool import build_task_dag_tool
 from sage_harness.subagents.middleware import SubagentLifecycleMiddleware
 from sage_harness.subagents.tool import build_task_tool
 
@@ -34,6 +35,7 @@ __all__ = [
     "SubagentResult",
     "SubagentTerminalStatus",
     "SubagentToolConfig",
+    "build_task_dag_tool",
     "build_task_tool",
     "derive_child_run_id",
 ]

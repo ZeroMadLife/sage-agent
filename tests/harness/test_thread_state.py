@@ -17,8 +17,10 @@ from sage_harness.state import (
     merge_promoted_tools,
     merge_sandbox,
     merge_skill_context,
+    merge_task_graphs,
     merge_thread_data,
     merge_todos,
+    merge_turn_context_plan,
 )
 
 
@@ -28,6 +30,38 @@ def test_state_extends_langchain_agent_state() -> None:
     assert "artifacts" in SageThreadState.__annotations__
     assert "approval_context" in SageThreadState.__annotations__
     assert "retrieval_gate" in SageThreadState.__annotations__
+    assert "turn_context_plan" in SageThreadState.__annotations__
+
+
+def test_turn_context_plan_binding_is_immutable_within_one_run() -> None:
+    first = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:first",
+    }
+
+    assert merge_turn_context_plan(None, first) == first
+    assert merge_turn_context_plan(first, dict(first)) == first
+    with pytest.raises(ValueError, match="Conflicting turn context plan bindings"):
+        merge_turn_context_plan(first, {**first, "plan_hash": "sha256:changed"})
+
+
+def test_turn_context_plan_binding_can_advance_on_a_new_run() -> None:
+    first = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:first",
+    }
+    second = {
+        "version": 1,
+        "run_id": "run-2",
+        "plan_id": "tcp-2",
+        "plan_hash": "sha256:second",
+    }
+
+    assert merge_turn_context_plan(first, second) == second
 
 
 def test_langgraph_applies_sage_reducers_during_a_real_graph_run() -> None:
@@ -242,3 +276,22 @@ def test_existing_checkpoint_channels_are_capped_on_read() -> None:
     assert len(merge_artifacts(artifacts, None)) == 100
     assert len(merge_memory_refs(memories, None)) == 32
     assert len(merge_skill_context(skills, None)) == 8
+
+
+def test_task_graph_reducer_rejects_hash_drift_and_terminal_downgrade() -> None:
+    terminal = {
+        "dag_id": "dag-1",
+        "dag_hash": "hash-a",
+        "run_id": "run-1",
+        "tool_call_id": "call-1",
+        "status": "succeeded",
+        "nodes": [],
+    }
+
+    assert merge_task_graphs([terminal], [{**terminal, "status": "running"}]) == [terminal]
+    with pytest.raises(ValueError, match="Conflicting task graph hash"):
+        merge_task_graphs([terminal], [{**terminal, "dag_hash": "hash-b"}])
+    with pytest.raises(ValueError, match="Conflicting terminal task graph statuses"):
+        merge_task_graphs([terminal], [{**terminal, "status": "failed"}])
+    with pytest.raises(ValueError, match="Conflicting task graph scope"):
+        merge_task_graphs([terminal], [{**terminal, "run_id": "run-2"}])

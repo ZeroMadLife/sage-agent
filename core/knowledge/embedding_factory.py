@@ -8,6 +8,8 @@ from core.config.settings import Settings
 from core.knowledge.embeddings import (
     DashScopeEmbeddingConfig,
     DashScopeEmbeddingProvider,
+    DoubaoMultimodalEmbeddingConfig,
+    DoubaoMultimodalEmbeddingProvider,
     FastEmbedEmbeddingConfig,
     FastEmbedEmbeddingProvider,
     OpenAICompatibleEmbeddingConfig,
@@ -22,6 +24,19 @@ def build_knowledge_embedding_provider(
     hashing_dimensions: int = 256,
 ) -> DenseEmbeddingProvider:
     provider_name = settings.knowledge_embedding_provider.strip().casefold()
+    if provider_name == "doubao_multimodal":
+        return DoubaoMultimodalEmbeddingProvider(
+            DoubaoMultimodalEmbeddingConfig(
+                api_key=settings.knowledge_embedding_api_key,
+                base_url=settings.knowledge_embedding_base_url,
+                model=settings.knowledge_embedding_model,
+                model_revision=settings.knowledge_embedding_model_revision,
+                dimensions=settings.knowledge_embedding_dimensions,
+                timeout_seconds=settings.knowledge_embedding_timeout_seconds,
+                max_workers=settings.knowledge_doubao_max_workers,
+                cost_per_1k_tokens_usd=settings.knowledge_embedding_cost_per_1k_tokens_usd,
+            )
+        )
     if provider_name == "dashscope":
         return DashScopeEmbeddingProvider(
             DashScopeEmbeddingConfig(

@@ -116,6 +116,22 @@ def message_payload(message: Any) -> dict[str, Any]:
             )
             if key in subagent_meta
         }
+    task_dag_meta = message.additional_kwargs.get("sage_task_dag")
+    if isinstance(message, ToolMessage) and isinstance(task_dag_meta, dict):
+        projected["sage_task_dag"] = {
+            key: _bounded_json(task_dag_meta[key])
+            for key in (
+                "dag_id",
+                "dag_hash",
+                "status",
+                "error_code",
+                "node_count",
+                "completed_count",
+                "failed_count",
+                "blocked_count",
+            )
+            if key in task_dag_meta
+        }
     return projected
 
 

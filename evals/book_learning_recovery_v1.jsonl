@@ -1,0 +1,4 @@
+{"case_id":"book-zh-003","rewrite_queries":["西遊記 第十四回 心猿歸正 六賊無蹤 悟空 隨唐僧","西遊記 第十八回 高老莊 大圣除魔 第十九回 雲棧洞 悟空收八戒"],"rewrite_preserved_intent":true,"provenance":"oracle_manual_rewrite"}
+{"case_id":"book-cross-001","rewrite_queries":["西遊記 第一回 靈根育孕源流出 心性修持大道生 开篇","The Wealth of Nations BOOK I CHAPTER I division of labour productive power"],"rewrite_preserved_intent":true,"provenance":"oracle_manual_rewrite"}
+{"case_id":"book-cross-002","rewrite_queries":["The Wealth of Nations BOOK I CHAPTER IV origin and use of money","西遊記 第十二回 唐王秉誠修大會 觀音顯聖化金蟬 取經起因"],"rewrite_preserved_intent":true,"provenance":"oracle_manual_rewrite"}
+{"case_id":"book-hard-002","rewrite_queries":["花果山 经纬度 坐标 latitude longitude"],"rewrite_preserved_intent":true,"provenance":"oracle_manual_rewrite"}

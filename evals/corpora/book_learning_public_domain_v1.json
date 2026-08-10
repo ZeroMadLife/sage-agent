@@ -1,0 +1,42 @@
+{
+  "dataset_id": "book-learning-public-domain-v1",
+  "revision": "2026-08-06.1",
+  "license_policy": "Only sources marked copyright=false by Gutendex are eligible.",
+  "license_reference": "https://www.gutenberg.org/policy/license.html",
+  "documents": [
+    {
+      "document_id": "gutenberg-23962-journey-to-the-west-zh",
+      "title": "西遊記",
+      "author": "Wu, Cheng'en",
+      "language": "zh",
+      "gutenberg_id": 23962,
+      "metadata_url": "https://gutendex.com/books/23962/",
+      "download_url": "https://www.gutenberg.org/ebooks/23962.txt.utf-8",
+      "copyright": false,
+      "expected_sha256": "af3c9e408c0c58595b666ed9981b6fa1e9343f4bbc78309b1cb0818c32fc1f58",
+      "filename": "gutenberg-23962-journey-to-the-west-zh.txt",
+      "evaluation_roles": [
+        "chapter-boundary",
+        "character-relation",
+        "cross-chapter-multi-hop"
+      ]
+    },
+    {
+      "document_id": "gutenberg-3300-wealth-of-nations-en",
+      "title": "An Inquiry into the Nature and Causes of the Wealth of Nations",
+      "author": "Smith, Adam",
+      "language": "en",
+      "gutenberg_id": 3300,
+      "metadata_url": "https://gutendex.com/books/3300/",
+      "download_url": "https://www.gutenberg.org/ebooks/3300.txt.utf-8",
+      "copyright": false,
+      "expected_sha256": "e91d52dca43fd0fd69baf7776b00a5d8e74b69675b6b608ca8a0378aaf3ae58d",
+      "filename": "gutenberg-3300-wealth-of-nations-en.txt",
+      "evaluation_roles": [
+        "concept-explanation",
+        "cross-chapter-comparison",
+        "long-block-retrieval"
+      ]
+    }
+  ]
+}

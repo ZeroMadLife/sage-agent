@@ -7,6 +7,7 @@ from core.knowledge.index import LocalKnowledgeIndex
 from core.knowledge.index_factory import build_knowledge_index
 from core.knowledge.observability import KnowledgeRetrievalObservabilityConfig
 from core.knowledge.postgres_index import PostgresKnowledgeIndex
+from core.knowledge.postgres_retrieval import NativePostgresFtsRetriever
 from core.knowledge.retrieval import HashingEmbeddingProvider
 
 
@@ -81,4 +82,16 @@ def test_knowledge_index_factory_rejects_unknown_backend() -> None:
             postgres_connect_timeout_seconds=5,
             postgres_pool_max_connections=4,
             embedding_provider=HashingEmbeddingProvider(dimensions=64),
+        )
+
+
+def test_knowledge_index_factory_rejects_postgres_strategies_for_sqlite() -> None:
+    with pytest.raises(ValueError, match="PostgreSQL retrieval strategies require postgres"):
+        build_knowledge_index(
+            backend="sqlite",
+            workspace_id="knowledge-local",
+            postgres_dsn="postgresql://user:secret@db.example/sage",
+            postgres_connect_timeout_seconds=5,
+            postgres_pool_max_connections=4,
+            sparse_retriever=NativePostgresFtsRetriever(),
         )

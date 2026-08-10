@@ -17,6 +17,17 @@ def test_local_private_source_is_the_only_auto_apply_path() -> None:
     assert result.risk_level == "low"
     assert result.action == "auto_apply"
 
+    txt_result = evaluate_knowledge_policy(
+        KnowledgePolicyInput(
+            change_kind="ingest",
+            source_kind="obsidian",
+            target_path="wiki/sources/book.md",
+            visibility="private",
+            parser_id="sage.txt",
+        )
+    )
+    assert txt_result.action == "auto_apply"
+
 
 def test_verified_extractive_learning_is_auto_applied_but_spoofing_is_blocked() -> None:
     verified = evaluate_knowledge_policy(

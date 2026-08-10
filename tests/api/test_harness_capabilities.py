@@ -277,6 +277,7 @@ def test_capability_api_exposes_research_only_with_knowledge_and_web_search(
         "subagent:explore",
         "subagent:practice",
         "subagent:research",
+        "subagent:task-dag",
     }
 
 

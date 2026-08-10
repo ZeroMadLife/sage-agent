@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS knowledge_chunks (
     confidence REAL NOT NULL DEFAULT 1.0,
     parser_id TEXT NOT NULL DEFAULT '',
     parser_version TEXT NOT NULL DEFAULT '',
+    line_start INTEGER,
+    line_end INTEGER,
+    char_start INTEGER,
+    char_end INTEGER,
+    byte_start INTEGER,
+    byte_end INTEGER,
+    parent_chunk_id TEXT,
+    retrieval_description TEXT,
+    retrieval_description_provider TEXT,
+    retrieval_description_revision TEXT,
     text TEXT NOT NULL,
     token_count INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
@@ -189,6 +199,16 @@ class LocalKnowledgeIndex:
             "confidence": "REAL NOT NULL DEFAULT 1.0",
             "parser_id": "TEXT NOT NULL DEFAULT ''",
             "parser_version": "TEXT NOT NULL DEFAULT ''",
+            "line_start": "INTEGER",
+            "line_end": "INTEGER",
+            "char_start": "INTEGER",
+            "char_end": "INTEGER",
+            "byte_start": "INTEGER",
+            "byte_end": "INTEGER",
+            "parent_chunk_id": "TEXT",
+            "retrieval_description": "TEXT",
+            "retrieval_description_provider": "TEXT",
+            "retrieval_description_revision": "TEXT",
         }
         for name, definition in additions.items():
             if name not in chunk_columns:
@@ -817,9 +837,17 @@ class LocalKnowledgeIndex:
                 source_id, source_revision, source_kind, source_relative_path,
                 proposal_id, artifact_id, block_id, ordinal, title,
                 heading_path_json, page_number, block_kind, bbox_json, media_ref,
-                confidence, parser_id, parser_version, text, token_count, content_hash,
+                confidence, parser_id, parser_version, line_start, line_end,
+                char_start, char_end, byte_start, byte_end, parent_chunk_id,
+                retrieval_description, retrieval_description_provider,
+                retrieval_description_revision, text, token_count, content_hash,
                 visibility, language, active, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?
+            )
             """,
             (
                 chunk.chunk_id,
@@ -844,6 +872,16 @@ class LocalKnowledgeIndex:
                 chunk.confidence,
                 chunk.parser_id,
                 chunk.parser_version,
+                chunk.line_start,
+                chunk.line_end,
+                chunk.char_start,
+                chunk.char_end,
+                chunk.byte_start,
+                chunk.byte_end,
+                chunk.parent_chunk_id,
+                chunk.retrieval_description,
+                chunk.retrieval_description_provider,
+                chunk.retrieval_description_revision,
                 chunk.text,
                 chunk.token_count,
                 chunk.content_hash,
@@ -933,4 +971,24 @@ class LocalKnowledgeIndex:
             confidence=float(row["confidence"]),
             parser_id=str(row["parser_id"]),
             parser_version=str(row["parser_version"]),
+            line_start=int(row["line_start"]) if row["line_start"] is not None else None,
+            line_end=int(row["line_end"]) if row["line_end"] is not None else None,
+            char_start=int(row["char_start"]) if row["char_start"] is not None else None,
+            char_end=int(row["char_end"]) if row["char_end"] is not None else None,
+            byte_start=int(row["byte_start"]) if row["byte_start"] is not None else None,
+            byte_end=int(row["byte_end"]) if row["byte_end"] is not None else None,
+            parent_chunk_id=str(row["parent_chunk_id"]) if row["parent_chunk_id"] else None,
+            retrieval_description=(
+                str(row["retrieval_description"]) if row["retrieval_description"] else None
+            ),
+            retrieval_description_provider=(
+                str(row["retrieval_description_provider"])
+                if row["retrieval_description_provider"]
+                else None
+            ),
+            retrieval_description_revision=(
+                str(row["retrieval_description_revision"])
+                if row["retrieval_description_revision"]
+                else None
+            ),
         )

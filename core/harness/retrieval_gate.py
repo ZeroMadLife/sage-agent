@@ -13,6 +13,13 @@ from typing import Any, Literal, cast
 from sage_harness import MemoryRetrievalResult
 
 from core.coding.run_coordinator import RunEvent
+from core.harness.learning_intent import (
+    LearningIntentRoute,
+    LearningIntentRouter,
+    resolve_learning_intent,
+    retrieval_sources_for_intent,
+)
+from core.harness.task_intent import TaskIntentEnvelope
 
 RetrievalDecision = Literal[
     "skip",
@@ -88,6 +95,7 @@ class RetrievalGateReceipt:
     token_budget_by_source: Mapping[str, int]
     query_fingerprint: str
     latency_ms: int
+    intent_route: LearningIntentRoute
     degraded: bool = False
     tool_scope: RetrievalToolScope = "default"
 
@@ -100,7 +108,7 @@ class RetrievalGateReceipt:
     def to_payload(self, *, run_id: str) -> dict[str, object]:
         return {
             "type": "retrieval_gate_decided",
-            "version": 1,
+            "version": 2,
             "run_id": run_id,
             "decision": self.decision,
             "reason_code": self.reason_code,
@@ -114,6 +122,7 @@ class RetrievalGateReceipt:
             "latency_ms": self.latency_ms,
             "degraded": self.degraded,
             "tool_scope": self.tool_scope,
+            "intent_route": self.intent_route.to_public_payload(),
         }
 
     def to_context(self) -> dict[str, object]:
@@ -125,6 +134,7 @@ class RetrievalGateReceipt:
             "query_fingerprint": self.query_fingerprint,
             "degraded": self.degraded,
             "tool_scope": self.tool_scope,
+            "intent_route": self.intent_route.to_context(),
         }
 
 
@@ -136,11 +146,19 @@ def decide_retrieval_gate(
     memory_available: bool,
     knowledge_available: bool,
     web_available: bool,
+    learning_intent_router: LearningIntentRouter | None = None,
+    intent_envelope: TaskIntentEnvelope | None = None,
 ) -> RetrievalGateReceipt:
-    """Route explicit retrieval signals before model/tool selection."""
+    """先路由显式检索信号，再应用冻结意图的候选范围。"""
     started_at = time.monotonic()
     normalized = " ".join(user_message.split())[:8_000]
     fingerprint = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    intent_route = resolve_learning_intent(
+        normalized,
+        surface_context=surface_context,
+        thread_goal=thread_goal,
+        router=learning_intent_router,
+    )
 
     available: list[str] = []
     if memory_available:
@@ -163,25 +181,51 @@ def decide_retrieval_gate(
     if thread_goal and not candidates and _goal_requests_retrieval(thread_goal):
         candidates.append("knowledge")
 
-    explicit_source = _explicit_only_source(normalized)
+    explicit_candidates = tuple(candidates)
+    tools_forbidden = bool(_NO_TOOLS_PATTERN.search(normalized))
+    intent_candidates = () if tools_forbidden else retrieval_sources_for_intent(intent_route)
+    candidates.extend(intent_candidates)
+
+    explicit_source = None if tools_forbidden else _explicit_only_source(normalized)
+    if explicit_source == "web" and web_negated:
+        explicit_source = None
     if explicit_source is not None:
         candidates = [explicit_source]
+    elif tools_forbidden:
+        candidates = []
+
+    if web_negated:
+        candidates = [source for source in candidates if source != "web"]
 
     candidates = list(dict.fromkeys(candidates))
+    intent_scoped = False
+    if intent_envelope is not None:
+        scoped_candidates = list(intent_envelope.narrow_retrieval_sources(tuple(candidates)))
+        intent_scoped = scoped_candidates != candidates
+        candidates = scoped_candidates
     selected = [source for source in candidates if source in available]
     degraded = len(selected) != len(candidates)
     if not candidates:
         decision: RetrievalDecision = "skip"
-        reason_code = "no_retrieval_signal"
+        reason_code = "intent_scope_empty" if intent_scoped else "no_retrieval_signal"
     elif not selected:
         decision = "skip"
         reason_code = "requested_sources_unavailable"
     elif len(selected) > 1:
         decision = "mixed"
-        reason_code = "multiple_explicit_sources"
+        reason_code = (
+            "multiple_explicit_sources"
+            if set(selected).issubset(explicit_candidates)
+            else "multiple_route_sources"
+        )
     else:
         decision = cast(RetrievalDecision, selected[0])
-        reason_code = "explicit_source_signal"
+        if intent_scoped:
+            reason_code = "intent_capability_scope"
+        elif selected[0] in explicit_candidates:
+            reason_code = "explicit_source_signal"
+        else:
+            reason_code = "learning_intent_signal"
 
     budgets = {source: _SOURCE_BUDGETS[source] for source in selected}
     tool_scope = _tool_scope(normalized)
@@ -194,6 +238,7 @@ def decide_retrieval_gate(
         token_budget_by_source=budgets,
         query_fingerprint=fingerprint,
         latency_ms=max(0, round((time.monotonic() - started_at) * 1_000)),
+        intent_route=intent_route,
         degraded=degraded,
         tool_scope=tool_scope,
     )

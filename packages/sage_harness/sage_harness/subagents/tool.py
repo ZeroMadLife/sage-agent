@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import suppress
 from typing import Annotated, Any
 
@@ -35,6 +35,7 @@ _SECRET_ASSIGNMENT = re.compile(
     r"(?i)(\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|token|password|secret)\s*=\s*)"
     r"(?:'[^']*'|\"[^\"]*\"|[^\s;&|]+)"
 )
+EventWriter = Callable[[dict[str, object]], None]
 
 
 def _result_content(result: SubagentResult) -> str:
@@ -75,6 +76,32 @@ def _terminal_command(
     request: SubagentRequest,
     result: SubagentResult,
 ) -> Command[Any]:
+    entry = _delegation_entry(request, result)
+    metadata = _subagent_metadata(request, result)
+    return Command(
+        update={
+            "delegations": [entry],
+            "evidence_refs": list(result.evidence_refs),
+            "evidence_query_fingerprints": list(result.query_fingerprints),
+            "evidence_source_fingerprints": list(result.source_fingerprints),
+            "messages": [
+                ToolMessage(
+                    content=_result_content(result),
+                    tool_call_id=tool_call_id,
+                    name="task",
+                    status="success" if result.status == "succeeded" else "error",
+                    additional_kwargs={"sage_subagent": metadata},
+                )
+            ],
+        }
+    )
+
+
+def _delegation_entry(
+    request: SubagentRequest,
+    result: SubagentResult,
+) -> dict[str, object]:
+    """生成可合并的 child ledger 终态，供 task 与 task_dag 共用。"""
     result_brief = result.result.strip()[:_RESULT_BRIEF_MAX]
     entry: dict[str, object] = {
         "id": request.child_run_id,
@@ -108,7 +135,15 @@ def _terminal_command(
         entry["mastery_evidence"] = [
             _mastery_evidence_payload(item) for item in result.mastery_evidence
         ]
-    metadata = {
+    return entry
+
+
+def _subagent_metadata(
+    request: SubagentRequest,
+    result: SubagentResult,
+) -> dict[str, object]:
+    """生成 ToolMessage 的脱敏 child 元数据。"""
+    return {
         "child_run_id": request.child_run_id,
         "parent_run_id": request.parent_run_id,
         "status": result.status,
@@ -124,23 +159,6 @@ def _terminal_command(
         ],
         "mastery_evidence_count": len(result.mastery_evidence),
     }
-    return Command(
-        update={
-            "delegations": [entry],
-            "evidence_refs": list(result.evidence_refs),
-            "evidence_query_fingerprints": list(result.query_fingerprints),
-            "evidence_source_fingerprints": list(result.source_fingerprints),
-            "messages": [
-                ToolMessage(
-                    content=_result_content(result),
-                    tool_call_id=tool_call_id,
-                    name="task",
-                    status="success" if result.status == "succeeded" else "error",
-                    additional_kwargs={"sage_subagent": metadata},
-                )
-            ],
-        }
-    )
 
 
 def _progress_event(
@@ -298,6 +316,121 @@ def _evidence_child_run_ids(
     return tuple(dict.fromkeys(child_ids))
 
 
+async def _execute_subagent_request(
+    *,
+    executor: SubagentExecutorPort,
+    request: SubagentRequest,
+    writer: EventWriter,
+    profile_available: bool,
+    allowed_types: frozenset[str],
+) -> SubagentResult:
+    """执行一个已由服务端定界的 child，并统一超时、取消与脱敏事件。"""
+    child_run_id = request.child_run_id
+    writer(
+        {
+            "type": "subagent_started",
+            "child_run_id": child_run_id,
+            "parent_run_id": request.parent_run_id,
+            "description": request.description,
+            "subagent_type": request.subagent_type,
+            "tool_scope": list(request.tool_scope),
+            "reserved_tokens": request.token_budget,
+            "operation_ref": {"kind": "coding_run", "id": child_run_id},
+        }
+    )
+    if not profile_available:
+        result = SubagentResult(
+            child_run_id=child_run_id,
+            status="failed",
+            result="Available profiles: " + ", ".join(sorted(allowed_types)) + ".",
+            error_code="subagent_type_not_allowed",
+        )
+    else:
+        execution: asyncio.Future[SubagentResult] | None = None
+        try:
+            execution = asyncio.ensure_future(
+                executor.execute(
+                    request,
+                    lambda event: writer(
+                        _progress_event(
+                            event,
+                            child_run_id=child_run_id,
+                            parent_run_id=request.parent_run_id,
+                            subagent_type=request.subagent_type,
+                        )
+                    ),
+                )
+            )
+            result = await asyncio.wait_for(
+                asyncio.shield(execution),
+                timeout=request.timeout_seconds,
+            )
+        except TimeoutError:
+            await executor.cancel(child_run_id, "timeout")
+            if execution is not None:
+                execution.cancel()
+                with suppress(asyncio.CancelledError):
+                    await execution
+            result = SubagentResult(
+                child_run_id=child_run_id,
+                status="timed_out",
+                error_code="timeout",
+                token_usage=request.token_budget,
+                model_calls=request.max_steps + 2,
+                tool_count=request.max_steps,
+            )
+        except asyncio.CancelledError:
+            await executor.cancel(child_run_id, "parent_cancelled")
+            if execution is not None:
+                execution.cancel()
+                with suppress(asyncio.CancelledError):
+                    await execution
+            writer(
+                {
+                    "type": "subagent_cancelled",
+                    "child_run_id": child_run_id,
+                    "parent_run_id": request.parent_run_id,
+                }
+            )
+            raise
+        except Exception:
+            result = SubagentResult(
+                child_run_id=child_run_id,
+                status="failed",
+                error_code="executor_failed",
+            )
+    event_type = {
+        "succeeded": "subagent_completed",
+        "failed": "subagent_failed",
+        "cancelled": "subagent_cancelled",
+        "timed_out": "subagent_timed_out",
+    }[result.status]
+    writer(
+        {
+            "type": event_type,
+            "child_run_id": child_run_id,
+            "parent_run_id": request.parent_run_id,
+            "subagent_type": request.subagent_type,
+            "description": request.description,
+            "status": result.status,
+            "result_brief": result.result.strip()[:500],
+            "result_ref": result.result_ref,
+            "error_code": result.error_code,
+            "evidence_count": len(result.evidence_refs),
+            "evidence_refs": list(result.evidence_refs),
+            "token_usage": result.token_usage,
+            "model_calls": result.model_calls,
+            "tool_count": result.tool_count,
+            "mastery_evidence": [
+                _mastery_evidence_payload(item) for item in result.mastery_evidence
+            ],
+            "mastery_evidence_count": len(result.mastery_evidence),
+            "operation_ref": {"kind": "coding_run", "id": child_run_id},
+        }
+    )
+    return result
+
+
 def build_task_tool(
     executor: SubagentExecutorPort,
     config: SubagentToolConfig | None = None,
@@ -369,110 +502,12 @@ def build_task_tool(
                 "evidence_source_fingerprints",
             ),
         )
-        writer = runtime.stream_writer
-        writer(
-            {
-                "type": "subagent_started",
-                "child_run_id": child_run_id,
-                "parent_run_id": request.parent_run_id,
-                "description": request.description,
-                "subagent_type": request.subagent_type,
-                "tool_scope": list(request.tool_scope),
-                "reserved_tokens": request.token_budget,
-                "operation_ref": {"kind": "coding_run", "id": child_run_id},
-            }
-        )
-        if profile is None:
-            result = SubagentResult(
-                child_run_id=child_run_id,
-                status="failed",
-                result=(
-                    "Available profiles: "
-                    + ", ".join(sorted(effective.allowed_types))
-                    + "."
-                ),
-                error_code="subagent_type_not_allowed",
-            )
-        else:
-            try:
-                execution: asyncio.Future[SubagentResult] = asyncio.ensure_future(
-                    executor.execute(
-                        request,
-                        lambda event: writer(
-                            _progress_event(
-                                event,
-                                child_run_id=child_run_id,
-                                parent_run_id=request.parent_run_id,
-                                subagent_type=request.subagent_type,
-                            )
-                        ),
-                    )
-                )
-                result = await asyncio.wait_for(
-                    asyncio.shield(execution),
-                    timeout=request.timeout_seconds,
-                )
-            except TimeoutError:
-                await executor.cancel(child_run_id, "timeout")
-                execution.cancel()
-                with suppress(asyncio.CancelledError):
-                    await execution
-                result = SubagentResult(
-                    child_run_id=child_run_id,
-                    status="timed_out",
-                    error_code="timeout",
-                    token_usage=request.token_budget,
-                    model_calls=request.max_steps + 2,
-                    tool_count=request.max_steps,
-                )
-            except asyncio.CancelledError:
-                await executor.cancel(child_run_id, "parent_cancelled")
-                if "execution" in locals():
-                    execution.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await execution
-                writer(
-                    {
-                        "type": "subagent_cancelled",
-                        "child_run_id": child_run_id,
-                        "parent_run_id": request.parent_run_id,
-                    }
-                )
-                raise
-            except Exception:
-                result = SubagentResult(
-                    child_run_id=child_run_id,
-                    status="failed",
-                    error_code="executor_failed",
-                )
-        event_type = {
-            "succeeded": "subagent_completed",
-            "failed": "subagent_failed",
-            "cancelled": "subagent_cancelled",
-            "timed_out": "subagent_timed_out",
-        }[result.status]
-        writer(
-            {
-                "type": event_type,
-                "child_run_id": child_run_id,
-                "parent_run_id": request.parent_run_id,
-                "subagent_type": request.subagent_type,
-                "description": request.description,
-                "status": result.status,
-                "result_brief": result.result.strip()[:500],
-                "result_ref": result.result_ref,
-                "error_code": result.error_code,
-                "evidence_count": len(result.evidence_refs),
-                "evidence_refs": list(result.evidence_refs),
-                "token_usage": result.token_usage,
-                "model_calls": result.model_calls,
-                "tool_count": result.tool_count,
-                "mastery_evidence": [
-                    _mastery_evidence_payload(item) for item in result.mastery_evidence
-                ],
-                "mastery_evidence_count": len(result.mastery_evidence),
-                "operation_ref": {"kind": "coding_run", "id": child_run_id},
-            }
+        result = await _execute_subagent_request(
+            executor=executor,
+            request=request,
+            writer=runtime.stream_writer,
+            profile_available=profile is not None,
+            allowed_types=effective.allowed_types,
         )
         return _terminal_command(
             tool_call_id=tool_call_id,

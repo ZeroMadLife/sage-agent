@@ -91,6 +91,8 @@ def test_evidence_bundle_reads_only_successful_parent_scoped_receipts(tmp_path: 
                     "source_relative_path": "notes/harness.md",
                     "source_kind": "obsidian",
                     "block_id": "block-1",
+                    "line_start": 12,
+                    "line_end": 18,
                 }
             ],
         },
@@ -129,6 +131,8 @@ def test_evidence_bundle_reads_only_successful_parent_scoped_receipts(tmp_path: 
     assert [item.evidence_ref for item in bundle.items] == ["kcite_one"]
     assert bundle.items[0].page_revision == "page-r1"
     assert bundle.items[0].metadata["block_id"] == "block-1"
+    assert bundle.items[0].metadata["line_start"] == 12
+    assert bundle.items[0].metadata["line_end"] == 18
     assert bundle.missing_refs == ("wcite_other", "wcite_missing")
 
 

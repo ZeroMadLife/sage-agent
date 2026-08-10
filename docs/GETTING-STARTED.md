@@ -55,7 +55,7 @@ REDIS_PORT=6379
 ```
 
 Knowledge 检索投影默认使用 SQLite。完成 PostgreSQL schema migration 后，可以显式切换为
-GIN + pgvector exact backend；canonical Wiki/proposal store 仍保留在 SQLite：
+pgvector exact + native GIN/`ts_rank_cd` hybrid backend；canonical Wiki/proposal store 仍保留在 SQLite：
 
 ```bash
 KNOWLEDGE_INDEX_BACKEND=postgres
@@ -65,7 +65,9 @@ KNOWLEDGE_POSTGRES_DSN=
 ```
 
 切换前先在仓库根目录运行 `python -m scripts.migrate_knowledge_index_postgres --force`。第一版不会创建
-HNSW/IVFFlat；若 PostgreSQL 不可用，显式配置的 postgres backend 会启动失败，不静默回退 SQLite。
+HNSW/IVFFlat；dense 当前使用 cosine exact scan。BM25 通过评测脚本的 `--postgres-sparse auto`
+显式探测 `pg_textsearch`，扩展不可用时回退 native GIN；生产默认仍以同一 Gold 验证过的 native
+hybrid 为准。若 PostgreSQL 不可用，显式配置的 postgres backend 会启动失败，不静默回退 SQLite。
 
 真实语义 Provider 需要显式选择。百炼原生模式会区分 document/query embedding，并把 role
 policy、模型 revision 和维度绑定到检索投影与 Gate policy：

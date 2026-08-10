@@ -24,7 +24,6 @@ _LATIN_TOKEN = re.compile(r"[a-z0-9_]+", re.IGNORECASE)
 _CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _MAX_CHUNK_CHARS = 4_000
 _CHUNK_OVERLAP_CHARS = 160
-_MAX_CHUNKS_PER_REVISION = 2_000
 _MAX_QUERY_TERMS = 64
 
 KnowledgeRetrievalMode = Literal["sparse", "dense", "hybrid"]
@@ -32,6 +31,7 @@ KnowledgeAblationStrategy = Literal[
     "baseline",
     "contextual_chunk",
     "parent_child",
+    "described_parent_child",
     "semantic_boundary",
     "cross_encoder",
 ]
@@ -47,13 +47,16 @@ class KnowledgeAblationPolicy:
     semantic_min_chars: int = _MAX_CHUNK_CHARS
     semantic_min_chunk_chars: int = 800
     semantic_breakpoint_percentile: float = 95.0
+    description_max_chars: int = 320
     rerank_top_n: int = 20
+    max_chunks_per_revision: int = 20_000
 
     def __post_init__(self) -> None:
         if self.strategy not in {
             "baseline",
             "contextual_chunk",
             "parent_child",
+            "described_parent_child",
             "semantic_boundary",
             "cross_encoder",
         }:
@@ -68,8 +71,12 @@ class KnowledgeAblationPolicy:
             raise ValueError("semantic minimum chunk chars are invalid")
         if not 0.0 <= self.semantic_breakpoint_percentile <= 100.0:
             raise ValueError("semantic breakpoint percentile must be between zero and 100")
+        if not 80 <= self.description_max_chars <= 1_000:
+            raise ValueError("parent description max chars must be between 80 and 1000")
         if not 2 <= self.rerank_top_n <= 50:
             raise ValueError("cross-encoder rerank top-n must be between 2 and 50")
+        if not 2_000 <= self.max_chunks_per_revision <= 50_000:
+            raise ValueError("max chunks per revision must be between 2000 and 50000")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +109,17 @@ class KnowledgeChunk:
     confidence: float = 1.0
     parser_id: str = ""
     parser_version: str = ""
+    line_start: int | None = None
+    line_end: int | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    byte_start: int | None = None
+    byte_end: int | None = None
     retrieval_text: str | None = None
+    parent_chunk_id: str | None = None
+    retrieval_description: str | None = None
+    retrieval_description_provider: str | None = None
+    retrieval_description_revision: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +190,16 @@ class _RrfState:
     dense_score: float | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _ChunkPart:
+    text: str
+    retrieval_text: str | None = None
+    parent_ordinal: int | None = None
+    description: str | None = None
+    description_provider: str | None = None
+    description_revision: str | None = None
+
+
 class DenseEmbeddingProvider(Protocol):
     model_id: str
     model_revision: str
@@ -181,6 +208,45 @@ class DenseEmbeddingProvider(Protocol):
 
     def embed(self, text: str) -> tuple[float, ...]:
         """Compatibility entrypoint for symmetric or legacy providers."""
+
+
+class ParentDescriptionProvider(Protocol):
+    """Build revision-bound retrieval context without changing citable text."""
+
+    provider_id: str
+    provider_revision: str
+
+    def describe(
+        self,
+        text: str,
+        *,
+        title: str,
+        heading_path: tuple[str, ...],
+        max_chars: int,
+    ) -> str:
+        """Return one bounded description for a semantic parent."""
+
+
+class ExtractiveParentDescriptionProvider:
+    """Deterministic first-stage description provider for offline ablations."""
+
+    provider_id = "sage.extractive-parent-description"
+    provider_revision = "1.0.0"
+
+    def describe(
+        self,
+        text: str,
+        *,
+        title: str,
+        heading_path: tuple[str, ...],
+        max_chars: int,
+    ) -> str:
+        section = " / ".join(heading_path) or title
+        sentences = _sentence_units(text)
+        summary = " ".join(sentences[:2]).strip() or text.strip()
+        prefix = f"Title: {title}\nSection: {section}\nSummary: "
+        available = max(1, max_chars - len(prefix))
+        return f"{prefix}{summary[:available].rstrip()}".strip()
 
 
 def embed_document_text(
@@ -296,6 +362,7 @@ def chunk_document(
     active: bool,
     ablation_policy: KnowledgeAblationPolicy | None = None,
     semantic_provider: DenseEmbeddingProvider | None = None,
+    description_provider: ParentDescriptionProvider | None = None,
 ) -> tuple[KnowledgeChunk, ...]:
     """Preserve parser blocks first and split only oversized semantic blocks."""
 
@@ -309,8 +376,13 @@ def chunk_document(
             parent_text,
             policy=policy,
             semantic_provider=semantic_provider,
+            description_provider=description_provider,
+            title=title,
+            heading_path=block.heading_path,
         )
-        for part_index, (text, retrieval_value) in enumerate(parts):
+        for part_index, part in enumerate(parts):
+            text = part.text
+            retrieval_value = part.retrieval_text
             content_hash = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
             retrieval_hash = hashlib.sha256((retrieval_value or text).encode("utf-8")).hexdigest()
             ordinal = len(chunks)
@@ -323,6 +395,18 @@ def chunk_document(
             ]
             if retrieval_value is not None:
                 identity_parts.append(retrieval_hash)
+            parent_chunk_id = None
+            if part.parent_ordinal is not None:
+                parent_chunk_id = _stable_id(
+                    "kparent",
+                    page_revision,
+                    block.block_id,
+                    str(part.parent_ordinal),
+                    content_hash,
+                )
+                identity_parts.append(parent_chunk_id)
+            if part.description_provider is not None:
+                identity_parts.extend((part.description_provider, part.description_revision or ""))
             if block.bbox is not None or block.media_ref is not None:
                 identity_parts.extend(
                     [
@@ -366,10 +450,20 @@ def chunk_document(
                     confidence=block.confidence,
                     parser_id=document.provenance.parser_id,
                     parser_version=document.provenance.parser_version,
+                    line_start=block.line_start if text == parent_text else None,
+                    line_end=block.line_end if text == parent_text else None,
+                    char_start=block.char_start if text == parent_text else None,
+                    char_end=block.char_end if text == parent_text else None,
+                    byte_start=block.byte_start if text == parent_text else None,
+                    byte_end=block.byte_end if text == parent_text else None,
                     retrieval_text=retrieval_value,
+                    parent_chunk_id=parent_chunk_id,
+                    retrieval_description=part.description,
+                    retrieval_description_provider=part.description_provider,
+                    retrieval_description_revision=part.description_revision,
                 )
             )
-            if len(chunks) >= _MAX_CHUNKS_PER_REVISION:
+            if len(chunks) >= policy.max_chunks_per_revision:
                 return tuple(chunks)
     if chunks:
         return tuple(chunks)
@@ -483,11 +577,18 @@ def postprocess_search_hits(
 ) -> tuple[KnowledgeSearchHit, ...]:
     """Apply exactly one bounded experiment after base retrieval."""
 
-    if policy.strategy == "parent_child":
+    if policy.strategy in {"parent_child", "described_parent_child"}:
         selected: list[KnowledgeSearchHit] = []
         seen_parents: set[tuple[str, str]] = set()
         for hit in hits:
-            parent = (hit.chunk.page_revision, hit.chunk.block_id)
+            parent = (
+                hit.chunk.page_revision,
+                (
+                    hit.chunk.parent_chunk_id or hit.chunk.block_id
+                    if policy.strategy == "described_parent_child"
+                    else hit.chunk.block_id
+                ),
+            )
             if parent in seen_parents:
                 continue
             seen_parents.add(parent)
@@ -658,21 +759,80 @@ def _ablation_parts(
     *,
     policy: KnowledgeAblationPolicy,
     semantic_provider: DenseEmbeddingProvider | None,
-) -> tuple[tuple[str, str | None], ...]:
+    description_provider: ParentDescriptionProvider | None,
+    title: str,
+    heading_path: tuple[str, ...],
+) -> tuple[_ChunkPart, ...]:
     if policy.strategy == "parent_child":
         return tuple(
-            (text, child)
+            _ChunkPart(text=text, retrieval_text=child)
             for child in _split_bounded_block(
                 text,
                 max_chars=policy.parent_child_max_chars,
                 overlap_chars=policy.parent_child_overlap_chars,
             )
         )
+    if policy.strategy == "described_parent_child":
+        semantic_parents: tuple[str, ...] = (text,)
+        if (
+            len(text) > policy.semantic_min_chars
+            and semantic_provider is not None
+            and semantic_provider.supports_semantic_recall
+        ):
+            try:
+                semantic_parents = _split_semantic_block(
+                    text,
+                    provider=semantic_provider,
+                    minimum_chunk_chars=policy.semantic_min_chunk_chars,
+                    breakpoint_percentile=policy.semantic_breakpoint_percentile,
+                )
+            except Exception:
+                semantic_parents = (text,)
+        provider = description_provider or ExtractiveParentDescriptionProvider()
+        described: list[_ChunkPart] = []
+        for parent_ordinal, parent in enumerate(semantic_parents):
+            description: str | None = None
+            provider_id: str | None = None
+            provider_revision: str | None = None
+            try:
+                description = provider.describe(
+                    parent,
+                    title=title,
+                    heading_path=heading_path,
+                    max_chars=policy.description_max_chars,
+                ).strip()
+                if not description:
+                    description = None
+                else:
+                    description = description[: policy.description_max_chars].rstrip()
+                    provider_id = provider.provider_id
+                    provider_revision = provider.provider_revision
+            except Exception:
+                description = None
+            for child in _split_bounded_block(
+                parent,
+                max_chars=policy.parent_child_max_chars,
+                overlap_chars=policy.parent_child_overlap_chars,
+            ):
+                retrieval_text = (
+                    f"{description}\nContent:\n{child}" if description is not None else child
+                )
+                described.append(
+                    _ChunkPart(
+                        text=parent,
+                        retrieval_text=retrieval_text,
+                        parent_ordinal=parent_ordinal,
+                        description=description,
+                        description_provider=provider_id,
+                        description_revision=provider_revision,
+                    )
+                )
+        return tuple(described)
     if policy.strategy == "semantic_boundary" and len(text) > policy.semantic_min_chars:
         if semantic_provider is None or not semantic_provider.supports_semantic_recall:
             raise ValueError("semantic boundary chunking requires a semantic embedding provider")
         return tuple(
-            (part, None)
+            _ChunkPart(text=part)
             for part in _split_semantic_block(
                 text,
                 provider=semantic_provider,
@@ -680,7 +840,7 @@ def _ablation_parts(
                 breakpoint_percentile=policy.semantic_breakpoint_percentile,
             )
         )
-    return tuple((part, None) for part in _split_oversized_block(text))
+    return tuple(_ChunkPart(text=part) for part in _split_oversized_block(text))
 
 
 def _split_oversized_block(text: str) -> tuple[str, ...]:

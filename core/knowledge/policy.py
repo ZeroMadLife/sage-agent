@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 POLICY_ID = "sage.knowledge-autonomy"
 POLICY_VERSION = "1.1.0"
-_TRUSTED_LOCAL_PARSERS = frozenset({"sage.markdown", "sage.html", "sage.pdf.text"})
+_TRUSTED_LOCAL_PARSERS = frozenset({"sage.markdown", "sage.html", "sage.pdf.text", "sage.txt"})
 
 
 def is_trusted_local_parser(parser_id: str) -> bool:

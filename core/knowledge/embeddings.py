@@ -6,6 +6,7 @@ import math
 import re
 import time
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -320,6 +321,155 @@ class DashScopeEmbeddingProvider:
 
 
 @dataclass(frozen=True, slots=True)
+class DoubaoMultimodalEmbeddingConfig:
+    """Version-bound text use of Doubao's multimodal fusion endpoint."""
+
+    api_key: str
+    base_url: str
+    model: str
+    model_revision: str
+    dimensions: int
+    timeout_seconds: float = 60.0
+    max_attempts: int = 3
+    retry_backoff_seconds: float = 0.25
+    max_workers: int = 8
+    cost_per_1k_tokens_usd: float | None = None
+
+    def __post_init__(self) -> None:
+        api_key = self.api_key.strip()
+        base_url = self.base_url.strip().rstrip("/")
+        model = self.model.strip()
+        model_revision = self.model_revision.strip()
+        if not api_key or len(api_key) > 4_096:
+            raise ValueError("Doubao embedding API key is required")
+        if not model or len(model) > 200:
+            raise ValueError("Doubao embedding model is required")
+        if not model_revision or len(model_revision) > 200:
+            raise ValueError("Doubao embedding model revision is required")
+        if not 1 <= self.dimensions <= 8_192:
+            raise ValueError("embedding dimensions must be between 1 and 8192")
+        if not 1.0 <= self.timeout_seconds <= 120.0:
+            raise ValueError("embedding timeout must be between 1 and 120 seconds")
+        if not 1 <= self.max_attempts <= 5:
+            raise ValueError("embedding max attempts must be between 1 and 5")
+        if not 0.0 <= self.retry_backoff_seconds <= 10.0:
+            raise ValueError("embedding retry backoff must be between 0 and 10 seconds")
+        if not 1 <= self.max_workers <= 32:
+            raise ValueError("Doubao embedding max workers must be between 1 and 32")
+        if self.cost_per_1k_tokens_usd is not None and not (
+            0.0 <= self.cost_per_1k_tokens_usd <= 100.0
+        ):
+            raise ValueError("embedding cost per 1k tokens must be between 0 and 100 USD")
+        parsed = urlsplit(base_url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ValueError("Doubao embedding base URL must use HTTPS")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError(
+                "Doubao embedding base URL must not contain credentials, query, or fragment"
+            )
+        object.__setattr__(self, "api_key", api_key)
+        object.__setattr__(self, "base_url", base_url)
+        object.__setattr__(self, "model", model)
+        object.__setattr__(self, "model_revision", model_revision)
+
+
+class DoubaoMultimodalEmbeddingProvider:
+    """Symmetric text vectors with one citable chunk per fusion request."""
+
+    supports_semantic_recall = True
+    protocol_mode = "multimodal-text-single-vector"
+
+    def __init__(self, config: DoubaoMultimodalEmbeddingConfig) -> None:
+        self.config = config
+        self.model_id = f"doubao-multimodal.{config.model}"
+        self.model_revision = f"{config.model_revision}+text-single-vector"
+        self.dimensions = config.dimensions
+        self._cache: dict[str, tuple[float, ...]] = {}
+        self._cache_lock = RLock()
+        self._metrics_lock = RLock()
+        self.request_count = 0
+        self.input_tokens = 0
+        self.request_latencies_ms: list[float] = []
+
+    @property
+    def estimated_cost_usd(self) -> float | None:
+        rate = self.config.cost_per_1k_tokens_usd
+        if rate is None:
+            return None
+        return self.input_tokens / 1_000.0 * rate
+
+    def prepare(self, texts: tuple[str, ...]) -> None:
+        with self._cache_lock:
+            pending = tuple(text for text in dict.fromkeys(texts) if text not in self._cache)
+        if not pending:
+            return
+        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+            vectors = tuple(executor.map(self._request, pending))
+        with self._cache_lock:
+            self._cache.update(zip(pending, vectors, strict=True))
+
+    def prepare_documents(self, texts: tuple[str, ...]) -> None:
+        self.prepare(texts)
+
+    def prepare_queries(self, texts: tuple[str, ...]) -> None:
+        self.prepare(texts)
+
+    def embed(self, text: str) -> tuple[float, ...]:
+        with self._cache_lock:
+            cached = self._cache.get(text)
+        if cached is not None:
+            return cached
+        vector = self._request(text)
+        with self._cache_lock:
+            return self._cache.setdefault(text, vector)
+
+    def embed_document(self, text: str) -> tuple[float, ...]:
+        return self.embed(text)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        return self.embed(text)
+
+    def _request(self, text: str) -> tuple[float, ...]:
+        endpoint = (
+            self.config.base_url
+            if self.config.base_url.endswith("/embeddings/multimodal")
+            else f"{self.config.base_url}/embeddings/multimodal"
+        )
+        started_at = time.perf_counter()
+        payload = _post_embedding_json(
+            endpoint,
+            request_json={
+                "model": self.config.model,
+                "input": [{"type": "text", "text": text}],
+            },
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout_seconds=self.config.timeout_seconds,
+            max_attempts=self.config.max_attempts,
+            retry_backoff_seconds=self.config.retry_backoff_seconds,
+            error_message="Doubao multimodal embedding request failed",
+        )
+        try:
+            data = payload["data"]
+            if not isinstance(data, dict):
+                raise TypeError("Doubao embedding data must be an object")
+            vector = _normalized_vector(data["embedding"], self.dimensions)
+            usage = payload.get("usage", {})
+            raw_tokens = usage.get("prompt_tokens", 0) if isinstance(usage, dict) else 0
+            input_tokens = raw_tokens if isinstance(raw_tokens, int) and raw_tokens >= 0 else 0
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("Doubao multimodal embedding response is invalid") from exc
+        elapsed_ms = (time.perf_counter() - started_at) * 1_000
+        with self._metrics_lock:
+            self.request_count += 1
+            self.input_tokens += input_tokens
+            self.request_latencies_ms.append(elapsed_ms)
+        return vector
+
+
+@dataclass(frozen=True, slots=True)
 class OpenAICompatibleEmbeddingConfig:
     api_key: str
     base_url: str
@@ -526,6 +676,8 @@ __all__ = [
     "FASTEMBED_RUNTIME_REVISION",
     "DashScopeEmbeddingConfig",
     "DashScopeEmbeddingProvider",
+    "DoubaoMultimodalEmbeddingConfig",
+    "DoubaoMultimodalEmbeddingProvider",
     "FastEmbedEmbeddingConfig",
     "FastEmbedEmbeddingProvider",
     "OpenAICompatibleEmbeddingConfig",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence, Set
+from dataclasses import dataclass
 from typing import Any
 
 from sage_harness import MemoryReference
@@ -11,13 +12,44 @@ from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
 
 
+@dataclass(frozen=True, slots=True)
+class DeerFlowPromptComponents:
+    """显式区分 Prompt 权威层，同时保持旧版渲染结果不变。"""
+
+    static_policy: str
+    dynamic_authority: str = ""
+    untrusted_context: str = ""
+
+    def render(self) -> str:
+        """按原有顺序渲染，A 阶段不改变实际模型输入。"""
+        return "\n\n".join(
+            block
+            for block in (self.static_policy, self.dynamic_authority, self.untrusted_context)
+            if block
+        )
+
+
 def build_deerflow_system_prompt(
     runtime: CodingRuntime,
     *,
     retrieval_tool_scope: str = "default",
     retrieval_sources: Set[str] | None = None,
 ) -> str:
-    """Render run-local working state without injecting durable memory unconditionally."""
+    """渲染本 run 的工作上下文，不无条件注入长期记忆。"""
+    return build_deerflow_prompt_components(
+        runtime,
+        retrieval_tool_scope=retrieval_tool_scope,
+        retrieval_sources=retrieval_sources,
+    ).render()
+
+
+def build_deerflow_prompt_components(
+    runtime: CodingRuntime,
+    *,
+    retrieval_tool_scope: str = "default",
+    retrieval_sources: Set[str] | None = None,
+) -> DeerFlowPromptComponents:
+    """拆分静态规则、动态权限和不可信 Working Memory。"""
     working = runtime.memory_manager.build_working_memory(
         runtime.session,
         runtime.runtime_mode,
@@ -38,10 +70,11 @@ def build_deerflow_system_prompt(
         "selection. Never use run_shell or a general HTTP client as a substitute for missing "
         "search_web or fetch_web capabilities."
     )
+    dynamic_authority = ""
     if retrieval_tool_scope == "retrieval_only":
         sources = ", ".join(sorted(retrieval_sources or ())) or "none"
-        base = (
-            f"{base}\n\nThis turn is source-locked to: {sources}. Only the tools already bound "
+        dynamic_authority = (
+            f"This turn is source-locked to: {sources}. Only the tools already bound "
             "for those sources may be used. Make at most four total retrieval calls: no more "
             "than two searches and two page fetches. Never repeat an equivalent query or URL. "
             "After sufficient evidence, no evidence, an unavailable result, or any duplicate/call "
@@ -49,8 +82,12 @@ def build_deerflow_system_prompt(
             "no evidence, say so plainly; do not substitute another source."
         )
     elif retrieval_tool_scope == "no_tools":
-        base = f"{base}\n\nThis turn is tool-locked: answer without calling any tool."
-    return f"{base}\n\n{working_block}" if working_block else base
+        dynamic_authority = "This turn is tool-locked: answer without calling any tool."
+    return DeerFlowPromptComponents(
+        static_policy=base,
+        dynamic_authority=dynamic_authority,
+        untrusted_context=working_block,
+    )
 
 
 def build_deerflow_durable_context(
@@ -174,7 +211,9 @@ def context_status_event(
 
 
 __all__ = [
+    "DeerFlowPromptComponents",
     "build_deerflow_durable_context",
+    "build_deerflow_prompt_components",
     "build_deerflow_system_prompt",
     "context_status_event",
 ]

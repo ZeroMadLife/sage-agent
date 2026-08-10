@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from core.knowledge.parsing import MarkdownParser, ParseRequest
+from core.knowledge.parsing import MarkdownParser, ParseRequest, TxtParser
 from core.knowledge.retrieval import (
     HashingEmbeddingProvider,
     KnowledgeSearchHit,
@@ -57,6 +57,36 @@ def test_heading_aware_chunks_keep_stable_revision_and_block_evidence() -> None:
     assert first[0].page_revision == "krev_test"
     assert first[0].source_revision == "sha256:test"
     assert first[0].content_hash.startswith("sha256:")
+
+
+def test_txt_chunk_carries_exact_locator_when_parent_is_not_split() -> None:
+    payload = "第一章\n\n正文证据。\n".encode()
+    document = TxtParser().parse(
+        ParseRequest("src_book", "book.txt", "sha256:book", "text/plain", payload)
+    )
+    chunk = chunk_document(
+        document,
+        workspace_id="knowledge-local",
+        page_id="page_book",
+        page_revision="krev_book",
+        page_path="wiki/sources/book.txt",
+        source_id="src_book",
+        source_revision="sha256:book",
+        source_kind="obsidian",
+        source_relative_path="book.txt",
+        proposal_id="kprop_book",
+        artifact_id="part_book",
+        title="Book",
+        visibility="private",
+        active=True,
+    )[-1]
+
+    assert chunk.line_start == 3
+    assert chunk.line_end == 3
+    assert chunk.char_start == 5
+    assert chunk.char_end == 10
+    assert chunk.byte_start == 11
+    assert chunk.byte_end == len(payload) - 1
 
 
 def test_visual_block_metadata_survives_chunk_and_changes_citation_identity() -> None:

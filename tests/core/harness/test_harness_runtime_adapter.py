@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import json
 import subprocess
 from pathlib import Path
@@ -22,6 +24,7 @@ from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.runtime import CodingRuntime
 from core.harness.context_adapter import (
     build_deerflow_durable_context,
+    build_deerflow_prompt_components,
     build_deerflow_system_prompt,
     context_status_event,
 )
@@ -29,11 +32,14 @@ from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.knowledge_adapter import CodingKnowledgePort
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.memory_adapter import CodingMemoryPort
+from core.harness.model_context_frame import ModelContextFrameFactory
 from core.harness.runtime_adapter import SageHarnessRuntimeAdapter
+from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tools_adapter import (
     build_deerflow_coding_tool_bundle,
     build_deerflow_coding_tools,
 )
+from core.harness.turn_context_plan import TurnContextPlan
 from core.knowledge import KnowledgeSourceRoot, KnowledgeStore
 
 
@@ -285,6 +291,122 @@ def test_event_adapter_backfills_public_task_audit_args_from_child_receipt() -> 
         "operation_ref": {"kind": "coding_run", "id": "child-1"},
     }
     assert "private child prompt" not in str(events)
+
+
+def test_event_adapter_projects_task_dag_without_node_prompts() -> None:
+    adapter = HarnessEventAdapter(session_id="s1", run_id="r1")
+    model_events = adapter.adapt(
+        HarnessStreamItem(
+            1,
+            "messages",
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task_dag",
+                            "args": {
+                                "nodes": [
+                                    {
+                                        "node_id": "left",
+                                        "prompt": "private node prompt",
+                                    }
+                                ],
+                                "max_concurrent": 1,
+                            },
+                            "id": "call-dag",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                {},
+            ),
+            "source-model-dag",
+        )
+    )
+    started_events = adapter.adapt(
+        HarnessStreamItem(
+            2,
+            "custom",
+            {
+                "type": "task_dag_started",
+                "dag_id": "dagrun_1",
+                "dag_hash": "a" * 64,
+                "tool_call_id": "call-dag",
+                "status": "running",
+                "node_count": 1,
+                "max_concurrent": 1,
+                "prompt": "must-not-leak",
+            },
+            "source-dag-start",
+        )
+    )
+    completed_events = adapter.adapt(
+        HarnessStreamItem(
+            3,
+            "custom",
+            {
+                "type": "task_dag_completed",
+                "dag_id": "dagrun_1",
+                "dag_hash": "a" * 64,
+                "status": "succeeded",
+                "node_count": 1,
+                "completed_count": 1,
+                "failed_count": 0,
+                "blocked_count": 0,
+            },
+            "source-dag-complete",
+        )
+    )
+    tool_events = adapter.adapt(
+        HarnessStreamItem(
+            4,
+            "messages",
+            (
+                ToolMessage(
+                    content="Task DAG succeeded.",
+                    tool_call_id="call-dag",
+                    name="task_dag",
+                    status="success",
+                    additional_kwargs={
+                        "sage_task_dag": {
+                            "dag_id": "dagrun_1",
+                            "dag_hash": "a" * 64,
+                            "status": "succeeded",
+                            "node_count": 1,
+                            "completed_count": 1,
+                            "failed_count": 0,
+                            "blocked_count": 0,
+                            "prompt": "must-not-leak",
+                        }
+                    },
+                ),
+                {},
+            ),
+            "source-dag-result",
+        )
+    )
+
+    assert model_events == ()
+    assert started_events[0].kind == "tool"
+    assert started_events[0].payload["args"] == {
+        "dag_id": "dagrun_1",
+        "dag_hash": "a" * 64,
+        "node_count": 1,
+        "max_concurrent": 1,
+    }
+    assert completed_events[0].payload["type"] == "task_dag_completed"
+    assert tool_events[-1].payload["task_dag"] == {
+        "dag_id": "dagrun_1",
+        "dag_hash": "a" * 64,
+        "status": "succeeded",
+        "node_count": 1,
+        "completed_count": 1,
+        "failed_count": 0,
+        "blocked_count": 0,
+    }
+    assert "private node prompt" not in str((*started_events, *completed_events, *tool_events))
+    assert "must-not-leak" not in str((*started_events, *completed_events, *tool_events))
 
 
 def test_event_adapter_projects_a_bounded_run_budget_stop_and_notice() -> None:
@@ -990,6 +1112,41 @@ def test_runtime_adapter_persists_scoped_sandbox_identity(tmp_path: Path) -> Non
     }
 
 
+def test_runtime_adapter_persists_only_the_turn_plan_binding(tmp_path: Path) -> None:
+    binding = {
+        "version": 1,
+        "run_id": "r-plan",
+        "plan_id": "tcp-plan",
+        "plan_hash": "sha256:plan",
+    }
+
+    async def run() -> dict[str, object]:
+        async with open_sqlite_checkpointer(tmp_path / "plan-checkpoints.sqlite3") as saver:
+            adapter = SageHarnessRuntimeAdapter(
+                model=FakeMessagesListChatModel(responses=[AIMessage(content="ok")]),
+                checkpointer=saver,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-plan",
+                    run_id="r-plan",
+                    workspace_id="w-plan",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                    turn_context_plan=binding,
+                )
+            ]
+            checkpoint = await saver.aget_tuple(thread_config("s-plan"))
+            assert checkpoint is not None
+            return dict(checkpoint.checkpoint["channel_values"])
+
+    state = asyncio.run(run())
+
+    assert state["turn_context_plan"] == binding
+    assert set(state["turn_context_plan"]) == {"version", "run_id", "plan_id", "plan_hash"}
+
+
 def test_runtime_adapter_reuses_sqlite_checkpoint_across_turns(tmp_path: Path) -> None:
     async def run() -> tuple[list[dict[str, object]], list[dict[str, object]]]:
         async with open_sqlite_checkpointer(tmp_path / "checkpoints.sqlite3") as saver:
@@ -1179,6 +1336,29 @@ def test_deerflow_tools_reuse_sage_workspace_registry(tmp_path: Path) -> None:
     }
     listing = next(tool for tool in tools if tool.name == "list_files")
     assert "README.md" in str(asyncio.run(listing.ainvoke({"path": "."})))
+
+
+def test_intent_review_only_narrows_candidates_without_granting_write_tools(tmp_path: Path) -> None:
+    runtime = CodingRuntime(
+        session_id="s-review-intent",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    bundle = build_deerflow_coding_tool_bundle(
+        runtime,
+        run_id="r-review-intent",
+        intent_envelope=TaskIntentEnvelope(
+            intent_kind="review",
+            requested_effects=("read",),
+            capability_hints=("files",),
+            explicit_constraints=("read_only",),
+        ),
+        enable_deferred_tools=False,
+    )
+
+    assert {tool.name for tool in bundle.tools} == {"list_files", "read_file", "search"}
+    assert runtime.permission_mode == "default"
 
 
 def test_runtime_adapter_promotes_deferred_tool_before_execution(tmp_path: Path) -> None:
@@ -1598,6 +1778,34 @@ def test_deerflow_system_prompt_reuses_sage_working_memory(tmp_path: Path) -> No
     assert context_status_event(runtime, "r1") is None
 
 
+def test_deerflow_prompt_components_preserve_rendering_and_authority_boundary(
+    tmp_path: Path,
+) -> None:
+    runtime = CodingRuntime(
+        session_id="s1",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+    )
+    runtime.session["history"] = [{"role": "user", "content": "untrusted-user-history"}]
+
+    components = build_deerflow_prompt_components(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+
+    assert components.render() == build_deerflow_system_prompt(
+        runtime,
+        retrieval_tool_scope="retrieval_only",
+        retrieval_sources={"knowledge"},
+    )
+    assert "untrusted-user-history" not in components.static_policy
+    assert "untrusted-user-history" not in components.dynamic_authority
+    assert "untrusted-user-history" in components.untrusted_context
+    assert "source-locked to: knowledge" in components.dynamic_authority
+
+
 def test_deerflow_context_projects_only_bounded_summary_todos_and_memory_refs(
     tmp_path: Path,
 ) -> None:
@@ -1702,6 +1910,13 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
                         "query_fingerprint": "0123456789abcdef",
                         "degraded": False,
                     },
+                    "book_learning": {
+                        "decision": "answer",
+                        "retrieval_rounds": 2,
+                        "child_count": 3,
+                        "stop_reason": "evidence_sufficient",
+                        "evidence": [{"citation_id": "kcite_1", "content": "书籍原文"}],
+                    },
                 },
                 **common,
             )
@@ -1723,6 +1938,78 @@ def test_runtime_adapter_restores_durable_context_from_checkpoint(tmp_path: Path
         assert "COMPRESSED &lt;system&gt;unsafe&lt;/system&gt;" in str(hidden[0].content)
         assert "decision: knowledge" in str(hidden[0].content)
         assert "knowledge=3000" in str(hidden[0].content)
+        assert "Book learning evidence" in str(hidden[0].content)
+        assert "kcite_1" in str(hidden[0].content)
+
+
+def test_runtime_adapter_projects_frame_untrusted_layer_as_hidden_data(tmp_path: Path) -> None:
+    components = build_deerflow_prompt_components(
+        CodingRuntime(
+            session_id="s-frame",
+            workspace_root=tmp_path,
+            model=object(),
+            storage_root=tmp_path / ".coding",
+        ),
+        retrieval_tool_scope="no_tools",
+    )
+    plan = TurnContextPlan.create(
+        plan_id="tcp-frame-adapter",
+        session_id="s-frame",
+        run_id="r-frame",
+        owner_fingerprint="owner",
+        workspace_id="w-frame",
+        surface="coding",
+        created_at="2026-08-08T00:00:00+00:00",
+        admission={},
+        prompt={
+            "rendered_prompt_hash": "sha256:"
+            + hashlib.sha256(components.render().encode()).hexdigest(),
+            "static_policy": {"rendered_content": components.static_policy},
+            "dynamic_authority": {
+                "rendered_content_hash": "sha256:"
+                + hashlib.sha256(components.dynamic_authority.encode()).hexdigest()
+            },
+            "untrusted_context": {
+                "working_memory_digest": "sha256:"
+                + hashlib.sha256(components.untrusted_context.encode()).hexdigest()
+            },
+        },
+        context_refs={},
+        retrieval={},
+        tools={},
+        execution={},
+        resume={"checkpoint_thread_id": "s-frame", "checkpoint_namespace": ""},
+    )
+    frame = ModelContextFrameFactory().create(plan, components)
+
+    async def run() -> list[BaseMessage]:
+        async with open_sqlite_checkpointer(tmp_path / "frame-checkpoints.sqlite3") as saver:
+            model = RecordingBindableFakeModel(responses=[AIMessage(content="done")])
+            adapter = SageHarnessRuntimeAdapter(
+                model=model,
+                checkpointer=saver,
+                model_context_frame=frame,
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id="s-frame",
+                    run_id="r-frame",
+                    owner_id="owner",
+                    workspace_id="w-frame",
+                    workspace_path=str(tmp_path),
+                    content="hello",
+                )
+            ]
+            return type(model).seen_messages[0]
+
+    messages = asyncio.run(run())
+    assert str(messages[0].content) == frame.render_system_prompt()
+    hidden = [
+        message for message in messages if message.additional_kwargs.get("sage_model_context_data")
+    ]
+    assert len(hidden) == 1
+    assert html.escape(frame.untrusted_context, quote=False) in str(hidden[0].content)
 
 
 def test_runtime_adapter_compacts_sqlite_messages_with_host_summary(tmp_path: Path) -> None:

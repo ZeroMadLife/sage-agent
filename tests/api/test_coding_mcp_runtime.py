@@ -24,6 +24,7 @@ class DocsTransport:
     def __init__(self) -> None:
         self.closed = False
         self.closed_scopes: list[McpScope] = []
+        self.discover_calls = 0
 
     async def discover(
         self,
@@ -31,6 +32,7 @@ class DocsTransport:
         scope: McpScope,
     ) -> Sequence[McpToolDescriptor]:
         _ = scope
+        self.discover_calls += 1
         return [
             McpToolDescriptor.from_schema(
                 tool_id=f"{server.name}:lookup",
@@ -155,6 +157,13 @@ def test_v2_discovers_promotes_and_sanitizes_live_mcp_tool(tmp_path: Path) -> No
         assert archived.status_code == 200
 
     payloads = [event["payload"] for event in events]
+    plan_receipts = [
+        payload for payload in payloads if payload.get("type") == "turn_context_plan_prepared"
+    ]
+    assert len(plan_receipts) == 1
+    assert "Search remote documentation" not in json.dumps(plan_receipts)
+    assert "Check the release guide" not in json.dumps(plan_receipts)
+    assert transport.discover_calls == 1
     catalog = next(payload for payload in payloads if payload.get("type") == "mcp_catalog_updated")
     assert catalog["servers"] == [
         {

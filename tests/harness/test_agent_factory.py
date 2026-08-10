@@ -184,6 +184,15 @@ def test_durable_context_is_injected_as_hidden_untrusted_data() -> None:
                 "query_fingerprint": "0123456789abcdef",
                 "degraded": False,
             },
+            "book_learning": {
+                "decision": "answer",
+                "retrieval_rounds": 2,
+                "child_count": 3,
+                "stop_reason": "evidence_sufficient",
+                "evidence": [
+                    {"citation_id": "kcite_1", "content": "原文证据"},
+                ],
+            },
         },
     )
     captured: list[ModelRequest] = []
@@ -208,6 +217,8 @@ def test_durable_context_is_injected_as_hidden_untrusted_data() -> None:
     assert "decision: semantic_memory" in str(hidden[0].content)
     assert "semantic_memory=1200" in str(hidden[0].content)
     assert "approved_memory" in str(hidden[0].content)
+    assert "Book learning evidence" in str(hidden[0].content)
+    assert "kcite_1" in str(hidden[0].content)
     assert "conflict=conflict_preferences" in str(hidden[0].content)
     assert messages[-1].content == "continue"
 

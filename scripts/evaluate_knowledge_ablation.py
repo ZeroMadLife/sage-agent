@@ -1,4 +1,4 @@
-"""Run four independent PR-6 retrieval ablations without test-set tuning."""
+"""Run isolated retrieval ablations without test-set tuning."""
 
 from __future__ import annotations
 
@@ -41,9 +41,11 @@ from core.knowledge.retrieval import (
 _STRATEGIES: tuple[KnowledgeAblationStrategy, ...] = (
     "contextual_chunk",
     "parent_child",
+    "described_parent_child",
     "semantic_boundary",
     "cross_encoder",
 )
+_EVALUATION_SCHEMA_VERSION = 2
 
 
 def main() -> int:
@@ -163,8 +165,8 @@ def main() -> int:
         }
 
     result = {
-        "schema_version": 1,
-        "evaluation_id": f"sage-retrieval-ablation-postgres-{args.stage}-v1",
+        "schema_version": _EVALUATION_SCHEMA_VERSION,
+        "evaluation_id": f"sage-retrieval-ablation-postgres-{args.stage}-v2",
         "stage": args.stage,
         "protocol": {
             "selection_splits": ["dev", "calibration"],
@@ -261,12 +263,14 @@ def _threshold(report: dict[str, Any]) -> float:
 
 
 def _assert_selection(report: dict[str, Any]) -> None:
+    if report.get("schema_version") != _EVALUATION_SCHEMA_VERSION:
+        raise ValueError("selection report has the wrong schema version")
     if report.get("stage") != "selection":
         raise ValueError("selection report has the wrong stage")
     if report.get("protocol", {}).get("test_used_for_strategy_or_gate_selection") is not False:
         raise ValueError("selection report did not preserve the frozen test split")
     if set(report.get("candidates", {})) != set(_STRATEGIES):
-        raise ValueError("selection report does not contain four isolated strategies")
+        raise ValueError("selection report does not contain all isolated strategies")
 
 
 def _load_report(path: Path) -> dict[str, Any]:

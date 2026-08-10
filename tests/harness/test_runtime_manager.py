@@ -12,7 +12,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from sage_harness.config import HarnessRunContext
-from sage_harness.runtime.checkpoint import load_scoped_checkpoint
+from sage_harness.runtime.checkpoint import CheckpointScopeError, load_scoped_checkpoint
 from sage_harness.runtime.manager import HarnessRunManager, HarnessRunRequest
 from typing_extensions import TypedDict
 
@@ -115,6 +115,96 @@ def test_path_only_legacy_checkpoint_can_be_claimed_by_matching_scope() -> None:
         return await load_scoped_checkpoint(StaticCheckpointSaver(legacy), _context("run-1"))  # type: ignore[arg-type]
 
     assert asyncio.run(run()) is legacy
+
+
+def test_checkpoint_plan_binding_must_match_before_resume() -> None:
+    binding = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:expected",
+    }
+    checkpoint = SimpleNamespace(
+        checkpoint={
+            "channel_values": {
+                "thread_data": {
+                    "owner_id": "owner-1",
+                    "workspace_id": "workspace-1",
+                    "thread_id": "thread-1",
+                    "workspace_path": "/tmp/workspace",
+                },
+                "turn_context_plan": binding,
+            }
+        }
+    )
+
+    async def run(expected: dict[str, object]) -> object:
+        return await load_scoped_checkpoint(  # type: ignore[arg-type]
+            StaticCheckpointSaver(checkpoint),
+            _context("run-1"),
+            expected_plan_binding=expected,
+        )
+
+    assert asyncio.run(run(dict(binding))) is checkpoint
+    with pytest.raises(CheckpointScopeError, match="plan binding"):
+        asyncio.run(run({**binding, "plan_hash": "sha256:changed"}))
+
+
+def test_checkpoint_without_plan_binding_fails_closed_when_resume_requires_it() -> None:
+    checkpoint = SimpleNamespace(
+        checkpoint={
+            "channel_values": {
+                "thread_data": {
+                    "owner_id": "owner-1",
+                    "workspace_id": "workspace-1",
+                    "thread_id": "thread-1",
+                    "workspace_path": "/tmp/workspace",
+                },
+            }
+        }
+    )
+
+    async def run() -> object:
+        return await load_scoped_checkpoint(  # type: ignore[arg-type]
+            StaticCheckpointSaver(checkpoint),
+            _context("run-1"),
+            expected_plan_binding={
+                "version": 1,
+                "run_id": "run-1",
+                "plan_id": "tcp-1",
+                "plan_hash": "sha256:expected",
+            },
+        )
+
+    with pytest.raises(CheckpointScopeError, match="plan binding"):
+        asyncio.run(run())
+
+
+def test_plan_resume_requires_complete_checkpoint_scope() -> None:
+    binding = {
+        "version": 1,
+        "run_id": "run-1",
+        "plan_id": "tcp-1",
+        "plan_hash": "sha256:expected",
+    }
+    checkpoint = SimpleNamespace(
+        checkpoint={
+            "channel_values": {
+                "thread_data": {"workspace_path": "/tmp/workspace"},
+                "turn_context_plan": binding,
+            }
+        }
+    )
+
+    async def run() -> object:
+        return await load_scoped_checkpoint(  # type: ignore[arg-type]
+            StaticCheckpointSaver(checkpoint),
+            _context("run-1"),
+            expected_plan_binding=binding,
+        )
+
+    with pytest.raises(CheckpointScopeError, match="scope is incomplete"):
+        asyncio.run(run())
 
 
 def test_request_rejects_a_cross_run_context() -> None:

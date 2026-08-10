@@ -25,9 +25,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _DATABASE_NAME = "timeline.sqlite3"
 _MAX_PAYLOAD_BYTES = 1024 * 1024
+_MAX_TURN_CONTEXT_PLAN_BYTES = 512 * 1024
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _KINDS = {
     "user",
@@ -136,6 +137,21 @@ _FENCE_SQL = """
 CREATE TABLE run_fence_state (
     state_key INTEGER PRIMARY KEY CHECK (state_key = 1),
     next_token INTEGER NOT NULL CHECK (next_token > 0)
+)
+"""
+_TURN_CONTEXT_PLAN_SQL = """
+CREATE TABLE turn_context_plans (
+    plan_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL UNIQUE,
+    version INTEGER NOT NULL,
+    plan_hash TEXT NOT NULL,
+    owner_fingerprint TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    surface TEXT NOT NULL,
+    checkpoint_thread_id TEXT NOT NULL,
+    checkpoint_namespace TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
 )
 """
 
@@ -1223,6 +1239,98 @@ class SessionEventJournal:
             ).fetchall()
         return tuple(_event_from_row(row, self.session_id) for row in rows)
 
+    def put_turn_context_plan(
+        self,
+        *,
+        plan_id: str,
+        run_id: str,
+        version: int,
+        plan_hash: str,
+        owner_fingerprint: str,
+        workspace_id: str,
+        surface: str,
+        checkpoint_thread_id: str,
+        checkpoint_namespace: str,
+        payload_json: str,
+        created_at: str,
+    ) -> dict[str, object]:
+        """在专用表中幂等保存不可变 Plan，不进入 Timeline replay。"""
+        for field, value in (
+            ("plan_id", plan_id),
+            ("run_id", run_id),
+            ("owner_fingerprint", owner_fingerprint),
+            ("workspace_id", workspace_id),
+            ("surface", surface),
+            ("checkpoint_thread_id", checkpoint_thread_id),
+        ):
+            _validate_identifier(field, value)
+        if not isinstance(checkpoint_namespace, str):
+            raise ValueError("checkpoint_namespace must be a string")
+        if isinstance(version, bool) or version < 1:
+            raise ValueError("turn context plan version must be positive")
+        if not isinstance(plan_hash, str) or not plan_hash:
+            raise ValueError("turn context plan hash must be non-empty")
+        if not isinstance(payload_json, str) or not payload_json:
+            raise ValueError("turn context plan payload must be non-empty")
+        if len(payload_json.encode("utf-8")) > _MAX_TURN_CONTEXT_PLAN_BYTES:
+            raise ValueError("turn context plan payload exceeds maximum size")
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("turn context plan payload must be JSON") from exc
+        if not _strict_json_value(payload):
+            raise ValueError("turn context plan payload must contain strict JSON values")
+        _validate_timestamp(created_at)
+        values = (
+            plan_id,
+            run_id,
+            version,
+            plan_hash,
+            owner_fingerprint,
+            workspace_id,
+            surface,
+            checkpoint_thread_id,
+            checkpoint_namespace,
+            payload_json,
+            created_at,
+        )
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                existing = connection.execute(
+                    "SELECT plan_id, run_id, version, plan_hash, owner_fingerprint, workspace_id, "
+                    "surface, checkpoint_thread_id, checkpoint_namespace, payload_json, created_at "
+                    "FROM turn_context_plans WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+                if existing is None:
+                    connection.execute(
+                        "INSERT INTO turn_context_plans ("
+                        "plan_id, run_id, version, plan_hash, owner_fingerprint, workspace_id, surface, "
+                        "checkpoint_thread_id, checkpoint_namespace, payload_json, created_at"
+                        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        values,
+                    )
+                    connection.commit()
+                    return _turn_context_plan_row(values)
+                connection.commit()
+                return _turn_context_plan_row(tuple(existing))
+            except Exception:
+                connection.rollback()
+                raise
+
+    def load_turn_context_plan(self, run_id: str) -> dict[str, object] | None:
+        """读取一个 Plan 原始行，完整契约校验由 TurnPlanStore 完成。"""
+        validated_run = _validate_identifier("run_id", run_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT plan_id, run_id, version, plan_hash, owner_fingerprint, workspace_id, "
+                "surface, checkpoint_thread_id, checkpoint_namespace, payload_json, created_at "
+                "FROM turn_context_plans WHERE run_id = ?",
+                (validated_run,),
+            ).fetchone()
+        return _turn_context_plan_row(tuple(row)) if row is not None else None
+
     def run_thread_goal(self, run_id: str) -> dict[str, Any] | None:
         """Return the Goal snapshot frozen by run_started."""
         validated_run = _validate_identifier("run_id", run_id)
@@ -1412,6 +1520,7 @@ class SessionEventJournal:
                     connection.execute(
                         "INSERT INTO run_fence_state (state_key, next_token) VALUES (1, 1)"
                     )
+                    connection.execute(_TURN_CONTEXT_PLAN_SQL)
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif version == 1:
                     _validate_schema(connection, self.path, lease_version=0)
@@ -1475,10 +1584,18 @@ class SessionEventJournal:
                             tuple(existing),
                         )
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                elif version == 5:
+                    _validate_schema(connection, self.path, lease_version=5)
+                    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                 elif version != SCHEMA_VERSION:
                     raise SessionEventJournalError(
                         f"unsupported session event schema version {version} at {self.path}"
                     )
+                connection.execute(
+                    _TURN_CONTEXT_PLAN_SQL.replace(
+                        "CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1
+                    )
+                )
                 _validate_schema(connection, self.path)
                 integrity = connection.execute("PRAGMA integrity_check").fetchall()
                 if [tuple(row) for row in integrity] != [("ok",)]:
@@ -1591,6 +1708,26 @@ def _validated_event_input(
     }
 
 
+def _turn_context_plan_row(values: tuple[object, ...]) -> dict[str, object]:
+    """把 Plan 专用表的一行转换成不暴露 SQLite Row 的字典。"""
+    fields = (
+        "plan_id",
+        "run_id",
+        "version",
+        "plan_hash",
+        "owner_fingerprint",
+        "workspace_id",
+        "surface",
+        "checkpoint_thread_id",
+        "checkpoint_namespace",
+        "payload_json",
+        "created_at",
+    )
+    if len(values) != len(fields):
+        raise SessionEventJournalCorruptionError("turn context plan row has invalid column count")
+    return dict(zip(fields, values, strict=True))
+
+
 def _validate_timestamp(value: str) -> None:
     if not isinstance(value, str) or not value:
         raise ValueError("timestamp must be a non-empty ISO-8601 value")
@@ -1695,8 +1832,14 @@ def _schema_objects(connection: sqlite3.Connection) -> list[tuple[str, str, str 
 
 
 def _validate_schema(
-    connection: sqlite3.Connection, path: Path, *, lease_version: int = SCHEMA_VERSION
+    connection: sqlite3.Connection,
+    path: Path,
+    *,
+    lease_version: int = SCHEMA_VERSION,
+    include_plan: bool | None = None,
 ) -> None:
+    if include_plan is None:
+        include_plan = lease_version >= 6
     expected_columns = [
         "sequence",
         "event_id",
@@ -1716,6 +1859,8 @@ def _validate_schema(
         ("table", "session_events"),
         ("table", "sqlite_sequence"),
     }
+    if include_plan:
+        expected_objects.add(("table", "turn_context_plans"))
     if lease_version:
         expected_objects.add(("table", "active_run_lease"))
     if lease_version >= 3:
@@ -1730,6 +1875,10 @@ def _validate_schema(
     object_sql = {(kind, name): sql for kind, name, sql in objects}
     if _normalize_sql(object_sql[("table", "session_events")]) != _normalize_sql(_EVENTS_SQL):
         raise SessionEventJournalError(f"non-canonical session event schema at {path}")
+    if include_plan and _normalize_sql(
+        object_sql[("table", "turn_context_plans")]
+    ) != _normalize_sql(_TURN_CONTEXT_PLAN_SQL):
+        raise SessionEventJournalError(f"non-canonical turn context plan schema at {path}")
     if _normalize_sql(object_sql[("index", "session_events_run_idx")]) != _normalize_sql(
         _RUN_INDEX_SQL
     ):
