@@ -1,7 +1,7 @@
 # Sage 长书 Query Rewrite 与 HNSW 门禁收口 v1
 
 > 日期：2026-08-10
-> clean source：`2a335956`
+> clean source：`e187cea9`
 > 机器摘要：[book_learning_query_rewrite_hnsw_v1_2026-08-10.json](../../evals/reports/book_learning_query_rewrite_hnsw_v1_2026-08-10.json)
 
 ## 收口结论

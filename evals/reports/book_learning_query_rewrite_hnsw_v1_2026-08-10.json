@@ -2,7 +2,7 @@
   "schema_version": 1,
   "benchmark_id": "sage-book-learning-query-rewrite-hnsw-v1",
   "evaluation_date": "2026-08-10",
-  "source_commit": "2a3359562f068cbc1c84bb5a8d5564cc15375d03",
+  "source_commit": "e187cea9db50c7a1211b9492bc86ebd1b3102d2c",
   "corpus": {
     "type": "real_public_domain_books",
     "book_count": 2,

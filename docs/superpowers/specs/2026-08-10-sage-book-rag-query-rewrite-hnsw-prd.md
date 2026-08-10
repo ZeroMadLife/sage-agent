@@ -1,7 +1,7 @@
 # Sage 长书 RAG 查询改写与 ANN 门禁 PRD
 
 > 状态：完成离线验证，默认策略不变
-> clean source：`2a335956`
+> clean source：`e187cea9`
 > 机器摘要：`evals/reports/book_learning_query_rewrite_hnsw_v1_2026-08-10.json`
 
 ## 产品决策
