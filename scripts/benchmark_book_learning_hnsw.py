@@ -12,7 +12,7 @@ import uuid
 from dataclasses import asdict
 from importlib import import_module
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from core.config.settings import get_settings
 from core.knowledge.benchmark import evaluate_retrieval_v2, load_benchmark_v2, passage_id
@@ -31,6 +31,12 @@ from evals.book_learning_hnsw import (
     choose_hnsw_storage,
     decide_book_hnsw_gate,
 )
+
+
+class _MeasurementReceipt(TypedDict):
+    latency_ms: dict[str, float]
+    gold_retrieval: dict[str, Any]
+    chunk_ids: dict[str, tuple[str, ...]]
 
 
 def main() -> int:
@@ -295,7 +301,7 @@ def _measure(
     top_k: int,
     warmup_passes: int,
     measured_passes: int,
-) -> dict[str, object]:
+) -> _MeasurementReceipt:
     for _ in range(warmup_passes):
         for query in queries:
             store.search(query.query, top_k=top_k, retrieval_mode="dense")

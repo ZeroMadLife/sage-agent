@@ -141,7 +141,13 @@ def _delta(baseline: dict[str, object], candidate: dict[str, object]) -> dict[st
 
 
 def _difference(candidate: object, baseline: object) -> float:
-    return round(float(candidate) - float(baseline), 4)
+    return round(_numeric(candidate) - _numeric(baseline), 4)
+
+
+def _numeric(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError("query rewrite metric must be numeric")
+    return float(value)
 
 
 def fuse_ranked_passages(

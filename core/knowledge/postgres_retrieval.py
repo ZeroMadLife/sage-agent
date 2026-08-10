@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 from core.knowledge.retrieval import fts_query, lexical_terms, reciprocal_rank_fusion
 
@@ -379,12 +379,15 @@ class ReciprocalRankFusionPolicy:
         *,
         tie_breakers: Mapping[str, str],
     ) -> list[FusedCandidate]:
-        return reciprocal_rank_fusion(
-            sparse,
-            dense,
-            rank_constant=self.rank_constant,
-            tie_breakers=tie_breakers,
-        )
+            return cast(
+                list[FusedCandidate],
+                reciprocal_rank_fusion(
+                sparse,
+                dense,
+                rank_constant=self.rank_constant,
+                tie_breakers=tie_breakers,
+                ),
+            )
 
 
 __all__ = [
