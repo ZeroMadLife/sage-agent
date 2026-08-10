@@ -15,11 +15,28 @@
 ![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/readme/sage-harness-agentic-rag-overall.png)
 
 <p align="center">
-  <a href="docs/evals/sage-harness-rag-stage-closeout-v1.md"><strong>阶段总复盘</strong></a>
-  · <a href="docs/resume/sage-project-experience-v3-draft.md">简历版项目经历</a>
-  · <a href="docs/resume/sage-harness-rag-interview-guide-v1.md">面试题单</a>
+  <a href="release/v1.1.0/README.md"><strong>v1.1.0 发布入口</strong></a>
+  · <a href="release/v1.1.0/TESTING.md">发布验收</a>
+  · <a href="#产品运行截图">产品运行截图</a>
   · <a href="docs/GETTING-STARTED.md">开发指南</a>
 </p>
+
+## 产品运行截图
+
+### Assistant：从目标进入统一任务
+
+![Sage Assistant 主对话工作台](docs/assets/readme/screenshots/assistant-e2e-2026-08-10.png)
+
+### Knowledge：从来源形成可引用知识
+
+![Sage Knowledge 知识图谱与来源工作台](docs/assets/readme/screenshots/knowledge-e2e-2026-08-10.png)
+
+### Practice：用真实执行验证理解
+
+![Sage Practice Harness 运行时间线与工具面板](docs/assets/readme/screenshots/practice-e2e-2026-08-10.png)
+
+截图由当前分支前后端启动后，通过 Playwright 在本地 `1440x900` 视口采集；其中 Practice
+截图来自一条真实会话的运行时间线。它们用于展示当前界面，不代表公网部署或生产 SLA。
 
 ## Sage 是什么
 
@@ -84,7 +101,7 @@ RRF                          ->  fused ranking
 
 ### 3. 分层 Eval 与架构决策门禁
 
-Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/latency` 分层，避免把一次 Demo 的结果误认为系统质量。面试主指标是 First-pass Claim Evidence Coverage、Answer Correctness、Correct Abstention/False Acceptance 和 Claim Recovery Gain；Faithfulness 只回答生成 Claim 是否被现有证据支持，不能代替 Answer Correctness。
+Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/latency` 分层，避免把一次 Demo 的结果误认为系统质量。核心指标是 First-pass Claim Evidence Coverage、Answer Correctness、Correct Abstention/False Acceptance 和 Claim Recovery Gain；Faithfulness 只回答生成 Claim 是否被现有证据支持，不能代替 Answer Correctness。
 
 ### 4. Sandbox 纵深防御
 
@@ -103,7 +120,7 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 | Sandbox live audit | Docker Desktop Level 1 `10/10` | 不等于内核级逃逸证明或生产 rootless 已验收 |
 | 完整质量门禁 | `1956 passed, 12 skipped`；PR #143 合入后 RAG/Knowledge + Harness 回归 `334 passed, 12 skipped` | 当前代码与 CI 收据；本地 `.env` 漂移不属于代码结论 |
 
-14-case 长书 E2E 仍是 `seed_manual`，Answer Correctness、Provider Failure 与 P95 用来暴露问题，不能包装成生产准确率。下一阶段需要扩大 Gold 到 30-50 条并独立 review、接入真实复杂度 Gate、降低 Provider Failure/P95，再考虑替换简历中的端到端表述。
+14-case 长书 E2E 仍是 `seed_manual`，Answer Correctness、Provider Failure 与 P95 用来暴露问题，不能包装成生产准确率。下一阶段需要扩大 Gold 到 30-50 条并独立 review、接入真实复杂度 Gate、降低 Provider Failure/P95，再考虑更新对外项目表述。
 
 ## 能力矩阵
 
@@ -190,14 +207,16 @@ sage-agent/
 
 ## 深入阅读
 
+- [v1.1.0 发布入口](release/v1.1.0/README.md)：版本事实、可用能力与发布边界
+- [v1.1.0 变更记录](release/v1.1.0/CHANGELOG.md)：本版本交付与不交付的能力
+- [v1.1.0 发布验收](release/v1.1.0/TESTING.md)：自动化门禁与复现实验入口
+- [v1.1.0 架构评审](release/v1.1.0/REVIEW.md)：架构取舍、风险和发布结论
 - [阶段总复盘](docs/evals/sage-harness-rag-stage-closeout-v1.md)：当前 Harness、RAG、Eval 与 Sandbox 的共同事实源
 - [Harness 输入分层 PRD](docs/superpowers/specs/2026-08-08-sage-harness-input-layers-prd.md)
 - [Task DAG V1 PRD](docs/superpowers/specs/2026-08-09-sage-task-dag-v1-prd.md)
 - [Query Rewrite 与 HNSW PRD](docs/superpowers/specs/2026-08-10-sage-book-rag-query-rewrite-hnsw-prd.md)
 - [最终 Query Rewrite/HNSW 评测](docs/evals/book-learning-query-rewrite-hnsw-v1.md)
 - [PostgreSQL 检索实现](core/knowledge/postgres_retrieval.py)
-- [简历版项目经历](docs/resume/sage-project-experience-v3-draft.md)
-- [Harness/RAG/Sandbox 面试题单](docs/resume/sage-harness-rag-interview-guide-v1.md)
 - [开发协作约定](AGENTS.md)
 
 ## 分支与贡献
