@@ -58,6 +58,24 @@ def test_generation_postgres_factory_is_injected_without_changing_sqlite_default
     index.close()
 
 
+def test_generation_postgres_factory_exposes_auto_sparse_route() -> None:
+    factory = _generation_index_factory(
+        backend="postgres",
+        postgres_dsn="postgresql://sage:secret@localhost:5432/sage",
+        postgres_sparse="auto",
+    )
+
+    assert factory is not None
+    index = factory(
+        "generation-auto-test",
+        HashingEmbeddingProvider(dimensions=64),
+        KnowledgeAblationPolicy(),
+    )
+
+    assert index.backend_id.startswith("auto(pg-textsearch-bm25|fallback=postgres-tsvector)")
+    index.close()
+
+
 def test_merged_evidence_is_bounded_and_keeps_passage_diversity() -> None:
     first = [
         {

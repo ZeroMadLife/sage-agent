@@ -32,7 +32,10 @@ from core.knowledge.postgres_index import (
     PostgresKnowledgeIndex,
     PostgresKnowledgeIndexConfig,
 )
-from core.knowledge.postgres_retrieval import PgTextsearchBm25Retriever
+from core.knowledge.postgres_retrieval import (
+    PostgresSparseStrategy,
+    build_sparse_retriever,
+)
 from core.knowledge.retrieval import (
     DenseEmbeddingProvider,
     KnowledgeAblationPolicy,
@@ -91,8 +94,9 @@ def main() -> int:
     )
     parser.add_argument(
         "--postgres-sparse",
-        choices=("native", "bm25"),
+        choices=("auto", "native", "bm25"),
         default="native",
+        help="Default native GIN + ts_rank_cd; auto probes BM25 and falls back when unavailable",
     )
     parser.add_argument(
         "--retrieval-mode",
@@ -144,9 +148,9 @@ def _generation_index_factory(
         raise ValueError("unknown generation evaluation backend")
     if not postgres_dsn.strip():
         raise ValueError("PostgreSQL generation evaluation requires a DSN")
-    if postgres_sparse not in {"native", "bm25"}:
+    if postgres_sparse not in {"auto", "native", "bm25"}:
         raise ValueError("unknown PostgreSQL sparse strategy")
-    sparse_retriever = PgTextsearchBm25Retriever() if postgres_sparse == "bm25" else None
+    sparse_retriever = build_sparse_retriever(cast(PostgresSparseStrategy, postgres_sparse))
 
     def factory(
         workspace_id: str,

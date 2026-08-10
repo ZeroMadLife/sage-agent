@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Protocol, TypeAlias
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, TypeAlias
 
 from core.knowledge.retrieval import fts_query, lexical_terms, reciprocal_rank_fusion
 
 PostgresCandidateRow: TypeAlias = dict[str, Any]
+PostgresSparseStrategy: TypeAlias = Literal["native", "auto", "bm25"]
 RankedCandidateInput: TypeAlias = list[tuple[str, float]]
 FusedCandidate: TypeAlias = tuple[
     str,
@@ -38,6 +39,50 @@ class SparseCandidateRetriever(Protocol):
         filter_params: tuple[object, ...],
         candidate_limit: int,
     ) -> tuple[PostgresCandidateRow, ...]: ...
+
+
+@dataclass(slots=True)
+class FallbackSparseRetriever:
+    """Prefer an extension-backed sparse route and fall back to native FTS."""
+
+    preferred: SparseCandidateRetriever
+    fallback: SparseCandidateRetriever
+    _active: SparseCandidateRetriever | None = field(default=None, init=False, repr=False)
+
+    @property
+    def backend_id(self) -> str:
+        active = self._active
+        if active is not None:
+            return active.backend_id
+        return f"auto({self.preferred.backend_id}|fallback={self.fallback.backend_id})"
+
+    def ensure_schema(self, cursor: Any) -> None:
+        availability_probe = getattr(self.preferred, "is_available", None)
+        if callable(availability_probe) and not availability_probe(cursor):
+            self._active = self.fallback
+        else:
+            self._active = self.preferred
+        self._active.ensure_schema(cursor)
+
+    def search(
+        self,
+        cursor: Any,
+        *,
+        query: str,
+        where_sql: str,
+        filter_params: tuple[object, ...],
+        candidate_limit: int,
+    ) -> tuple[PostgresCandidateRow, ...]:
+        active = self._active
+        if active is None:
+            raise RuntimeError("sparse retriever schema must be initialized before search")
+        return active.search(
+            cursor,
+            query=query,
+            where_sql=where_sql,
+            filter_params=filter_params,
+            candidate_limit=candidate_limit,
+        )
 
 
 class DenseCandidateRetriever(Protocol):
@@ -132,6 +177,20 @@ class PgTextsearchBm25Retriever:
     def backend_id(self) -> str:
         return "pg-textsearch-bm25"
 
+    def is_available(self, cursor: Any) -> bool:
+        """Check extension availability without mutating the current transaction."""
+
+        cursor.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM pg_available_extensions WHERE name=%s
+            )
+            """,
+            ("pg_textsearch",),
+        )
+        row = cursor.fetchone()
+        return bool(row and row[0])
+
     def ensure_schema(self, cursor: Any) -> None:
         cursor.execute("CREATE EXTENSION IF NOT EXISTS pg_textsearch")
         cursor.execute(
@@ -174,6 +233,21 @@ class PgTextsearchBm25Retriever:
             (terms, self.index_name, *filter_params, candidate_limit),
         )
         return tuple(cursor.fetchall())
+
+
+def build_sparse_retriever(strategy: PostgresSparseStrategy) -> SparseCandidateRetriever:
+    """Build an explicit sparse route without coupling callers to implementations."""
+
+    if strategy == "native":
+        return NativePostgresFtsRetriever()
+    if strategy == "bm25":
+        return PgTextsearchBm25Retriever()
+    if strategy == "auto":
+        return FallbackSparseRetriever(
+            preferred=PgTextsearchBm25Retriever(),
+            fallback=NativePostgresFtsRetriever(),
+        )
+    raise ValueError("unknown PostgreSQL sparse strategy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,10 +325,13 @@ class ReciprocalRankFusionPolicy:
 
 __all__ = [
     "DenseCandidateRetriever",
+    "FallbackSparseRetriever",
     "NativePostgresFtsRetriever",
     "PgTextsearchBm25Retriever",
     "PgvectorExactRetriever",
+    "PostgresSparseStrategy",
     "RankFusionPolicy",
     "ReciprocalRankFusionPolicy",
     "SparseCandidateRetriever",
+    "build_sparse_retriever",
 ]

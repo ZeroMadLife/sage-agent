@@ -6,10 +6,14 @@
 > 数据：2 本公共领域长书、5,220 个 contextual chunks、14 条 seed、15 个 Gold Claim
 > Gold 状态：`seed_manual`，本报告用于工程决策，不作为生产准确率
 
+> **决策更新（2026-08-10）**：产品默认采用 native GIN + `ts_rank_cd` 与 pgvector exact 的
+> hybrid + RRF。BM25 保留为显式 `auto`/`bm25` 实验路线：扩展可用时可尝试，不可用时回退 native；
+> 只有在同一 Gold 上通过排序和延迟门禁后，才提升为默认。
+
 ## 一句话结论
 
 Sage 没有把 SQLite 的知识事实迁走，而是把 PostgreSQL 做成可重建的搜索投影。当前长书质量优先
-策略是 **豆包 2048 维 + pgvector exact dense-first**；native PostgreSQL FTS 与
+策略是 **豆包 2048 维 + pgvector exact + native GIN/`ts_rank_cd` hybrid + RRF**；native PostgreSQL FTS 与
 `pg_textsearch` BM25 都通过同一个稀疏策略接口接入，保留为可替换实现和离线对照，不与
 Agentic RAG、Harness 或 Task DAG 绑定。
 
@@ -82,14 +86,16 @@ chunk。下一版 Gold 要继续细化到 chunk/excerpt，才能诊断“章节�
 
 | 策略 | Recall@10 | MRR | NDCG@10 | Claim Coverage | 检索 P95 | 结论 |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| native hybrid（GIN + pgvector + RRF） | 0.8333 | 0.7833 | 0.7629 | 0.8000 | 157.5 ms | 稳健对照 |
-| **dense-first（pgvector exact）** | **0.8833** | **0.8083** | **0.7778** | **0.8333** | **101.9 ms** | **当前候选默认** |
+| **native hybrid（GIN + pgvector + RRF）** | 0.8333 | 0.7833 | 0.7629 | 0.8000 | 157.5 ms | **当前产品默认** |
+| dense-first（pgvector exact） | **0.8833** | **0.8083** | **0.7778** | **0.8333** | **101.9 ms** | 检索消融最佳 |
 | BM25 sparse-only（pg_textsearch） | 0.7000 | 0.5500 | 0.5856 | 0.7000 | 58.8 ms | 关键词密集场景 |
 | BM25 hybrid + RRF | 0.8333 | 0.7200 | 0.6977 | 0.8000 | 2056.6 ms | 不作为默认 |
 
 这里的 dense-first 是一次 exact cosine scan，并非 ANN；5,220 chunks 的规模下已经比旧 SQLite
 2048 维扫描快，但规模继续增长时应单独做 HNSW/降维 gate。BM25 的高速度不抵消当前质量和
-中文分词不确定性，因此只作为可插拔实验路线。
+中文分词不确定性，因此只作为可插拔实验路线。当前 dense 评分是 `1 - (embedding <=> query)`；
+后续可以在 candidate retrieval 之后增加 Cross-Encoder reranker，或把 exact 换成 HNSW/其他
+距离，但每次都必须重新跑同一 Gold 的 Claim Coverage、MRR/NDCG、P95 和端到端门禁。
 
 ## 真实端到端结果
 
@@ -142,8 +148,8 @@ Coordinator 是其中的受控 Research 分支；两者共享安全与运行基�
   的统一入口为准，不把单元测试当成线上准确率。
 - Gold 仍是 seed_manual，14 条 query 不能包装成生产效果；需要扩到 30-50 条并独立 review，
   冻结 calibration/test 后再设 release gate。
-- 当前建议：先默认豆包 dense-first；后续只一次改一个组件，按 4+2 归因。BM25 作为关键词
-  场景开关保留，HNSW/降维等性能优化另开 scale gate。
+- 当前建议：默认豆包 native hybrid；dense-first 作为检索消融最佳基线。后续只一次改一个组件，
+  按 4+2 归因。BM25 作为 `auto`/关键词场景开关保留，HNSW/降维/reranker 另开 scale gate。
 - 当前重大问题不是检索速度，而是端到端 Provider Failure 超过 5% 目标、Answer Correctness 低于
   0.8 目标，以及 dense-first 的 Recovery Gain 为 0；下一轮应先修复 Provider fallback，再对
   missing-claim rewrite 做独立离线消融。

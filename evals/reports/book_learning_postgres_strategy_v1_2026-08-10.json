@@ -4,6 +4,13 @@
   "source_commit": "2a2e7a0",
   "source_dirty": true,
   "branch": "feat/book-rag-postgres-strategies",
+  "product_decision": {
+    "default_retrieval": "native GIN + ts_rank_cd + pgvector exact cosine + RRF",
+    "dense_best_ablation": "pgvector exact cosine",
+    "bm25_policy": "explicit auto/bm25 experiment; auto falls back to native",
+    "reranker_status": "not implemented; candidate-stage seam remains replaceable",
+    "ann_status": "not implemented; exact scan retained until scale gate"
+  },
   "scope": {
     "corpus": "2 public-domain long books",
     "contextual_chunk_count": 5220,
