@@ -8,6 +8,7 @@ from core.knowledge.postgres_retrieval import (
     FallbackSparseRetriever,
     NativePostgresFtsRetriever,
     PgTextsearchBm25Retriever,
+    PgvectorHnswRetriever,
     ReciprocalRankFusionPolicy,
     build_sparse_retriever,
 )
@@ -49,6 +50,27 @@ def test_native_sparse_retriever_owns_postgres_fts_sql() -> None:
     assert "websearch_to_tsquery" in cursor.sql
     assert "ts_rank_cd" in cursor.sql
     assert cursor.params[-2:] == ("workspace", 20)
+
+
+def test_hnsw_retriever_uses_halfvec_for_doubao_2048_dimensions() -> None:
+    cursor = RecordingCursor(({"chunk_id": "chunk-1", "score": 0.5},))
+    retriever = PgvectorHnswRetriever(dimensions=2_048, ef_search=80)
+
+    rows = retriever.search(
+        cursor,
+        query_vector="[0.1,0.2]",
+        dimensions=2_048,
+        where_sql="chunk.workspace_id=%s",
+        filter_params=("workspace",),
+        candidate_limit=20,
+    )
+
+    assert rows == cursor.rows
+    assert retriever.backend_id == "pgvector-hnsw-halfvec-ef80"
+    assert "halfvec(2048)" in cursor.sql
+    assert "halfvec_cosine_ops" not in cursor.sql
+    assert "hnsw.ef_search" in cursor.statements[0]
+    assert cursor.params[-3:] == ("workspace", 2_048, 20)
 
 
 def test_pg_textsearch_retriever_uses_explicit_bm25_index_and_positive_score() -> None:
