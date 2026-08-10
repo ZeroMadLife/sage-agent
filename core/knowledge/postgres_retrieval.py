@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, TypeAlias
+from typing import Any, Literal, Protocol, TypeAlias, cast
 
 from core.knowledge.retrieval import fts_query, lexical_terms, reciprocal_rank_fusion
 
@@ -295,6 +295,68 @@ class PgvectorExactRetriever:
 
 
 @dataclass(frozen=True, slots=True)
+class PgvectorHnswRetriever:
+    """Opt-in pgvector HNSW route, including the halfvec path for 2048-D vectors.
+
+    The class only owns candidate SQL and session tuning. Index creation remains
+    an evaluation/deployment concern so the exact default cannot be changed by
+    constructing a retriever accidentally.
+    """
+
+    dimensions: int
+    ef_search: int = 80
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.dimensions <= 4_000:
+            raise ValueError("HNSW dimensions must be between 1 and 4000")
+        if not 1 <= self.ef_search <= 10_000:
+            raise ValueError("HNSW ef_search must be between 1 and 10000")
+
+    @property
+    def backend_id(self) -> str:
+        storage = "vector" if self.dimensions <= 2_000 else "halfvec"
+        return f"pgvector-hnsw-{storage}-ef{self.ef_search}"
+
+    def search(
+        self,
+        cursor: Any,
+        *,
+        query_vector: object,
+        dimensions: int,
+        where_sql: str,
+        filter_params: tuple[object, ...],
+        candidate_limit: int,
+    ) -> tuple[PostgresCandidateRow, ...]:
+        if dimensions != self.dimensions:
+            raise ValueError("HNSW query dimensions do not match retriever dimensions")
+        cast_type = "vector" if dimensions <= 2_000 else f"halfvec({dimensions})"
+        embedding = (
+            "chunk.embedding" if dimensions <= 2_000 else f"chunk.embedding::halfvec({dimensions})"
+        )
+        cursor.execute("SET LOCAL hnsw.ef_search = %s", (self.ef_search,))
+        cursor.execute("SET LOCAL enable_seqscan = off")
+        cursor.execute(
+            f"""
+            WITH query AS (SELECT (%s::vector)::{cast_type} AS value)
+            SELECT chunk.chunk_id,
+                   1 - ({embedding} <=> query.value) AS score,
+                   chunk.source_relative_path, chunk.source_revision,
+                   chunk.ordinal, chunk.content_hash
+            FROM knowledge_index_chunks AS chunk
+            CROSS JOIN query
+            WHERE {where_sql}
+              AND chunk.embedding_dimensions=%s
+            ORDER BY {embedding} <=> query.value,
+                     chunk.source_relative_path, chunk.source_revision,
+                     chunk.ordinal, chunk.content_hash, chunk.chunk_id
+            LIMIT %s
+            """,
+            (query_vector, *filter_params, dimensions, candidate_limit),
+        )
+        return tuple(cursor.fetchall())
+
+
+@dataclass(frozen=True, slots=True)
 class ReciprocalRankFusionPolicy:
     """Application-layer RRF shared by native FTS and extension-backed sparse routes."""
 
@@ -315,11 +377,14 @@ class ReciprocalRankFusionPolicy:
         *,
         tie_breakers: Mapping[str, str],
     ) -> list[FusedCandidate]:
-        return reciprocal_rank_fusion(
-            sparse,
-            dense,
-            rank_constant=self.rank_constant,
-            tie_breakers=tie_breakers,
+        return cast(
+            list[FusedCandidate],
+            reciprocal_rank_fusion(
+                sparse,
+                dense,
+                rank_constant=self.rank_constant,
+                tie_breakers=tie_breakers,
+            ),
         )
 
 
@@ -329,6 +394,7 @@ __all__ = [
     "NativePostgresFtsRetriever",
     "PgTextsearchBm25Retriever",
     "PgvectorExactRetriever",
+    "PgvectorHnswRetriever",
     "PostgresSparseStrategy",
     "RankFusionPolicy",
     "ReciprocalRankFusionPolicy",

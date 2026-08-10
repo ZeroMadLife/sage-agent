@@ -113,7 +113,8 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 | 能力 | 当前证据 | 仍未解决 |
 | --- | --- | --- |
 | **RAG Cloud Embedding Selection v2** | 同一 PostgreSQL selection 上，FastEmbed 384、百炼 v4 1024、豆包 vision 2048 的 Recall@10 均为 1.0；百炼以最高 MRR/NDCG 和可审计成本进入唯一 final，并在 frozen test 将 Recall@10 0.889→1.000、MRR 0.683→0.806 | frozen test 没有 semantic-paraphrase case，专项 activation 仍 fail closed；豆包逐 token 成本未知；这些不是线上指标 |
-| **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下的 pgvector exact Recall@10 均为 1.0，P95 为 1.403/2.838/93.906 ms；100k 未超过冻结的 100 ms，因此保持 exact、不触发 HNSW | 100k 已接近门限，扩容前必须在目标硬件重跑；合成向量不代表真实生产查询分布或 SLA |
+| **RAG HNSW Scale Gate v1** | 384 维 synthetic vectors 在 1k/10k/100k chunks 下 exact P95 为 1.403/2.838/93.906 ms；真实长书 2048 维豆包向量通过 `halfvec` 表达式索引完成 `ef_search` 曲线，四档 Oracle Recall@10 均为 1.0 | synthetic 100k 与真实长书均没有给出稳定 ANN 净收益；当前保持 exact，HNSW 不代表已上线或生产 SLA |
+| **RAG Query Rewrite + ANN Gate v1** | 4 个人工审计困难 case 上，original+rewrite RRF 将 Claim Evidence Coverage `0.4444 -> 0.8333`、Recall@10 `0.6111 -> 0.8889`；同一 5,220-chunk 长书上 HNSW 未通过 P95/加速门禁 | rewrite 仍是 `oracle_manual` 上界，未证明真实模型改写；Gold 尚未独立 review，复杂问题条件门控保持 offline candidate |
 | **RAG Multimodal Evidence v1** | 12/12 项目自建 fixture case 通过；DOCX/PNG L1 与 Qwen VLM L2 的 `page/bbox/media_ref/confidence/parser` 可穿透 SQLite/PostgreSQL、API 和 Harness citation | 未运行真实 VLM 质量评测；DOCX 不渲染分页；未引入 ColPali/ColQwen 等视觉向量检索 |
 | **RAG Retrieval Ablation v1** | PostgreSQL exact hybrid 上完成 Contextual、Parent-Child、Semantic Boundary 和 bounded Cross-Encoder 单变量消融；真实长书 seed 又触发了 32 个超长 block，Semantic Boundary 仍未显示净增益 | 旧 frozen 语料没有超长 block，真实长书 gold 也尚未冻结；所有候选继续保持默认关闭 |
 | **RAG Described Parent-Child v2（实验候选）** | 已实现句向量语义 parent、bounded child、revision-bound extractive description，以及“description + child 检索、parent 正文引用”的 SQLite/PostgreSQL 投影；真实长书 seed 已可消融 | 真实书籍诊断没有优于普通 Parent-Child；PostgreSQL live、selection/frozen-test 与生成质量仍未完成，不能声称提升准确率 |
@@ -138,6 +139,7 @@ Knowledge。各存储通过 `session_id`、`run_id`、`revision`、`citation_id`
 [长书 Agentic RAG v1 收口](docs/evals/book-learning-agentic-rag-v1.md)、
 [长书 4+2 KPI 与策略选择 v1](docs/evals/book-learning-scorecard-v1.md)、
 [长书 Embedding Provider 与 Agentic RAG 收口 v1](docs/evals/book-learning-embedding-provider-tradeoff-v1.md)、
+[长书 Query Rewrite 与 HNSW 门禁收口 v1](docs/evals/book-learning-query-rewrite-hnsw-v1.md)、
 [RAG 失败可观测性报告](docs/evals/knowledge-retrieval-observability-v1.md)、
 [历史 RAG 报告](docs/evals/knowledge-benchmark-v2.md)、
 [拒答与关系检索报告](docs/evals/knowledge-relation-abstention-v1.md)、

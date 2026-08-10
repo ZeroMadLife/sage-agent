@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "benchmark_id": "sage-book-learning-query-rewrite-hnsw-v1",
+  "evaluation_date": "2026-08-10",
+  "source_commit": "e187cea9db50c7a1211b9492bc86ebd1b3102d2c",
+  "corpus": {
+    "type": "real_public_domain_books",
+    "book_count": 2,
+    "indexed_chunks": 5220,
+    "query_count": 14,
+    "gold_status": "seed_manual",
+    "production_accuracy_claim_allowed": false
+  },
+  "query_rewrite": {
+    "receipt_sha256": "91c2e6d004c9a4320b28d146cfe594ecd8bf0be007c51914d39f84a4ac7593c7",
+    "receipt_scope": "4_manual_difficult_cases",
+    "rewrite_status": "oracle_manual",
+    "model_rewrite_evidence": false,
+    "variants": {
+      "original_only": {
+        "first_pass_claim_evidence_coverage": 0.4444,
+        "recall_at_10": 0.6111,
+        "mrr": 0.5111,
+        "ndcg_at_10": 0.3988
+      },
+      "rewrite_only": {
+        "first_pass_claim_evidence_coverage": 0.8333,
+        "recall_at_10": 0.8889,
+        "mrr": 1.0,
+        "ndcg_at_10": 0.9060
+      },
+      "original_plus_rewrite_rrf": {
+        "first_pass_claim_evidence_coverage": 0.8333,
+        "recall_at_10": 0.8889,
+        "mrr": 1.0,
+        "ndcg_at_10": 0.8534
+      }
+    },
+    "delta_vs_original_plus_rewrite_rrf": {
+      "first_pass_claim_evidence_coverage": 0.3889,
+      "recall_at_10": 0.2778,
+      "mrr": 0.4889,
+      "ndcg_at_10": 0.4546
+    },
+    "rewrite_intent_drift_rate": 0.0,
+    "latency_ms": {
+      "original_p50": 8838.86,
+      "original_p95": 11397.218,
+      "original_plus_rewrite_serial_upper_bound_p50": 16545.068,
+      "original_plus_rewrite_serial_upper_bound_p95": 20861.309,
+      "rewrite_requests_per_case": 1.75
+    },
+    "decision": "conditional_candidate_only",
+    "reason": "manual rewrite improves hard-case evidence coverage but adds substantial retrieval latency; real model rewrite must pass the same gate before activation"
+  },
+  "hnsw": {
+    "receipt_sha256": "93a27ddd6d7d984d46551d514c1d4dca77bcea7695420b1dfe412a51f0ad55bb",
+    "provider": {
+      "model_id": "doubao-multimodal.doubao-embedding-vision-250615",
+      "dimensions": 2048
+    },
+    "storage": {
+      "candidate_sql_type": "halfvec",
+      "operator_class": "halfvec_cosine_ops",
+      "lossy_cast": true
+    },
+    "exact_reference": {
+      "p50_ms": 66.759,
+      "p95_ms": 101.878,
+      "repeat_oracle_recall_at_10": 1.0
+    },
+    "ef_search_curve": [
+      {"ef_search": 40, "oracle_recall_at_10": 1.0, "p50_ms": 120.63, "p95_ms": 1387.516},
+      {"ef_search": 80, "oracle_recall_at_10": 1.0, "p50_ms": 103.838, "p95_ms": 143.909},
+      {"ef_search": 120, "oracle_recall_at_10": 1.0, "p50_ms": 88.831, "p95_ms": 183.491},
+      {"ef_search": 200, "oracle_recall_at_10": 1.0, "p50_ms": 184.703, "p95_ms": 235.452}
+    ],
+    "build_ms": 6893.858,
+    "index_bytes": 42770432,
+    "decision": "keep_exact_hnsw_not_eligible",
+    "runtime_index_enabled": false
+  },
+  "product_strategy": {
+    "default_retrieval": "PostgreSQL GIN + ts_rank_cd + pgvector exact cosine + RRF",
+    "query_rewrite": "complexity-gated candidate; preserve original query and fuse bounded rewrites",
+    "dense_ann": "HNSW/halfvec remains opt-in scale-gate candidate",
+    "database_switch": "not_needed_for_current Sage corpus and modularity goal"
+  },
+  "evidence_boundaries": {
+    "real_book_evaluation": true,
+    "gold_independently_reviewed": false,
+    "production_traffic": false,
+    "production_sla_claim": false,
+    "answer_correctness_or_faithfulness_measured_here": false,
+    "ephemeral_hnsw_cleanup_completed": true
+  }
+}
