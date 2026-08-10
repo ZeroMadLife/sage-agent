@@ -107,7 +107,7 @@ def main() -> int:
                 index_factory=lambda _workspace, _provider, _policy: index,
                 workspace_id=workspace_id,
             )
-            exact = _measure(
+            exact_initial = _measure(
                 store,
                 queries,
                 top_k=args.top_k,
@@ -136,7 +136,9 @@ def main() -> int:
                     warmup_passes=args.warmup_passes,
                     measured_passes=args.measured_passes,
                 )
-                oracle_recall = _oracle_recall(exact["chunk_ids"], measured["chunk_ids"])
+                oracle_recall = _oracle_recall(
+                    exact_initial["chunk_ids"], measured["chunk_ids"]
+                )
                 measurement = BookHnswMeasurement(
                     ef_search=ef_search,
                     recall_at_k=oracle_recall,
@@ -152,9 +154,67 @@ def main() -> int:
                         "plan": _explain(index, queries[0].query, top_k=args.top_k),
                     }
                 )
+            index.dense_retriever = PgvectorExactRetriever()
+            exact_confirmation = _measure(
+                store,
+                queries,
+                top_k=args.top_k,
+                warmup_passes=args.warmup_passes,
+                measured_passes=args.measured_passes,
+            )
+            exact_trials = (exact_initial, exact_confirmation)
+            exact_reference = min(
+                exact_trials, key=lambda item: float(item["latency_ms"]["p95"])
+            )
+            exact_reference_p95 = float(exact_reference["latency_ms"]["p95"])
+            preliminary = decide_book_hnsw_gate(
+                config,
+                exact_p95_ms=exact_reference_p95,
+                measurements=tuple(decision_measurements),
+            )
+            for ef_search in preliminary.eligible_ef_search:
+                index.dense_retriever = PgvectorHnswRetriever(
+                    dimensions=provider.dimensions,
+                    ef_search=ef_search,
+                )
+                confirmation = _measure(
+                    store,
+                    queries,
+                    top_k=args.top_k,
+                    warmup_passes=args.warmup_passes,
+                    measured_passes=args.measured_passes,
+                )
+                position = next(
+                    index
+                    for index, item in enumerate(decision_measurements)
+                    if item.ef_search == ef_search
+                )
+                first = decision_measurements[position]
+                confirmed = BookHnswMeasurement(
+                    ef_search=ef_search,
+                    recall_at_k=min(
+                        first.recall_at_k,
+                        _oracle_recall(
+                            exact_reference["chunk_ids"], confirmation["chunk_ids"]
+                        ),
+                    ),
+                    p50_ms=max(first.p50_ms, float(confirmation["latency_ms"]["p50"])),
+                    p95_ms=max(first.p95_ms, float(confirmation["latency_ms"]["p95"])),
+                    measured_queries=first.measured_queries
+                    + len(queries) * args.measured_passes,
+                )
+                decision_measurements[position] = confirmed
+                hnsw_runs[position].update(asdict(confirmed))
+                hnsw_runs[position]["confirmation"] = {
+                    "latency_ms": confirmation["latency_ms"],
+                    "gold_retrieval": confirmation["gold_retrieval"],
+                    "oracle_recall_at_k": _oracle_recall(
+                        exact_reference["chunk_ids"], confirmation["chunk_ids"]
+                    ),
+                }
             decision = decide_book_hnsw_gate(
                 config,
-                exact_p95_ms=float(exact["latency_ms"]["p95"]),
+                exact_p95_ms=exact_reference_p95,
                 measurements=tuple(decision_measurements),
             )
             result = {
@@ -183,9 +243,21 @@ def main() -> int:
                 },
                 "storage": asdict(storage),
                 "exact": {
-                    "latency_ms": exact["latency_ms"],
-                    "measured_queries": len(queries) * args.measured_passes,
-                    "gold_retrieval": exact["gold_retrieval"],
+                    "latency_ms": exact_reference["latency_ms"],
+                    "reference_policy": "minimum_p95_across_two_warmed_trials",
+                    "initial": {
+                        "latency_ms": exact_initial["latency_ms"],
+                        "gold_retrieval": exact_initial["gold_retrieval"],
+                    },
+                    "confirmation": {
+                        "latency_ms": exact_confirmation["latency_ms"],
+                        "gold_retrieval": exact_confirmation["gold_retrieval"],
+                    },
+                    "repeat_oracle_recall_at_k": _oracle_recall(
+                        exact_initial["chunk_ids"], exact_confirmation["chunk_ids"]
+                    ),
+                    "measured_queries": len(queries) * args.measured_passes * 2,
+                    "gold_retrieval": exact_reference["gold_retrieval"],
                 },
                 "hnsw_build": hnsw_build,
                 "hnsw": hnsw_runs,
@@ -196,6 +268,8 @@ def main() -> int:
                     "ephemeral_partial_index": True,
                     "halfvec_cast_is_lossy": storage.lossy_cast,
                     "query_embedding_latency_included": True,
+                    "exact_repeat_required": True,
+                    "eligible_hnsw_repeat_required": True,
                     "production_traffic": False,
                     "production_sla_claim": False,
                 },
