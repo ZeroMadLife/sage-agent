@@ -49,8 +49,9 @@ def test_query_rewrite_variants_measure_original_rewrite_and_rrf_union() -> None
     assert report["variants"]["rewrite_only"]["retrieval"]["recall_at_k"] == 0.5
     assert report["variants"]["original_plus_rewrite"]["retrieval"]["recall_at_k"] == 1.0
     assert (
-        report["variants"]["original_plus_rewrite"]["claim_evidence"]["metrics"]
-        ["first_pass_claim_evidence_coverage"]
+        report["variants"]["original_plus_rewrite"]["claim_evidence"]["metrics"][
+            "first_pass_claim_evidence_coverage"
+        ]
         == 1.0
     )
 

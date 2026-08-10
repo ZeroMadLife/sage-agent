@@ -7,8 +7,9 @@ from pathlib import Path
 def test_committed_book_query_rewrite_hnsw_report_is_fail_closed() -> None:
     root = Path(__file__).parents[2]
     report = json.loads(
-        (root / "evals/reports/book_learning_query_rewrite_hnsw_v1_2026-08-10.json")
-        .read_text(encoding="utf-8")
+        (root / "evals/reports/book_learning_query_rewrite_hnsw_v1_2026-08-10.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert len(report["source_commit"]) == 40

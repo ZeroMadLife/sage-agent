@@ -104,9 +104,7 @@ def evaluate_query_rewrite_variants(
         },
         "query_count": len(observations),
         "rewrite_intent_drift_rate": (
-            round(sum(value is False for value in labels) / len(labels), 4)
-            if labels
-            else None
+            round(sum(value is False for value in labels) / len(labels), 4) if labels else None
         ),
         "variants": variants,
         "deltas_vs_original": {
@@ -130,7 +128,9 @@ def _delta(baseline: dict[str, object], candidate: dict[str, object]) -> dict[st
     assert isinstance(baseline_claim_metrics, dict)
     assert isinstance(candidate_claim_metrics, dict)
     return {
-        "recall_at_k": _difference(candidate_retrieval["recall_at_k"], baseline_retrieval["recall_at_k"]),
+        "recall_at_k": _difference(
+            candidate_retrieval["recall_at_k"], baseline_retrieval["recall_at_k"]
+        ),
         "mrr": _difference(candidate_retrieval["mrr"], baseline_retrieval["mrr"]),
         "ndcg_at_k": _difference(candidate_retrieval["ndcg_at_k"], baseline_retrieval["ndcg_at_k"]),
         "first_pass_claim_evidence_coverage": _difference(

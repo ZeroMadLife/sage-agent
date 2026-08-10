@@ -331,9 +331,7 @@ class PgvectorHnswRetriever:
             raise ValueError("HNSW query dimensions do not match retriever dimensions")
         cast_type = "vector" if dimensions <= 2_000 else f"halfvec({dimensions})"
         embedding = (
-            "chunk.embedding"
-            if dimensions <= 2_000
-            else f"chunk.embedding::halfvec({dimensions})"
+            "chunk.embedding" if dimensions <= 2_000 else f"chunk.embedding::halfvec({dimensions})"
         )
         cursor.execute("SET LOCAL hnsw.ef_search = %s", (self.ef_search,))
         cursor.execute("SET LOCAL enable_seqscan = off")
@@ -379,15 +377,15 @@ class ReciprocalRankFusionPolicy:
         *,
         tie_breakers: Mapping[str, str],
     ) -> list[FusedCandidate]:
-            return cast(
-                list[FusedCandidate],
-                reciprocal_rank_fusion(
+        return cast(
+            list[FusedCandidate],
+            reciprocal_rank_fusion(
                 sparse,
                 dense,
                 rank_constant=self.rank_constant,
                 tie_breakers=tie_breakers,
-                ),
-            )
+            ),
+        )
 
 
 __all__ = [

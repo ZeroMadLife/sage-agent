@@ -13,10 +13,13 @@ from scripts.benchmark_book_learning_hnsw import (
 def test_book_hnsw_helpers_keep_passage_and_oracle_contracts() -> None:
     assert _section("book.txt", ("Book", "Chapter")) == "Book / Chapter"
     assert _section("book.md", ("Book", "Chapter")) == "Chapter"
-    assert _oracle_recall(
-        {"q1": ("a", "b"), "q2": ("c", "d")},
-        {"q1": ("a", "b"), "q2": ("c", "noise")},
-    ) == 0.75
+    assert (
+        _oracle_recall(
+            {"q1": ("a", "b"), "q2": ("c", "d")},
+            {"q1": ("a", "b"), "q2": ("c", "noise")},
+        )
+        == 0.75
+    )
 
 
 def test_book_hnsw_helpers_validate_curve_and_interpolate_percentiles() -> None:
