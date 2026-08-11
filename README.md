@@ -12,7 +12,9 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/readme/sage-harness-agentic-rag-overall.png)
+![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/architecture/sage-harness-rag-integrated-v1-zh.png)
+
+> [可编辑 SVG 总体图](docs/assets/architecture/sage-harness-rag-integrated-v1-zh.svg) · [架构图资产说明](docs/assets/architecture/README.md)
 
 <p align="center">
   <a href="release/v1.1.0/README.md"><strong>v1.1.0 发布入口</strong></a>
