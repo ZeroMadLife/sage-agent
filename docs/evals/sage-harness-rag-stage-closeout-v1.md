@@ -22,7 +22,9 @@ Sage 已从“一个能调用工具和知识库的 Agent”演进为一条可约
 
 最终架构图：
 
-![Sage Agent Harness 与 Agentic RAG 总体架构](../assets/resume/sage-harness-agentic-rag-overall-v1-zh.png)
+![Sage Agent Harness 与 Agentic RAG 总体架构](../assets/architecture/sage-harness-rag-integrated-v1-zh.png)
+
+可编辑源：[SVG](../assets/architecture/sage-harness-rag-integrated-v1-zh.svg) · [Graphviz 结构源](../assets/architecture/sage-harness-rag-integrated-v1-zh.dot)。SVG 是中文可读权威图，生图结果仅作视觉参考。
 
 ## 两条开发主线
 
