@@ -81,7 +81,7 @@ Sage 不是给聊天框加几个工具，而是一个本地优先的个人 AI �
 
 意图识别只负责收窄候选，不授予权限。真正的授权边界在服务端 Permission、Policy、Approval 与 Sandbox；Resume 也必须重新验证 frozen Plan 和 scoped Checkpoint，不能从 Timeline 反推权限。
 
-## 四个关键工程决策
+## 五个关键工程决策
 
 ### 1. 模块化 Harness 与有界编排
 
@@ -105,7 +105,11 @@ RRF                          ->  fused ranking
 
 Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/latency` 分层，避免把一次 Demo 的结果误认为系统质量。核心指标是 First-pass Claim Evidence Coverage、Answer Correctness、Correct Abstention/False Acceptance 和 Claim Recovery Gain；Faithfulness 只回答生成 Claim 是否被现有证据支持，不能代替 Answer Correctness。
 
-### 4. Sandbox 纵深防御
+### 4. Proposal-first 长期记忆治理
+
+长期事实先进入 pending proposal，只有显式批准后才成为 active fact。SQLite schema v2 以 revision CAS 和 append-only event 管理 `active -> superseded/retracted` 生命周期；Consolidation 只把带 evidence refs 的运行证据整理为 proposal，不自动批准，也不让 Markdown 旧投影重新进入 Context。
+
+### 5. Sandbox 纵深防御
 
 动作依次经过参数 schema、workspace path containment、Permission、Policy、Approval，再进入 Container Sandbox。Sandbox 当前使用 seccomp、`cap-drop ALL`、`no-new-privileges`、只读 rootfs、禁网、CPU/RAM/PID/ulimit 和 mount 漂移校验。workspace 仍是可写 bind mount，生产 image digest、rootless live audit 和内核级隔离尚未宣称完成。
 
@@ -119,6 +123,7 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 | 80-case versioned RAG Eval | 9 份 snapshot，`dev/calibration/frozen-test=40/20/20`；Recall@10 `0.889 -> 1.000`、MRR `0.683 -> 0.806`、NDCG@10 `0.701 -> 0.852` | 固定语料的离线检索/排序结果；frozen test 尚未覆盖 `semantic_paraphrase` |
 | Query Rewrite 消融 | 4 个困难 case：Claim Coverage `0.4444 -> 0.8333`，Recall@10 `0.6111 -> 0.8889`，串行 P95 `11.397s -> 20.861s` | `oracle_manual` 上界，不代表真实模型改写；仅条件触发 |
 | HNSW 门禁 | 两本真实长书、`5,220` chunks；exact P95 `101.878ms`；四档 Oracle Recall@10 都是 `1.0` | 没有稳定延迟净收益，当前保持 exact，HNSW 未上线 |
+| Memory lifecycle | 40/40 确定性场景 | 验证 proposal 隔离、撤回/替代、重启恢复与 workspace 隔离；不是自然语言记忆准确率 |
 | Sandbox live audit | Docker Desktop Level 1 `10/10` | 不等于内核级逃逸证明或生产 rootless 已验收 |
 | 完整质量门禁 | `1956 passed, 12 skipped`；PR #143 合入后 RAG/Knowledge + Harness 回归 `334 passed, 12 skipped` | 当前代码与 CI 收据；本地 `.env` 漂移不属于代码结论 |
 
@@ -131,6 +136,7 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 | **Chat Harness** | SSE/WebSocket 事件、durable Timeline、Checkpoint、Context Budget、Artifact 与 usage |
 | **Practice Engine** | 文件、搜索、Shell、Patch、Diff、Git、审批、测试与运行工件 |
 | **Knowledge Platform** | 来源 revision、Wiki proposal、SQLite/PostgreSQL 检索投影、Embedding、RRF 与 citation |
+| **Long-term Memory** | workspace-scoped proposal、revision CAS、事实撤回/替代、证据事件与 active-only recall |
 | **Runtime Extension** | Skills、MCP、受限子 Agent、Provider capability 与运行配置 |
 | **Safety Boundary** | 路径 containment、权限模式、审批、Container Sandbox 与终态清理 |
 | **Evaluation** | versioned corpus、retrieval/claim/generation/recovery 分层指标与 release gate |
@@ -218,6 +224,7 @@ sage-agent/
 - [Task DAG V1 PRD](docs/superpowers/specs/2026-08-09-sage-task-dag-v1-prd.md)
 - [Query Rewrite 与 HNSW PRD](docs/superpowers/specs/2026-08-10-sage-book-rag-query-rewrite-hnsw-prd.md)
 - [最终 Query Rewrite/HNSW 评测](docs/evals/book-learning-query-rewrite-hnsw-v1.md)
+- [Memory 生命周期评测](docs/evals/memory-lifecycle-v1.md)
 - [PostgreSQL 检索实现](core/knowledge/postgres_retrieval.py)
 - [开发协作约定](AGENTS.md)
 
