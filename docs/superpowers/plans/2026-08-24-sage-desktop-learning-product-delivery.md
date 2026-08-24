@@ -4,7 +4,7 @@
 >
 > L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
 >
-> L3 状态（2026-08-25）：Research、Synthesize 与 Learning Artifact code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 已在固定 L2 docs 候选 `ca6e618d6df993dff40ed3a304ca942c239e7d84` 上本地完成，等待中枢三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
+> L3 状态（2026-08-25）：Research、Synthesize 与 Learning Artifact code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 已在固定 L2 docs 候选 `ca6e618d6df993dff40ed3a304ca942c239e7d84` 上本地完成，等待中枢三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -340,7 +340,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
-> 本地 code candidate：`c15fa6743e97979d24b886b2b130469124ed2018`；mini-spec：`9a52a7a`。当前结论是“可提交并等待中枢三镜头复审”，不是已合入、已发布或已证明真实 Provider/Web 质量。
+> 本地 code candidate：`c15fa679ea15ad85ef0d8fd6cde690926d85f231`；mini-spec：`9a52a7a`。当前结论是“可提交并等待中枢三镜头复审”，不是已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 

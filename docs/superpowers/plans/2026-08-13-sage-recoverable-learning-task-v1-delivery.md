@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3/L3 本地 code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 等待中枢三镜头复审；B4-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3/L3 本地 code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 等待中枢三镜头复审；B4-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -716,6 +716,6 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 
 A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 已完成最终复审，作为本轮 L3 固定起点；它们仍未合入 `dev/sage-v7` 或发布。
 
-B1-B3/L3 code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 已形成真实 Knowledge-first LearningPlan、条件只读 Research、durable Research receipt、citation-bound Learning Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享会话 UI。最终串行邻接为 `214 passed, 1 warning`；完整 Vue `71 files / 525 tests passed`；private/public build、全仓 Ruff、Mypy `254 source files`、本切片 25 个 Python 文件 format check、Playwright `2 passed` 与 `git diff --check` 均通过。全仓 format check 仅剩 5 个未修改 Harness 文件的历史漂移。
+B1-B3/L3 code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 已形成真实 Knowledge-first LearningPlan、条件只读 Research、durable Research receipt、citation-bound Learning Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享会话 UI。最终串行邻接为 `214 passed, 1 warning`；完整 Vue `71 files / 525 tests passed`；private/public build、全仓 Ruff、Mypy `254 source files`、本切片 25 个 Python 文件 format check、Playwright `2 passed` 与 `git diff --check` 均通过。全仓 format check 仅剩 5 个未修改 Harness 文件的历史漂移。
 
 当前停止在 L3 本地候选，等待中枢三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；确定性 fixture 也不证明真实 Provider/Web 质量或学习效果。
