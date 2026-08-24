@@ -27,6 +27,14 @@ from core.learning.mastery import (
     MasteryLedgerConflictError,
     MasteryLedgerNotFoundError,
 )
+from core.learning.materials import (
+    KnowledgeUnit,
+    LearningCitation,
+    LearningMapArtifact,
+    LearningMapOutcome,
+    LearningMapService,
+    LearningPlan,
+)
 from core.learning.task_repository import (
     LearningTaskConflictError,
     LearningTaskError,
@@ -51,10 +59,12 @@ __all__ = [
     "FINANCIAL_EDUCATION_NOTICE",
     "MASTERY_RUBRIC_REVISION",
     "UNSET",
+    "KnowledgeUnit",
     "LearningActivationError",
     "LearningActivationRecord",
     "LearningActivationService",
     "LearningActivationTurnContextBinding",
+    "LearningCitation",
     "LearningClarification",
     "LearningClarificationQuestion",
     "LearningGoalRef",
@@ -63,6 +73,10 @@ __all__ = [
     "LearningKickoffErrorCode",
     "LearningKickoffService",
     "LearningLearnerProfile",
+    "LearningMapArtifact",
+    "LearningMapOutcome",
+    "LearningMapService",
+    "LearningPlan",
     "LearningSourcePolicy",
     "LearningTask",
     "LearningTaskConflictError",
