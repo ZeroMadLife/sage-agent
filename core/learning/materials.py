@@ -7,7 +7,13 @@ import json
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from sage_harness import KnowledgeEvidence, KnowledgePort, TaskDAGNode, TaskDAGPlan
+from sage_harness import (
+    EvidenceBundleItem,
+    KnowledgeEvidence,
+    KnowledgePort,
+    TaskDAGNode,
+    TaskDAGPlan,
+)
 
 from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
 
@@ -23,6 +29,8 @@ class LearningCitation:
     content_hash: str
     page_revision: str
     source_revision: str
+    url: str = ""
+    fetched_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +338,10 @@ def _artifact_for_plan(
                 "来源状态：已由当前 revision 的证据支持。",
                 "",
                 "## 来源",
-                *(f"- {item.title} [{item.citation_id}]" for item in citations),
+                *(
+                    f"- {item.title} [{item.citation_id}]" + (f"({item.url})" if item.url else "")
+                    for item in citations
+                ),
             ]
         )
     else:
@@ -370,6 +381,39 @@ def _artifact_for_plan(
     )
 
 
+def synthesize_research_map(
+    task: LearningTask,
+    plan: LearningPlan,
+    evidence: tuple[EvidenceBundleItem, ...],
+) -> tuple[LearningMapArtifact, tuple[LearningCitation, ...]]:
+    """Build controlled Markdown only from the Research service's validated bundle."""
+    citations = tuple(
+        LearningCitation(
+            citation_id=item.evidence_ref,
+            title=item.title,
+            content=item.content,
+            content_hash=item.content_hash,
+            page_revision=item.content_hash,
+            source_revision=item.content_hash,
+            url=item.canonical_url,
+            fetched_at=str(item.metadata.get("fetched_at", "")),
+        )
+        for item in evidence
+        if item.evidence_ref
+        and item.title
+        and item.content
+        and item.content_hash
+        and item.canonical_url
+        and str(item.metadata.get("fetched_at", ""))
+    )
+    return _artifact_for_plan(
+        task,
+        plan,
+        citations,
+        gap_reason="" if citations else "learning_research_no_evidence",
+    ), citations
+
+
 def _knowledge_query(task: LearningTask) -> str:
     return " ".join(filter(None, (task.topic, task.desired_outcome or "")))
 
@@ -393,4 +437,5 @@ __all__ = [
     "LearningMapService",
     "LearningPlan",
     "LearningUnitStatus",
+    "synthesize_research_map",
 ]

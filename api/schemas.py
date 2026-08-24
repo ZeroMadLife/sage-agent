@@ -2027,6 +2027,71 @@ class LearningErrorResponse(BaseModel):
     detail: LearningErrorDetail
 
 
+class LearningAdvanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_checkpoint_revision: int = Field(ge=0)
+
+
+class LearningArtifactSummaryResponse(BaseModel):
+    artifact_id: str
+    kind: str
+    content_hash: str
+    media_type: str
+    status: str
+    citation_count: int = Field(ge=0)
+    source_revisions: list[str]
+    retention: str
+
+
+class LearningResumeResponse(BaseModel):
+    task_id: str
+    task_revision: int = Field(ge=1)
+    goal_summary: str
+    plan_id: str
+    plan_hash: str
+    dag_hash: str
+    stage: str
+    evidence_count: int = Field(ge=0)
+    citation_count: int = Field(ge=0)
+    gap_codes: list[str]
+    blocking_reason: str
+    next_action: str
+    artifact_ref: str
+    artifact: LearningArtifactSummaryResponse | None = None
+    checkpoint_revision: int = Field(ge=1)
+    fencing_token: int = Field(ge=1)
+
+
+class LearningCitationResponse(BaseModel):
+    evidence_ref: str
+    title: str
+    url: str
+    content_hash: str
+    fetched_at: str
+    page_revision: str
+    source_revision: str
+
+
+class LearningArtifactResponse(BaseModel):
+    artifact_id: str
+    artifact_ref: str
+    kind: str
+    task_id: str
+    task_revision: int = Field(ge=1)
+    plan_id: str
+    content_hash: str
+    media_type: str
+    status: str
+    evidence_refs: list[str]
+    source_revisions: list[str]
+    citations: list[LearningCitationResponse]
+    retention: str
+    content: str
+    created_at: str
+    updated_at: str
+
+
 class LearningKickoffDispatchResponse(BaseModel):
     """Browser-safe acceptance receipt for one canonical learning kickoff."""
 

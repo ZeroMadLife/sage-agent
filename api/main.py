@@ -64,6 +64,7 @@ from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
 from core.learning import (
     LearningActivationService,
+    LearningArtifactStore,
     LearningKickoffService,
     LearningTaskRepository,
     LearningTaskService,
@@ -511,6 +512,9 @@ def create_app(
     )
     app.state.mastery_ledger = MasteryLedger(
         app.state.coding_storage_root / "mastery-ledger.sqlite3"
+    )
+    app.state.learning_artifact_store = LearningArtifactStore(
+        app.state.coding_storage_root / "learning-artifacts.sqlite3"
     )
     learning_task_repository = LearningTaskRepository(
         app.state.coding_storage_root / "learning-tasks.sqlite3"

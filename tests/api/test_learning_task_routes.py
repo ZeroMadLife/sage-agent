@@ -130,7 +130,7 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
     assert set(paths["/api/v1/learning/tasks/{task_id}/activate"]) == {"post"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/activation"]) == {"get"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/kickoff"]) == {"get", "post"}
-    assert set(paths["/api/v1/learning/tasks/{task_id}/resume"]) == {"post"}
+    assert set(paths["/api/v1/learning/tasks/{task_id}/resume"]) == {"get", "post"}
     activation = openapi["components"]["schemas"]["LearningActivationResponse"]
     properties = activation["properties"]
     task = openapi["components"]["schemas"]["LearningTaskResponse"]

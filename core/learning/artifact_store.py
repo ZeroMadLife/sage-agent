@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS learning_checkpoints (
     artifact_ref TEXT NOT NULL,
     lease_owner_id TEXT NOT NULL,
     fencing_token INTEGER NOT NULL,
+    last_advance_key_hash TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     PRIMARY KEY (owner_id, workspace_id, task_id)
 )
@@ -237,10 +238,21 @@ class LearningArtifactStore:
         task: LearningTask,
         plan: LearningPlan,
         lease_owner_id: str,
+        idempotency_key: str = "",
+        artifact_ref: str = "",
+        evidence_count: int = 0,
+        citation_count: int = 0,
+        gap_codes: Sequence[str] = (),
     ) -> LearningCheckpoint:
         _validate_scope(owner_id, workspace_id, task.task_id)
         _validate_plan_binding(task, plan)
         _bounded(lease_owner_id, "lease_owner_id", 256)
+        if min(evidence_count, citation_count) < 0:
+            raise ValueError("checkpoint counts must be non-negative")
+        gaps = tuple(dict.fromkeys(_bounded(item, "gap_code", 160) for item in gap_codes))
+        advance_key_hash = (
+            _sha256(_bounded(idempotency_key, "idempotency_key", 300)) if idempotency_key else ""
+        )
         timestamp = _now()
         with self._transaction() as connection:
             existing = self._checkpoint_row(
@@ -276,9 +288,10 @@ class LearningArtifactStore:
                     owner_id, workspace_id, task_id, task_revision, plan_id, plan_hash,
                     dag_hash, source_policy_revision, capability_revision, checkpoint_revision,
                     stage, next_action, evidence_count, citation_count, gap_codes_json,
-                    blocking_reason, artifact_ref, lease_owner_id, fencing_token, updated_at
+                    blocking_reason, artifact_ref, lease_owner_id, fencing_token,
+                    last_advance_key_hash, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'knowledge_pending', 'read_knowledge',
-                    0, 0, '[]', '', '', ?, 1, ?)""",
+                    ?, ?, ?, '', ?, ?, 1, ?, ?)""",
                 (
                     owner_id,
                     workspace_id,
@@ -289,7 +302,12 @@ class LearningArtifactStore:
                     plan.dag_hash,
                     plan.source_policy_revision,
                     plan.capability_revision,
+                    evidence_count,
+                    citation_count,
+                    _json(gaps),
+                    artifact_ref[:1_000],
                     lease_owner_id,
+                    advance_key_hash,
                     timestamp,
                 ),
             )
@@ -344,6 +362,7 @@ class LearningArtifactStore:
         gap_codes: Sequence[str] = (),
         blocking_reason: str = "",
         artifact_ref: str = "",
+        idempotency_key: str = "",
     ) -> LearningCheckpoint:
         _validate_scope(owner_id, workspace_id, task_id)
         if stage not in _STAGES:
@@ -354,6 +373,9 @@ class LearningArtifactStore:
             raise ValueError("checkpoint counts must be non-negative")
         _bounded(next_action, "next_action", 160)
         gaps = tuple(dict.fromkeys(_bounded(item, "gap_code", 160) for item in gap_codes))
+        advance_key_hash = (
+            _sha256(_bounded(idempotency_key, "idempotency_key", 300)) if idempotency_key else ""
+        )
         with self._transaction() as connection:
             row = self._checkpoint_row(
                 connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task_id
@@ -371,7 +393,7 @@ class LearningArtifactStore:
             cursor = connection.execute(
                 """UPDATE learning_checkpoints SET checkpoint_revision = ?, stage = ?,
                    next_action = ?, evidence_count = ?, citation_count = ?, gap_codes_json = ?,
-                   blocking_reason = ?, artifact_ref = ?, updated_at = ?
+                   blocking_reason = ?, artifact_ref = ?, last_advance_key_hash = ?, updated_at = ?
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
                      AND checkpoint_revision = ? AND lease_owner_id = ? AND fencing_token = ?""",
                 (
@@ -383,6 +405,7 @@ class LearningArtifactStore:
                     _json(gaps),
                     blocking_reason[:500],
                     artifact_ref[:1_000],
+                    advance_key_hash,
                     _now(),
                     owner_id,
                     workspace_id,
@@ -399,6 +422,22 @@ class LearningArtifactStore:
             )
             assert updated is not None
             return _checkpoint(updated)
+
+    def is_advance_replay(
+        self,
+        *,
+        owner_id: str,
+        workspace_id: str,
+        task_id: str,
+        idempotency_key: str,
+    ) -> bool:
+        _validate_scope(owner_id, workspace_id, task_id)
+        key_hash = _sha256(_bounded(idempotency_key, "idempotency_key", 300))
+        with self._connect() as connection:
+            row = self._checkpoint_row(
+                connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task_id
+            )
+        return row is not None and str(row["last_advance_key_hash"]) == key_hash
 
     def save_artifact(
         self,
@@ -601,6 +640,15 @@ class LearningArtifactStore:
             connection.execute(_PLAN_TABLE)
             connection.execute(_ARTIFACT_TABLE)
             connection.execute(_CHECKPOINT_TABLE)
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(learning_checkpoints)")
+            }
+            if "last_advance_key_hash" not in columns:
+                connection.execute(
+                    "ALTER TABLE learning_checkpoints ADD COLUMN "
+                    "last_advance_key_hash TEXT NOT NULL DEFAULT ''"
+                )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:

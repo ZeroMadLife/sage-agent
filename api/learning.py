@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
+from sage_harness import SubagentToolConfig
 
 from api.cloud_dependencies import SESSION_COOKIE, require_cloud_authentication_in_production
 from api.schemas import (
     LearningActivationResponse,
+    LearningAdvanceRequest,
+    LearningArtifactResponse,
     LearningErrorResponse,
     LearningKickoffDispatchRequest,
     LearningKickoffDispatchResponse,
+    LearningResumeResponse,
     LearningSourcePolicyRequest,
     LearningTaskActivationRequest,
     LearningTaskDraftRequest,
@@ -22,14 +26,24 @@ from api.schemas import (
 )
 from core.cloud.auth.repository import CloudRepository
 from core.coding.memory import workspace_id_from_path
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
+from core.harness.knowledge_adapter import CodingKnowledgePort
+from core.harness.learning_scope import LearningReadonlyScopeResolver, LearningScopeConflict
+from core.harness.sandbox_factory import create_coding_sandbox
+from core.harness.subagent_adapter import CodingSubagentExecutor, build_coding_subagent_config
 from core.learning import (
     UNSET,
     LearningActivationError,
     LearningActivationRecord,
     LearningActivationService,
+    LearningArtifactStore,
+    LearningExecutionContext,
+    LearningExecutionService,
     LearningKickoffDispatchRecord,
     LearningKickoffError,
     LearningKickoffService,
+    LearningMapService,
+    LearningResearchService,
     LearningSourcePolicy,
     LearningTask,
     LearningTaskConflictError,
@@ -38,6 +52,11 @@ from core.learning import (
     LearningTaskPatch,
     LearningTaskService,
     UnsetValue,
+)
+from core.learning.artifact_store import (
+    LearningArtifactNotFoundError,
+    LearningArtifactStoreError,
+    LearningResumeNotFoundError,
 )
 
 router = APIRouter(
@@ -333,6 +352,125 @@ async def resume_learning_task(
     return _activation_response(receipt)
 
 
+@router.post(
+    "/tasks/{task_id}/advance",
+    response_model=LearningResumeResponse,
+    responses={409: {"model": LearningErrorResponse}, 503: {"model": LearningErrorResponse}},
+)
+async def advance_learning_task(
+    task_id: str,
+    payload: LearningAdvanceRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
+) -> LearningResumeResponse:
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = await _owner_id(request)
+    workspace_id = _workspace_id(request)
+    try:
+        task = await asyncio.to_thread(
+            _service(request).get,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+        execution, context = await _execution_service(
+            request, owner_id=owner_id, workspace_id=workspace_id, task=task
+        )
+        summary = await execution.advance(
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task=task,
+            context=context,
+            expected_checkpoint_revision=payload.expected_checkpoint_revision,
+            idempotency_key=idempotency_key,
+        )
+    except LearningTaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="learning task not found") from exc
+    except LearningKickoffError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)[:200]},
+        ) from exc
+    except (LearningScopeConflict, LearningArtifactStoreError) as exc:
+        raise _learning_execution_http_error(exc) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return LearningResumeResponse.model_validate(asdict(summary))
+
+
+@router.get(
+    "/tasks/{task_id}/resume",
+    response_model=LearningResumeResponse,
+    responses={404: {"model": LearningErrorResponse}, 409: {"model": LearningErrorResponse}},
+)
+async def get_learning_resume(
+    task_id: str,
+    request: Request,
+    response: Response,
+) -> LearningResumeResponse:
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = await _owner_id(request)
+    workspace_id = _workspace_id(request)
+    try:
+        task = await asyncio.to_thread(
+            _service(request).get,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+        scope = await asyncio.to_thread(
+            _scope_resolver(request).resolve,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+        summary = _artifact_store(request).resume(
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task=task,
+            capability_revision=scope.capability_revision,
+        )
+    except LearningTaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="learning task not found") from exc
+    except (LearningScopeConflict, LearningArtifactStoreError) as exc:
+        raise _learning_execution_http_error(exc) from exc
+    return LearningResumeResponse.model_validate(asdict(summary))
+
+
+@router.get(
+    "/tasks/{task_id}/artifacts/{artifact_id}",
+    response_model=LearningArtifactResponse,
+    responses={404: {"model": LearningErrorResponse}, 409: {"model": LearningErrorResponse}},
+)
+async def get_learning_artifact(
+    task_id: str,
+    artifact_id: str,
+    request: Request,
+    response: Response,
+) -> LearningArtifactResponse:
+    response.headers["Cache-Control"] = "no-store"
+    owner_id = await _owner_id(request)
+    workspace_id = _workspace_id(request)
+    try:
+        await asyncio.to_thread(
+            _scope_resolver(request).resolve,
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            task_id=task_id,
+        )
+        artifact = _artifact_store(request).read_artifact(
+            owner_id=owner_id,
+            workspace_id=workspace_id,
+            artifact_ref=f"sage://learning/artifacts/{artifact_id}",
+        )
+        if artifact.task_id != task_id:
+            raise LearningArtifactNotFoundError("Learning Artifact not found")
+    except (LearningScopeConflict, LearningArtifactStoreError, ValueError) as exc:
+        raise _learning_execution_http_error(exc) from exc
+    return LearningArtifactResponse.model_validate(asdict(artifact))
+
+
 def _service(request: Request) -> LearningTaskService:
     service = getattr(request.app.state, "learning_task_service", None)
     if not isinstance(service, LearningTaskService):
@@ -352,6 +490,124 @@ def _kickoff_service(request: Request) -> LearningKickoffService:
     if not isinstance(service, LearningKickoffService):
         raise HTTPException(status_code=503, detail="learning kickoff service is unavailable")
     return service
+
+
+def _artifact_store(request: Request) -> LearningArtifactStore:
+    store = getattr(request.app.state, "learning_artifact_store", None)
+    if not isinstance(store, LearningArtifactStore):
+        raise HTTPException(status_code=503, detail="learning artifact store is unavailable")
+    return store
+
+
+def _scope_resolver(request: Request) -> LearningReadonlyScopeResolver:
+    resolver = getattr(request.app.state, "learning_readonly_scope_resolver", None)
+    if not isinstance(resolver, LearningReadonlyScopeResolver):
+        raise HTTPException(status_code=503, detail="learning scope is unavailable")
+    return resolver
+
+
+async def _execution_service(
+    request: Request,
+    *,
+    owner_id: str,
+    workspace_id: str,
+    task: LearningTask,
+) -> tuple[LearningExecutionService, LearningExecutionContext]:
+    scope = await asyncio.to_thread(
+        _scope_resolver(request).resolve,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        task_id=task.task_id,
+    )
+    kickoff = await asyncio.to_thread(
+        _kickoff_service(request).get,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        task_id=task.task_id,
+    )
+    from api.coding import _rehydrate_coding_runtime
+
+    runtime = await _rehydrate_coding_runtime(request, scope.session_id)
+    knowledge = CodingKnowledgePort(runtime)
+    knowledge_port = knowledge if scope.knowledge_policy != "disabled" else None
+    web_search = (
+        getattr(request.app.state, "coding_web_search_port", None)
+        if scope.web_policy == "allowed_when_insufficient"
+        else None
+    )
+    web_fetch = (
+        getattr(request.app.state, "coding_web_fetch_port", None)
+        if scope.web_policy == "allowed_when_insufficient"
+        else None
+    )
+    evidence = CodingEvidenceBundlePort(runtime, authorized_parent_run_id=kickoff.turn_run_id)
+    config = build_coding_subagent_config(
+        knowledge_port,
+        web_search,
+        web_fetch,
+        evidence_bundle_port=evidence,
+        base_config=SubagentToolConfig(),
+    )
+    research_profiles = tuple(profile for profile in config.profiles if profile.name == "research")
+    config = replace(
+        config,
+        allowed_types=frozenset({"research"}) if research_profiles else frozenset(),
+        profiles=research_profiles,
+    )
+    sandbox = create_coding_sandbox(
+        runtime.workspace,
+        thread_id=runtime.session_id,
+        app_env=str(getattr(request.app.state, "cloud_app_env", "development")),
+        provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
+        allow_host_shell=False,
+        allow_writes=False,
+        container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
+    )
+    executor = CodingSubagentExecutor(
+        runtime,
+        knowledge_port=knowledge_port,
+        web_search_port=web_search,
+        web_fetch_port=web_fetch,
+        evidence_bundle_port=evidence,
+        sandbox=sandbox,
+        allow_shell_network=False,
+        web_policy_domains=scope.domains,
+        web_policy_freshness="year" if scope.freshness == "current" else "all",
+        learning_scope=scope,
+        learning_scope_revalidator=lambda: _scope_resolver(request).revalidate(scope),
+    )
+    research = LearningResearchService(
+        subagent_executor=executor,
+        subagent_config=config,
+        evidence_bundle_port=evidence,
+    )
+    return (
+        LearningExecutionService(
+            store=_artifact_store(request),
+            map_service=LearningMapService(knowledge_port=knowledge_port),
+            research_service=research,
+        ),
+        LearningExecutionContext(
+            thread_id=scope.session_id,
+            parent_run_id=kickoff.turn_run_id,
+            workspace_path=str(runtime.workspace.root),
+            capability_revision=scope.capability_revision,
+            catalog_revision=scope.catalog_revision,
+            allowed_capabilities=frozenset(scope.allowed_capabilities),
+            remaining_token_budget=24_000,
+        ),
+    )
+
+
+def _learning_execution_http_error(exc: Exception) -> HTTPException:
+    code = str(getattr(exc, "code", "learning_artifact_not_found"))
+    not_found = isinstance(exc, LearningResumeNotFoundError | LearningArtifactNotFoundError)
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=404, detail={"code": code, "message": "not found"})
+    return HTTPException(
+        status_code=404 if not_found else 409,
+        detail={"code": code, "message": str(exc)[:200]},
+    )
 
 
 async def _owner_id(request: Request) -> str:

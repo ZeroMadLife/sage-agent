@@ -24,8 +24,11 @@ _KIND_PRIORITY = {"web_fetch": 0, "knowledge": 1, "web_search": 2}
 class CodingEvidenceBundlePort(EvidenceBundlePort):
     """Resolve only evidence already authorized by successful child receipts."""
 
-    def __init__(self, runtime: CodingRuntime) -> None:
+    def __init__(
+        self, runtime: CodingRuntime, *, authorized_parent_run_id: str | None = None
+    ) -> None:
         self._runtime = runtime
+        self._authorized_parent_run_id = authorized_parent_run_id
 
     @property
     def available(self) -> bool:
@@ -42,7 +45,10 @@ class CodingEvidenceBundlePort(EvidenceBundlePort):
     ) -> EvidenceBundle:
         if thread_id != self._runtime.session_id:
             raise PermissionError("evidence thread does not match adapter scope")
-        if parent_run_id != self._runtime.active_run_id:
+        if parent_run_id not in {
+            self._runtime.active_run_id,
+            self._authorized_parent_run_id,
+        }:
             raise PermissionError("evidence parent run is not active")
         if not _MIN_TOKEN_BUDGET <= token_budget <= _MAX_TOKEN_BUDGET:
             raise ValueError("evidence token_budget must be between 256 and 20000")

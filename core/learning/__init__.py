@@ -13,6 +13,7 @@ from core.learning.artifact_store import (
     LearningResumeSummary,
     StoredLearningArtifact,
 )
+from core.learning.execution import LearningExecutionContext, LearningExecutionService
 from core.learning.kickoff import (
     LearningKickoffDispatchRecord,
     LearningKickoffError,
@@ -81,6 +82,8 @@ __all__ = [
     "LearningCitation",
     "LearningClarification",
     "LearningClarificationQuestion",
+    "LearningExecutionContext",
+    "LearningExecutionService",
     "LearningGoalRef",
     "LearningKickoffDispatchRecord",
     "LearningKickoffError",
