@@ -134,6 +134,10 @@ function currentSessionLease(): DesktopSessionLease {
   return { session, revision: sessionRevision }
 }
 
+function currentSessionLeaseOrNull(): DesktopSessionLease | null {
+  return session ? { session, revision: sessionRevision } : null
+}
+
 function endpointUrl(active: DesktopSession, path: string): string {
   if (!path.startsWith('/')) throw new Error('desktop_path_rejected')
   return `${active.endpoint}${path}`
@@ -160,16 +164,18 @@ async function recoverSession(
 ): Promise<DesktopSessionLease | null> {
   if (!isActive()) return null
   if (sessionRevision !== expectedRevision) {
-    return isActive() ? currentSessionLease() : null
+    const current = currentSessionLeaseOrNull()
+    if (current) return isActive() ? current : null
+    expectedRevision = sessionRevision
   }
   const snapshot = await invoke<DesktopHostSnapshot>('desktop_host_status')
   if (!isActive()) return null
   publishConnectionState('degraded')
   const next = snapshot.state === 'ready' ? snapshot.session : null
   if (!replaceSessionIfRevision(next, expectedRevision)) {
-    return isActive() ? currentSessionLease() : null
+    return isActive() ? currentSessionLeaseOrNull() : null
   }
-  return currentSessionLease()
+  return currentSessionLeaseOrNull()
 }
 
 async function desktopFetchWithSession(
@@ -514,7 +520,11 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
         this.sessionLeaseRevision,
         () => !this.stopped && expectedEpoch === this.connectionEpoch,
       )
-      if (!refreshed || this.stopped || expectedEpoch !== this.connectionEpoch) return
+      if (this.stopped || expectedEpoch !== this.connectionEpoch) return
+      if (!refreshed) {
+        this.scheduleReconnect()
+        return
+      }
       await this.connect(expectedEpoch, refreshed)
     } catch {
       if (this.stopped || expectedEpoch !== this.connectionEpoch) return
@@ -544,7 +554,7 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
     this.clearReconnectTimer()
     this.clearStableTimer()
     if (clearSession) replaceSessionIfRevision(null, this.sessionLeaseRevision)
-    publishConnectionState('degraded')
+    if (clearSession) publishConnectionState('degraded')
     this.dispatchEvent(new CloseEvent('close', { code, reason, wasClean }))
   }
 }

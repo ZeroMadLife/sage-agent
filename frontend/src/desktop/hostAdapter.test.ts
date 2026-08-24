@@ -846,10 +846,14 @@ describe('DesktopHostAdapter', () => {
       return socket
     })
     vi.stubGlobal('WebSocket', websocket)
-    const { desktopHostStatus, desktopWebSocket, desktopFetch } = await import('./hostAdapter')
+    const {
+      desktopHostStatus, desktopWebSocket, desktopFetch, onDesktopConnectionState,
+    } = await import('./hostAdapter')
     await desktopHostStatus()
     const connection = await desktopWebSocket('/desktop/probe/ws')
     const terminal = vi.fn()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
     connection.addEventListener('close', terminal)
 
     for (const delay of [100, 200, 400]) {
@@ -862,6 +866,7 @@ describe('DesktopHostAdapter', () => {
 
     expect(websocket).toHaveBeenCalledTimes(4)
     expect(terminal).toHaveBeenCalledOnce()
+    expect(states).toContain('degraded')
     vi.stubGlobal('fetch', vi.fn())
     await expect(desktopFetch('/capabilities')).rejects.toThrow('desktop_session_unavailable')
     vi.useRealTimers()
@@ -910,5 +915,119 @@ describe('DesktopHostAdapter', () => {
     expect(websocket).toHaveBeenCalledTimes(1)
     expect(sockets[0].close).toHaveBeenCalledOnce()
     vi.useRealTimers()
+  })
+
+  it('rechecks host status after a transient null session revision and installs the new socket', async () => {
+    vi.useFakeTimers()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'starting', reasonCode: null, action: null, session: null,
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const sockets: Array<{ emit: (type: string, event: Event) => void }> = []
+    const websocket = vi.fn(function WebSocketMock() {
+      const listeners = new Map<string, Array<(event: Event) => void>>()
+      const socket = {
+        readyState: WebSocket.OPEN,
+        addEventListener(type: string, listener: (event: Event) => void) {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener])
+        },
+        emit(type: string, event: Event) {
+          for (const listener of listeners.get(type) ?? []) listener(event)
+        },
+        close: vi.fn(), send: vi.fn(),
+      }
+      sockets.push(socket)
+      return socket
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const { desktopHostStatus, desktopWebSocket } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const connection = await desktopWebSocket('/desktop/probe/ws')
+
+    sockets[0].emit('close', new CloseEvent('close', { wasClean: false, code: 1006 }))
+    await vi.advanceTimersByTimeAsync(100)
+    await vi.advanceTimersByTimeAsync(200)
+
+    expect(invoke).toHaveBeenCalledTimes(3)
+    expect(websocket).toHaveBeenCalledTimes(2)
+    expect(websocket).toHaveBeenLastCalledWith(
+      'ws://127.0.0.1:49153/desktop/probe/ws',
+      ['sage.v1', 'sage-bearer.new'],
+    )
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it('does not publish global degradation for user close or session switch cleanup', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'token', instanceId: 'instance' },
+    })
+    const websocket = vi.fn(function WebSocketMock() {
+      return {
+        readyState: WebSocket.OPEN,
+        addEventListener: vi.fn(), close: vi.fn(), send: vi.fn(),
+      }
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const {
+      desktopHostStatus, desktopWebSocket, desktopSocket, onDesktopConnectionState,
+    } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+
+    const direct = await desktopWebSocket('/desktop/probe/ws')
+    direct.close()
+    const switched = desktopSocket('/desktop/probe/ws')
+    await Promise.resolve()
+    await Promise.resolve()
+    switched.close()
+
+    expect(states).not.toContain('degraded')
+  })
+
+  it('keeps CodingStream session switch and unmount cleanup local to the stream', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'token', instanceId: 'instance' },
+    })
+    const websocket = vi.fn(function WebSocketMock() {
+      return {
+        readyState: WebSocket.OPEN,
+        addEventListener: vi.fn(), close: vi.fn(), send: vi.fn(),
+      }
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const {
+      desktopHostStatus, desktopSocket, onDesktopConnectionState,
+    } = await import('./hostAdapter')
+    const { CodingStream } = await import('../stores/codingStream')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+    const stream = new CodingStream({
+      createSocket: desktopSocket,
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+    })
+
+    stream.connect('coding_1', 'ws://desktop/desktop/coding/coding_1')
+    await Promise.resolve()
+    await Promise.resolve()
+    stream.connect('coding_2', 'ws://desktop/desktop/coding/coding_2')
+    await Promise.resolve()
+    await Promise.resolve()
+    stream.stop()
+
+    expect(states).not.toContain('degraded')
   })
 })

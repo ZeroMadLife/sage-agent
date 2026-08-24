@@ -90,6 +90,7 @@ struct HostInner {
     diagnostic_log: Option<DiagnosticLog>,
     disk: HostDiskState,
     launch_generation: u64,
+    configuration_restart_in_progress: bool,
 }
 
 impl Default for HostInner {
@@ -103,6 +104,7 @@ impl Default for HostInner {
             diagnostic_log: None,
             disk: HostDiskState::default(),
             launch_generation: 0,
+            configuration_restart_in_progress: false,
         }
     }
 }
@@ -303,7 +305,7 @@ fn schedule_launch(
         match launch_once(&app, &shared, &data_dir, generation).await {
             Ok(receiver) => monitor(app, shared, data_dir, receiver, generation).await,
             Err(reason) if !shared.is_stopping() => {
-                match record_launch_failure(&shared, reason, unix_seconds()) {
+                match record_launch_failure(&shared, generation, reason, unix_seconds()) {
                     LaunchFailureDisposition::RetryAfter(seconds) => schedule_launch(
                         app,
                         shared,
@@ -315,6 +317,7 @@ fn schedule_launch(
                         schedule_launch(app, shared, data_dir, Duration::from_secs(1), generation)
                     }
                     LaunchFailureDisposition::Blocked => {}
+                    LaunchFailureDisposition::Superseded => {}
                 }
             }
             Err(_) => {}
@@ -541,7 +544,7 @@ fn handle_crash(
         return;
     }
     if let LaunchFailureDisposition::RetryAfter(seconds) =
-        record_launch_failure(&shared, reason, unix_seconds())
+        record_launch_failure(&shared, generation, reason, unix_seconds())
     {
         schedule_launch(
             app,
@@ -555,6 +558,7 @@ fn handle_crash(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LaunchFailureDisposition {
+    Superseded,
     RecoverableConfiguration,
     RetryAfter(u64),
     Blocked,
@@ -582,12 +586,19 @@ fn recoverable_configuration_action(reason: &str) -> Option<&'static str> {
 
 fn record_launch_failure(
     shared: &SharedHostState,
+    generation: u64,
     reason: &'static str,
     now: u64,
 ) -> LaunchFailureDisposition {
+    if reason == "desktop_launch_superseded" {
+        return LaunchFailureDisposition::Superseded;
+    }
     if let Some(action) = recoverable_configuration_action(reason) {
         let persistence_failed = {
             let mut inner = shared.0.lock().expect("host state poisoned");
+            if inner.launch_generation != generation {
+                return LaunchFailureDisposition::Superseded;
+            }
             inner.pid = None;
             inner.child = None;
             inner.snapshot = HostSnapshot::problem("blocked", reason, action);
@@ -608,6 +619,9 @@ fn record_launch_failure(
     }
     let (delay, persistence_failed) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
+        if inner.launch_generation != generation {
+            return LaunchFailureDisposition::Superseded;
+        }
         inner.pid = None;
         inner.child = None;
         inner.disk.orphan = None;
@@ -679,14 +693,123 @@ pub fn restart_for_configuration(app: AppHandle, shared: SharedHostState) {
         );
         return;
     };
-    let generation = next_launch_generation(&shared);
-    set_snapshot(&shared, HostSnapshot::starting());
+    let Some(request) = begin_configuration_restart(&shared) else {
+        return;
+    };
     tauri::async_runtime::spawn(async move {
-        let stopped = stop_sidecar(&shared).await;
-        if stopped && !shared.is_stopping() && is_current_generation(&shared, generation) {
-            schedule_launch(app, shared, data_dir, Duration::ZERO, generation);
+        let stopped = stop_sidecar_for_configuration(&shared, &request).await;
+        if !stopped {
+            mark_configuration_stop_failed(&shared, &request);
+        }
+        let completed = finish_configuration_restart(&shared, request.generation);
+        if stopped
+            && completed
+            && !shared.is_stopping()
+            && is_current_generation(&shared, request.generation)
+        {
+            schedule_launch(app, shared, data_dir, Duration::ZERO, request.generation);
         }
     });
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConfigurationRestartRequest {
+    generation: u64,
+    orphan: Option<OrphanRecord>,
+}
+
+fn begin_configuration_restart(shared: &SharedHostState) -> Option<ConfigurationRestartRequest> {
+    let mut inner = shared.0.lock().expect("host state poisoned");
+    inner.snapshot = HostSnapshot::starting();
+    if inner.configuration_restart_in_progress {
+        return None;
+    }
+    inner.launch_generation = inner.launch_generation.wrapping_add(1);
+    inner.configuration_restart_in_progress = true;
+    Some(ConfigurationRestartRequest {
+        generation: inner.launch_generation,
+        orphan: inner.disk.orphan.clone(),
+    })
+}
+
+async fn stop_sidecar_for_configuration(
+    shared: &SharedHostState,
+    request: &ConfigurationRestartRequest,
+) -> bool {
+    let owned = shared.clone();
+    let request = request.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        stop_sidecar_blocking_for_configuration(&owned, &request)
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn stop_sidecar_blocking_for_configuration(
+    shared: &SharedHostState,
+    request: &ConfigurationRestartRequest,
+) -> bool {
+    let child = {
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        if inner.launch_generation != request.generation
+            || !inner.configuration_restart_in_progress
+            || inner.disk.orphan != request.orphan
+        {
+            return false;
+        }
+        inner.child.take()
+    };
+    if let Some(record) = request.orphan.as_ref() {
+        let _child = child;
+        finish_runtime_termination_for_generation(
+            shared,
+            record,
+            request.generation,
+            terminate_runtime(record),
+        )
+    } else {
+        let stopped = child.is_none();
+        drop(child);
+        if stopped {
+            let mut inner = shared.0.lock().expect("host state poisoned");
+            if inner.launch_generation != request.generation
+                || !inner.configuration_restart_in_progress
+                || inner.disk.orphan.is_some()
+            {
+                return false;
+            }
+            inner.pid = None;
+        }
+        stopped
+    }
+}
+
+fn finish_configuration_restart(shared: &SharedHostState, generation: u64) -> bool {
+    let mut inner = shared.0.lock().expect("host state poisoned");
+    if inner.launch_generation != generation || !inner.configuration_restart_in_progress {
+        return false;
+    }
+    inner.configuration_restart_in_progress = false;
+    true
+}
+
+fn mark_configuration_stop_failed(shared: &SharedHostState, request: &ConfigurationRestartRequest) {
+    {
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        if inner.launch_generation != request.generation
+            || !inner.configuration_restart_in_progress
+            || inner.disk.orphan != request.orphan
+        {
+            return;
+        }
+        inner.snapshot = HostSnapshot::termination_failure();
+    }
+    let _ = append_diagnostic(
+        shared,
+        "sidecar_stop_failed",
+        "blocked",
+        "desktop_sidecar_stop_failed",
+    );
 }
 
 async fn stop_sidecar(shared: &SharedHostState) -> bool {
@@ -718,16 +841,36 @@ fn finish_runtime_termination(
     record: &OrphanRecord,
     result: std::io::Result<crate::lifecycle::TerminationOutcome>,
 ) -> bool {
+    finish_runtime_termination_guarded(shared, record, None, result)
+}
+
+fn finish_runtime_termination_for_generation(
+    shared: &SharedHostState,
+    record: &OrphanRecord,
+    generation: u64,
+    result: std::io::Result<crate::lifecycle::TerminationOutcome>,
+) -> bool {
+    finish_runtime_termination_guarded(shared, record, Some(generation), result)
+}
+
+fn finish_runtime_termination_guarded(
+    shared: &SharedHostState,
+    record: &OrphanRecord,
+    generation: Option<u64>,
+    result: std::io::Result<crate::lifecycle::TerminationOutcome>,
+) -> bool {
     let (stopped, persistence_failed) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
-        inner.pid = None;
-        let stopped = result.is_ok() && inner.disk.orphan.as_ref() == Some(record);
+        if generation.is_some_and(|expected| inner.launch_generation != expected)
+            || inner.disk.orphan.as_ref() != Some(record)
+        {
+            return false;
+        }
+        let stopped = matches!(result, Ok(crate::lifecycle::TerminationOutcome::Stopped));
         if stopped {
+            inner.pid = None;
             inner.disk.orphan = None;
         } else {
-            if inner.disk.orphan.is_none() {
-                inner.disk.orphan = Some(record.clone());
-            }
             inner.snapshot = HostSnapshot::termination_failure();
         }
         let persistence_failed = persist_disk_locked(&inner).is_err();
@@ -903,9 +1046,24 @@ fn clean_known_orphan(disk: &mut HostDiskState) -> std::io::Result<()> {
     let Some(record) = disk.orphan.as_ref() else {
         return Ok(());
     };
-    terminate_runtime(record)?;
-    disk.orphan = None;
-    Ok(())
+    let outcome = terminate_runtime(record)?;
+    apply_startup_termination_outcome(disk, outcome)
+}
+
+fn apply_startup_termination_outcome(
+    disk: &mut HostDiskState,
+    outcome: crate::lifecycle::TerminationOutcome,
+) -> std::io::Result<()> {
+    match outcome {
+        crate::lifecycle::TerminationOutcome::Stopped => {
+            disk.orphan = None;
+            Ok(())
+        }
+        crate::lifecycle::TerminationOutcome::IdentityChanged
+        | crate::lifecycle::TerminationOutcome::KillSent => Err(std::io::Error::other(
+            "desktop sidecar stop was not verified",
+        )),
+    }
 }
 
 fn persist_disk_locked(inner: &HostInner) -> std::io::Result<()> {
@@ -972,10 +1130,12 @@ fn append_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_diagnostic, finish_runtime_termination, origin_for_profile,
-        post_handshake_reject_reason, record_launch_failure, runtime_origin,
-        DesktopStateRepository, DiagnosticLog, HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN,
-        PRODUCTION_ORIGIN,
+        append_diagnostic, apply_startup_termination_outcome, begin_configuration_restart,
+        finish_configuration_restart, finish_runtime_termination,
+        finish_runtime_termination_for_generation, mark_configuration_stop_failed,
+        origin_for_profile, post_handshake_reject_reason, record_launch_failure, runtime_origin,
+        ConfigurationRestartRequest, DesktopStateRepository, DiagnosticLog, HostSnapshot,
+        SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
     };
     use crate::lifecycle::{OrphanRecord, TerminationOutcome};
     use tauri_plugin_shell::process::CommandEvent;
@@ -1074,7 +1234,7 @@ mod tests {
                     Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
             }
 
-            let retry = record_launch_failure(&shared, reason, 100);
+            let retry = record_launch_failure(&shared, 0, reason, 100);
 
             assert!(retry.is_recoverable_configuration());
             let persisted: serde_json::Value =
@@ -1087,6 +1247,223 @@ mod tests {
             let inner = shared.0.lock().unwrap();
             assert_eq!(inner.snapshot.state, "blocked");
             assert_eq!(inner.snapshot.reason_code, Some(reason));
+        }
+    }
+
+    #[test]
+    fn superseded_launch_failure_does_not_mutate_new_generation_ownership_or_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 99,
+            start_time: 200,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.launch_generation = 2;
+            inner.pid = Some(record.pid);
+            inner.disk.orphan = Some(record.clone());
+            inner.snapshot = HostSnapshot::problem("ready", "new_generation_ready", "none");
+        }
+
+        let _disposition = record_launch_failure(&shared, 1, "desktop_launch_superseded", 100);
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.pid, Some(record.pid));
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&record));
+        assert_eq!(
+            serde_json::to_value(&inner.disk.crash_budget).unwrap(),
+            serde_json::json!({ "crash_timestamps": [] })
+        );
+        assert_eq!(inner.snapshot.reason_code, Some("new_generation_ready"));
+    }
+
+    #[test]
+    fn old_generation_failure_after_new_ready_is_cancelled_before_accounting() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 99,
+            start_time: 200,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.launch_generation = 2;
+            inner.pid = Some(record.pid);
+            inner.disk.orphan = Some(record.clone());
+            inner.snapshot = HostSnapshot::problem("ready", "new_generation_ready", "none");
+        }
+
+        let disposition = record_launch_failure(&shared, 1, "desktop_sidecar_spawn_failed", 100);
+
+        assert_eq!(disposition, super::LaunchFailureDisposition::Superseded);
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.pid, Some(record.pid));
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&record));
+        assert_eq!(inner.snapshot.reason_code, Some("new_generation_ready"));
+    }
+
+    #[test]
+    fn rapid_configuration_restarts_share_one_stop_owner() {
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        shared.0.lock().unwrap().disk.orphan = Some(record.clone());
+
+        let first = begin_configuration_restart(&shared).unwrap();
+        let second = begin_configuration_restart(&shared);
+
+        assert_eq!(first.orphan.as_ref(), Some(&record));
+        assert!(second.is_none());
+        assert_eq!(shared.0.lock().unwrap().launch_generation, first.generation);
+        assert!(finish_configuration_restart(&shared, first.generation));
+    }
+
+    #[test]
+    fn current_configuration_stop_failure_blocks_but_late_failure_is_a_noop() {
+        let shared = SharedHostState::default();
+        let current = begin_configuration_restart(&shared).unwrap();
+
+        mark_configuration_stop_failed(&shared, &current);
+        assert_eq!(
+            shared.0.lock().unwrap().snapshot.reason_code,
+            Some("desktop_sidecar_stop_failed")
+        );
+
+        let stale = ConfigurationRestartRequest {
+            generation: current.generation.wrapping_sub(1),
+            orphan: current.orphan.clone(),
+        };
+        shared.0.lock().unwrap().snapshot =
+            HostSnapshot::problem("ready", "new_generation_ready", "none");
+        mark_configuration_stop_failed(&shared, &stale);
+        assert_eq!(
+            shared.0.lock().unwrap().snapshot.reason_code,
+            Some("new_generation_ready")
+        );
+    }
+
+    #[test]
+    fn late_generation_stop_completion_is_a_noop_even_for_the_same_orphan() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.launch_generation = 2;
+            inner.pid = Some(record.pid);
+            inner.disk.orphan = Some(record.clone());
+            inner.snapshot = HostSnapshot::problem("ready", "new_generation_ready", "none");
+        }
+
+        assert!(!finish_runtime_termination_for_generation(
+            &shared,
+            &record,
+            1,
+            Ok(TerminationOutcome::Stopped),
+        ));
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.pid, Some(record.pid));
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&record));
+        assert_eq!(inner.snapshot.reason_code, Some("new_generation_ready"));
+    }
+
+    #[test]
+    fn late_stop_completion_is_a_noop_for_new_orphan_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let old = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        let current = OrphanRecord {
+            pid: 99,
+            start_time: 200,
+            executable: old.executable.clone(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.pid = Some(current.pid);
+            inner.disk.orphan = Some(current.clone());
+            inner.snapshot = HostSnapshot::problem("ready", "new_generation_ready", "none");
+        }
+
+        assert!(!finish_runtime_termination(
+            &shared,
+            &old,
+            Ok(TerminationOutcome::Stopped),
+        ));
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.pid, Some(current.pid));
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&current));
+        assert_eq!(inner.snapshot.reason_code, Some("new_generation_ready"));
+    }
+
+    #[test]
+    fn identity_changed_is_not_a_verified_stop_and_keeps_runtime_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.pid = Some(record.pid);
+            inner.disk.orphan = Some(record.clone());
+        }
+
+        assert!(!finish_runtime_termination(
+            &shared,
+            &record,
+            Ok(TerminationOutcome::IdentityChanged),
+        ));
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&record));
+        assert_eq!(inner.snapshot.state, "blocked");
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_sidecar_stop_failed")
+        );
+    }
+
+    #[test]
+    fn startup_cleanup_preserves_orphan_without_a_verified_stopped_outcome() {
+        for outcome in [
+            TerminationOutcome::IdentityChanged,
+            TerminationOutcome::KillSent,
+        ] {
+            let record = OrphanRecord {
+                pid: 42,
+                start_time: 100,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            };
+            let mut disk = crate::state_repository::HostDiskState {
+                orphan: Some(record.clone()),
+                ..Default::default()
+            };
+
+            assert!(apply_startup_termination_outcome(&mut disk, outcome).is_err());
+            assert_eq!(disk.orphan.as_ref(), Some(&record));
         }
     }
 

@@ -655,6 +655,122 @@ fn rotate_cleanup_failure_is_durable_and_restart_finishes_reconciliation() {
 }
 
 #[test]
+fn active_rotate_cleanup_failure_reports_runtime_invalidation() {
+    let root = tempfile::tempdir().unwrap();
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    service.choose_mode(OnboardingMode::Local).unwrap();
+    service.select_workspace(&workspace).unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-old".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+    service.set_active_provider(&provider.provider_id).unwrap();
+    assert!(service.snapshot().providers[0].is_active);
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+
+    let outcome = service.rotate_provider_key_operation(&provider.provider_id, "test-secret-new");
+
+    assert!(outcome.runtime_invalidated);
+    assert_eq!(
+        outcome.result.unwrap_err().reason_code,
+        "provider_reconciliation_required"
+    );
+    assert!(service.runtime_configuration().is_err());
+}
+
+#[test]
+fn active_disconnect_cleanup_failure_reports_runtime_invalidation() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    service.choose_mode(OnboardingMode::Local).unwrap();
+    service.select_workspace(&workspace).unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-live".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+    service.set_active_provider(&provider.provider_id).unwrap();
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+
+    let outcome = service.disconnect_provider_operation(&provider.provider_id);
+
+    assert!(outcome.runtime_invalidated);
+    assert_eq!(
+        outcome.result.unwrap_err().reason_code,
+        "provider_reconciliation_required"
+    );
+    assert!(service.snapshot().active_provider_id.is_none());
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    assert!(service.runtime_configuration().is_err());
+}
+
+#[test]
+fn active_delete_cleanup_failure_reports_runtime_invalidation() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    service.choose_mode(OnboardingMode::Local).unwrap();
+    service.select_workspace(&workspace).unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-live".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+    service.set_active_provider(&provider.provider_id).unwrap();
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+
+    let outcome = service.delete_provider_operation(&provider.provider_id);
+
+    assert!(outcome.runtime_invalidated);
+    assert_eq!(
+        outcome.result.unwrap_err().reason_code,
+        "provider_reconciliation_required"
+    );
+    assert!(service.snapshot().active_provider_id.is_none());
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    assert!(service.runtime_configuration().is_err());
+}
+
+#[test]
 fn disconnect_metadata_failure_reconciles_without_deleting_the_live_secret() {
     let root = tempfile::tempdir().unwrap();
     let data_dir = root.path().join("data");

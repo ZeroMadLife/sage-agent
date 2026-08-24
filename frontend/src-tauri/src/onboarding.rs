@@ -271,6 +271,11 @@ struct ProviderOperation {
     previous_key_ref: Option<String>,
 }
 
+pub struct ProviderOperationOutcome<T> {
+    pub result: Result<T, DesktopActionError>,
+    pub runtime_invalidated: bool,
+}
+
 pub struct OnboardingService {
     database_path: PathBuf,
     connection: Connection,
@@ -354,7 +359,15 @@ pub fn desktop_onboarding_action(
             OnboardingRuntime::Ready(_) => unreachable!(),
         };
     };
-    let restart_required = apply_action(service, action)?;
+    let restart_required = match apply_action(service, action) {
+        Ok(value) => value,
+        Err(failure) => {
+            drop(runtime);
+            return Err(complete_action_failure(failure, || {
+                crate::supervisor::restart_for_configuration(app, host.inner().clone());
+            }));
+        }
+    };
     let snapshot = service.snapshot();
     drop(runtime);
     if restart_required {
@@ -366,7 +379,7 @@ pub fn desktop_onboarding_action(
 fn apply_action(
     service: &mut OnboardingService,
     action: DesktopOnboardingAction,
-) -> Result<bool, DesktopActionError> {
+) -> Result<bool, ActionFailure> {
     match action {
         DesktopOnboardingAction::ChooseMode { mode } => {
             service.choose_mode(mode)?;
@@ -409,24 +422,53 @@ fn apply_action(
             provider_id,
             api_key,
         } => {
-            service.rotate_provider_key(&provider_id, api_key.expose())?;
-            Ok(service.is_active_provider(&provider_id)?)
+            operation_restart(service.rotate_provider_key_operation(&provider_id, api_key.expose()))
         }
         DesktopOnboardingAction::DisconnectProvider { provider_id } => {
-            let was_active = service.is_active_provider(&provider_id)?;
-            service.disconnect_provider(&provider_id)?;
-            Ok(was_active)
+            operation_restart(service.disconnect_provider_operation(&provider_id))
         }
         DesktopOnboardingAction::DeleteProvider { provider_id } => {
-            let was_active = service.is_active_provider(&provider_id)?;
-            service.delete_provider(&provider_id)?;
-            Ok(was_active)
+            operation_restart(service.delete_provider_operation(&provider_id))
         }
         DesktopOnboardingAction::RetryProviderReconciliation => {
             service.reconcile_pending_operations()?;
             Ok(true)
         }
     }
+}
+
+struct ActionFailure {
+    error: DesktopActionError,
+    runtime_invalidated: bool,
+}
+
+impl From<DesktopActionError> for ActionFailure {
+    fn from(error: DesktopActionError) -> Self {
+        Self {
+            error,
+            runtime_invalidated: false,
+        }
+    }
+}
+
+fn operation_restart<T>(outcome: ProviderOperationOutcome<T>) -> Result<bool, ActionFailure> {
+    match outcome.result {
+        Ok(_) => Ok(outcome.runtime_invalidated),
+        Err(error) => Err(ActionFailure {
+            error,
+            runtime_invalidated: outcome.runtime_invalidated,
+        }),
+    }
+}
+
+fn complete_action_failure(
+    failure: ActionFailure,
+    invalidate_runtime: impl FnOnce(),
+) -> DesktopActionError {
+    if failure.runtime_invalidated {
+        invalidate_runtime();
+    }
+    failure.error
 }
 
 pub fn runtime_configuration_for_app(
@@ -747,6 +789,37 @@ impl OnboardingService {
         provider_id: &str,
         new_secret: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.rotate_provider_key_operation(provider_id, new_secret)
+            .result
+    }
+
+    pub fn rotate_provider_key_operation(
+        &mut self,
+        provider_id: &str,
+        new_secret: &str,
+    ) -> ProviderOperationOutcome<LocalProviderView> {
+        let was_active = match self.is_active_provider(provider_id) {
+            Ok(value) => value,
+            Err(error) => {
+                return ProviderOperationOutcome {
+                    result: Err(error),
+                    runtime_invalidated: false,
+                };
+            }
+        };
+        let result = self.rotate_provider_key_inner(provider_id, new_secret);
+        ProviderOperationOutcome {
+            runtime_invalidated: was_active
+                && (result.is_ok() || self.provider_operation_pending(provider_id)),
+            result,
+        }
+    }
+
+    fn rotate_provider_key_inner(
+        &mut self,
+        provider_id: &str,
+        new_secret: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
         self.ensure_provider_operations_settled()?;
         if new_secret.trim().is_empty() {
             return Err(DesktopActionError::new(
@@ -822,6 +895,34 @@ impl OnboardingService {
         &mut self,
         provider_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.disconnect_provider_operation(provider_id).result
+    }
+
+    pub fn disconnect_provider_operation(
+        &mut self,
+        provider_id: &str,
+    ) -> ProviderOperationOutcome<LocalProviderView> {
+        let was_active = match self.is_active_provider(provider_id) {
+            Ok(value) => value,
+            Err(error) => {
+                return ProviderOperationOutcome {
+                    result: Err(error),
+                    runtime_invalidated: false,
+                };
+            }
+        };
+        let result = self.disconnect_provider_inner(provider_id);
+        ProviderOperationOutcome {
+            runtime_invalidated: was_active
+                && (result.is_ok() || self.provider_operation_pending(provider_id)),
+            result,
+        }
+    }
+
+    fn disconnect_provider_inner(
+        &mut self,
+        provider_id: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         let operation_id = Uuid::new_v4().to_string();
@@ -867,6 +968,28 @@ impl OnboardingService {
     }
 
     pub fn delete_provider(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
+        self.delete_provider_operation(provider_id).result
+    }
+
+    pub fn delete_provider_operation(&mut self, provider_id: &str) -> ProviderOperationOutcome<()> {
+        let was_active = match self.is_active_provider(provider_id) {
+            Ok(value) => value,
+            Err(error) => {
+                return ProviderOperationOutcome {
+                    result: Err(error),
+                    runtime_invalidated: false,
+                };
+            }
+        };
+        let result = self.delete_provider_inner(provider_id);
+        ProviderOperationOutcome {
+            runtime_invalidated: was_active
+                && (result.is_ok() || self.provider_operation_pending(provider_id)),
+            result,
+        }
+    }
+
+    fn delete_provider_inner(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         let operation_id = Uuid::new_v4().to_string();
@@ -924,6 +1047,16 @@ impl OnboardingService {
             .and_then(|_| transaction.commit())
             .map_err(|_| DesktopActionError::reconciliation())?;
         Ok(())
+    }
+
+    fn provider_operation_pending(&self, provider_id: &str) -> bool {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM provider_operations WHERE provider_id = ?1)",
+                [provider_id],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(true)
     }
 
     fn insert_operation(
@@ -1176,7 +1309,7 @@ impl OnboardingService {
             return Ok(None);
         };
         if self.pending_operation_count()? > 0 {
-            return Ok(None);
+            return Err(DesktopActionError::reconciliation());
         }
         let Some(active_provider_id) = self.active_provider_id()? else {
             return Ok(None);
@@ -1746,4 +1879,27 @@ fn docker_socket_ready() -> bool {
 #[cfg(not(unix))]
 fn docker_socket_ready() -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{complete_action_failure, ActionFailure, DesktopActionError};
+    use std::cell::Cell;
+
+    #[test]
+    fn action_failure_preserves_the_runtime_invalidation_signal() {
+        for runtime_invalidated in [false, true] {
+            let callback_called = Cell::new(false);
+            let error = complete_action_failure(
+                ActionFailure {
+                    error: DesktopActionError::reconciliation(),
+                    runtime_invalidated,
+                },
+                || callback_called.set(true),
+            );
+
+            assert_eq!(error.reason_code, "provider_reconciliation_required");
+            assert_eq!(callback_called.get(), runtime_invalidated);
+        }
+    }
 }
