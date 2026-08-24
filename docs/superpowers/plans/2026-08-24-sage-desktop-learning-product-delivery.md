@@ -527,6 +527,83 @@ Provider/Keychain/journal/capability 与 artifact 产品合同保持不变。
   分别来自 zsh 特殊变量 `path` 覆盖 `$PATH`、以及错误假设 artifact/jq 路径，均未作为证据，最终计数
   使用已确认的 dist 路径、`/usr/bin/jq` 与只读命令重做。当前候选等待第五轮 Runtime/Standards 短审。
 
+### D2.5 Supervisor write-ahead ownership 修复 mini-spec（2026-08-25）
+
+本增量只关闭第五轮 Runtime/Standards 合并出的两条 P1 与两条 P2；已经通过的
+Provider/Keychain/onboarding/capability 与 artifact 合同保持不变，不复写 D2.4 receipt 结论。
+
+**Write-ahead ownership 与锁顺序**
+
+- launch success CAS 拒绝后，在任何 signal、kill、wait 或 verified termination 开始前，必须把 exact
+  `OrphanRecord` 同时登记为内存 reservation 并 durable append 到 unpublished journal。append 成功前
+  host admission mutex 不释放，因此新 generation、starting、success commit 与 configuration restart
+  都不能越过该窗口；append 失败保持不可绕过的 persistence blocked。
+- 固定锁顺序为 host admission mutex -> repository unpublished lock；repository 不回调 host、diagnostics
+  只在释放 host mutex 后追加。termination/process observation 一律在锁外执行，避免长 I/O 与重入死锁。
+- safe `Stopped/IdentityChanged` 只能先按 exact identity durable remove，再清内存 reservation；remove
+  或 persist 失败必须保留内存 recovery ownership 和 blocked gate，不能先清 ownership 再补偿。
+
+**Journal health 与统一 admission gate**
+
+- `healthy/recovering/untrusted/persist_failed` 是显式运行时状态，不能再用空 `Vec` 推断 journal 可用。
+  startup parse/load 失败进入 `untrusted`，append/remove/replace 失败进入 `persist_failed`，仍有 exact
+  ownership 待核验时进入 `recovering`；只有安全 reconciliation/repair 完成并成功持久化后回到 `healthy`。
+- starting、success commit、configuration restart、schedule/relaunch、generation admission 以及所有经
+  `restart_for_configuration` 触发的 Provider 配置动作统一检查该 gate；非 `healthy` 永远 fail closed。
+
+**Failure accounting 与 startup 专用合同**
+
+- `record_launch_failure` 的每个真实 mutation 临界区必须原子复查 generation、journal health 与 pending
+  reservation。早期检查只允许快速返回；pending 在预检查后插入时，后续不得覆盖专用 snapshot、清
+  ownership 或消费 crash budget。
+- startup reconciliation 分别处理 unpublished ownership 与 main orphan。unpublished unsafe outcome 发布
+  `blocked + desktop_unpublished_sidecar_cleanup_failed + open_diagnostics` 和专用脱敏 diagnostic；main
+  orphan 继续使用 `desktop_sidecar_stop_failed`，两者不得折叠。safe remove 后必须从真实 journal reload
+  验证；replace/remove 失败保留 health gate。
+
+**Red/Green 与门禁**
+
+- Red 顺序固定为：CAS reject 后 cleanup future barrier、损坏 journal 的 file-backed health gate、failure
+  accounting TOCTOU barrier、startup safe/unsafe/persist-failure reconciliation。每组先在 production caller
+  或真实 repository seam 上失败，再做最小 Green，并用 logic-lens 复核资源、generation、持久化和锁。
+- focused 后运行 supervisor/repository、Rust full/fmt/clippy、Provider/Keychain、Python desktop、Vue
+  host adapter/HostGate、source product smoke 与 `git diff --check`。代码/docs 独立中文 commit；源码变化
+  后从新的 clean docs HEAD 和全新目录重建 arm64 bundle，固定 receipt source/dirty、12+6、manifest、
+  strict codesign、secret scan、零残留及 code/docs/receipt SHA，再等待第六轮短审。
+
+### D2.5 实施收口（2026-08-25）
+
+- **代码候选**：`5ffa82ae92878d84d5e30f9e3c4c27fd6d73a77b`。launch success CAS reject
+  现在先在 host admission mutex 内登记 exact `OrphanRecord`，并通过 repository 原子写、file fsync、rename
+  与 directory fsync durable append；只有 append 成功后才在锁外 poll verified termination future。cleanup
+  future 暂停期间，journal reload 能读取 exact identity，generation、starting、success commit、configuration
+  restart 与 onboarding mutation 均被同一 gate 拒绝。
+- **健康状态与安全收敛**：`OwnershipRecoveryState` 显式区分 `Healthy/Recovering/Untrusted/
+  PersistFailed`。损坏 journal 不再退化为空数组；append/remove/replace 失败保持单调 fail closed，后续并发
+  reservation 或 unsafe completion 不能把失败状态降级。safe `Stopped/IdentityChanged` 必须先 exact durable
+  remove，再清内存 ownership；remove 失败保留 record、专用状态和诊断，重启 reconciliation 只有在真实
+  journal replace/reload 成功后才恢复 `Healthy`。
+- **startup 与失败计数**：startup 使用 file-backed reconciliation seam 独立处理 unpublished journal 与
+  main orphan；unsafe unpublished cleanup 固定发布
+  `desktop_unpublished_sidecar_cleanup_failed + open_diagnostics`，不再折叠成 main orphan 的
+  `desktop_sidecar_stop_failed`。`record_launch_failure` 的 recoverable 与 crash-budget mutation 临界区都重新
+  检查 generation、journal health 与 pending reservation，TOCTOU 插入后不会覆盖 snapshot、清 ownership
+  或消费 crash budget。
+- **Red/Green 证据**：四组旧实现 Red 分别得到 journal `left: []`、损坏 journal transition
+  `left: Ok(())`、failure accounting `left: RetryAfter(1)`、startup unsafe reason
+  `left: desktop_sidecar_stop_failed`。Green 后 supervisor `33 passed`，repository `6 passed`，并覆盖
+  write-ahead append 失败不 poll cleanup、await 窗口 reload/reconciliation、exact remove 失败、startup
+  replace 失败以及 `PersistFailed` 不可降级。
+- **源码门禁**：Rust full `77 passed`、fmt、Clippy `-D warnings` 通过，其中 Provider `14 passed`、唯一临时
+  macOS Keychain round-trip/cleanup `1 passed`；Python desktop `61 passed`、source smoke `1 passed`；Vue
+  focused `39 passed`、full `72 files / 552 tests`、production build 通过。changed-diff secret/敏感扩展名
+  扫描零命中，host/launcher/sidecar 精确进程检查均为零，`git diff --check` 通过。
+- **环境恢复记录**：工作树 `.venv` 是 bundle verifier 环境且没有 pytest；Anaconda pytest 又先后暴露
+  未设置 `packages/sage_harness` 与 LangChain 版本不兼容，均在 collection 阶段退出、未计入证据。最终
+  使用仓库根工作区已固定的 Python 3.12 开发环境，并显式设置
+  `PYTHONPATH=packages/sage_harness:.` 完整重跑通过。正式 arm64 artifact 尚待从下一笔 clean docs HEAD 和
+  全新输出目录构建，不能复用 D2.4 receipt。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
