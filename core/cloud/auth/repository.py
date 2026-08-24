@@ -283,17 +283,11 @@ class CloudRepository:
                 await session.rollback()
                 raise PermissionError("invite is invalid or already consumed")
 
-            user = await session.scalar(
-                select(CloudUserRecord).where(CloudUserRecord.email == email).with_for_update()
+            user, _ = await _get_or_insert_user(
+                session,
+                email=email,
+                display_name=email.partition("@")[0],
             )
-            if user is None:
-                user = CloudUserRecord(
-                    id=str(uuid4()),
-                    email=email,
-                    display_name=email.partition("@")[0],
-                )
-                session.add(user)
-                await session.flush()
             if user.disabled_at is not None:
                 raise PermissionError("cloud user is disabled")
 

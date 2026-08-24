@@ -437,6 +437,50 @@ async def test_concurrent_canary_device_login_persists_one_complete_refresh_fami
     )
 
 
+async def test_concurrent_canary_first_logins_share_one_user_across_distinct_invites(
+    concurrent_repository: CloudRepository,
+) -> None:
+    repository = concurrent_repository
+    expires_at = datetime.now(UTC) + timedelta(days=30)
+    email = "parallel-canary@example.com"
+    invites = ("parallel-canary-first", "parallel-canary-second")
+    refresh_tokens = (
+        "parallel-canary-refresh-token-first-value",
+        "parallel-canary-refresh-token-second-value",
+    )
+    for invite in invites:
+        await repository.create_invite(invite, email=email)
+
+    results = await asyncio.gather(
+        *(
+            repository.create_canary_invite_session(
+                invite_code=invite,
+                token=f"parallel-canary-session-{index}",
+                device_name=f"Device {index}",
+                expires_at=expires_at,
+                refresh_token=refresh_tokens[index],
+                refresh_expires_at=expires_at,
+            )
+            for index, invite in enumerate(invites)
+        ),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, tuple) for result in results), results
+    user_ids = {result[0].user_id for result in results if isinstance(result, tuple)}
+    assert len(user_ids) == 1
+    assert len(await repository.list_active_sessions(email)) == 2
+    for refresh_token in refresh_tokens:
+        assert (
+            await repository.rotate_refresh_token(
+                token=refresh_token,
+                replacement=f"replacement-{refresh_token}",
+                expires_at=expires_at,
+            )
+            is not None
+        )
+
+
 async def test_concurrent_development_login_persists_one_complete_refresh_family(
     concurrent_repository: CloudRepository,
 ) -> None:
