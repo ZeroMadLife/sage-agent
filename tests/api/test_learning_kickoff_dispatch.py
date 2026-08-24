@@ -2,16 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from api.coding import _start_accepted_learning_kickoff
 from api.main import create_app
 from core.coding.persistence import CodingSessionStore
-from core.coding.persistence.session_event_journal import SessionEventJournal
+from core.coding.persistence.session_event_journal import (
+    SessionEventJournal,
+    SessionThreadGoalConflictError,
+)
+from core.coding.run_coordinator import ActiveRunConflictError, RunCoordinator
 from core.coding.runtime import CodingRuntime
 
 
@@ -19,6 +25,7 @@ def _app(tmp_path: Path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(exist_ok=True)
     return create_app(
+        coding_model_factory=lambda: object(),
         coding_workspace_root=workspace,
         coding_storage_root=tmp_path / ".coding",
         coding_default_runtime_profile="legacy",
@@ -124,6 +131,41 @@ def test_kickoff_receipt_survives_app_restart_and_repeated_post(tmp_path: Path) 
     assert repeated.json() == accepted
 
 
+def test_restarted_coding_stream_lazily_rehydrates_and_starts_accepted_kickoff(
+    tmp_path: Path,
+) -> None:
+    first_app = _app(tmp_path)
+    with TestClient(first_app) as client:
+        task, activation = _active_task(client)
+        accepted = _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        ).json()
+
+    journal = SessionEventJournal(tmp_path / ".coding", activation["session_id"])
+    assert journal.events_for_run(accepted["turn_run_id"]) == ()
+
+    restarted_app = _app(tmp_path)
+    with TestClient(restarted_app) as client:
+        assert activation["session_id"] not in restarted_app.state.coding_sessions
+        with client.websocket_connect(
+            f"/api/v1/coding/{activation['session_id']}/stream?after=0"
+        ) as websocket:
+            for _ in range(30):
+                event = websocket.receive_json()
+                if event["kind"] == "terminal" and event["run_id"] == accepted["turn_run_id"]:
+                    break
+            else:
+                raise AssertionError("accepted kickoff did not reach a terminal event")
+
+        assert activation["session_id"] in restarted_app.state.coding_sessions
+
+    turn_events = journal.events_for_run(accepted["turn_run_id"])
+    assert sum(event.payload.get("event") == "run_started" for event in turn_events) == 1
+    assert sum(event.kind == "terminal" for event in turn_events) == 1
+
+
 @pytest.mark.parametrize("point", ["after_intent", "after_journal", "after_accepted"])
 def test_kickoff_failure_points_recover_without_duplicate_message(
     tmp_path: Path,
@@ -223,6 +265,65 @@ def test_kickoff_get_fails_closed_when_canonical_task_binding_drifts(tmp_path: P
     assert canonical.json()["detail"]["code"] == "learning_kickoff_binding_conflict"
 
 
+def test_kickoff_get_fails_closed_when_canonical_task_is_missing(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task, _ = _active_task(client)
+        accepted = _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        )
+        assert accepted.status_code == 200
+
+        database = tmp_path / ".coding" / "learning-tasks.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute("DELETE FROM learning_tasks WHERE task_id = ?", (task["task_id"],))
+
+        canonical = client.get(f"/api/v1/learning/tasks/{task['task_id']}/kickoff")
+
+    assert canonical.status_code == 409
+    assert canonical.json()["detail"]["code"] == "learning_kickoff_binding_conflict"
+
+
+def test_coding_stream_fails_closed_when_kickoff_task_is_missing(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task, activation = _active_task(client)
+        accepted = _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        )
+        assert accepted.status_code == 200
+        session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(
+            activation["session_id"]
+        )
+        app.state.coding_sessions[activation["session_id"]] = CodingRuntime(
+            session_id=activation["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+
+        database = tmp_path / ".coding" / "learning-tasks.sqlite3"
+        with sqlite3.connect(database) as connection:
+            connection.execute("DELETE FROM learning_tasks WHERE task_id = ?", (task["task_id"],))
+
+        with (
+            client.websocket_connect(
+                f"/api/v1/coding/{activation['session_id']}/stream?after=0"
+            ) as websocket,
+            pytest.raises(WebSocketDisconnect) as closed,
+        ):
+            websocket.receive_json()
+
+    assert closed.value.code == 1008
+    assert closed.value.reason == "learning_kickoff_binding_conflict"
+
+
 def test_coding_stream_consumes_only_accepted_kickoff_once(tmp_path: Path) -> None:
     app = _app(tmp_path)
     with TestClient(app) as client:
@@ -264,3 +365,130 @@ def test_coding_stream_consumes_only_accepted_kickoff_once(tmp_path: Path) -> No
     assert all(event.event_id != accepted["message_id"] for event in turn_events)
     acceptance_events = coordinator.journal.events_for_run(accepted["acceptance_run_id"])
     assert [event.event_id for event in acceptance_events] == [accepted["message_id"]]
+
+
+def test_concurrent_kickoff_stale_check_converges_to_same_terminal_run(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task, activation = _active_task(client)
+        accepted = _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        ).json()
+        session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(
+            activation["session_id"]
+        )
+        runtime = CodingRuntime(
+            session_id=activation["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+
+        class DelayedRunCoordinator(RunCoordinator):
+            def __init__(self, journal: SessionEventJournal) -> None:
+                super().__init__(journal, owner_id="second-app", owner_pid=os.getpid())
+                self.ready = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def start_run(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+                self.ready.set()
+                await self.release.wait()
+                return await super().start_run(*args, **kwargs)
+
+        first = RunCoordinator(
+            SessionEventJournal(tmp_path / ".coding", activation["session_id"]),
+            owner_id="first-app",
+            owner_pid=os.getpid(),
+        )
+        second = DelayedRunCoordinator(
+            SessionEventJournal(tmp_path / ".coding", activation["session_id"])
+        )
+
+        async def exercise_race():  # type: ignore[no-untyped-def]
+            stale_attempt = asyncio.create_task(
+                _start_accepted_learning_kickoff(app, runtime, second)
+            )
+            await second.ready.wait()
+            started = await _start_accepted_learning_kickoff(app, runtime, first)
+            assert started is not None
+            await started
+            second.release.set()
+            replay = await stale_attempt
+            return replay
+
+        replay = asyncio.run(exercise_race())
+
+    assert replay is None
+    events = first.journal.events_for_run(accepted["turn_run_id"])
+    assert sum(event.payload.get("event") == "run_started" for event in events) == 1
+    assert sum(event.kind == "terminal" for event in events) == 1
+
+
+def test_kickoff_does_not_swallow_unrelated_thread_goal_conflict(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task, activation = _active_task(client)
+        _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        )
+        session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(
+            activation["session_id"]
+        )
+        runtime = CodingRuntime(
+            session_id=activation["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+        coordinator = RunCoordinator(
+            SessionEventJournal(tmp_path / ".coding", activation["session_id"])
+        )
+
+        async def conflict(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise SessionThreadGoalConflictError(2)
+
+        coordinator.start_run = conflict  # type: ignore[method-assign]
+
+        with pytest.raises(SessionThreadGoalConflictError):
+            asyncio.run(_start_accepted_learning_kickoff(app, runtime, coordinator))
+
+
+def test_kickoff_does_not_swallow_unrelated_active_run_conflict(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task, activation = _active_task(client)
+        _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        )
+        session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(
+            activation["session_id"]
+        )
+        runtime = CodingRuntime(
+            session_id=activation["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+        coordinator = RunCoordinator(
+            SessionEventJournal(tmp_path / ".coding", activation["session_id"])
+        )
+
+        async def conflict(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise ActiveRunConflictError("another run is active")
+
+        coordinator.start_run = conflict  # type: ignore[method-assign]
+
+        with pytest.raises(ActiveRunConflictError):
+            asyncio.run(_start_accepted_learning_kickoff(app, runtime, coordinator))

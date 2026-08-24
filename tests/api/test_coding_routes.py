@@ -916,6 +916,29 @@ def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
     assert app.state.coding_sessions[session_id].session["history"][0]["content"] == "读 README.md"
 
 
+def test_restarted_coding_stream_lazily_rehydrates_ordinary_session(tmp_path: Path) -> None:
+    """A browser WebSocket reconnect restores an ordinary persisted session after restart."""
+    (tmp_path / "README.md").write_text("Sage reconnect\n", encoding="utf-8")
+    options = {
+        "coding_model_factory": FakeModel,
+        "coding_workspace_root": tmp_path,
+        "coding_storage_root": tmp_path / ".coding",
+    }
+    with TestClient(create_app(**options)) as first:
+        session_id = first.post("/api/v1/coding/session", json={}).json()["session_id"]
+
+    restarted_app = create_app(**options)
+    with TestClient(restarted_app) as restarted:
+        assert session_id not in restarted_app.state.coding_sessions
+        with restarted.websocket_connect(f"/api/v1/coding/{session_id}/stream") as websocket:
+            websocket.send_json({"content": "读 README.md"})
+            events = _receive_until(websocket, "final")
+
+        assert session_id in restarted_app.state.coding_sessions
+
+    assert any(event["type"] == "final" for event in events)
+
+
 def test_resume_recovers_an_interrupted_persisted_run_before_rehydrating(tmp_path: Path) -> None:
     """A restart turns an abandoned durable lease into a retryable terminal event."""
     app = create_app(

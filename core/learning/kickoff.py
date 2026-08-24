@@ -156,10 +156,8 @@ class LearningKickoffService:
             workspace_id=workspace_id,
             task_id=task_id,
         )
-        task = self.repository.get(
-            owner_id=owner_id,
-            workspace_id=workspace_id,
-            task_id=record.task_id,
+        task = self._canonical_task(
+            owner_id=owner_id, workspace_id=workspace_id, task_id=record.task_id
         )
         activation = self._active_activation(
             owner_id=owner_id, workspace_id=workspace_id, task_id=record.task_id
@@ -177,10 +175,8 @@ class LearningKickoffService:
         )
         if record is None:
             return None
-        task = self.repository.get(
-            owner_id=owner_id,
-            workspace_id=workspace_id,
-            task_id=record.task_id,
+        task = self._canonical_task(
+            owner_id=owner_id, workspace_id=workspace_id, task_id=record.task_id
         )
         activation = self._active_activation(
             owner_id=owner_id, workspace_id=workspace_id, task_id=record.task_id
@@ -223,6 +219,19 @@ class LearningKickoffService:
         except LearningActivationError as exc:
             raise LearningKickoffError(
                 "learning kickoff activation binding changed",
+                code="learning_kickoff_binding_conflict",
+            ) from exc
+
+    def _canonical_task(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningTask:
+        try:
+            return self.repository.get(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task_id=task_id,
+            )
+        except KeyError as exc:
+            raise LearningKickoffError(
+                "learning kickoff task binding changed",
                 code="learning_kickoff_binding_conflict",
             ) from exc
 

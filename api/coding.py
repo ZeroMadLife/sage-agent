@@ -381,7 +381,7 @@ def _graph_approval_resume_value(
     }
 
 
-def _require_enabled_runtime_profile(value: object, request: Request) -> RuntimeProfile:
+def _require_enabled_runtime_profile(value: object, request: HTTPConnection) -> RuntimeProfile:
     """Resolve a requested profile and enforce the server-owned rollout gate."""
     profile = normalize_runtime_profile(value)
     if profile == "deerflow_v2" and not bool(request.app.state.coding_deerflow_v2_enabled):
@@ -404,7 +404,7 @@ def _require_enabled_runtime_profile(value: object, request: Request) -> Runtime
     return profile
 
 
-def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
+def _available_runtime_profiles(request: HTTPConnection) -> list[RuntimeProfile]:
     """Advertise only runtime profiles that this deployment can safely create."""
     profiles: list[RuntimeProfile] = ["legacy"]
     if not bool(getattr(request.app.state, "coding_deerflow_v2_enabled", False)):
@@ -420,7 +420,7 @@ def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
     return profiles
 
 
-def _effective_default_runtime_profile(request: Request) -> RuntimeProfile:
+def _effective_default_runtime_profile(request: HTTPConnection) -> RuntimeProfile:
     """Return the configured default only when this deployment can create it safely."""
     configured = normalize_runtime_profile(
         getattr(request.app.state, "coding_default_runtime_profile", "legacy")
@@ -2416,105 +2416,114 @@ async def resume_coding_session(
 ) -> CodingSessionResponse:
     """Rehydrate a persisted coding runtime session."""
     _require_valid_session_id(session_id)
-    model_factory = getattr(request.app.state, "coding_model_factory", None)
-    if model_factory is None:
-        raise RuntimeError("Coding model factory is not configured")
-    storage_root = Path(request.app.state.coding_storage_root)
-    store = CodingSessionStore(storage_root / "sessions")
-    try:
-        persisted = store.load(session_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail=f"Unknown coding session: {session_id}"
-        ) from exc
-    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
-    active_runtime = sessions.get(session_id)
-    coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
-    active_run_id = coordinator.active_run_id or coordinator.journal.active_run_id()
-    if active_run_id is not None:
-        if active_runtime is None:
-            raise HTTPException(
-                status_code=409,
-                detail="active coding run has no in-memory runtime",
-            )
-        return CodingSessionResponse(
-            session_id=session_id,
-            workspace_root=str(active_runtime.workspace.root.resolve()),
-            workspace_id=workspace_id_from_path(active_runtime.workspace.root),
-            permission_mode=active_runtime.permission_mode,
-            runtime_profile=active_runtime.runtime_profile,
-            sandbox_provider=active_runtime.sandbox_provider,
-            sandbox_image=active_runtime.sandbox_image,
-        )
-    try:
-        runtime_profile = _require_enabled_runtime_profile(
-            persisted.get("runtime_profile"), request
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="invalid persisted runtime profile") from exc
-    account = await load_account_model_context(request, include_credentials=True)
-    catalog = combined_catalog(request, account)
-    model_factory = combined_model_factory(request, account)
-    registry = combined_capabilities(request, account)
-    reasoning_modes = combined_reasoning_modes(request, account)
-    model_id = str(persisted.get("model_spec") or request.app.state.coding_default_model)
-    if model_id not in _catalog_model_ids(catalog):
-        raise HTTPException(status_code=422, detail="unknown coding model")
-    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
-    persisted_workspace = _resolve_persisted_workspace_root(
-        default_workspace, persisted.get("workspace_root")
-    )
-    persisted["workspace_root"] = str(persisted_workspace)
-    reasoning_mode = _resolved_reasoning_mode(
-        model_id,
-        str(persisted.get("reasoning_mode", "off")),
-        reasoning_modes,
-    )
-    runtime = CodingRuntime(
-        session_id=session_id,
-        workspace_root=persisted_workspace,
-        model=_build_model(model_factory, model_id, reasoning_mode),
-        storage_root=storage_root,
-        model_factory=model_factory,
-        approval_policy="ask",
-        session_state=persisted,
-        save_on_init=False,
-        model_capabilities=registry,
-        checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
-        model_spec=model_id,
-        reasoning_mode=reasoning_mode,
-        model_reasoning_modes=reasoning_modes,
-        usage_store=request.app.state.coding_usage_store,
-        knowledge_store=_coding_knowledge_store(request),
-        runtime_profile=runtime_profile,
-        sandbox_provider=str(
-            persisted.get(
-                "sandbox_provider",
-                getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
-            )
-        ),
-        sandbox_image=str(
-            persisted.get(
-                "sandbox_image",
-                getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim"),
-            )
-        ),
-    )
-    sessions[session_id] = runtime
-    pending_approval = coordinator.journal.recoverable_approval()
-    if pending_approval is not None:
-        runtime.approval_manager.restore_pending(pending_approval)
-    else:
-        _schedule_goal_reconciliation(request.app, session_id)
+    runtime = await _rehydrate_coding_runtime(request, session_id)
     return CodingSessionResponse(
         session_id=session_id,
-        workspace_root=str(persisted_workspace),
-        workspace_id=workspace_id_from_path(persisted_workspace),
+        workspace_root=str(runtime.workspace.root.resolve()),
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
         permission_mode=runtime.permission_mode,
         runtime_profile=runtime.runtime_profile,
         sandbox_provider=runtime.sandbox_provider,
         sandbox_image=runtime.sandbox_image,
     )
+
+
+async def _rehydrate_coding_runtime(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Idempotently restore one persisted runtime for REST or WebSocket reconnects."""
+    sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
+    runtime = sessions.get(session_id)
+    if runtime is not None:
+        await connection.app.state.coding_run_registry.hydrate(session_id)
+        return runtime
+    lock: asyncio.Lock = connection.app.state.coding_session_rehydrate_lock
+    async with lock:
+        runtime = sessions.get(session_id)
+        if runtime is not None:
+            return runtime
+        model_factory = getattr(connection.app.state, "coding_model_factory", None)
+        if model_factory is None:
+            raise RuntimeError("Coding model factory is not configured")
+        storage_root = Path(connection.app.state.coding_storage_root)
+        store = CodingSessionStore(storage_root / "sessions")
+        try:
+            persisted = store.load(session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(
+                status_code=404, detail=f"Unknown coding session: {session_id}"
+            ) from exc
+        coordinator = await connection.app.state.coding_run_registry.hydrate(session_id)
+        active_run_id = coordinator.active_run_id or coordinator.journal.active_run_id()
+        if active_run_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="active coding run has no in-memory runtime",
+            )
+        try:
+            runtime_profile = _require_enabled_runtime_profile(
+                persisted.get("runtime_profile"), connection
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid persisted runtime profile"
+            ) from exc
+        account = await load_account_model_context(connection, include_credentials=True)
+        catalog = combined_catalog(connection, account)
+        model_factory = combined_model_factory(connection, account)
+        registry = combined_capabilities(connection, account)
+        reasoning_modes = combined_reasoning_modes(connection, account)
+        model_id = str(persisted.get("model_spec") or connection.app.state.coding_default_model)
+        if model_id not in _catalog_model_ids(catalog):
+            raise HTTPException(status_code=422, detail="unknown coding model")
+        default_workspace = Path(connection.app.state.coding_workspace_root).resolve()
+        persisted_workspace = _resolve_persisted_workspace_root(
+            default_workspace, persisted.get("workspace_root")
+        )
+        persisted["workspace_root"] = str(persisted_workspace)
+        reasoning_mode = _resolved_reasoning_mode(
+            model_id,
+            str(persisted.get("reasoning_mode", "off")),
+            reasoning_modes,
+        )
+        runtime = CodingRuntime(
+            session_id=session_id,
+            workspace_root=persisted_workspace,
+            model=_build_model(model_factory, model_id, reasoning_mode),
+            storage_root=storage_root,
+            model_factory=model_factory,
+            approval_policy="ask",
+            session_state=persisted,
+            save_on_init=False,
+            model_capabilities=registry,
+            checkpoint_anchor_key=connection.app.state.coding_checkpoint_anchor_key,
+            model_spec=model_id,
+            reasoning_mode=reasoning_mode,
+            model_reasoning_modes=reasoning_modes,
+            usage_store=connection.app.state.coding_usage_store,
+            knowledge_store=_coding_knowledge_store(connection),
+            runtime_profile=runtime_profile,
+            sandbox_provider=str(
+                persisted.get(
+                    "sandbox_provider",
+                    getattr(connection.app.state, "coding_sandbox_provider", "local_workspace"),
+                )
+            ),
+            sandbox_image=str(
+                persisted.get(
+                    "sandbox_image",
+                    getattr(connection.app.state, "coding_sandbox_image", "python:3.11-slim"),
+                )
+            ),
+        )
+        pending_approval = coordinator.journal.recoverable_approval()
+        if pending_approval is not None:
+            runtime.approval_manager.restore_pending(pending_approval)
+        sessions[session_id] = runtime
+        if pending_approval is None:
+            _schedule_goal_reconciliation(connection.app, session_id)
+        return runtime
 
 
 async def _thread_goal_service(request: Request, session_id: str) -> ThreadGoalService:
@@ -2922,7 +2931,29 @@ async def _start_accepted_learning_kickoff(
         )
     except ActiveRunConflictError:
         await stream.aclose()
-        return None
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
+    except SessionThreadGoalConflictError:
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
+    except SessionEventJournalError:
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
     _attach_goal_post_turn(app, runtime.session_id, receipt.turn_run_id, run_task)
     return cast(asyncio.Task[None], run_task)
 
@@ -2934,13 +2965,16 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     if not _valid_session_id(session_id):
         await websocket.close(code=1008, reason="invalid coding session id")
         return
-    sessions: dict[str, CodingRuntime] = websocket.app.state.coding_sessions
-    runtime = sessions.get(session_id)
-    if runtime is None:
-        await websocket.send_json(
-            ErrorEvent(message=f"Unknown coding session: {session_id}").model_dump()
-        )
-        await websocket.close()
+    try:
+        runtime = await _rehydrate_coding_runtime(websocket, session_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            await websocket.send_json(
+                ErrorEvent(message=f"Unknown coding session: {session_id}").model_dump()
+            )
+            await websocket.close()
+            return
+        await websocket.close(code=1008, reason="coding_session_rehydrate_failed")
         return
     raw_after = websocket.query_params.get("after", "0")
     try:
@@ -2955,6 +2989,15 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
         await _start_accepted_learning_kickoff(websocket.app, runtime, coordinator)
     except LearningKickoffError as exc:
         await websocket.close(code=1008, reason=exc.code)
+        return
+    except ActiveRunConflictError:
+        await websocket.close(code=1008, reason="learning_kickoff_run_conflict")
+        return
+    except SessionThreadGoalConflictError:
+        await websocket.close(code=1008, reason="thread_goal_revision_conflict")
+        return
+    except SessionEventJournalError:
+        await websocket.close(code=1008, reason="learning_kickoff_journal_conflict")
         return
 
     async def sender() -> None:
