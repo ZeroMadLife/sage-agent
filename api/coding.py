@@ -907,8 +907,8 @@ async def _deerflow_timeline_events(
             thread_id=runtime.session_id,
             app_env=app_env,
             provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
-            allow_host_shell=True,
-            allow_writes=True,
+            allow_host_shell=runtime.side_effect_tools_enabled,
+            allow_writes=runtime.side_effect_tools_enabled,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
         )
         try:
@@ -1774,6 +1774,9 @@ async def create_coding_session(
             getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
         ),
         sandbox_image=str(getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")),
+        side_effect_tools_enabled=bool(
+            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
+        ),
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -1894,7 +1897,10 @@ def _harness_capability_context(
         from core.coding.skills import SkillRegistry
         from core.coding.tools.registry import build_tool_registry
 
-        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        tools = build_tool_registry(
+            WorkspaceContext(workspace_root),
+            side_effect_tools_enabled=bool(persisted.get("side_effect_tools_enabled", True)),
+        )
         skills = SkillRegistry(root=workspace_root).list()
         owner_id = str(persisted.get("owner_user_id") or "local")
     workspace_id = workspace_id_from_path(workspace_root)
@@ -2112,6 +2118,9 @@ async def resume_coding_session(
                 "sandbox_image",
                 getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim"),
             )
+        ),
+        side_effect_tools_enabled=bool(
+            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
         ),
     )
     sessions[session_id] = runtime

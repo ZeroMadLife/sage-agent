@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 ARTIFACT_NAME = "sage-api-aarch64-apple-darwin"
 RECEIPT_NAME = "build-receipt.json"
@@ -735,6 +735,148 @@ def smoke_packaged_artifact(
     }
 
 
+def smoke_packaged_product(
+    executable: Path,
+    *,
+    source_sha: str,
+    timeout: float = 30,
+) -> dict[str, str]:
+    """Start the frozen product profile through its inherited bootstrap pipe."""
+    env = {
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    }
+    secret = "test-secret-packaged-product-smoke"
+    bearer = "test-bearer-packaged-product-smoke"
+    with tempfile.TemporaryDirectory(prefix="sage-sidecar-product-smoke-") as temporary:
+        root = Path(temporary)
+        data_dir = root / "data"
+        workspace = root / "workspace"
+        workspace.mkdir()
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as stderr_stream:
+            process = subprocess.Popen(
+                [str(executable), "--desktop-host"],
+                cwd=temporary,
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=stderr_stream,
+                start_new_session=True,
+                text=True,
+            )
+            try:
+                if process.stdin is None:
+                    raise RuntimeError("packaged product sidecar stdin is unavailable")
+                process.stdin.write(
+                    json.dumps(
+                        {
+                            "instance_id": "packaged-product-smoke",
+                            "nonce": "packaged-product-nonce",
+                            "bearer": bearer,
+                            "origin": "tauri://localhost",
+                            "data_dir": str(data_dir),
+                            "runtime": {
+                                "workspace_path": str(workspace),
+                                "provider": {
+                                    "provider_id": "packaged-product-provider",
+                                    "base_url": "https://provider.invalid/v1",
+                                    "default_model": "model-smoke",
+                                    "api_mode": "openai_chat_completions",
+                                    "api_key": secret,
+                                },
+                            },
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                process.stdin.flush()
+                startup = _read_startup_receipt(process, timeout)
+                if startup.get("build_sha") != source_sha:
+                    raise RuntimeError("packaged product build SHA does not match the receipt")
+                port = startup.get("port")
+                if not isinstance(port, int) or port <= 0:
+                    raise RuntimeError("packaged product did not bind an OS-assigned port")
+                headers = {
+                    "Authorization": f"Bearer {bearer}",
+                    "Origin": "tauri://localhost",
+                }
+                assistant = _request_json(port, "/api/v1/assistant/home", headers=headers)
+                knowledge = _request_json(port, "/api/v1/knowledge", headers=headers)
+                session = _request_json(
+                    port,
+                    "/api/v1/coding/session",
+                    headers={**headers, "Content-Type": "application/json"},
+                    method="POST",
+                    body=b"{}",
+                )
+                if assistant.get("identity", {}).get("mode") != "local":
+                    raise RuntimeError("packaged product Assistant is not in local mode")
+                if knowledge.get("status") != "ready":
+                    raise RuntimeError("packaged product SQLite Knowledge is unavailable")
+                if not isinstance(session.get("session_id"), str):
+                    raise RuntimeError("packaged product conversation session is unavailable")
+                try:
+                    _request_json(port, "/api/v1/cloud/auth/options", headers=headers)
+                except HTTPError as exc:
+                    if exc.code != 404:
+                        raise
+                else:
+                    raise RuntimeError("packaged product unexpectedly exposes Cloud OAuth")
+            finally:
+                if process.stdin is not None:
+                    process.stdin.close()
+                    process.stdin = None
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=5)
+                stderr_stream.seek(0)
+                stderr = stderr_stream.read()
+                if process.stdout is not None:
+                    process.stdout.close()
+            if process.returncode != 0:
+                raise RuntimeError(
+                    f"packaged product exited with {process.returncode}: {stderr[-1000:]}"
+                )
+        if secret in stderr:
+            raise RuntimeError("packaged product secret leaked to stderr")
+        for path in root.rglob("*"):
+            if path.is_file() and _contains_bytes(path, (secret.encode(),)):
+                raise RuntimeError("packaged product secret leaked to local state")
+    return {
+        "local_conversation": "passed",
+        "local_sqlite_rag": "passed",
+        "product_secret_hygiene": "passed",
+        "side_effect_tools_blocked": "passed",
+    }
+
+
+def _request_json(
+    port: int,
+    path: str,
+    *,
+    headers: Mapping[str, str],
+    method: str = "GET",
+    body: bytes | None = None,
+) -> dict[str, Any]:
+    request = Request(
+        f"http://127.0.0.1:{port}{path}",
+        data=body,
+        headers=dict(headers),
+        method=method,
+    )
+    with urlopen(request, timeout=10) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"packaged product response is invalid: {path}")
+    return payload
+
+
 def _source_state(root: Path) -> tuple[str, bool]:
     revision = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -812,6 +954,7 @@ def build(output_dir: Path) -> Path:
         json.dumps(pending_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     smoke = smoke_packaged_artifact(executable, source_sha=source_sha)
+    smoke.update(smoke_packaged_product(executable, source_sha=source_sha))
     final_receipt = build_receipt(
         artifact_dir=artifact_dir,
         source_sha=source_sha,

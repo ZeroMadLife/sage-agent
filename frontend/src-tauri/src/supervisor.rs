@@ -21,6 +21,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 const API_VERSION: &str = "1";
 const PRODUCTION_ORIGIN: &str = "tauri://localhost";
@@ -88,6 +89,7 @@ struct HostInner {
     repository: Option<DesktopStateRepository>,
     diagnostic_log: Option<DiagnosticLog>,
     disk: HostDiskState,
+    launch_generation: u64,
 }
 
 impl Default for HostInner {
@@ -100,6 +102,7 @@ impl Default for HostInner {
             repository: None,
             diagnostic_log: None,
             disk: HostDiskState::default(),
+            launch_generation: 0,
         }
     }
 }
@@ -120,6 +123,24 @@ struct Bootstrap<'a> {
     bearer: &'a str,
     origin: &'a str,
     data_dir: &'a Path,
+    runtime: Option<BootstrapRuntime<'a>>,
+}
+
+#[derive(Serialize)]
+struct BootstrapRuntime<'a> {
+    workspace_path: &'a Path,
+    provider: BootstrapProvider<'a>,
+    sandbox_provider: &'a str,
+    side_effect_tools_enabled: bool,
+}
+
+#[derive(Serialize)]
+struct BootstrapProvider<'a> {
+    provider_id: &'a str,
+    base_url: &'a str,
+    default_model: &'a str,
+    api_mode: &'a str,
+    api_key: &'a str,
 }
 
 #[tauri::command]
@@ -261,10 +282,17 @@ pub fn start(app: AppHandle) {
         );
         return;
     }
-    schedule_launch(app, shared, data_dir, Duration::ZERO);
+    let generation = next_launch_generation(&shared);
+    schedule_launch(app, shared, data_dir, Duration::ZERO, generation);
 }
 
-fn schedule_launch(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, delay: Duration) {
+fn schedule_launch(
+    app: AppHandle,
+    shared: SharedHostState,
+    data_dir: PathBuf,
+    delay: Duration,
+    generation: u64,
+) {
     tauri::async_runtime::spawn(async move {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
@@ -272,9 +300,11 @@ fn schedule_launch(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, d
         if shared.is_stopping() {
             return;
         }
-        match launch_once(&app, &shared, &data_dir).await {
-            Ok(receiver) => monitor(app, shared, data_dir, receiver).await,
-            Err(reason) if !shared.is_stopping() => handle_crash(app, shared, data_dir, reason),
+        match launch_once(&app, &shared, &data_dir, generation).await {
+            Ok(receiver) => monitor(app, shared, data_dir, receiver, generation).await,
+            Err(reason) if !shared.is_stopping() => {
+                handle_crash(app, shared, data_dir, reason, generation)
+            }
             Err(_) => {}
         }
     });
@@ -284,12 +314,18 @@ async fn launch_once(
     app: &AppHandle,
     shared: &SharedHostState,
     data_dir: &Path,
+    generation: u64,
 ) -> Result<tauri::async_runtime::Receiver<CommandEvent>, &'static str> {
+    if !is_current_generation(shared, generation) {
+        return Err("desktop_launch_superseded");
+    }
     set_snapshot(shared, HostSnapshot::starting());
     let instance_id = Uuid::new_v4().to_string();
     let nonce = random_secret();
     let bearer = random_secret();
     let origin = runtime_origin();
+    let runtime =
+        crate::onboarding::runtime_configuration_for_app(app).map_err(|error| error.reason_code)?;
     let command = app
         .shell()
         .sidecar("sage-api")
@@ -309,13 +345,27 @@ async fn launch_once(
         bearer: &bearer,
         origin,
         data_dir,
+        runtime: runtime.as_ref().map(|configuration| BootstrapRuntime {
+            workspace_path: configuration.workspace_path(),
+            provider: BootstrapProvider {
+                provider_id: configuration.provider_id(),
+                base_url: configuration.base_url(),
+                default_model: configuration.default_model(),
+                api_mode: configuration.api_mode(),
+                api_key: configuration.expose_secret(),
+            },
+            sandbox_provider: configuration.sandbox_provider(),
+            side_effect_tools_enabled: configuration.side_effect_tools_enabled(),
+        }),
     };
     let mut encoded = serde_json::to_vec(&bootstrap).map_err(|_| "desktop_bootstrap_failed")?;
     encoded.push(b'\n');
     if child.write(&encoded).is_err() {
+        encoded.zeroize();
         let _ = child.kill();
         return Err("desktop_bootstrap_failed");
     }
+    encoded.zeroize();
 
     let handshake = match read_handshake(&mut receiver).await {
         Ok(value) => value,
@@ -349,6 +399,10 @@ async fn launch_once(
     if shared.is_stopping() {
         let _ = child.kill();
         return Err("desktop_stopping");
+    }
+    if !is_current_generation(shared, generation) {
+        let _ = child.kill();
+        return Err("desktop_launch_superseded");
     }
     if let Err(reason) = persist_orphan(shared, child_pid) {
         let _ = child.kill();
@@ -444,6 +498,7 @@ async fn monitor(
     shared: SharedHostState,
     data_dir: PathBuf,
     mut receiver: tauri::async_runtime::Receiver<CommandEvent>,
+    generation: u64,
 ) {
     let mut reason = "desktop_sidecar_crashed";
     while let Some(event) = receiver.recv().await {
@@ -455,12 +510,21 @@ async fn monitor(
             break;
         }
     }
-    if !shared.is_stopping() {
-        handle_crash(app, shared, data_dir, reason);
+    if !shared.is_stopping() && is_current_generation(&shared, generation) {
+        handle_crash(app, shared, data_dir, reason, generation);
     }
 }
 
-fn handle_crash(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, reason: &'static str) {
+fn handle_crash(
+    app: AppHandle,
+    shared: SharedHostState,
+    data_dir: PathBuf,
+    reason: &'static str,
+    generation: u64,
+) {
+    if !is_current_generation(&shared, generation) {
+        return;
+    }
     if lifecycle_action(LifecycleEvent::SidecarCrash) != LifecycleAction::RestartWithBackoff {
         return;
     }
@@ -507,8 +571,49 @@ fn handle_crash(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, reas
         },
     );
     if let Some(seconds) = delay {
-        schedule_launch(app, shared, data_dir, Duration::from_secs(seconds));
+        schedule_launch(
+            app,
+            shared,
+            data_dir,
+            Duration::from_secs(seconds),
+            generation,
+        );
     }
+}
+
+fn next_launch_generation(shared: &SharedHostState) -> u64 {
+    let mut inner = shared.0.lock().expect("host state poisoned");
+    inner.launch_generation = inner.launch_generation.wrapping_add(1);
+    inner.launch_generation
+}
+
+fn is_current_generation(shared: &SharedHostState, generation: u64) -> bool {
+    shared
+        .0
+        .lock()
+        .expect("host state poisoned")
+        .launch_generation
+        == generation
+}
+
+pub fn restart_for_configuration(app: AppHandle, shared: SharedHostState) {
+    let Ok(data_dir) = app.path().app_data_dir() else {
+        set_problem(
+            &shared,
+            "blocked",
+            "desktop_data_dir_unavailable",
+            "restart_sage",
+        );
+        return;
+    };
+    let generation = next_launch_generation(&shared);
+    set_snapshot(&shared, HostSnapshot::starting());
+    tauri::async_runtime::spawn(async move {
+        stop_sidecar(&shared).await;
+        if !shared.is_stopping() && is_current_generation(&shared, generation) {
+            schedule_launch(app, shared, data_dir, Duration::ZERO, generation);
+        }
+    });
 }
 
 async fn stop_sidecar(shared: &SharedHostState) {

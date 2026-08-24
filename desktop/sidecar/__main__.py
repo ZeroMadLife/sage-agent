@@ -88,7 +88,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if bootstrap is not None
         else None
     )
-    app = create_desktop_app(data_dir=data_dir, build_sha=build_sha, security=security)
+    app = create_desktop_app(
+        data_dir=data_dir,
+        build_sha=build_sha,
+        security=security,
+        runtime=bootstrap.runtime if bootstrap is not None else None,
+    )
     if bootstrap is None:
         receipt = {
             "event": "sidecar_started",

@@ -10,6 +10,7 @@ use lifecycle::{
     apply_single_instance_action, lifecycle_action, single_instance_action, LifecycleAction,
     LifecycleEvent,
 };
+use onboarding::{desktop_onboarding_action, desktop_onboarding_status, SharedOnboardingState};
 use supervisor::{desktop_exit, desktop_host_status, desktop_open_diagnostics, SharedHostState};
 use tauri::{Manager, RunEvent, WindowEvent};
 
@@ -55,12 +56,16 @@ pub fn run() {
         .plugin(navigation_guard)
         .plugin(tauri_plugin_shell::init())
         .manage(SharedHostState::default())
+        .manage(SharedOnboardingState::default())
         .invoke_handler(tauri::generate_handler![
             desktop_host_status,
             desktop_exit,
-            desktop_open_diagnostics
+            desktop_open_diagnostics,
+            desktop_onboarding_status,
+            desktop_onboarding_action
         ])
         .setup(|app| {
+            onboarding::initialize(app.handle().clone());
             supervisor::start(app.handle().clone());
             Ok(())
         })

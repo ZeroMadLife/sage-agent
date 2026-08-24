@@ -34,6 +34,42 @@ export interface DesktopCapabilities {
   capabilities: Record<string, DesktopCapability>
 }
 
+export type OnboardingMode = 'local' | 'cloud'
+
+export interface DesktopLocalProvider {
+  provider_id: string
+  name: string
+  base_url: string
+  key_ref: string
+  key_hint: string
+  key_configured: boolean
+  status: string
+  reason_code: string | null
+  models: string[]
+  default_model: string | null
+}
+
+export interface DesktopOnboardingSnapshot {
+  status: CapabilityState
+  reason_code: string | null
+  action: string | null
+  stage: 'choose_mode' | 'cloud_unavailable' | 'select_workspace' | 'configure_provider' | 'complete' | 'blocked'
+  mode: OnboardingMode | null
+  workspace_name: string | null
+  providers: DesktopLocalProvider[]
+  capabilities: Record<string, DesktopCapability>
+}
+
+export type DesktopOnboardingAction =
+  | { kind: 'choose_mode', mode: OnboardingMode }
+  | { kind: 'select_workspace', workspace_path: string }
+  | { kind: 'add_provider', name: string, base_url: string, api_key: string, default_model: string }
+  | { kind: 'probe_provider', provider_id: string }
+  | { kind: 'set_default_model', provider_id: string, model_id: string }
+  | { kind: 'rotate_provider_key', provider_id: string, api_key: string }
+  | { kind: 'disconnect_provider', provider_id: string }
+  | { kind: 'delete_provider', provider_id: string }
+
 let session: DesktopSession | null = null
 let sessionRevision = 0
 let hostStatusGeneration = 0
@@ -176,10 +212,33 @@ export async function desktopFetch(path: string, init: RequestInit = {}): Promis
   return (await desktopFetchWithSession(path, init)).response
 }
 
+function requestPath(input: RequestInfo | URL): string {
+  const raw = input instanceof Request ? input.url : input.toString()
+  const parsed = new URL(raw, window.location.origin)
+  return `${parsed.pathname}${parsed.search}`
+}
+
+export function desktopAwareFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> {
+  return isDesktopRuntime() ? desktopFetch(requestPath(input), init) : fetch(input, init)
+}
+
 export async function desktopCapabilities(): Promise<DesktopCapabilities> {
   const response = await desktopFetch('/capabilities')
   if (!response.ok) throw new Error('desktop_capabilities_unavailable')
   return response.json() as Promise<DesktopCapabilities>
+}
+
+export async function desktopOnboardingStatus(): Promise<DesktopOnboardingSnapshot> {
+  return invoke<DesktopOnboardingSnapshot>('desktop_onboarding_status')
+}
+
+export async function desktopOnboardingAction(
+  action: DesktopOnboardingAction,
+): Promise<DesktopOnboardingSnapshot> {
+  return invoke<DesktopOnboardingSnapshot>('desktop_onboarding_action', { action })
 }
 
 function sseRequestInit(init: RequestInit): RequestInit {
@@ -337,6 +396,7 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
 
 export interface DesktopWebSocketConnection {
   readonly readyState: number
+  readonly connectionGeneration: number
   send(data: Parameters<WebSocket['send']>[0]): void
   close(code?: number, reason?: string): void
   addEventListener(type: string, listener: EventListenerOrEventListenerObject): void
@@ -347,6 +407,7 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
   private socket: WebSocket | null = null
   private stopped = false
   private reconnectAttempts = 0
+  private socketGeneration = 0
   private readonly path: string
 
   constructor(path: string) {
@@ -358,10 +419,15 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
     return this.socket?.readyState ?? WebSocket.CONNECTING
   }
 
+  get connectionGeneration(): number {
+    return this.socketGeneration
+  }
+
   async connect(): Promise<void> {
     const active = currentSession()
     const url = endpointUrl(active, this.path).replace(/^http:/, 'ws:')
     const socket = new WebSocket(url, ['sage.v1', `sage-bearer.${active.bearer}`])
+    this.socketGeneration += 1
     this.socket = socket
     socket.addEventListener('open', (event) => {
       if (socket !== this.socket) return
@@ -426,6 +492,80 @@ export async function desktopWebSocket(path: string): Promise<DesktopWebSocketCo
   const connection = new ReconnectingDesktopWebSocket(path)
   await connection.connect()
   return connection
+}
+
+export interface DesktopSocketLike {
+  readonly readyState: number
+  onopen: (() => void) | null
+  onmessage: ((event: { data: string }) => void) | null
+  onerror: (() => void) | null
+  onclose: ((event?: { code?: number, wasClean?: boolean }) => void) | null
+  send(data: string): void
+  close(): void
+}
+
+class DeferredDesktopSocket implements DesktopSocketLike {
+  private connection: DesktopWebSocketConnection | null = null
+  private stopped = false
+  private openedGeneration = 0
+  onopen: (() => void) | null = null
+  onmessage: ((event: { data: string }) => void) | null = null
+  onerror: (() => void) | null = null
+  onclose: ((event?: { code?: number, wasClean?: boolean }) => void) | null = null
+
+  constructor(url: string) {
+    const parsed = new URL(url, window.location.origin)
+    void this.connect(`${parsed.pathname}${parsed.search}`)
+  }
+
+  get readyState(): number {
+    return this.connection?.readyState ?? WebSocket.CONNECTING
+  }
+
+  send(data: string): void {
+    if (!this.connection) throw new Error('desktop_socket_unavailable')
+    this.connection.send(data)
+  }
+
+  close(): void {
+    this.stopped = true
+    this.connection?.close()
+  }
+
+  private async connect(path: string): Promise<void> {
+    try {
+      const connection = await desktopWebSocket(path)
+      if (this.stopped) {
+        connection.close()
+        return
+      }
+      this.connection = connection
+      const reportOpen = () => {
+        if (connection.connectionGeneration <= this.openedGeneration) return
+        this.openedGeneration = connection.connectionGeneration
+        this.onopen?.()
+      }
+      connection.addEventListener('open', reportOpen)
+      connection.addEventListener('message', (event) => {
+        this.onmessage?.({ data: String((event as MessageEvent).data) })
+      })
+      connection.addEventListener('error', () => this.onerror?.())
+      connection.addEventListener('close', (event) => {
+        const close = event as CloseEvent
+        this.onclose?.({ code: close.code, wasClean: close.wasClean })
+      })
+      if (connection.readyState === WebSocket.OPEN) reportOpen()
+    } catch {
+      if (!this.stopped) {
+        this.onerror?.()
+        this.onclose?.({ code: 1006, wasClean: false })
+      }
+    }
+  }
+}
+
+export function desktopSocket(url: string): DesktopSocketLike {
+  return new DeferredDesktopSocket(url)
 }
 
 export async function desktopExit(): Promise<void> {

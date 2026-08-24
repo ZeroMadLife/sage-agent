@@ -213,7 +213,7 @@ def test_build_module_imports_without_runtime_dependencies() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_minimal_runtime_versions_match_the_sage_release() -> None:
+def test_desktop_product_runtime_versions_match_the_sage_release() -> None:
     root_pins = _pinned_requirements(ROOT / "requirements.txt")
     desktop_pins = _pinned_requirements(ROOT / "desktop" / "sidecar" / "requirements-runtime.txt")
     lock_pins = _pinned_requirements(ROOT / "desktop" / "sidecar" / "requirements-lock.txt")
@@ -225,16 +225,30 @@ def test_minimal_runtime_versions_match_the_sage_release() -> None:
         name: root_pins[name]
         for name in (
             "aiosqlite",
+            "asyncpg",
             "cryptography",
             "fastapi",
+            "greenlet",
             "httpx",
             "langchain",
+            "langchain-anthropic",
             "langchain-core",
+            "langchain-openai",
             "langgraph",
             "langgraph-checkpoint-sqlite",
+            "networkx",
             "orjson",
+            "pgvector",
+            "pillow",
             "psycopg2-binary",
             "pydantic",
+            "pydantic-settings",
+            "pypdf",
+            "pypdfium2",
+            "python-docx",
+            "python-dotenv",
+            "redis",
+            "sqlalchemy",
             "tenacity",
             "uvicorn",
         )

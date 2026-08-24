@@ -1,15 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { FolderOpen, Power, RefreshCw } from 'lucide-vue-next'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { FolderOpen, Power, RefreshCw, Settings2, X } from 'lucide-vue-next'
+import DesktopOnboarding from './DesktopOnboarding.vue'
 import {
   desktopCapabilities,
   desktopExit,
   desktopHostStatus,
+  desktopOnboardingAction,
+  desktopOnboardingStatus,
   desktopOpenDiagnostics,
   onDesktopConnectionState,
   type DesktopCapabilities,
   type DesktopHostSnapshot,
+  type DesktopOnboardingAction,
+  type DesktopOnboardingSnapshot,
 } from '../../desktop/hostAdapter'
+
+const emit = defineEmits<{
+  availability: [available: boolean]
+}>()
 
 const snapshot = ref<DesktopHostSnapshot>({
   state: 'starting',
@@ -18,10 +27,16 @@ const snapshot = ref<DesktopHostSnapshot>({
   session: null,
 })
 const capabilities = ref<DesktopCapabilities | null>(null)
+const coreCapabilities = ref<DesktopCapabilities | null>(null)
+const onboarding = ref<DesktopOnboardingSnapshot | null>(null)
+const onboardingBusy = ref(false)
+const onboardingError = ref<{ reason_code: string, action: string } | null>(null)
+const managementOpen = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 let unsubscribeConnection: (() => void) | undefined
 
 const title = computed(() => {
+  if (onboarding.value && onboarding.value.stage !== 'complete') return '完成首次设置'
   if (snapshot.value.state === 'blocked') return 'Sage 无法启动'
   if (snapshot.value.state === 'degraded') {
     return capabilities.value ? 'Sage 部分能力受限' : 'Sage 正在恢复'
@@ -29,6 +44,17 @@ const title = computed(() => {
   if (snapshot.value.state === 'ready') return 'Sage 已启动'
   return '正在启动 Sage'
 })
+const applicationAvailable = computed(() => Boolean(
+  snapshot.value.session
+  && onboarding.value?.stage === 'complete'
+  && onboarding.value.capabilities.conversation?.status === 'ready'
+  && onboarding.value.capabilities.rag?.status === 'ready'
+  && coreCapabilities.value?.capabilities.conversation?.status === 'ready'
+  && coreCapabilities.value?.capabilities.rag?.status === 'ready'
+))
+const panelVisible = computed(() => !applicationAvailable.value || managementOpen.value)
+
+watch(applicationAvailable, (available) => emit('availability', available), { immediate: true })
 
 const capabilityLabels: Record<string, string> = {
   api: '本地服务',
@@ -37,6 +63,68 @@ const capabilityLabels: Record<string, string> = {
   provider: 'Provider',
   knowledge: '知识库',
   sandbox: '安全工具',
+  data_directory: '数据目录',
+  migrations: '数据迁移',
+  workspace: '学习空间',
+  conversation: '对话',
+  rag: 'SQLite RAG',
+  side_effect_tools: '副作用工具',
+  postgres: 'PostgreSQL',
+  web_search: 'Web Search',
+}
+
+function applyOnboarding(next: DesktopOnboardingSnapshot): void {
+  onboarding.value = next
+  const retainedCore = Object.fromEntries(
+    Object.entries(coreCapabilities.value?.capabilities ?? {})
+      .filter(([name]) => ['api', 'storage', 'checkpoint'].includes(name)),
+  )
+  capabilities.value = {
+    status: next.status,
+    api_version: coreCapabilities.value?.api_version ?? '1',
+    build_sha: coreCapabilities.value?.build_sha ?? 'unknown',
+    capabilities: { ...retainedCore, ...next.capabilities },
+  }
+  snapshot.value = {
+    ...snapshot.value,
+    state: next.status,
+    reasonCode: next.reason_code,
+    action: next.action,
+  }
+}
+
+function normalizeOnboardingError(error: unknown): { reason_code: string, action: string } {
+  if (error && typeof error === 'object') {
+    const value = error as { reason_code?: unknown, action?: unknown }
+    if (typeof value.reason_code === 'string' && typeof value.action === 'string') {
+      return { reason_code: value.reason_code, action: value.action }
+    }
+  }
+  return { reason_code: 'desktop_onboarding_unavailable', action: 'retry_onboarding' }
+}
+
+async function runOnboardingAction(action: DesktopOnboardingAction): Promise<void> {
+  if (onboardingBusy.value) return
+  onboardingBusy.value = true
+  onboardingError.value = null
+  try {
+    let next = await desktopOnboardingAction(action)
+    applyOnboarding(next)
+    if (action.kind === 'add_provider') {
+      const provider = next.providers.at(-1)
+      if (provider) {
+        next = await desktopOnboardingAction({
+          kind: 'probe_provider',
+          provider_id: provider.provider_id,
+        })
+        applyOnboarding(next)
+      }
+    }
+  } catch (error) {
+    onboardingError.value = normalizeOnboardingError(error)
+  } finally {
+    onboardingBusy.value = false
+  }
 }
 
 async function refresh(): Promise<void> {
@@ -45,15 +133,17 @@ async function refresh(): Promise<void> {
     snapshot.value = await desktopHostStatus()
     if (snapshot.value.state === 'ready') {
       try {
-        capabilities.value = await desktopCapabilities()
-        snapshot.value = {
-          ...snapshot.value,
-          state: capabilities.value.status,
-          reasonCode: capabilities.value.status === 'ready' ? null : 'desktop_capability_degraded',
-          action: capabilities.value.status === 'ready' ? null : 'review_capabilities',
-        }
+        const [core, rebuilt] = await Promise.all([
+          desktopCapabilities(),
+          desktopOnboardingStatus(),
+        ])
+        coreCapabilities.value = core
+        onboardingError.value = null
+        applyOnboarding(rebuilt)
       } catch {
         capabilities.value = null
+        coreCapabilities.value = null
+        onboarding.value = null
         snapshot.value = {
           state: 'degraded',
           reasonCode: 'desktop_connection_lost',
@@ -63,6 +153,9 @@ async function refresh(): Promise<void> {
       }
     }
   } catch {
+    capabilities.value = null
+    coreCapabilities.value = null
+    onboarding.value = null
     snapshot.value = {
       state: 'degraded',
       reasonCode: 'desktop_host_unavailable',
@@ -70,13 +163,16 @@ async function refresh(): Promise<void> {
       session: null,
     }
   }
-  const delay = snapshot.value.state === 'ready' ? 1000 : 500
+  const delay = snapshot.value.session ? 2000 : 500
   if (snapshot.value.state !== 'blocked') pollTimer = setTimeout(refresh, delay)
 }
 
 onMounted(() => {
   unsubscribeConnection = onDesktopConnectionState((state) => {
     if (state === 'degraded' && snapshot.value.state === 'ready') {
+      capabilities.value = null
+      coreCapabilities.value = null
+      onboarding.value = null
       snapshot.value = {
         state: 'degraded',
         reasonCode: 'desktop_connection_lost',
@@ -95,73 +191,150 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="desktop-status" :data-host-state="snapshot.state">
-    <header class="desktop-status__header">
-      <div>
-        <p class="desktop-status__brand">Sage</p>
-        <h1>{{ title }}</h1>
-      </div>
-      <div class="desktop-status__actions">
-        <button type="button" title="重新检查" aria-label="重新检查" @click="refresh">
-          <RefreshCw :size="17" aria-hidden="true" />
-        </button>
-        <button
-          v-if="snapshot.action === 'open_diagnostics'"
-          type="button"
-          title="打开诊断"
-          aria-label="打开诊断"
-          data-action="diagnostics"
-          @click="desktopOpenDiagnostics"
-        >
-          <FolderOpen :size="17" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          title="退出 Sage"
-          aria-label="退出 Sage"
-          data-action="exit"
-          @click="desktopExit"
-        >
-          <Power :size="17" aria-hidden="true" />
-        </button>
-      </div>
-    </header>
+  <div class="desktop-host-layer" :data-host-state="snapshot.state">
+    <button
+      v-if="applicationAvailable && !managementOpen"
+      type="button"
+      class="desktop-host-launcher"
+      title="本地运行状态与 Provider"
+      aria-label="本地运行状态与 Provider"
+      data-action="open-provider-management"
+      @click="managementOpen = true"
+    >
+      <Settings2 :size="18" aria-hidden="true" />
+    </button>
 
-    <section v-if="capabilities" class="desktop-capabilities" aria-label="本地能力状态">
-      <div
-        v-for="(capability, name) in capabilities.capabilities"
-        :key="name"
-        class="desktop-capability"
-        :data-capability="name"
-        :data-status="capability.status"
+    <div
+      v-if="panelVisible"
+      class="desktop-status-backdrop"
+      :data-forced="!applicationAvailable"
+    >
+      <main
+        class="desktop-status"
+        role="dialog"
+        aria-modal="true"
+        aria-label="本地运行状态与 Provider"
       >
-        <span class="desktop-capability__dot" aria-hidden="true" />
-        <div class="desktop-capability__content">
-          <strong>{{ capabilityLabels[name] ?? name }}</strong>
-          <code v-if="capability.reason_code">{{ capability.reason_code }}</code>
+        <header class="desktop-status__header">
+          <div>
+            <p class="desktop-status__brand">Sage</p>
+            <h1>{{ title }}</h1>
+          </div>
+          <div class="desktop-status__actions">
+            <button type="button" title="重新检查" aria-label="重新检查" @click="refresh">
+              <RefreshCw :size="17" aria-hidden="true" />
+            </button>
+            <button
+              v-if="snapshot.action === 'open_diagnostics'"
+              type="button"
+              title="打开诊断"
+              aria-label="打开诊断"
+              data-action="diagnostics"
+              @click="desktopOpenDiagnostics"
+            >
+              <FolderOpen :size="17" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              title="退出 Sage"
+              aria-label="退出 Sage"
+              data-action="exit"
+              @click="desktopExit"
+            >
+              <Power :size="17" aria-hidden="true" />
+            </button>
+            <button
+              v-if="applicationAvailable"
+              type="button"
+              title="关闭"
+              aria-label="关闭本地运行状态与 Provider"
+              data-action="close-provider-management"
+              @click="managementOpen = false"
+            >
+              <X :size="17" aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
+        <DesktopOnboarding
+          v-if="onboarding"
+          :snapshot="onboarding"
+          :busy="onboardingBusy"
+          :error="onboardingError"
+          @action="runOnboardingAction"
+        />
+
+        <section v-if="capabilities && onboarding?.stage === 'complete'" class="desktop-capabilities" aria-label="本地能力状态">
+          <div
+            v-for="(capability, name) in capabilities.capabilities"
+            :key="name"
+            class="desktop-capability"
+            :data-capability="name"
+            :data-status="capability.status"
+          >
+            <span class="desktop-capability__dot" aria-hidden="true" />
+            <div class="desktop-capability__content">
+              <strong>{{ capabilityLabels[name] ?? name }}</strong>
+              <code v-if="capability.reason_code">{{ capability.reason_code }}</code>
+            </div>
+            <span class="desktop-capability__status">{{ capability.status }}</span>
+            <code v-if="capability.action" class="desktop-capability__action">{{ capability.action }}</code>
+          </div>
+        </section>
+
+        <section v-else-if="!onboarding && snapshot.reasonCode" class="desktop-problem" aria-live="polite">
+          <code>{{ snapshot.reasonCode }}</code>
+          <span>{{ snapshot.action }}</span>
+        </section>
+
+        <div v-else class="desktop-progress" role="status" aria-live="polite">
+          <span class="desktop-progress__bar" />
         </div>
-        <span class="desktop-capability__status">{{ capability.status }}</span>
-        <code v-if="capability.action" class="desktop-capability__action">{{ capability.action }}</code>
-      </div>
-    </section>
-
-    <section v-else-if="snapshot.reasonCode" class="desktop-problem" aria-live="polite">
-      <code>{{ snapshot.reasonCode }}</code>
-      <span>{{ snapshot.action }}</span>
-    </section>
-
-    <div v-else class="desktop-progress" role="status" aria-live="polite">
-      <span class="desktop-progress__bar" />
+      </main>
     </div>
-  </main>
+  </div>
 </template>
 
 <style scoped>
+.desktop-host-layer { position: relative; z-index: 60; }
+
+.desktop-host-launcher {
+  position: fixed;
+  z-index: 32;
+  right: 16px;
+  bottom: 16px;
+  box-shadow: var(--sage-shadow-sm);
+}
+
+.desktop-status-backdrop {
+  position: fixed;
+  z-index: 60;
+  inset: 0;
+  overflow: auto;
+  background: rgb(17 18 20 / 42%);
+}
+
+.desktop-status-backdrop[data-forced="true"] { background: var(--sage-bg); }
+
 .desktop-status {
   width: min(760px, calc(100% - 48px));
-  margin: 0 auto;
-  padding: 56px 0;
+  max-height: calc(100dvh - 48px);
+  box-sizing: border-box;
+  margin: 24px auto;
+  padding: 28px;
+  overflow: auto;
   color: var(--sage-text);
+  background: var(--sage-surface);
+  border: 1px solid var(--sage-border);
+  border-radius: var(--sage-radius);
+  box-shadow: var(--sage-shadow-md);
+}
+
+.desktop-status-backdrop[data-forced="true"] .desktop-status {
+  min-height: calc(100dvh - 48px);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .desktop-status__header {
@@ -249,7 +422,9 @@ button:hover { color: var(--sage-text); border-color: var(--sage-border-strong);
 @keyframes progress { to { transform: translateX(150%); } }
 
 @media (max-width: 640px) {
-  .desktop-status { width: min(100% - 32px, 760px); padding: 32px 0; }
+  .desktop-host-launcher { right: 12px; bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .desktop-status { width: min(100% - 24px, 760px); max-height: calc(100dvh - 24px); margin: 12px auto; padding: 20px; }
+  .desktop-status-backdrop[data-forced="true"] .desktop-status { min-height: calc(100dvh - 24px); }
   .desktop-capability { grid-template-columns: 10px minmax(100px, 1fr) auto; }
   .desktop-capability__action { display: none; }
 }

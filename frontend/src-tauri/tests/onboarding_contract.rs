@@ -1,6 +1,6 @@
 use sage_desktop_lib::onboarding::{
-    CapabilityInputs, HostCapabilityProbe, LocalProviderInput, OnboardingMode, OnboardingService,
-    ProviderProbe, ProviderProbeError,
+    CapabilityInputs, DesktopOnboardingAction, HostCapabilityProbe, LocalProviderInput,
+    OnboardingMode, OnboardingService, ProviderProbe, ProviderProbeError,
 };
 use sage_desktop_lib::secret_broker::{SecretBroker, SecretBrokerError};
 use std::collections::HashMap;
@@ -134,6 +134,31 @@ fn no_optional_services() -> Arc<dyn HostCapabilityProbe> {
 }
 
 #[test]
+fn onboarding_action_schema_rejects_secret_fields_outside_provider_writes() {
+    let action: DesktopOnboardingAction = serde_json::from_value(serde_json::json!({
+        "kind": "add_provider",
+        "name": "Provider",
+        "base_url": "https://api.openai.com/v1",
+        "api_key": "write-only-test-secret",
+        "default_model": "model-small"
+    }))
+    .unwrap();
+    assert!(matches!(
+        action,
+        DesktopOnboardingAction::AddProvider { .. }
+    ));
+
+    assert!(
+        serde_json::from_value::<DesktopOnboardingAction>(serde_json::json!({
+            "kind": "choose_mode",
+            "mode": "local",
+            "api_key": "must-be-rejected"
+        }))
+        .is_err()
+    );
+}
+
+#[test]
 fn local_onboarding_rebuilds_from_sqlite_without_persisting_the_secret() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace with spaces");
@@ -206,6 +231,42 @@ fn local_onboarding_rebuilds_from_sqlite_without_persisting_the_secret() {
 }
 
 #[test]
+fn completed_onboarding_rebuilds_one_write_only_runtime_configuration() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let mut service = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets,
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    service.choose_mode(OnboardingMode::Local).unwrap();
+    service.select_workspace(&workspace).unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-runtime-only".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+
+    let runtime = service.runtime_configuration().unwrap().unwrap();
+
+    assert_eq!(runtime.workspace_path(), workspace.canonicalize().unwrap());
+    assert_eq!(runtime.provider_id(), provider.provider_id);
+    assert_eq!(runtime.base_url(), "https://provider.example/v1");
+    assert_eq!(runtime.default_model(), "model-small");
+    assert_eq!(runtime.api_mode(), "openai_chat_completions");
+    assert_eq!(runtime.sandbox_provider(), "local_workspace");
+    assert!(!runtime.side_effect_tools_enabled());
+}
+
+#[test]
 fn keychain_failures_keep_provider_metadata_recoverable() {
     let root = tempfile::tempdir().unwrap();
     let workspace = root.path().join("workspace");
@@ -241,11 +302,41 @@ fn keychain_failures_keep_provider_metadata_recoverable() {
             default_model: "model-small".into(),
         })
         .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+
+    secrets.fail_read(SecretBrokerError::Locked);
+    let locked_snapshot = service.snapshot();
+    assert_eq!(locked_snapshot.status, "blocked");
+    assert_eq!(
+        locked_snapshot.reason_code.as_deref(),
+        Some("keychain_locked")
+    );
+    assert_eq!(
+        locked_snapshot.action.as_deref(),
+        Some("unlock_keychain_and_retry")
+    );
+    assert_eq!(
+        locked_snapshot.capabilities["provider"]
+            .reason_code
+            .as_deref(),
+        Some("keychain_locked")
+    );
 
     secrets.fail_read(SecretBrokerError::Locked);
     let locked = service.probe_provider(&provider.provider_id).unwrap_err();
     assert_eq!(locked.reason_code, "keychain_locked");
     assert_eq!(service.snapshot().providers.len(), 1);
+
+    secrets.fail_read(SecretBrokerError::AccessDenied);
+    let denied_snapshot = service.snapshot();
+    assert_eq!(
+        denied_snapshot.reason_code.as_deref(),
+        Some("keychain_access_denied")
+    );
+    assert_eq!(
+        denied_snapshot.action.as_deref(),
+        Some("allow_keychain_access_and_retry")
+    );
 
     secrets.fail_store(SecretBrokerError::AccessDenied);
     let rotate_denied = service

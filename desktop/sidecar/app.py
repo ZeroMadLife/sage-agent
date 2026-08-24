@@ -9,17 +9,23 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from desktop.sidecar.security import DesktopSecurity, DesktopSecurityMiddleware
+from desktop.sidecar.security import (
+    DesktopRuntimeBootstrap,
+    DesktopSecurity,
+    DesktopSecurityMiddleware,
+)
 from desktop.sidecar.smoke import ProbeCheck, StartupSmoke, run_startup_smoke
 
 DESKTOP_PROFILE = "desktop-minimal"
 DESKTOP_API_VERSION = "1"
 DESKTOP_HEALTH_SCHEMA_VERSION = "1"
 SmokeRunner = Callable[[Path], Awaitable[StartupSmoke]]
+ModelFactory = Callable[..., Any]
 
 
 def create_desktop_app(
@@ -28,13 +34,25 @@ def create_desktop_app(
     build_sha: str,
     smoke_runner: SmokeRunner = run_startup_smoke,
     security: DesktopSecurity | None = None,
+    runtime: DesktopRuntimeBootstrap | None = None,
+    model_factory: ModelFactory | None = None,
 ) -> FastAPI:
-    """Create the local-only profile without loading the full product API."""
+    """Create the secure diagnostic or local product desktop profile."""
+
+    product_app = (
+        _create_local_product_app(data_dir, runtime, model_factory=model_factory)
+        if runtime is not None
+        else None
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.desktop_smoke = await smoke_runner(data_dir)
-        yield
+        if product_app is None:
+            yield
+            return
+        async with product_app.router.lifespan_context(product_app):
+            yield
 
     app = FastAPI(title="Sage Desktop Sidecar", lifespan=lifespan)
     capability_observed = False
@@ -86,6 +104,8 @@ def create_desktop_app(
             with capability_observation_lock:
                 if not capability_observed:
                     capability_observed = _record_capability_observation(data_dir)
+        product_ready = product_app is not None
+        side_effect_tools_ready = bool(runtime and runtime.side_effect_tools_enabled)
         return {
             "status": "degraded",
             "api_version": DESKTOP_API_VERSION,
@@ -95,19 +115,26 @@ def create_desktop_app(
                 "storage": {"status": "ready", "reason_code": None, "action": None},
                 "checkpoint": {"status": "ready", "reason_code": None, "action": None},
                 "provider": {
-                    "status": "blocked",
-                    "reason_code": "provider_not_configured",
-                    "action": "configure_provider",
+                    "status": "ready" if product_ready else "blocked",
+                    "reason_code": None if product_ready else "provider_not_configured",
+                    "action": None if product_ready else "configure_provider",
                 },
-                "knowledge": {
-                    "status": "degraded",
-                    "reason_code": "knowledge_profile_minimal",
-                    "action": "continue_without_knowledge",
+                "conversation": {
+                    "status": "ready" if product_ready else "blocked",
+                    "reason_code": None if product_ready else "provider_not_configured",
+                    "action": None if product_ready else "configure_provider",
                 },
-                "sandbox": {
-                    "status": "blocked",
-                    "reason_code": "sandbox_not_available",
-                    "action": "continue_without_tools",
+                "rag": {
+                    "status": "ready" if product_ready else "blocked",
+                    "reason_code": None if product_ready else "workspace_not_configured",
+                    "action": None if product_ready else "select_workspace",
+                },
+                "side_effect_tools": {
+                    "status": "ready" if side_effect_tools_ready else "blocked",
+                    "reason_code": None if side_effect_tools_ready else "docker_not_available",
+                    "action": (
+                        None if side_effect_tools_ready else "continue_without_side_effect_tools"
+                    ),
                 },
             },
         }
@@ -115,7 +142,7 @@ def create_desktop_app(
     @app.get("/desktop/probe/sse")
     async def sse_probe() -> StreamingResponse:
         async def event() -> AsyncIterator[str]:
-            yield f"event: ready\ndata: {{\"api_version\":\"{DESKTOP_API_VERSION}\"}}\n\n"
+            yield f'event: ready\ndata: {{"api_version":"{DESKTOP_API_VERSION}"}}\n\n'
 
         return StreamingResponse(event(), media_type="text/event-stream")
 
@@ -141,7 +168,68 @@ def create_desktop_app(
         await websocket.send_json({"status": "ready", "api_version": DESKTOP_API_VERSION})
         await websocket.close(code=1000)
 
+    if product_app is not None:
+        app.mount("/", product_app)
+
     return app
+
+
+def _create_local_product_app(
+    data_dir: Path,
+    runtime: DesktopRuntimeBootstrap,
+    *,
+    model_factory: ModelFactory | None,
+) -> FastAPI:
+    from api.main import create_app
+    from core.knowledge.index import LocalKnowledgeIndex
+    from core.llm import create_llm
+
+    provider = runtime.provider
+    model_spec = f"desktop:{provider.default_model}"
+
+    def build_model(
+        requested_model: str = model_spec,
+        *,
+        reasoning_mode: str = "off",
+    ) -> Any:
+        return create_llm(
+            requested_model,
+            reasoning_mode=reasoning_mode,
+            api_key=provider.api_key,
+            base_url=provider.base_url,
+            api_mode=provider.api_mode,
+        )
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return create_app(
+        coding_model_factory=model_factory or build_model,
+        coding_workspace_root=runtime.workspace_path,
+        coding_storage_root=data_dir / "coding",
+        coding_model_catalog=[
+            {
+                "id": model_spec,
+                "label": provider.default_model,
+                "provider": "desktop",
+                "reasoning_modes": [],
+            }
+        ],
+        coding_model_capabilities={},
+        coding_default_model=model_spec,
+        coding_deerflow_v2_enabled=False,
+        coding_default_runtime_profile="legacy",
+        coding_context_assembly_mode="off",
+        coding_sandbox_provider=runtime.sandbox_provider,
+        coding_side_effect_tools_enabled=runtime.side_effect_tools_enabled,
+        coding_web_fetch_enabled=False,
+        coding_web_search_enabled=False,
+        database_auto_migrate=False,
+        cloud_app_env="development",
+        cloud_routes_enabled=False,
+        knowledge_workspace_root=runtime.workspace_path,
+        knowledge_database_path=data_dir / "knowledge.sqlite3",
+        knowledge_index=LocalKnowledgeIndex(workspace_id="desktop-local"),
+        knowledge_jobs_enabled=False,
+    )
 
 
 def _record_capability_observation(data_dir: Path) -> bool:

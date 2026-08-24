@@ -51,6 +51,54 @@ describe('DesktopHostAdapter', () => {
     expect(JSON.stringify(localStorage)).not.toContain('memory-only-token')
   })
 
+  it('routes product API URLs through the authenticated desktop session', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: {
+        endpoint: 'http://127.0.0.1:49152', bearer: 'desktop-token', instanceId: 'instance',
+      },
+    })
+    const { desktopAwareFetch, desktopHostStatus } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const fetch = vi.fn().mockResolvedValue(new Response('{}'))
+    vi.stubGlobal('fetch', fetch)
+
+    await desktopAwareFetch(new URL('tauri://localhost/api/v1/knowledge?limit=8'), {
+      credentials: 'include',
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:49152/api/v1/knowledge?limit=8',
+      expect.objectContaining({
+        credentials: 'include',
+        headers: expect.objectContaining({ Authorization: 'Bearer desktop-token' }),
+      }),
+    )
+  })
+
+  it('sends onboarding secrets only to the fixed Rust action command', async () => {
+    invoke.mockResolvedValue({
+      status: 'blocked', reason_code: 'provider_not_configured', action: 'configure_provider',
+      stage: 'configure_provider', mode: 'local', workspace_name: 'workspace',
+      providers: [], capabilities: {},
+    })
+    const storage = vi.spyOn(Storage.prototype, 'setItem')
+    const { desktopOnboardingAction } = await import('./hostAdapter')
+
+    await desktopOnboardingAction({
+      kind: 'add_provider', name: 'Provider', base_url: 'https://api.openai.com/v1',
+      api_key: 'write-only-desktop-secret', default_model: 'gpt-test',
+    })
+
+    expect(invoke).toHaveBeenCalledWith('desktop_onboarding_action', {
+      action: expect.objectContaining({
+        kind: 'add_provider', api_key: 'write-only-desktop-secret',
+      }),
+    })
+    expect(storage).not.toHaveBeenCalled()
+    expect(JSON.stringify(localStorage)).not.toContain('write-only-desktop-secret')
+  })
+
   it('keeps the newer host status when concurrent requests resolve out of order', async () => {
     const older = deferred<unknown>()
     const newer = deferred<unknown>()
@@ -721,6 +769,55 @@ describe('DesktopHostAdapter', () => {
       'ws://127.0.0.1:49153/desktop/probe/ws',
       ['sage.v1', 'sage-bearer.new'],
     )
+    connection.close()
+    vi.useRealTimers()
+  })
+
+  it('forwards one open event per underlying desktop WebSocket generation', async () => {
+    vi.useFakeTimers()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const sockets: Array<{ emit: (type: string, event: Event) => void }> = []
+    const websocket = vi.fn(function WebSocketMock(_url: string, _protocols: string[]) {
+      const listeners = new Map<string, Array<(event: Event) => void>>()
+      const socket = {
+        readyState: WebSocket.OPEN,
+        addEventListener(type: string, listener: (event: Event) => void) {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener])
+        },
+        emit(type: string, event: Event) {
+          for (const listener of listeners.get(type) ?? []) listener(event)
+        },
+        close: vi.fn(),
+        send: vi.fn(),
+      }
+      sockets.push(socket)
+      return socket
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const { desktopHostStatus, desktopSocket } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const connection = desktopSocket('/desktop/probe/ws')
+    const onopen = vi.fn()
+    connection.onopen = onopen
+    await Promise.resolve()
+    await Promise.resolve()
+
+    sockets[0].emit('open', new Event('open'))
+    expect(onopen).toHaveBeenCalledTimes(1)
+
+    sockets[0].emit('close', new CloseEvent('close', { wasClean: false }))
+    await vi.advanceTimersByTimeAsync(100)
+    sockets[1].emit('open', new Event('open'))
+    expect(onopen).toHaveBeenCalledTimes(2)
+
     connection.close()
     vi.useRealTimers()
   })

@@ -39,13 +39,14 @@ import type {
   CodingSkillsResponse,
   PermissionMode,
 } from '../types/api'
+import { desktopAwareFetch } from '../desktop/hostAdapter'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 const TIMELINE_KINDS = new Set(['user', 'assistant', 'model', 'tool', 'approval', 'context', 'memory', 'proposal', 'agent', 'terminal', 'system', 'run', 'harness'])
 const TIMELINE_STATUSES = new Set(['pending', 'queued', 'running', 'blocked', 'done', 'completed', 'cancelled', 'error', 'interrupted', 'retryable'])
 
 function apiFetch(input: RequestInfo | URL, init: RequestInit = {}) {
-  return fetch(input, { credentials: 'include', ...init })
+  return desktopAwareFetch(input, { credentials: 'include', ...init })
 }
 
 export class CodingApprovalResponseError extends Error {

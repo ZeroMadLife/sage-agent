@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
+use zeroize::Zeroize;
 
 const SCHEMA_VERSION: i64 = 1;
 
@@ -64,8 +66,70 @@ impl OnboardingMode {
 pub struct LocalProviderInput {
     pub name: String,
     pub base_url: String,
-    pub api_key: String,
+    pub api_key: WriteOnlySecret,
     pub default_model: String,
+}
+
+#[derive(Deserialize)]
+#[serde(transparent)]
+pub struct WriteOnlySecret(String);
+
+impl WriteOnlySecret {
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for WriteOnlySecret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for WriteOnlySecret {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
+impl Drop for WriteOnlySecret {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DesktopOnboardingAction {
+    ChooseMode {
+        mode: OnboardingMode,
+    },
+    SelectWorkspace {
+        workspace_path: String,
+    },
+    AddProvider {
+        name: String,
+        base_url: String,
+        api_key: WriteOnlySecret,
+        default_model: String,
+    },
+    ProbeProvider {
+        provider_id: String,
+    },
+    SetDefaultModel {
+        provider_id: String,
+        model_id: String,
+    },
+    RotateProviderKey {
+        provider_id: String,
+        api_key: WriteOnlySecret,
+    },
+    DisconnectProvider {
+        provider_id: String,
+    },
+    DeleteProvider {
+        provider_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -80,6 +144,53 @@ pub struct LocalProviderView {
     pub reason_code: Option<String>,
     pub models: Vec<String>,
     pub default_model: Option<String>,
+}
+
+pub struct DesktopRuntimeConfiguration {
+    workspace_path: PathBuf,
+    provider_id: String,
+    base_url: String,
+    default_model: String,
+    api_key: WriteOnlySecret,
+    docker_ready: bool,
+}
+
+impl DesktopRuntimeConfiguration {
+    pub fn workspace_path(&self) -> &Path {
+        &self.workspace_path
+    }
+
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    pub fn default_model(&self) -> &str {
+        &self.default_model
+    }
+
+    pub fn api_mode(&self) -> &'static str {
+        "openai_chat_completions"
+    }
+
+    pub fn sandbox_provider(&self) -> &'static str {
+        if self.docker_ready {
+            "container"
+        } else {
+            "local_workspace"
+        }
+    }
+
+    pub fn side_effect_tools_enabled(&self) -> bool {
+        self.docker_ready
+    }
+
+    pub(crate) fn expose_secret(&self) -> &str {
+        self.api_key.expose()
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -144,6 +255,158 @@ pub struct OnboardingService {
     secrets: Arc<dyn SecretBroker>,
     provider_probe: Arc<dyn ProviderProbe>,
     host_capabilities: Arc<dyn HostCapabilityProbe>,
+}
+
+enum OnboardingRuntime {
+    Uninitialized,
+    Ready(OnboardingService),
+    Blocked(DesktopActionError),
+}
+
+#[derive(Clone)]
+pub struct SharedOnboardingState(Arc<Mutex<OnboardingRuntime>>);
+
+impl Default for SharedOnboardingState {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(OnboardingRuntime::Uninitialized)))
+    }
+}
+
+pub fn initialize(app: AppHandle) {
+    let state = app.state::<SharedOnboardingState>().inner().clone();
+    let runtime = match app.path().app_data_dir() {
+        Ok(data_dir) => {
+            #[cfg(target_os = "macos")]
+            {
+                OnboardingService::open_production(data_dir)
+                    .map(OnboardingRuntime::Ready)
+                    .unwrap_or_else(OnboardingRuntime::Blocked)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = data_dir;
+                OnboardingRuntime::Blocked(DesktopActionError::new(
+                    "keychain_platform_unsupported",
+                    "use_macos_desktop",
+                ))
+            }
+        }
+        Err(_) => OnboardingRuntime::Blocked(DesktopActionError::new(
+            "desktop_data_dir_unavailable",
+            "restart_sage",
+        )),
+    };
+    *state.0.lock().expect("onboarding state poisoned") = runtime;
+}
+
+#[tauri::command]
+pub fn desktop_onboarding_status(
+    state: State<'_, SharedOnboardingState>,
+) -> Result<OnboardingSnapshot, DesktopActionError> {
+    let runtime = state.0.lock().map_err(|_| DesktopActionError::storage())?;
+    match &*runtime {
+        OnboardingRuntime::Ready(service) => Ok(service.snapshot()),
+        OnboardingRuntime::Blocked(error) => Err(error.clone()),
+        OnboardingRuntime::Uninitialized => Err(DesktopActionError::new(
+            "desktop_onboarding_starting",
+            "wait_for_startup",
+        )),
+    }
+}
+
+#[tauri::command]
+pub fn desktop_onboarding_action(
+    action: DesktopOnboardingAction,
+    app: AppHandle,
+    state: State<'_, SharedOnboardingState>,
+    host: State<'_, crate::supervisor::SharedHostState>,
+) -> Result<OnboardingSnapshot, DesktopActionError> {
+    let mut runtime = state.0.lock().map_err(|_| DesktopActionError::storage())?;
+    let OnboardingRuntime::Ready(service) = &mut *runtime else {
+        return match &*runtime {
+            OnboardingRuntime::Blocked(error) => Err(error.clone()),
+            OnboardingRuntime::Uninitialized => Err(DesktopActionError::new(
+                "desktop_onboarding_starting",
+                "wait_for_startup",
+            )),
+            OnboardingRuntime::Ready(_) => unreachable!(),
+        };
+    };
+    let restart_required = apply_action(service, action)?;
+    let snapshot = service.snapshot();
+    drop(runtime);
+    if restart_required {
+        crate::supervisor::restart_for_configuration(app, host.inner().clone());
+    }
+    Ok(snapshot)
+}
+
+fn apply_action(
+    service: &mut OnboardingService,
+    action: DesktopOnboardingAction,
+) -> Result<bool, DesktopActionError> {
+    match action {
+        DesktopOnboardingAction::ChooseMode { mode } => {
+            service.choose_mode(mode)?;
+            Ok(false)
+        }
+        DesktopOnboardingAction::SelectWorkspace { workspace_path } => {
+            service.select_workspace(Path::new(&workspace_path))?;
+            Ok(false)
+        }
+        DesktopOnboardingAction::AddProvider {
+            name,
+            base_url,
+            api_key,
+            default_model,
+        } => {
+            service.add_provider(LocalProviderInput {
+                name,
+                base_url,
+                api_key,
+                default_model,
+            })?;
+            Ok(false)
+        }
+        DesktopOnboardingAction::ProbeProvider { provider_id } => {
+            service.probe_provider(&provider_id)?;
+            Ok(true)
+        }
+        DesktopOnboardingAction::SetDefaultModel {
+            provider_id,
+            model_id,
+        } => {
+            service.set_default_model(&provider_id, &model_id)?;
+            Ok(true)
+        }
+        DesktopOnboardingAction::RotateProviderKey {
+            provider_id,
+            api_key,
+        } => {
+            service.rotate_provider_key(&provider_id, api_key.expose())?;
+            Ok(true)
+        }
+        DesktopOnboardingAction::DisconnectProvider { provider_id } => {
+            service.disconnect_provider(&provider_id)?;
+            Ok(true)
+        }
+        DesktopOnboardingAction::DeleteProvider { provider_id } => {
+            service.delete_provider(&provider_id)?;
+            Ok(true)
+        }
+    }
+}
+
+pub fn runtime_configuration_for_app(
+    app: &AppHandle,
+) -> Result<Option<DesktopRuntimeConfiguration>, DesktopActionError> {
+    let state = app.state::<SharedOnboardingState>();
+    let runtime = state.0.lock().map_err(|_| DesktopActionError::storage())?;
+    match &*runtime {
+        OnboardingRuntime::Ready(service) => service.runtime_configuration(),
+        OnboardingRuntime::Blocked(error) => Err(error.clone()),
+        OnboardingRuntime::Uninitialized => Ok(None),
+    }
 }
 
 impl OnboardingService {
@@ -222,15 +485,17 @@ impl OnboardingService {
         let name = normalized_label(&input.name, "provider_name_invalid")?;
         let base_url = normalized_base_url(&input.base_url)?;
         let default_model = normalized_label(&input.default_model, "provider_model_invalid")?;
-        if input.api_key.trim().is_empty() {
+        if input.api_key.expose().trim().is_empty() {
             return Err(DesktopActionError::new(
                 "provider_key_invalid",
                 "reenter_provider_key",
             ));
         }
         let provider_id = Uuid::new_v4().to_string();
-        let key_ref = self.secrets.store(&provider_id, input.api_key.trim())?;
-        let key_hint = key_hint(input.api_key.trim());
+        let key_ref = self
+            .secrets
+            .store(&provider_id, input.api_key.expose().trim())?;
+        let key_hint = key_hint(input.api_key.expose().trim());
         let transaction = self
             .connection
             .transaction()
@@ -265,11 +530,12 @@ impl OnboardingService {
         if !provider.key_configured {
             return Err(SecretBrokerError::Missing.into());
         }
-        let secret = self.secrets.read(&provider.key_ref)?;
-        let models = match self
+        let mut secret = self.secrets.read(&provider.key_ref)?;
+        let probe_result = self
             .provider_probe
-            .discover_models(&provider.base_url, &secret)
-        {
+            .discover_models(&provider.base_url, &secret);
+        secret.zeroize();
+        let models = match probe_result {
             Ok(models) if !models.is_empty() => models,
             Ok(_) | Err(ProviderProbeError::InvalidResponse) => {
                 self.record_probe_failure(provider_id, "provider_probe_invalid_response")?;
@@ -377,7 +643,7 @@ impl OnboardingService {
         let provider = self.provider_record(provider_id)?;
         let previous = if provider.key_configured {
             match self.secrets.read(&provider.key_ref) {
-                Ok(secret) => Some(secret),
+                Ok(secret) => Some(WriteOnlySecret::from(secret)),
                 Err(SecretBrokerError::Missing) => None,
                 Err(error) => return Err(error.into()),
             }
@@ -393,7 +659,7 @@ impl OnboardingService {
         if result.is_err() {
             match previous {
                 Some(secret) => {
-                    let _ = self.secrets.store(provider_id, &secret);
+                    let _ = self.secrets.store(provider_id, secret.expose());
                 }
                 None => {
                     let _ = self.secrets.delete(&key_ref);
@@ -410,7 +676,7 @@ impl OnboardingService {
     ) -> Result<LocalProviderView, DesktopActionError> {
         let provider = self.provider_record(provider_id)?;
         let previous = match self.secrets.read(&provider.key_ref) {
-            Ok(secret) => Some(secret),
+            Ok(secret) => Some(WriteOnlySecret::from(secret)),
             Err(SecretBrokerError::Missing) => None,
             Err(error) => return Err(error.into()),
         };
@@ -425,7 +691,7 @@ impl OnboardingService {
         );
         if result.is_err() {
             if let Some(secret) = previous {
-                let _ = self.secrets.store(provider_id, &secret);
+                let _ = self.secrets.store(provider_id, secret.expose());
             }
             return Err(DesktopActionError::storage());
         }
@@ -435,7 +701,7 @@ impl OnboardingService {
     pub fn delete_provider(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
         let provider = self.provider_record(provider_id)?;
         let previous = match self.secrets.read(&provider.key_ref) {
-            Ok(secret) => Some(secret),
+            Ok(secret) => Some(WriteOnlySecret::from(secret)),
             Err(SecretBrokerError::Missing) => None,
             Err(error) => return Err(error.into()),
         };
@@ -451,7 +717,7 @@ impl OnboardingService {
             .is_err()
         {
             if let Some(secret) = previous {
-                let _ = self.secrets.store(provider_id, &secret);
+                let _ = self.secrets.store(provider_id, secret.expose());
             }
             return Err(DesktopActionError::storage());
         }
@@ -472,12 +738,59 @@ impl OnboardingService {
             })
     }
 
+    pub fn runtime_configuration(
+        &self,
+    ) -> Result<Option<DesktopRuntimeConfiguration>, DesktopActionError> {
+        let (mode, workspace) = self.onboarding_selection()?;
+        if mode != Some(OnboardingMode::Local) {
+            return Ok(None);
+        }
+        let Some(workspace_path) = workspace.filter(|path| path.is_dir()) else {
+            return Ok(None);
+        };
+        let provider = self
+            .provider_views()?
+            .into_iter()
+            .find(|value| value.status == "connected" && value.key_configured);
+        let Some(provider) = provider else {
+            return Ok(None);
+        };
+        let Some(default_model) = provider.default_model else {
+            return Ok(None);
+        };
+        let api_key = WriteOnlySecret::from(self.secrets.read(&provider.key_ref)?);
+        let docker_ready = self.host_capabilities.detect().docker_ready;
+        Ok(Some(DesktopRuntimeConfiguration {
+            workspace_path,
+            provider_id: provider.provider_id,
+            base_url: provider.base_url,
+            default_model,
+            api_key,
+            docker_ready,
+        }))
+    }
+
     fn try_snapshot(&self) -> Result<OnboardingSnapshot, DesktopActionError> {
         let (mode, workspace) = self.onboarding_selection()?;
         let providers = self.provider_views()?;
         let workspace_ready = workspace.as_ref().is_some_and(|path| path.is_dir());
+        let mut provider_secret_error = None;
         let provider_ready = providers.iter().any(|provider| {
-            provider.key_configured && self.secrets.read(&provider.key_ref).is_ok()
+            if !provider.key_configured || provider.status != "connected" {
+                return false;
+            }
+            match self.secrets.read(&provider.key_ref) {
+                Ok(mut secret) => {
+                    secret.zeroize();
+                    true
+                }
+                Err(error) => {
+                    if provider_secret_error.is_none() {
+                        provider_secret_error = Some(DesktopActionError::from(error));
+                    }
+                    false
+                }
+            }
         });
         let stage = match mode {
             None => "choose_mode",
@@ -487,7 +800,13 @@ impl OnboardingService {
             Some(OnboardingMode::Local) => "complete",
         };
         let host = self.host_capabilities.detect();
-        let capabilities = capability_matrix(mode, workspace_ready, provider_ready, host);
+        let mut capabilities = capability_matrix(mode, workspace_ready, provider_ready, host);
+        if let Some(error) = provider_secret_error.as_ref() {
+            capabilities.insert(
+                "provider".into(),
+                capability("blocked", Some(error.reason_code), Some(error.action)),
+            );
+        }
         let (status, reason_code, action) = if stage == "complete" {
             let degraded = capabilities
                 .values()
@@ -498,10 +817,11 @@ impl OnboardingService {
                 degraded.then_some("review_capabilities".into()),
             )
         } else {
-            let (reason, action) = match stage {
-                "choose_mode" => ("onboarding_mode_required", "choose_onboarding_mode"),
-                "cloud_unavailable" => ("cloud_oauth_not_available", "choose_local_mode"),
-                "select_workspace" => ("workspace_required", "select_workspace"),
+            let (reason, action) = match (stage, provider_secret_error.as_ref()) {
+                ("configure_provider", Some(error)) => (error.reason_code, error.action),
+                ("choose_mode", _) => ("onboarding_mode_required", "choose_onboarding_mode"),
+                ("cloud_unavailable", _) => ("cloud_oauth_not_available", "choose_local_mode"),
+                ("select_workspace", _) => ("workspace_required", "select_workspace"),
                 _ => ("provider_not_configured", "configure_provider"),
             };
             ("blocked", Some(reason.into()), Some(action.into()))

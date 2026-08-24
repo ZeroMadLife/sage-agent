@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -39,7 +40,11 @@ def _headers(**overrides: str) -> dict[str, str]:
 
 
 @contextmanager
-def _running_secure_sidecar(tmp_path: Path) -> Iterator[subprocess.Popen[str]]:
+def _running_secure_sidecar(
+    tmp_path: Path,
+    *,
+    runtime: dict[str, object] | None = None,
+) -> Iterator[subprocess.Popen[str]]:
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
         [str(Path.cwd()), str(Path.cwd() / "packages" / "sage_harness")]
@@ -55,18 +60,16 @@ def _running_secure_sidecar(tmp_path: Path) -> Iterator[subprocess.Popen[str]]:
     )
     try:
         assert process.stdin is not None
-        process.stdin.write(
-            json.dumps(
-                {
-                    "instance_id": "test-instance",
-                    "nonce": "test-nonce",
-                    "bearer": BEARER,
-                    "origin": ORIGIN,
-                    "data_dir": str(tmp_path),
-                }
-            )
-            + "\n"
-        )
+        bootstrap = {
+            "instance_id": "test-instance",
+            "nonce": "test-nonce",
+            "bearer": BEARER,
+            "origin": ORIGIN,
+            "data_dir": str(tmp_path),
+        }
+        if runtime is not None:
+            bootstrap["runtime"] = runtime
+        process.stdin.write(json.dumps(bootstrap) + "\n")
         process.stdin.flush()
         yield process
     finally:
@@ -109,6 +112,39 @@ def test_bootstrap_accepts_only_the_two_exact_desktop_origins(origin: str) -> No
         DesktopBootstrap.from_json(json.dumps({**payload, "origin": f"{origin}/"}))
 
 
+def test_bootstrap_accepts_one_local_provider_without_exporting_it_to_environment() -> None:
+    secret = "test-secret-bootstrap-only"
+    payload = {
+        "instance_id": "instance",
+        "nonce": "nonce",
+        "bearer": "bearer",
+        "origin": ORIGIN,
+        "data_dir": "/tmp/sage",
+        "runtime": {
+            "workspace_path": "/tmp/sage workspace",
+            "provider": {
+                "provider_id": "provider-1",
+                "base_url": "https://provider.example/v1",
+                "default_model": "model-small",
+                "api_mode": "openai_chat_completions",
+                "api_key": secret,
+            },
+        },
+    }
+
+    bootstrap = DesktopBootstrap.from_json(json.dumps(payload))
+
+    assert bootstrap.runtime is not None
+    assert bootstrap.runtime.provider.default_model == "model-small"
+    assert secret not in repr(bootstrap)
+    assert all(value != secret for value in os.environ.values())
+
+    with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+        DesktopBootstrap.from_json(
+            json.dumps({**payload, "runtime": {**payload["runtime"], "unknown": True}})
+        )
+
+
 def test_exact_desktop_preflight_allows_authorization_without_bearer(tmp_path: Path) -> None:
     app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
 
@@ -137,7 +173,10 @@ def test_exact_desktop_preflight_allows_authorization_without_bearer(tmp_path: P
         ({"Origin": "https://evil.example"}, "desktop_origin_rejected"),
         ({"Host": "localhost:43123"}, "desktop_host_rejected"),
         ({"Access-Control-Request-Method": "POST"}, "desktop_preflight_rejected"),
-        ({"Access-Control-Request-Headers": "authorization, x-extra"}, "desktop_preflight_rejected"),
+        (
+            {"Access-Control-Request-Headers": "authorization, x-extra"},
+            "desktop_preflight_rejected",
+        ),
     ],
 )
 def test_desktop_preflight_fails_closed(
@@ -223,9 +262,11 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
     assert sse.headers["content-type"].startswith("text/event-stream")
     assert "event: ready" in sse.text
     assert ws_payload == {"status": "ready", "api_version": DESKTOP_API_VERSION}
-    diagnostic_lines = (tmp_path / "diagnostics" / "desktop-sidecar.jsonl").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    diagnostic_lines = (
+        (tmp_path / "diagnostics" / "desktop-sidecar.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert len(diagnostic_lines) == 1
     diagnostic = json.loads(diagnostic_lines[0])
     assert set(diagnostic) == {"timestamp", "event", "state", "reason_code"}
@@ -252,9 +293,11 @@ def test_capability_observation_retries_after_diagnostic_write_failure(
         assert client.get("/capabilities", headers=_headers()).status_code == 200
         assert client.get("/capabilities", headers=_headers()).status_code == 200
 
-    lines = (tmp_path / "diagnostics" / "desktop-sidecar.jsonl").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    lines = (
+        (tmp_path / "diagnostics" / "desktop-sidecar.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert attempts == 2
     assert len(lines) == 1
 
@@ -319,3 +362,53 @@ def test_secure_process_exits_when_the_parent_pipe_closes(tmp_path: Path) -> Non
         return_code = process.wait(timeout=10)
 
     assert return_code == 0
+
+
+def test_secure_process_bootstraps_the_local_product_without_persisting_secret(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    secret = "test-secret-process-bootstrap"
+    runtime = {
+        "workspace_path": str(workspace),
+        "provider": {
+            "provider_id": "provider-1",
+            "base_url": "https://provider.example/v1",
+            "default_model": "model-small",
+            "api_mode": "openai_chat_completions",
+            "api_key": secret,
+        },
+    }
+
+    with _running_secure_sidecar(tmp_path, runtime=runtime) as process:
+        assert process.stdout is not None
+        handshake_line = process.stdout.readline()
+        handshake = json.loads(handshake_line)
+        headers = {
+            "Authorization": f"Bearer {BEARER}",
+            "Origin": ORIGIN,
+        }
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{handshake['port']}",
+            headers=headers,
+            timeout=10,
+        ) as client:
+            assistant = client.get("/api/v1/assistant/home")
+            knowledge = client.get("/api/v1/knowledge")
+            session = client.post("/api/v1/coding/session", json={})
+        assert process.stdin is not None
+        process.stdin.close()
+        process.stdin = None
+        process.wait(timeout=10)
+        stderr = process.stderr.read() if process.stderr is not None else ""
+
+    assert assistant.status_code == 200
+    assert knowledge.status_code == 200
+    assert session.status_code == 200
+    assert secret not in handshake_line
+    assert secret not in stderr
+    assert all(value != secret for value in os.environ.values())
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert secret.encode() not in path.read_bytes()

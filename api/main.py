@@ -98,9 +98,12 @@ def create_app(
     coding_harness_config: HarnessConfig | None = None,
     coding_sandbox_provider: str | None = None,
     coding_sandbox_image: str | None = None,
+    coding_side_effect_tools_enabled: bool = True,
     coding_mcp_catalog: McpCatalogPort | None = None,
     coding_web_fetch_port: WebFetchPort | None = None,
     coding_web_search_port: WebSearchPort | None = None,
+    coding_web_fetch_enabled: bool | None = None,
+    coding_web_search_enabled: bool | None = None,
     database_auto_migrate: bool | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
@@ -110,6 +113,7 @@ def create_app(
     cloud_token_secret: str | None = None,
     cloud_github_oauth_service: GitHubOAuthService | None = None,
     cloud_frontend_url: str | None = None,
+    cloud_routes_enabled: bool = True,
     cloud_model_provider_repository: ModelProviderRepository | None = None,
     cloud_model_provider_probe: ProviderProbe | None = None,
     knowledge_workspace_root: str | Path | None = None,
@@ -208,7 +212,10 @@ def create_app(
         settings.validate_cloud_token_signing_secret(resolved_cloud_token_secret)
     if app_env == "production" and cloud_repository is None:
         settings.validate_cloud_production_secrets(app_env=app_env)
-    app.state.cloud_repository = cloud_repository or CloudRepository(AsyncSessionFactory)
+    resolved_cloud_repository: CloudRepository | None = (
+        cloud_repository or CloudRepository(AsyncSessionFactory) if cloud_routes_enabled else None
+    )
+    app.state.cloud_repository = resolved_cloud_repository
     app.state.cloud_app_env = app_env
     app.state.cloud_dev_login_enabled = (
         settings.cloud_dev_login_enabled
@@ -254,16 +261,21 @@ def create_app(
         app_env=app_env
     )
     app.state.cloud_github_oauth_service = cloud_github_oauth_service
-    if app.state.cloud_github_oauth_service is None and all(
-        (
-            settings.github_oauth_client_id,
-            settings.github_oauth_client_secret,
-            settings.github_oauth_transaction_secret,
-            settings.github_token_encryption_secret,
+    if (
+        cloud_routes_enabled
+        and app.state.cloud_github_oauth_service is None
+        and all(
+            (
+                settings.github_oauth_client_id,
+                settings.github_oauth_client_secret,
+                settings.github_oauth_transaction_secret,
+                settings.github_token_encryption_secret,
+            )
         )
     ):
+        assert resolved_cloud_repository is not None
         app.state.cloud_github_oauth_service = GitHubOAuthService(
-            app.state.cloud_repository,
+            resolved_cloud_repository,
             GitHubOAuthConfig(
                 client_id=settings.github_oauth_client_id,
                 client_secret=settings.github_oauth_client_secret,
@@ -374,6 +386,7 @@ def create_app(
     ).strip()
     if not app.state.coding_sandbox_image:
         raise ValueError("coding sandbox image must not be empty")
+    app.state.coding_side_effect_tools_enabled = bool(coding_side_effect_tools_enabled)
     app.state.sage_harness_checkpointer = None
     resolved_mcp_catalog = coding_mcp_catalog or ConfiguredMcpCatalog({})
     app.state.coding_mcp_catalog = resolved_mcp_catalog
@@ -382,7 +395,11 @@ def create_app(
     )
     if coding_web_search_port is not None:
         app.state.coding_web_search_port = coding_web_search_port
-    elif settings.sage_web_search_enabled:
+    elif (
+        settings.sage_web_search_enabled
+        if coding_web_search_enabled is None
+        else coding_web_search_enabled
+    ):
         if not settings.sage_web_search_endpoint.strip():
             raise ValueError("SAGE_WEB_SEARCH_ENDPOINT is required when web search is enabled")
         app.state.coding_web_search_port = SearxngWebSearchAdapter(
@@ -394,7 +411,11 @@ def create_app(
         app.state.coding_web_search_port = None
     if coding_web_fetch_port is not None:
         app.state.coding_web_fetch_port = coding_web_fetch_port
-    elif settings.sage_web_fetch_enabled:
+    elif (
+        settings.sage_web_fetch_enabled
+        if coding_web_fetch_enabled is None
+        else coding_web_fetch_enabled
+    ):
         app.state.coding_web_fetch_port = SafeWebFetchAdapter(
             connect_timeout_seconds=settings.sage_web_fetch_connect_timeout_seconds,
             read_timeout_seconds=settings.sage_web_fetch_read_timeout_seconds,
@@ -535,9 +556,10 @@ def create_app(
     app.include_router(coding.router)
     app.include_router(knowledge.router)
     app.include_router(publication.router)
-    app.include_router(cloud_auth.router)
-    app.include_router(cloud_model_providers.router)
-    app.include_router(cloud_workspaces.router)
+    if cloud_routes_enabled:
+        app.include_router(cloud_auth.router)
+        app.include_router(cloud_model_providers.router)
+        app.include_router(cloud_workspaces.router)
     return app
 
 

@@ -94,7 +94,7 @@ fn desktop_ci_and_manifest_pin_the_supported_arm64_rust_toolchain() {
 }
 
 #[test]
-fn registered_commands_are_the_three_fixed_desktop_host_actions() {
+fn registered_commands_are_the_five_fixed_desktop_actions() {
     let source = fs::read_to_string(crate_root().join("src/lib.rs"))
         .expect("desktop host source must exist");
     let compact: String = source
@@ -103,8 +103,10 @@ fn registered_commands_are_the_three_fixed_desktop_host_actions() {
         .collect();
 
     assert!(compact.contains(
-        "tauri::generate_handler![desktop_host_status,desktop_exit,desktop_open_diagnostics]"
+        "tauri::generate_handler![desktop_host_status,desktop_exit,desktop_open_diagnostics,desktop_onboarding_status,desktop_onboarding_action]"
     ));
+    assert!(compact.contains("manage(SharedOnboardingState::default())"));
+    assert!(compact.contains("onboarding::initialize(app.handle().clone())"));
     assert!(compact.contains("RunEvent::Exit=event"));
     assert!(compact.contains("supervisor::finalize_exit(state)"));
     assert!(!source.contains("core:default"));

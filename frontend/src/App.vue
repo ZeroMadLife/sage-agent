@@ -29,6 +29,7 @@ const cloudAuthenticated = ref(!cloudAuthRequired)
 const cloudAuthChecking = ref(cloudAuthRequired)
 const { check: checkCloudAuth } = useCloudAuth()
 const desktopRuntime = isDesktopRuntime()
+const desktopAvailable = ref(false)
 
 onMounted(async () => {
   if (!cloudAuthRequired) return
@@ -66,13 +67,19 @@ watch(
     <NLoadingBarProvider>
       <NMessageProvider>
         <NDialogProvider>
-          <DesktopHostGate v-if="desktopRuntime" />
+          <DesktopHostGate
+            v-if="desktopRuntime"
+            @availability="desktopAvailable = $event"
+          />
           <CloudAuthGate
-            v-else-if="cloudAuthRequired && !cloudAuthenticated"
+            v-if="!desktopRuntime && cloudAuthRequired && !cloudAuthenticated"
             :checking="cloudAuthChecking"
             @authenticated="cloudAuthenticated = true"
           />
-          <div v-else class="app-shell">
+          <div
+            v-if="desktopRuntime ? desktopAvailable : (!cloudAuthRequired || cloudAuthenticated)"
+            class="app-shell"
+          >
             <AssistantNavigation v-if="usesAssistantShell">
               <RouterView />
             </AssistantNavigation>
