@@ -266,8 +266,22 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - **源码门禁**：Rust `44 passed`、fmt/clippy 通过，真实临时 Keychain round-trip 已清理；Python
   desktop/auth 均 `61 passed`，full `2054 passed, 12 skipped`，Ruff 与受影响 Python mypy 通过；
   Vue focused `39 passed`、full `72 files / 549 tests`、production build 通过；source product smoke 与
-  `git diff --check` 通过。正式 clean arm64 artifact、strict codesign、计数与 receipt SHA 在 docs HEAD
-  固定后重跑，不沿用首轮 `b55f0f2` receipt。
+  `git diff --check` 通过。
+- **正式 artifact**：从 clean docs HEAD `8479a2cf77e30b3f2f7c9d43d4076e828261df61`
+  运行唯一入口，receipt 为
+  `/private/tmp/sage-desktop-8479a2cf77e30b3f2f7c9d43d4076e828261df61/desktop-bundle-receipt.json`，
+  SHA-256 `466b274664a985d01714980cd35d0a3cef5946fddc412693233b490b2e325074`；
+  `source_dirty=false`，target 为 `aarch64-apple-darwin`，sidecar 12 项 smoke 与 `.app` 6 项
+  lifecycle smoke 全部 `passed`。其中模型 turn、SQLite RAG 与副作用工具阻断均来自冻结产物真实请求。
+- **计数与安全**：sidecar receipt SHA-256 为
+  `e512859637eeb3a3c684cc7a0e732266d5d4844aec54f01e605b7e940ed235f4`；artifact
+  manifest 的 269 entries 经逐项分类为 247 个 regular files、22 个 symlinks、0 missing，写入
+  `build-receipt.json` 后物理目录为 248 个 regular files、116 个 directories、22 个 symlinks。
+  最终 `.app` 为 274 个 regular files、121 个 directories、0 symlink。host、launcher、sidecar
+  均为 arm64 Mach-O，app 与三个嵌套可执行文件通过 `codesign --verify --deep --strict`/strict 验证，
+  签名为 ad-hoc；secret sentinel 在 `.app` 与 receipt 中均零命中，退出后精确进程名复查为零残留。
+- **发布边界**：不沿用首轮 `b55f0f2` receipt。当前仍只是 macOS arm64 ad-hoc/local dev 候选，
+  等待第二轮中枢三镜头复审；Cloud OAuth、updater、Developer ID、公证、stapled DMG 均未交付。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
