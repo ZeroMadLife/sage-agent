@@ -171,6 +171,14 @@ pub fn request_exit(app: AppHandle, shared: SharedHostState) {
     });
 }
 
+pub fn finalize_exit(shared: SharedHostState) {
+    {
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        inner.stopping = true;
+    }
+    stop_sidecar_blocking(&shared);
+}
+
 pub fn start(app: AppHandle) {
     let shared = app.state::<SharedHostState>().inner().clone();
     let data_dir = match app.path().app_data_dir() {
@@ -492,16 +500,18 @@ fn handle_crash(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, reas
 }
 
 async fn stop_sidecar(shared: &SharedHostState) {
+    let owned = shared.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || stop_sidecar_blocking(&owned)).await;
+}
+
+fn stop_sidecar_blocking(shared: &SharedHostState) {
     let (record, child) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         (inner.disk.orphan.clone(), inner.child.take())
     };
     if let Some(record) = record {
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            let _child = child;
-            terminate_runtime(&record)
-        })
-        .await;
+        let _child = child;
+        let _ = terminate_runtime(&record);
     } else {
         drop(child);
     }

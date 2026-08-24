@@ -83,5 +83,7 @@ fn registered_commands_are_the_three_fixed_desktop_host_actions() {
     assert!(compact.contains(
         "tauri::generate_handler![desktop_host_status,desktop_exit,desktop_open_diagnostics]"
     ));
+    assert!(compact.contains("RunEvent::Exit=event"));
+    assert!(compact.contains("supervisor::finalize_exit(state)"));
     assert!(!source.contains("core:default"));
 }

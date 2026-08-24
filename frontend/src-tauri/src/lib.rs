@@ -58,6 +58,9 @@ pub fn run() {
                 api.prevent_exit();
                 supervisor::request_exit(app.clone(), state);
             }
+        } else if let RunEvent::Exit = event {
+            let state = app.state::<SharedHostState>().inner().clone();
+            supervisor::finalize_exit(state);
         }
     });
 }
