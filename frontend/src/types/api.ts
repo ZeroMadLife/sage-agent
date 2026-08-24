@@ -100,6 +100,94 @@ export type AssistantHomeSummary = {
   }>
 }
 
+export type LearningSourcePolicy = {
+  knowledge: 'preferred' | 'required' | 'disabled'
+  web: 'allowed_when_insufficient' | 'forbidden'
+  domains: string[]
+  freshness: 'all' | 'current'
+}
+
+export type LearningTaskStatus =
+  | 'draft'
+  | 'activating'
+  | 'active'
+  | 'activation_failed'
+  | 'blocked'
+  | 'completed'
+  | 'archived'
+
+export type LearningTaskResponse = {
+  version: number
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  template_id: string
+  topic: string
+  desired_outcome: string | null
+  learner_profile: {
+    starting_level: 'beginner' | 'intermediate' | 'advanced' | null
+    time_budget_minutes_per_week: number | null
+    target_date: string | null
+  }
+  source_policy: LearningSourcePolicy
+  risk_class: 'general_education' | 'financial_education'
+  risk_notice: string | null
+  clarification: {
+    required_fields: string[]
+    questions: Array<{ field: string; prompt: string }>
+    ready_to_activate: boolean
+  }
+  learning_plan_id: string | null
+  learning_plan_hash: string | null
+  dag_hash: string | null
+  learning_goal_ref: { goal_id: string; goal_revision: string } | null
+  status: LearningTaskStatus
+  created_at: string
+  updated_at: string
+}
+
+export type LearningTaskDraftInput = {
+  topic: string
+  desired_outcome?: string | null
+  starting_level?: 'beginner' | 'intermediate' | 'advanced' | null
+  time_budget_minutes_per_week?: number | null
+  target_date?: string | null
+  source_policy?: LearningSourcePolicy | null
+}
+
+export type LearningTaskPatchInput = Partial<Omit<LearningTaskDraftInput, 'topic'>> & {
+  expected_revision: number
+  topic?: string
+}
+
+export type LearningActivationResponse = {
+  version: number
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  session_id: string
+  thread_goal_revision: number | null
+  learning_goal_ref: { goal_id: string; goal_revision: string }
+  learning_plan_id: string | null
+  learning_plan_hash: string | null
+  turn_context_plan_id: string
+  turn_context_plan_hash: string | null
+  dag_hash: string | null
+  plan_id: string
+  plan_hash: string | null
+  catalog_revision: string | null
+  capability_revision: string | null
+  allowed_capabilities: string[]
+  source_policy_snapshot: LearningSourcePolicy
+  source_policy_revision: string
+  resume_validation_version: 'canonical_l0_v3' | 'legacy_l0_v2'
+  receipt_status: 'activating' | 'activation_failed' | 'active'
+  failure_code: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+}
+
 export type KnowledgeSourceRoot = {
   root_id: string
   kind: 'obsidian' | 'markdown' | 'github' | 'feishu'

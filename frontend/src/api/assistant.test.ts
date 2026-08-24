@@ -1,5 +1,11 @@
 import { afterEach, expect, it, vi } from 'vitest'
-import { fetchAssistantHome } from './assistant'
+import {
+  activateLearningTask,
+  createLearningDraft,
+  fetchAssistantHome,
+  fetchLearningTasks,
+  updateLearningDraft,
+} from './assistant'
 
 afterEach(() => vi.unstubAllGlobals())
 
@@ -23,4 +29,50 @@ it('maps an expired cloud session to a Chinese error', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }))
 
   await expect(fetchAssistantHome()).rejects.toThrow('登录状态已失效')
+})
+
+it('uses the browser-safe learning task control-plane contract', async () => {
+  const task = { task_id: 'ltask_1', task_revision: 2 }
+  const receipt = { task_id: 'ltask_1', task_revision: 2, receipt_status: 'active' }
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => [task] })
+    .mockResolvedValueOnce({ ok: true, json: async () => task })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ...task, task_revision: 3 }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => receipt })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(fetchLearningTasks()).resolves.toEqual([task])
+  await expect(createLearningDraft({ topic: '学习 checkpoint' })).resolves.toEqual(task)
+  await expect(updateLearningDraft('ltask_1', {
+    expected_revision: 2,
+    desired_outcome: '能够解释恢复边界',
+  })).resolves.toMatchObject({ task_revision: 3 })
+  await expect(activateLearningTask('ltask_1', 2, 'learning-ltask_1-r2')).resolves.toEqual(receipt)
+
+  expect(fetchMock).toHaveBeenNthCalledWith(1, expect.any(URL), {
+    credentials: 'include', cache: 'no-store',
+  })
+  expect(fetchMock).toHaveBeenNthCalledWith(2, expect.any(URL), expect.objectContaining({
+    method: 'POST', credentials: 'include',
+    body: JSON.stringify({ topic: '学习 checkpoint' }),
+  }))
+  expect(fetchMock).toHaveBeenNthCalledWith(3, expect.any(URL), expect.objectContaining({
+    method: 'PATCH', credentials: 'include',
+  }))
+  expect(fetchMock).toHaveBeenNthCalledWith(4, expect.any(URL), expect.objectContaining({
+    method: 'POST', credentials: 'include',
+    headers: expect.objectContaining({ 'Idempotency-Key': 'learning-ltask_1-r2' }),
+    body: JSON.stringify({ expected_revision: 2 }),
+  }))
+})
+
+it('surfaces the server activation failure message', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: false,
+    status: 503,
+    json: async () => ({ detail: { code: 'learning_activation_failed', message: '会话初始化失败' } }),
+  }))
+
+  await expect(activateLearningTask('ltask_1', 1, 'learning-ltask_1-r1'))
+    .rejects.toThrow('会话初始化失败')
 })
