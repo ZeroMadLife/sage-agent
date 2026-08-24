@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from core.learning import LearningFailureCode
+
 
 def _default_coding_runtime_profiles() -> list[Literal["legacy", "deerflow_v2"]]:
     return ["legacy"]
@@ -2018,7 +2020,7 @@ class LearningKickoffDispatchRequest(BaseModel):
 class LearningErrorDetail(BaseModel):
     """Stable browser-safe error detail for Learning control-plane APIs."""
 
-    code: str
+    code: LearningFailureCode
     message: str = ""
     current_revision: int | None = None
 

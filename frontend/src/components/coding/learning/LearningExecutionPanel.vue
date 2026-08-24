@@ -35,16 +35,17 @@ const artifactId = computed(() => resume.value?.artifact?.artifact_id || '')
 const canAdvance = computed(() => !resume.value || !['artifact_ready', 'blocked'].includes(resume.value.stage))
 
 async function load() {
+  const taskId = props.taskId
   const current = ++generation
   loading.value = true
   error.value = ''
   try {
-    const next = await fetchLearningResume(props.taskId)
-    if (current !== generation) return
+    const next = await fetchLearningResume(taskId)
+    if (!ownsRequest(taskId, current)) return
     resume.value = next
-    await loadArtifact(next, current)
+    await loadArtifact(next, taskId, current)
   } catch (cause) {
-    if (current !== generation) return
+    if (!ownsRequest(taskId, current)) return
     if (isLearningRequestStatus(cause, 404)) {
       resume.value = null
       artifact.value = null
@@ -52,40 +53,51 @@ async function load() {
       error.value = cause instanceof Error ? cause.message : '学习进度加载失败'
     }
   } finally {
-    if (current === generation) loading.value = false
+    if (ownsRequest(taskId, current)) loading.value = false
   }
 }
 
-async function loadArtifact(summary: LearningResumeResponse, current: number) {
+function ownsRequest(taskId: string, current: number) {
+  return taskId === props.taskId && current === generation
+}
+
+async function loadArtifact(summary: LearningResumeResponse, taskId: string, current: number) {
   if (!summary.artifact?.artifact_id) {
-    artifact.value = null
+    if (ownsRequest(taskId, current)) artifact.value = null
     return
   }
-  const next = await fetchLearningArtifact(props.taskId, summary.artifact.artifact_id)
-  if (current === generation) artifact.value = next
+  const next = await fetchLearningArtifact(taskId, summary.artifact.artifact_id)
+  if (ownsRequest(taskId, current)) artifact.value = next
 }
 
 async function advance() {
   if (advancing.value) return
+  const taskId = props.taskId
+  const current = generation
   advancing.value = true
   error.value = ''
   const revision = resume.value?.checkpoint_revision ?? 0
   try {
     const next = await advanceLearningTask(
-      props.taskId,
+      taskId,
       revision,
-      `learning-ui-${props.taskId}-checkpoint-${revision}`,
+      `learning-ui-${taskId}-checkpoint-${revision}`,
     )
+    if (!ownsRequest(taskId, current)) return
     resume.value = next
-    await loadArtifact(next, generation)
+    await loadArtifact(next, taskId, current)
   } catch (cause) {
+    if (!ownsRequest(taskId, current)) return
     error.value = cause instanceof Error ? cause.message : '学习进度推进失败'
   } finally {
-    advancing.value = false
+    if (ownsRequest(taskId, current)) advancing.value = false
   }
 }
 
-watch(() => props.taskId, () => { void load() }, { immediate: true })
+watch(() => props.taskId, () => {
+  advancing.value = false
+  void load()
+}, { immediate: true })
 </script>
 
 <template>

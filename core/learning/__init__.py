@@ -14,6 +14,7 @@ from core.learning.artifact_store import (
     StoredLearningArtifact,
     StoredLearningResearchReceipt,
 )
+from core.learning.errors import LearningFailureCode
 from core.learning.execution import LearningExecutionContext, LearningExecutionService
 from core.learning.kickoff import (
     LearningKickoffDispatchRecord,
@@ -85,6 +86,7 @@ __all__ = [
     "LearningClarificationQuestion",
     "LearningExecutionContext",
     "LearningExecutionService",
+    "LearningFailureCode",
     "LearningGoalRef",
     "LearningKickoffDispatchRecord",
     "LearningKickoffError",

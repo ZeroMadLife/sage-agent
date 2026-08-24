@@ -7,6 +7,7 @@ from sage_harness import KnowledgeEvidence, KnowledgeRetrievalResult
 
 from api import learning as learning_api
 from api.main import create_app
+from api.schemas import LearningErrorResponse
 from core.learning import LearningExecutionContext, LearningExecutionService, LearningMapService
 
 
@@ -163,6 +164,24 @@ def test_learning_l3_openapi_declares_browser_contracts(tmp_path: Path) -> None:
             "application/json"
         ]["schema"]
         assert response_schema["$ref"].endswith("/LearningErrorResponse")
+    error_detail = schema["components"]["schemas"]["LearningErrorDetail"]
+    code_schema = error_detail["properties"]["code"]
+    assert code_schema["$ref"].endswith("/LearningFailureCode")
+
+
+def test_missing_and_invalid_learning_task_ids_return_structured_errors(tmp_path: Path) -> None:
+    with TestClient(_app(tmp_path)) as client:
+        missing = client.get("/api/v1/learning/tasks/ltask_missing/resume")
+        invalid = client.get("/api/v1/learning/tasks/not-a-learning-task/resume")
+
+    assert missing.status_code == 404
+    assert LearningErrorResponse.model_validate(missing.json()).detail.code == (
+        "learning_task_not_found"
+    )
+    assert invalid.status_code == 422
+    assert LearningErrorResponse.model_validate(invalid.json()).detail.code == (
+        "learning_task_invalid_id"
+    )
 
 
 def test_first_advance_without_research_profile_returns_canonical_source_gap(

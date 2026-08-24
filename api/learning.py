@@ -39,6 +39,7 @@ from core.learning import (
     LearningArtifactStore,
     LearningExecutionContext,
     LearningExecutionService,
+    LearningFailureCode,
     LearningKickoffDispatchRecord,
     LearningKickoffError,
     LearningKickoffService,
@@ -355,7 +356,12 @@ async def resume_learning_task(
 @router.post(
     "/tasks/{task_id}/advance",
     response_model=LearningResumeResponse,
-    responses={409: {"model": LearningErrorResponse}, 503: {"model": LearningErrorResponse}},
+    responses={
+        404: {"model": LearningErrorResponse},
+        409: {"model": LearningErrorResponse},
+        422: {"model": LearningErrorResponse},
+        503: {"model": LearningErrorResponse},
+    },
 )
 async def advance_learning_task(
     task_id: str,
@@ -365,6 +371,7 @@ async def advance_learning_task(
     idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
 ) -> LearningResumeResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     owner_id = await _owner_id(request)
     workspace_id = _workspace_id(request)
     try:
@@ -386,7 +393,9 @@ async def advance_learning_task(
             idempotency_key=idempotency_key,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except LearningKickoffError as exc:
         raise HTTPException(
             status_code=409,
@@ -395,14 +404,21 @@ async def advance_learning_task(
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return LearningResumeResponse.model_validate(asdict(summary))
 
 
 @router.get(
     "/tasks/{task_id}/resume",
     response_model=LearningResumeResponse,
-    responses={404: {"model": LearningErrorResponse}, 409: {"model": LearningErrorResponse}},
+    responses={
+        404: {"model": LearningErrorResponse},
+        409: {"model": LearningErrorResponse},
+        422: {"model": LearningErrorResponse},
+        503: {"model": LearningErrorResponse},
+    },
 )
 async def get_learning_resume(
     task_id: str,
@@ -410,6 +426,7 @@ async def get_learning_resume(
     response: Response,
 ) -> LearningResumeResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     owner_id = await _owner_id(request)
     workspace_id = _workspace_id(request)
     try:
@@ -432,7 +449,9 @@ async def get_learning_resume(
             capability_revision=scope.capability_revision,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
     return LearningResumeResponse.model_validate(asdict(summary))
@@ -441,7 +460,12 @@ async def get_learning_resume(
 @router.get(
     "/tasks/{task_id}/artifacts/{artifact_id}",
     response_model=LearningArtifactResponse,
-    responses={404: {"model": LearningErrorResponse}, 409: {"model": LearningErrorResponse}},
+    responses={
+        404: {"model": LearningErrorResponse},
+        409: {"model": LearningErrorResponse},
+        422: {"model": LearningErrorResponse},
+        503: {"model": LearningErrorResponse},
+    },
 )
 async def get_learning_artifact(
     task_id: str,
@@ -450,6 +474,8 @@ async def get_learning_artifact(
     response: Response,
 ) -> LearningArtifactResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
+    _validate_learning_artifact_id(artifact_id)
     owner_id = await _owner_id(request)
     workspace_id = _workspace_id(request)
     try:
@@ -466,7 +492,7 @@ async def get_learning_artifact(
         )
         if artifact.task_id != task_id:
             raise LearningArtifactNotFoundError("Learning Artifact not found")
-    except (LearningScopeConflict, LearningArtifactStoreError, ValueError) as exc:
+    except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
     return LearningArtifactResponse.model_validate(asdict(artifact))
 
@@ -602,14 +628,44 @@ async def _execution_service(
 
 
 def _learning_execution_http_error(exc: Exception) -> HTTPException:
-    code = str(getattr(exc, "code", "learning_artifact_not_found"))
+    code = LearningFailureCode(str(getattr(exc, "code", LearningFailureCode.ARTIFACT_NOT_FOUND)))
     not_found = isinstance(exc, LearningResumeNotFoundError | LearningArtifactNotFoundError)
-    if isinstance(exc, ValueError):
-        return HTTPException(status_code=404, detail={"code": code, "message": "not found"})
-    return HTTPException(
-        status_code=404 if not_found else 409,
-        detail={"code": code, "message": str(exc)[:200]},
+    return _learning_error(
+        404 if not_found else 409,
+        code,
+        "not found" if not_found else "learning state conflict",
     )
+
+
+def _learning_error(
+    status_code: int,
+    code: LearningFailureCode,
+    message: str,
+    *,
+    current_revision: int | None = None,
+) -> HTTPException:
+    detail: dict[str, str | int] = {"code": code.value, "message": message}
+    if current_revision is not None:
+        detail["current_revision"] = current_revision
+    return HTTPException(status_code=status_code, detail=detail)
+
+
+def _validate_learning_task_id(task_id: str) -> None:
+    if not task_id.startswith("ltask_") or len(task_id) > 128:
+        raise _learning_error(
+            422,
+            LearningFailureCode.TASK_INVALID_ID,
+            "invalid learning task id",
+        )
+
+
+def _validate_learning_artifact_id(artifact_id: str) -> None:
+    if not artifact_id.startswith("lart_") or len(artifact_id) > 128:
+        raise _learning_error(
+            422,
+            LearningFailureCode.REQUEST_INVALID,
+            "invalid learning artifact id",
+        )
 
 
 async def _owner_id(request: Request) -> str:

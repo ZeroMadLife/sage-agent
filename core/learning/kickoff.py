@@ -5,28 +5,16 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Literal, Protocol
 
 from core.learning.activation import LearningActivationError, LearningActivationRecord
+from core.learning.errors import LearningFailureCode
 from core.learning.tasks import LearningTask
 
 LearningKickoffReceiptStatus = Literal["dispatching", "accepted"]
 
 
-class LearningKickoffErrorCode(StrEnum):
-    """Closed browser-safe kickoff failure contract."""
-
-    ACTIVATION_REQUIRED = "learning_kickoff_activation_required"
-    BINDING_CONFLICT = "learning_kickoff_binding_conflict"
-    CONFLICT = "learning_kickoff_conflict"
-    CORRUPT = "learning_kickoff_corrupt"
-    DISPATCH_FAILED = "learning_kickoff_dispatch_failed"
-    IDEMPOTENCY_CONFLICT = "learning_kickoff_idempotency_conflict"
-    JOURNAL_CONFLICT = "learning_kickoff_journal_conflict"
-    NOT_FOUND = "learning_kickoff_not_found"
-    SERVICE_UNAVAILABLE = "learning_kickoff_service_unavailable"
-    SESSION_CONFLICT = "learning_kickoff_session_conflict"
+LearningKickoffErrorCode = LearningFailureCode
 
 
 LearningKickoffStage = Literal["intent", "journal", "accepted"]

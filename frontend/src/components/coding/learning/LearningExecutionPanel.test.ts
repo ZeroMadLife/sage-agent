@@ -14,9 +14,12 @@ vi.mock('../../../api/assistant', () => ({
   isLearningRequestStatus: () => false,
 }))
 
-function resume(stage: LearningResumeResponse['stage'] = 'artifact_ready'): LearningResumeResponse {
+function resume(
+  stage: LearningResumeResponse['stage'] = 'artifact_ready',
+  taskId = 'ltask-1',
+): LearningResumeResponse {
   return {
-    task_id: 'ltask-1', task_revision: 2, goal_summary: '学习 checkpoint',
+    task_id: taskId, task_revision: 2, goal_summary: `学习 ${taskId}`,
     plan_id: 'lplan-1', plan_hash: 'sha256:plan', dag_hash: 'sha256:dag', stage,
     evidence_count: 1, citation_count: 1, gap_codes: [], blocking_reason: '',
     next_action: stage === 'artifact_ready' ? 'review_artifact' : 'synthesize',
@@ -84,4 +87,28 @@ it('advances exactly the current checkpoint and reloads its artifact', async () 
   )
   expect(wrapper.text()).toContain('artifact_ready')
   expect(wrapper.find('.advance-button').exists()).toBe(false)
+})
+
+it('ignores a late advance response after switching tasks', async () => {
+  let releaseA!: (value: LearningResumeResponse) => void
+  fetchLearningResume.mockImplementation((taskId: string) => Promise.resolve(
+    resume('synthesize_pending', taskId),
+  ))
+  advanceLearningTask.mockImplementation(() => new Promise<LearningResumeResponse>((resolve) => {
+    releaseA = resolve
+  }))
+  const wrapper = mount(LearningExecutionPanel, { props: { taskId: 'ltask-a' } })
+  await flushPromises()
+
+  await wrapper.get('.advance-button').trigger('click')
+  await wrapper.setProps({ taskId: 'ltask-b' })
+  await flushPromises()
+  expect(wrapper.text()).toContain('学习 ltask-b')
+
+  releaseA(resume('artifact_ready', 'ltask-a'))
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('学习 ltask-b')
+  expect(wrapper.text()).toContain('synthesize_pending')
+  expect(wrapper.text()).not.toContain('学习 ltask-a')
 })
