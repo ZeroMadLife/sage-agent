@@ -13,54 +13,14 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from tests.core.harness.learning_scope_support import make_real_scope, make_scope
 
-from core.coding.memory import workspace_id_from_path
-from core.coding.persistence import CodingSessionStore, TurnPlanStore
+from core.coding.persistence import TurnPlanStore
 from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.learning_scope import (
-    LearningReadonlyScope,
-    LearningReadonlyScopeResolver,
     LearningScopeConflict,
     LearningScopeMiddleware,
 )
-from core.learning import (
-    LearningActivationService,
-    LearningSourcePolicy,
-    LearningTaskCreate,
-    LearningTaskRepository,
-    LearningTaskService,
-)
-from core.learning.runtime_resources import SageLearningActivationResources
-
-
-def _scope(
-    *,
-    allowed: tuple[str, ...] = (
-        "local:knowledge_search",
-        "subagent:research",
-        "web:fetch",
-        "web:search",
-    ),
-    web_policy: str = "allowed_when_insufficient",
-    knowledge_policy: str = "preferred",
-) -> LearningReadonlyScope:
-    return LearningReadonlyScope(
-        task_id="ltask_scope",
-        task_revision=1,
-        session_id="session_scope",
-        owner_id="local",
-        workspace_id="workspace_scope",
-        turn_context_plan_id="turnplan_scope",
-        turn_context_plan_hash="sha256:plan-scope",
-        catalog_revision="catalog-v1",
-        capability_revision="lcap-v1",
-        allowed_capabilities=allowed,
-        source_policy_revision="lsrc-v1",
-        knowledge_policy=knowledge_policy,
-        web_policy=web_policy,
-        domains=(),
-        freshness="all",
-    )
 
 
 def _tools() -> list[StructuredTool]:
@@ -128,8 +88,8 @@ def _tool_request(name: str, args: dict[str, object]) -> ToolCallRequest:
 
 def test_learning_scope_filters_model_catalog_to_frozen_readonly_capabilities() -> None:
     middleware = LearningScopeMiddleware(
-        _scope(),
-        revalidate=lambda: _scope(),
+        make_scope(),
+        revalidate=lambda: make_scope(),
     )
     captured: list[ModelRequest] = []
 
@@ -148,11 +108,11 @@ def test_learning_scope_filters_model_catalog_to_frozen_readonly_capabilities() 
 
 def test_learning_scope_allows_direct_web_only_when_knowledge_is_disabled() -> None:
     middleware = LearningScopeMiddleware(
-        _scope(
+        make_scope(
             allowed=("subagent:research", "web:fetch", "web:search"),
             knowledge_policy="disabled",
         ),
-        revalidate=lambda: _scope(
+        revalidate=lambda: make_scope(
             allowed=("subagent:research", "web:fetch", "web:search"),
             knowledge_policy="disabled",
         ),
@@ -173,12 +133,12 @@ def test_learning_scope_allows_direct_web_only_when_knowledge_is_disabled() -> N
 
 
 def test_learning_scope_constrains_retrieval_sources_to_executable_policy() -> None:
-    knowledge_first = _scope(
+    knowledge_first = make_scope(
         allowed=("local:knowledge_search", "web:search"),
         knowledge_policy="preferred",
         web_policy="allowed_when_insufficient",
     )
-    direct_web = _scope(
+    direct_web = make_scope(
         allowed=("web:search",),
         knowledge_policy="disabled",
         web_policy="allowed_when_insufficient",
@@ -196,7 +156,7 @@ def test_learning_scope_constrains_retrieval_sources_to_executable_policy() -> N
 
 def test_web_forbidden_scope_rejects_frozen_web_or_research_capabilities() -> None:
     with pytest.raises(LearningScopeConflict) as caught:
-        _scope(web_policy="forbidden")
+        make_scope(web_policy="forbidden")
 
     assert caught.value.code == "learning_scope_web_forbidden"
     assert caught.value.status_code == 409
@@ -214,7 +174,7 @@ def test_forged_or_writing_tool_call_is_denied_before_handler(
     tool_name: str,
     args: dict[str, object],
 ) -> None:
-    middleware = LearningScopeMiddleware(_scope(), revalidate=lambda: _scope())
+    middleware = LearningScopeMiddleware(make_scope(), revalidate=lambda: make_scope())
     handler = MagicMock(return_value=ToolMessage(content="executed", tool_call_id="call-scope"))
 
     result = middleware.wrap_tool_call(_tool_request(tool_name, args), handler)
@@ -236,7 +196,7 @@ def test_forged_or_writing_tool_call_is_denied_before_handler(
 
 
 def test_research_child_is_allowed_but_practice_child_is_not() -> None:
-    middleware = LearningScopeMiddleware(_scope(), revalidate=lambda: _scope())
+    middleware = LearningScopeMiddleware(make_scope(), revalidate=lambda: make_scope())
     handler = MagicMock(return_value=ToolMessage(content="executed", tool_call_id="call-scope"))
 
     result = middleware.wrap_tool_call(
@@ -269,7 +229,7 @@ def test_execution_revalidates_canonical_scope_before_handler(
     drifted: dict[str, object],
     reason_code: str,
 ) -> None:
-    frozen = _scope()
+    frozen = make_scope()
     current = replace(frozen, **drifted)
     middleware = LearningScopeMiddleware(frozen, revalidate=lambda: current)
     handler = MagicMock(return_value=ToolMessage(content="executed", tool_call_id="call-scope"))
@@ -287,7 +247,7 @@ def test_execution_revalidates_canonical_scope_before_handler(
 
 
 def test_model_catalog_revalidates_canonical_scope_before_provider() -> None:
-    frozen = _scope()
+    frozen = make_scope()
     current = replace(frozen, capability_revision="lcap-v2")
     middleware = LearningScopeMiddleware(frozen, revalidate=lambda: current)
     handler = MagicMock(return_value=ModelResponse(result=[AIMessage(content="unsafe")]))
@@ -300,7 +260,7 @@ def test_model_catalog_revalidates_canonical_scope_before_provider() -> None:
 
 
 def test_skill_capability_requires_an_exact_active_lifecycle() -> None:
-    scope = _scope(allowed=("local:knowledge_search", "skill:builtin:review"))
+    scope = make_scope(allowed=("local:knowledge_search", "skill:builtin:review"))
     inactive = SkillLifecycleSnapshot(catalog_revision="skills-v1")
 
     assert scope.skill_allowed_tool_names(inactive, skill_capability_id=None) == frozenset()
@@ -321,62 +281,8 @@ def test_skill_capability_requires_an_exact_active_lifecycle() -> None:
     assert caught.value.code == "learning_scope_skill_not_activated"
 
 
-def _real_scope(
-    tmp_path: Path,
-) -> tuple[
-    LearningReadonlyScope,
-    LearningReadonlyScopeResolver,
-    dict[str, object],
-    Path,
-    str,
-]:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    storage = tmp_path / ".coding"
-    repository = LearningTaskRepository(storage / "learning-tasks.sqlite3")
-    resources = SageLearningActivationResources(
-        storage_root=storage,
-        workspace_root=workspace,
-        runtime_profile="deerflow_v2",
-        sandbox_provider="local_workspace",
-        sandbox_image="python:3.11-slim",
-        knowledge_available=True,
-        web_search_available=True,
-        web_fetch_available=True,
-    )
-    tasks = LearningTaskService(repository)
-    activation_service = LearningActivationService(repository, resources)
-    task = tasks.create_draft(
-        owner_id="local",
-        workspace_id=workspace_id_from_path(workspace),
-        request=LearningTaskCreate(
-            topic="系统学习源码，不要联网",
-            desired_outcome="能够解释关键调用链",
-            starting_level="beginner",
-            time_budget_minutes_per_week=180,
-            source_policy=LearningSourcePolicy(web="forbidden"),
-        ),
-    )
-    activation = activation_service.activate(
-        owner_id="local",
-        workspace_id=task.workspace_id,
-        task_id=task.task_id,
-        expected_revision=task.task_revision,
-        idempotency_key="learning-scope-v1",
-    )
-    session = CodingSessionStore(storage / "sessions").load(activation.session_id)
-    resolver = LearningReadonlyScopeResolver(repository, resources)
-    scope = resolver.resolve_runtime_session(
-        session,
-        owner_id="local",
-        workspace_id=task.workspace_id,
-    )
-    assert scope is not None
-    return scope, resolver, session, storage, activation.kickoff_run_id
-
-
 def test_real_l0_receipt_resolves_to_web_forbidden_readonly_scope(tmp_path: Path) -> None:
-    scope, resolver, session, _, _ = _real_scope(tmp_path)
+    scope, resolver, session, _, _ = make_real_scope(tmp_path)
 
     assert scope.allowed_capabilities == (
         "local:evidence_read",
@@ -389,7 +295,7 @@ def test_real_l0_receipt_resolves_to_web_forbidden_readonly_scope(tmp_path: Path
 
 
 def test_real_plan_tamper_is_denied_before_tool_handler(tmp_path: Path) -> None:
-    scope, resolver, _, storage, kickoff_run_id = _real_scope(tmp_path)
+    scope, resolver, _, storage, kickoff_run_id = make_real_scope(tmp_path)
     plan_store = TurnPlanStore(storage, scope.session_id)
     plan = plan_store.load_for_run(kickoff_run_id)
     assert plan is not None

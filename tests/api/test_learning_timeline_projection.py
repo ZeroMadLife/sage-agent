@@ -226,3 +226,68 @@ def test_learning_timeline_fails_closed_when_runtime_identity_drifts(tmp_path: P
 
     assert closed.value.code == 1008
     assert closed.value.reason == "learning_scope_session_mismatch"
+
+
+@pytest.mark.parametrize("session_failure", ["deleted", "corrupt"])
+def test_active_learning_timeline_without_runtime_maps_session_failure_to_scope_conflict(
+    tmp_path: Path,
+    session_failure: str,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        _, receipt = _activate_learning(client)
+        session_id = receipt["session_id"]
+        assert session_id not in app.state.coding_sessions
+        session_path = CodingSessionStore(tmp_path / ".coding" / "sessions").path(session_id)
+        if session_failure == "deleted":
+            session_path.unlink()
+        else:
+            session_path.write_text("{not-json", encoding="utf-8")
+
+        response = client.get(f"/api/v1/coding/session/{session_id}/timeline")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "learning_scope_validation_failed"
+
+
+def test_active_learning_timeline_without_runtime_accepts_valid_persisted_session(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        _, receipt = _activate_learning(client)
+        session_id = receipt["session_id"]
+        assert session_id not in app.state.coding_sessions
+
+        response = client.get(f"/api/v1/coding/session/{session_id}/timeline")
+
+    assert response.status_code == 200
+    assert response.json()["items"]
+
+
+def test_ordinary_coding_timeline_without_runtime_keeps_missing_session_404(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        response = client.get("/api/v1/coding/session/session_missing/timeline")
+
+    assert response.status_code == 404
+
+
+def test_ordinary_coding_timeline_without_runtime_keeps_corrupt_session_500(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        created = client.post("/api/v1/coding/session", json={}).json()
+        session_id = created["session_id"]
+        app.state.coding_sessions.pop(session_id)
+        CodingSessionStore(tmp_path / ".coding" / "sessions").path(session_id).write_text(
+            "{not-json",
+            encoding="utf-8",
+        )
+
+        response = client.get(f"/api/v1/coding/session/{session_id}/timeline")
+
+    assert response.status_code == 500

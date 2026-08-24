@@ -480,6 +480,32 @@ class LearningTaskRepository:
             )
         return activation
 
+    def active_activation_for_owner_session(
+        self, *, owner_id: str, session_id: str
+    ) -> LearningActivationRecord | None:
+        """Resolve one canonical active binding without trusting Session storage."""
+        owner = _bounded_owner(owner_id)
+        session_key = str(session_id).strip()
+        if not session_key:
+            raise ValueError("session_id must not be empty")
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
+                "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
+                "WHERE owner_id = ? AND session_id = ? AND status = 'active' "
+                "AND workspace_id IS NOT NULL LIMIT 2",
+                (owner, session_key),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise LearningActivationError(
+                "learning session has multiple active owner bindings",
+                code="learning_activation_session_conflict",
+            )
+        return _decode_activation_row(rows[0])
+
     def save_activation(
         self,
         record: LearningActivationRecord,

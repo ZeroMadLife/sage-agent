@@ -331,6 +331,33 @@ class LearningReadonlyScopeResolver:
             raise LearningScopeConflict("learning_scope_session_mismatch")
         return scope
 
+    def resolve_active_owner_session(
+        self,
+        *,
+        owner_id: str,
+        session_id: str,
+    ) -> LearningReadonlyScope | None:
+        """Resolve canonical Learning authority before reading mutable Session JSON."""
+        try:
+            activation = self.repository.active_activation_for_owner_session(
+                owner_id=owner_id,
+                session_id=session_id,
+            )
+            if activation is None:
+                return None
+            scope = self.resolve(
+                owner_id=activation.owner_id,
+                workspace_id=activation.workspace_id,
+                task_id=activation.task_id,
+            )
+        except LearningScopeConflict:
+            raise
+        except Exception as exc:
+            raise LearningScopeConflict("learning_scope_validation_failed") from exc
+        if scope.session_id != session_id or scope.owner_id != owner_id:
+            raise LearningScopeConflict("learning_scope_session_mismatch")
+        return scope
+
     def resolve(
         self,
         *,

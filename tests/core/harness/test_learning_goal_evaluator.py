@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from tests.core.harness.test_learning_scope import _real_scope
+from tests.core.harness.learning_scope_support import make_real_scope
 
 from api.coding import _post_turn_goal_followup
 from core.coding.persistence import TurnPlanStore
@@ -21,7 +21,7 @@ from core.harness.thread_goal import ThreadGoalService
 async def test_post_turn_learning_goal_revalidates_scope_before_evaluator(
     tmp_path: Path,
 ) -> None:
-    scope, resolver, session, storage, kickoff_run_id = _real_scope(tmp_path)
+    scope, resolver, session, storage, kickoff_run_id = make_real_scope(tmp_path)
     runtime = CodingRuntime(
         session_id=scope.session_id,
         workspace_root=tmp_path / "workspace",

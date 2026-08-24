@@ -122,6 +122,10 @@ class LearningActivationRepositoryPort(Protocol):
         self, *, owner_id: str, workspace_id: str, session_id: str
     ) -> LearningActivationRecord | None: ...
 
+    def active_activation_for_owner_session(
+        self, *, owner_id: str, session_id: str
+    ) -> LearningActivationRecord | None: ...
+
     def save_activation(
         self,
         record: LearningActivationRecord,

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from tests.core.harness.test_learning_scope import _scope
+from tests.core.harness.learning_scope_support import make_scope
 
 from api.coding import _deerflow_timeline_events, _runtime_timeline_events
 from core.coding.run_coordinator import RunEvent
@@ -30,7 +30,7 @@ def test_learning_tool_bundle_snapshot_contains_only_frozen_visible_capabilities
     knowledge_port = MagicMock()
     knowledge_port.available = True
     knowledge_port.workspace_id = "workspace_scope"
-    scope = _scope(
+    scope = make_scope(
         allowed=("local:knowledge_search",),
         web_policy="forbidden",
     )
@@ -64,7 +64,7 @@ async def test_required_knowledge_gap_stops_before_provider(
         storage_root=tmp_path / ".coding",
         runtime_profile="deerflow_v2",
     )
-    scope = _scope(
+    scope = make_scope(
         allowed=("local:knowledge_search",),
         web_policy="forbidden",
         knowledge_policy="required",
@@ -131,7 +131,7 @@ async def test_learning_mcp_catalog_is_never_read_and_emits_fixed_blocked_receip
         storage_root=tmp_path / ".coding",
         runtime_profile="deerflow_v2",
     )
-    scope = _scope(
+    scope = make_scope(
         allowed=("local:memory_read",),
         web_policy="forbidden",
         knowledge_policy="disabled",
@@ -192,7 +192,7 @@ async def test_model_boundary_scope_conflict_keeps_specific_public_reason(
         storage_root=tmp_path / ".coding",
         runtime_profile="deerflow_v2",
     )
-    scope = _scope(
+    scope = make_scope(
         allowed=("local:memory_read",),
         web_policy="forbidden",
         knowledge_policy="disabled",
@@ -243,7 +243,7 @@ async def test_learning_graph_without_public_output_receipt_is_not_completed(
         storage_root=tmp_path / ".coding",
         runtime_profile="deerflow_v2",
     )
-    scope = _scope(
+    scope = make_scope(
         allowed=("local:memory_read",),
         web_policy="forbidden",
         knowledge_policy="disabled",

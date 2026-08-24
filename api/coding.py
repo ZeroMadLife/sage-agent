@@ -545,6 +545,40 @@ def _http_timeline_learning_scope(
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
 
 
+async def _coding_request_owner_id(connection: HTTPConnection) -> str:
+    repository = getattr(connection.app.state, "cloud_repository", None)
+    if isinstance(repository, CloudRepository):
+        user = await repository.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+        if user is not None:
+            return user.user_id
+    if str(getattr(connection.app.state, "cloud_app_env", "development")).lower() != ("production"):
+        return "local"
+    raise HTTPException(status_code=401, detail="cloud authentication is required")
+
+
+def _http_active_learning_scope(
+    connection: HTTPConnection,
+    *,
+    session_id: str,
+    owner_id: str,
+) -> LearningReadonlyScope | None:
+    """Resolve an active Learning binding before persisted Session access."""
+    resolver: LearningReadonlyScopeResolver | None = getattr(
+        connection.app.state,
+        "learning_readonly_scope_resolver",
+        None,
+    )
+    if resolver is None:
+        return None
+    try:
+        return resolver.resolve_active_owner_session(
+            owner_id=owner_id,
+            session_id=session_id,
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+
+
 def _require_valid_session_id(session_id: str) -> None:
     if not _valid_session_id(session_id):
         raise HTTPException(status_code=422, detail="invalid coding session id")
@@ -2725,7 +2759,15 @@ async def get_coding_session_timeline(
         raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     runtime = sessions.get(session_id)
+    learning_scope: LearningReadonlyScope | None = None
     if runtime is None:
+        owner_id = await _coding_request_owner_id(request)
+        learning_scope = await asyncio.to_thread(
+            _http_active_learning_scope,
+            request,
+            session_id=session_id,
+            owner_id=owner_id,
+        )
         store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
         try:
             session = store.load(session_id)
@@ -2735,12 +2777,13 @@ async def get_coding_session_timeline(
             ) from exc
     else:
         session = runtime.session
-    learning_scope = await asyncio.to_thread(
-        _http_timeline_learning_scope,
-        request,
-        session_id=session_id,
-        session=session,
-    )
+    if learning_scope is None:
+        learning_scope = await asyncio.to_thread(
+            _http_timeline_learning_scope,
+            request,
+            session_id=session_id,
+            session=session,
+        )
     coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
     if tail or before is not None:
         backward_page = coordinator.journal.replay_before(
