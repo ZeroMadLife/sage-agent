@@ -2,9 +2,11 @@
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from api.main import create_app
@@ -13,6 +15,14 @@ from core.cloud.model_providers import ModelProviderRepository
 from core.coding.persistence import CodingSessionStore
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
+
+
+class FakeModel:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+
+    async def complete(self, _prompt: str) -> str:
+        return "<final>done</final>"
 
 
 async def _production_client(tmp_path: Path) -> tuple[TestClient, CloudRepository, object]:
@@ -25,6 +35,8 @@ async def _production_client(tmp_path: Path) -> tuple[TestClient, CloudRepositor
         cloud_repository=repository,
         cloud_model_provider_repository=providers,
         cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+        coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",
     )
@@ -120,6 +132,7 @@ async def test_production_coding_routes_fail_closed_without_control_plane(
     app = create_app(
         cloud_repository=object(),
         cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         coding_workspace_root=tmp_path,
         coding_storage_root=tmp_path / ".coding",
     )
@@ -173,7 +186,7 @@ async def test_production_fails_closed_for_unowned_legacy_session(
             client.get("/api/v1/coding/legacy-unowned/files", headers=headers),
         )
         with (
-            pytest.raises(WebSocketDisconnect) as exc_info,
+            pytest.raises(WebSocketDenialResponse) as exc_info,
             client.websocket_connect(
                 "/api/v1/coding/legacy-unowned/stream",
                 headers=headers,
@@ -186,7 +199,56 @@ async def test_production_fails_closed_for_unowned_legacy_session(
     assert listed.status_code == 200
     assert listed.json() == {"sessions": []}
     assert [response.status_code for response in requests] == [404, 404, 404, 404, 404]
-    assert exc_info.value.code == 1008
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.parametrize("storage_state", ["missing", "corrupt"])
+async def test_production_active_unowned_runtime_fails_closed_without_valid_storage(
+    tmp_path: Path,
+    storage_state: str,
+) -> None:
+    client, repository, engine = await _production_client(tmp_path)
+    client.app.state.cloud_canary_invite_login_enabled = True
+    headers = await _device_bearer(client, repository)
+    try:
+        created = client.post("/api/v1/coding/session", headers=headers, json={})
+        assert created.status_code == 200
+        session_id = created.json()["session_id"]
+        runtime = client.app.state.coding_sessions[session_id]
+        runtime.owner_user_id = None
+        runtime.session.pop("owner_user_id", None)
+        session_path = CodingSessionStore(client.app.state.coding_storage_root / "sessions").path(
+            session_id
+        )
+        if storage_state == "missing":
+            session_path.unlink()
+        else:
+            session_path.write_text("{broken", encoding="utf-8")
+
+        responses = (
+            client.post(f"/api/v1/coding/session/{session_id}/resume", headers=headers),
+            client.get(f"/api/v1/coding/session/{session_id}/timeline", headers=headers),
+            client.get(f"/api/v1/coding/session/{session_id}/messages", headers=headers),
+            client.patch(
+                f"/api/v1/coding/session/{session_id}/metadata",
+                headers=headers,
+                json={"title": "must not change"},
+            ),
+            client.get(f"/api/v1/coding/{session_id}/files", headers=headers),
+        )
+        with (
+            pytest.raises(WebSocketDenialResponse) as denied,
+            client.websocket_connect(
+                f"/api/v1/coding/{session_id}/stream",
+                headers=headers,
+            ),
+        ):
+            pass
+    finally:
+        await engine.dispose()
+
+    assert [response.status_code for response in responses] == [404, 404, 404, 404, 404]
+    assert denied.value.status_code == 404
 
 
 async def test_development_keeps_unowned_legacy_session_compatible(tmp_path: Path) -> None:

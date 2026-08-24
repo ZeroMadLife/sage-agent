@@ -172,6 +172,7 @@ async def test_production_publication_routes_require_authentication(dependencies
         create_app(
             cloud_repository=cloud,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
             publication_candidate_service=publication,
         )
     )
@@ -192,6 +193,7 @@ async def test_production_publication_uses_bearer_owner_scope(dependencies) -> N
             cloud_repository=cloud,
             cloud_canary_invite_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
             publication_candidate_service=publication,
         )
     )

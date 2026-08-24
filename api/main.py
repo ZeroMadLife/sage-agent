@@ -107,6 +107,7 @@ def create_app(
     cloud_canary_invite_login_enabled: bool | None = None,
     cloud_secure_cookies: bool | None = None,
     cloud_app_env: str | None = None,
+    cloud_token_secret: str | None = None,
     cloud_github_oauth_service: GitHubOAuthService | None = None,
     cloud_frontend_url: str | None = None,
     cloud_model_provider_repository: ModelProviderRepository | None = None,
@@ -199,9 +200,14 @@ def create_app(
     app.state.coding_goal_followup_tasks = set()
     app.state.coding_goal_followup_shutdown = False
     settings = get_settings()
-    app_env = cloud_app_env or settings.app_env
+    app_env = str(cloud_app_env or settings.app_env).strip().lower()
+    resolved_cloud_token_secret = (
+        settings.app_secret_key if cloud_token_secret is None else cloud_token_secret
+    )
+    if app_env == "production":
+        settings.validate_cloud_token_signing_secret(resolved_cloud_token_secret)
     if app_env == "production" and cloud_repository is None:
-        settings.validate_cloud_production_secrets()
+        settings.validate_cloud_production_secrets(app_env=app_env)
     app.state.cloud_repository = cloud_repository or CloudRepository(AsyncSessionFactory)
     app.state.cloud_app_env = app_env
     app.state.cloud_dev_login_enabled = (
@@ -222,7 +228,7 @@ def create_app(
         else cloud_secure_cookies
     )
     app.state.cloud_frontend_url = cloud_frontend_url or settings.cloud_frontend_url
-    app.state.cloud_token_secret = settings.app_secret_key
+    app.state.cloud_token_secret = resolved_cloud_token_secret
     app.state.cloud_access_token_ttl_seconds = settings.cloud_access_token_ttl_seconds
     app.state.cloud_refresh_token_ttl_days = settings.cloud_refresh_token_ttl_days
     app.state.database_auto_migrate = (

@@ -47,6 +47,7 @@ def test_production_startup_never_runs_implicit_database_migration(
     monkeypatch.setattr(api_main, "init_db", fake_init_db)
     app = create_app(
         cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         cloud_repository=object(),
         database_auto_migrate=True,
         coding_deerflow_v2_enabled=False,

@@ -39,6 +39,9 @@ def _app(
         cloud_repository=repository,
         cloud_dev_login_enabled=True,
         cloud_app_env=app_env,
+        cloud_token_secret=(
+            "test-only-jwt-signing-secret-that-is-long-enough" if app_env == "production" else None
+        ),
     )
 
 
@@ -215,6 +218,7 @@ async def test_cloud_home_accepts_device_bearer_and_keeps_owner_scope(
         cloud_repository=repository,
         cloud_canary_invite_login_enabled=True,
         cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
     )
     (tmp_path / "workspace").mkdir()
     await repository.create_invite("device-home-invite", email="device-home@example.com")

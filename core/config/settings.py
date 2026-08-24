@@ -237,9 +237,10 @@ class Settings(BaseSettings):
         auth = f":{self.redis_password}@" if self.redis_password else ""
         return f"redis://{auth}{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
-    def validate_cloud_production_secrets(self) -> None:
+    def validate_cloud_production_secrets(self, *, app_env: str | None = None) -> None:
         """Fail closed when a production cloud process has placeholder secrets."""
-        if self.app_env != "production":
+        effective_app_env = str(self.app_env if app_env is None else app_env).strip().lower()
+        if effective_app_env != "production":
             return
         missing: list[str] = []
         if (
@@ -268,6 +269,12 @@ class Settings(BaseSettings):
             missing.append("CLOUD_CANARY_INVITE_LOGIN_ENABLED=false outside private Canary")
         if missing:
             raise RuntimeError(f"production cloud secrets are missing: {', '.join(missing)}")
+
+    def validate_cloud_token_signing_secret(self, secret: str | None = None) -> None:
+        """Reject weak JWT signing material independently of repository construction."""
+        candidate = self.app_secret_key if secret is None else secret
+        if not candidate or candidate == "change-me-in-production" or len(candidate) < 32:
+            raise RuntimeError("production cloud secrets are missing: APP_SECRET_KEY")
 
 
 @lru_cache

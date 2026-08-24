@@ -99,6 +99,16 @@ def test_production_cloud_settings_fail_closed_without_secrets() -> None:
         settings.validate_cloud_production_secrets()
 
 
+def test_production_cloud_settings_use_the_effective_app_environment() -> None:
+    """An app-factory override cannot bypass the complete production secret gate."""
+    import pytest
+
+    settings = Settings(app_env="development", app_secret_key="change-me-in-production")
+
+    with pytest.raises(RuntimeError, match="APP_SECRET_KEY"):
+        settings.validate_cloud_production_secrets(app_env=" Production ")
+
+
 def test_production_cloud_settings_accept_distinct_configured_secrets() -> None:
     settings = Settings(
         app_env="production",

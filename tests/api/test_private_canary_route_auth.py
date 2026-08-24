@@ -23,7 +23,13 @@ async def _repository(tmp_path: Path) -> CloudRepository:
 
 async def test_production_keeps_health_open_and_closes_legacy_chat(tmp_path: Path) -> None:
     repository = await _repository(tmp_path)
-    client = TestClient(create_app(cloud_app_env="production", cloud_repository=repository))
+    client = TestClient(
+        create_app(
+            cloud_app_env="production",
+            cloud_repository=repository,
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+        )
+    )
 
     assert client.get("/health").status_code == 200
     response = client.post("/api/v1/chat", json={"content": "bypass"})
@@ -40,6 +46,7 @@ async def test_production_knowledge_rejects_anonymous_requests(tmp_path: Path) -
     app = create_app(
         cloud_app_env="production",
         cloud_repository=repository,
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         knowledge_workspace_root=workspace,
         knowledge_database_path=workspace / ".sage" / "knowledge.sqlite3",
         knowledge_source_roots={

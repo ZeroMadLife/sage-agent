@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.testclient import WebSocketDenialResponse
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
@@ -290,11 +290,54 @@ async def test_account_model_sessions_are_hidden_from_other_users(
     assert not other.get("/api/v1/coding/models").json()["current"].startswith("account:")
     assert other.post(f"/api/v1/coding/session/{session_id}/resume").status_code == 404
     with (
-        pytest.raises(WebSocketDisconnect) as denied,
+        pytest.raises(WebSocketDenialResponse) as denied,
         other.websocket_connect(f"/api/v1/coding/{session_id}/stream"),
     ):
         pass
-    assert denied.value.code == 1008
+    assert denied.value.status_code == 404
+
+
+async def test_bearer_account_default_model_bootstraps_and_survives_resume(
+    harness: Harness, tmp_path: Path
+) -> None:
+    await harness.cloud.create_invite("bearer-model-invite", email="bearer-model@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=harness.cloud,
+            cloud_model_provider_repository=harness.providers,
+            cloud_model_provider_probe=harness.probe,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+            coding_workspace_root=tmp_path,
+            coding_storage_root=tmp_path / ".coding",
+        )
+    )
+    login = client.post(
+        "/api/v1/cloud/auth/device/login",
+        json={"invite_code": "bearer-model-invite", "device_name": "Sage TUI"},
+    )
+    assert login.status_code == 200
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    created_provider = client.post(
+        "/api/v1/cloud/model-providers", headers=headers, json=_create_payload()
+    )
+    assert created_provider.status_code == 200
+    runtime_model_id = f"account:{created_provider.json()['id']}:model-a"
+    catalog = client.get("/api/v1/coding/models", headers=headers)
+    created_session = client.post("/api/v1/coding/session", headers=headers, json={})
+    assert catalog.status_code == 200
+    assert catalog.json()["current"] == runtime_model_id
+    assert created_session.status_code == 200
+    session_id = created_session.json()["session_id"]
+    assert client.app.state.coding_sessions[session_id].model_spec == runtime_model_id
+
+    client.app.state.coding_sessions.clear()
+    resumed = client.post(f"/api/v1/coding/session/{session_id}/resume", headers=headers)
+
+    assert resumed.status_code == 200
+    assert client.app.state.coding_sessions[session_id].model_spec == runtime_model_id
 
 
 async def test_anonymous_coding_catalog_does_not_expose_account_models(

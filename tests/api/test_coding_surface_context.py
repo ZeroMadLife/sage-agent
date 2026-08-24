@@ -11,7 +11,7 @@ from typing import ClassVar
 
 import pytest
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.testclient import WebSocketDenialResponse
 
 from api.harness_context import validate_surface_context
 from api.main import create_app
@@ -365,9 +365,9 @@ async def test_coding_stream_rejects_a_session_from_another_owner(
     session = owner.post("/api/v1/coding/session", json={}).json()
 
     with (
-        pytest.raises(WebSocketDisconnect) as denied,
+        pytest.raises(WebSocketDenialResponse) as denied,
         other.websocket_connect(f"/api/v1/coding/{session['session_id']}/stream"),
     ):
         pass
 
-    assert denied.value.code == 1008
+    assert denied.value.status_code == 404

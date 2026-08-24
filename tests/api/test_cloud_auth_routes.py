@@ -2,12 +2,14 @@
 
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
+from core.config.settings import Settings
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
 
@@ -24,6 +26,40 @@ async def cloud_repository() -> AsyncIterator[CloudRepository]:
         await engine.dispose()
 
 
+@pytest.mark.parametrize("weak_secret", ["change-me-in-production", "too-short"])
+@pytest.mark.parametrize("app_env", ["production", " Production "])
+def test_production_rejects_weak_jwt_secret_with_injected_repository(
+    cloud_repository: CloudRepository,
+    weak_secret: str,
+    app_env: str,
+) -> None:
+    settings = Settings(_env_file=None, app_secret_key=weak_secret)
+
+    with (
+        patch("api.main.get_settings", return_value=settings),
+        pytest.raises(RuntimeError, match="APP_SECRET_KEY"),
+    ):
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_app_env=app_env,
+        )
+
+
+def test_production_accepts_explicit_strong_jwt_secret_for_tests(
+    cloud_repository: CloudRepository,
+) -> None:
+    settings = Settings(_env_file=None, app_secret_key="change-me-in-production")
+
+    with patch("api.main.get_settings", return_value=settings):
+        app = create_app(
+            cloud_repository=cloud_repository,
+            cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+        )
+
+    assert app.state.cloud_token_secret == "test-only-jwt-signing-secret-that-is-long-enough"
+
+
 def test_cloud_me_requires_a_server_session(cloud_repository: CloudRepository) -> None:
     """The cloud API never trusts a browser-provided user ID."""
     client = TestClient(
@@ -37,6 +73,99 @@ def test_cloud_me_requires_a_server_session(cloud_repository: CloudRepository) -
     response = client.get("/api/v1/cloud/me")
 
     assert response.status_code == 401
+
+
+async def test_device_login_rolls_back_the_whole_invite_session_refresh_transaction(
+    cloud_repository: CloudRepository,
+) -> None:
+    expires_at = datetime.now(UTC) + timedelta(days=30)
+    duplicate_refresh = "api-duplicate-refresh-token-for-transaction-rollback"
+    await cloud_repository.create_invite("api-refresh-seed", email="seed@example.com")
+    seed_user, seed_session = await cloud_repository.create_canary_invite_session(
+        invite_code="api-refresh-seed",
+        token="api-refresh-seed-session",
+        device_name="Seed",
+        expires_at=expires_at,
+    )
+    await cloud_repository.create_refresh_token(
+        user_id=seed_user.user_id,
+        family_id=seed_session.session_id,
+        token=duplicate_refresh,
+        expires_at=expires_at,
+    )
+    await cloud_repository.create_invite("api-atomic-device", email="atomic@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+        ),
+        raise_server_exceptions=False,
+    )
+
+    with patch("api.cloud_auth.new_refresh_token", return_value=duplicate_refresh):
+        failed = client.post(
+            "/api/v1/cloud/auth/device/login",
+            json={"invite_code": "api-atomic-device", "device_name": "Desktop"},
+        )
+
+    assert failed.status_code == 500
+    assert await cloud_repository.invite_is_consumed("api-atomic-device") is False
+    assert await cloud_repository.list_active_sessions("atomic@example.com") == []
+    retried = client.post(
+        "/api/v1/cloud/auth/device/login",
+        json={"invite_code": "api-atomic-device", "device_name": "Desktop"},
+    )
+    assert retried.status_code == 200
+
+
+async def test_development_login_rolls_back_invite_and_identity_on_session_insert_failure(
+    cloud_repository: CloudRepository,
+) -> None:
+    expires_at = datetime.now(UTC) + timedelta(days=7)
+    duplicate_session = "api-duplicate-development-browser-session"
+    await cloud_repository.create_invite("api-dev-seed", email="seed-dev@example.com")
+    await cloud_repository.create_development_invite_session(
+        email="seed-dev@example.com",
+        display_name="Seed",
+        invite_code="api-dev-seed",
+        token=duplicate_session,
+        device_name="Seed browser",
+        expires_at=expires_at,
+    )
+    await cloud_repository.create_invite("api-atomic-dev", email="dev@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_dev_login_enabled=True,
+            cloud_app_env="development",
+        ),
+        raise_server_exceptions=False,
+    )
+
+    with patch("api.cloud_auth.new_browser_session_token", return_value=duplicate_session):
+        failed = client.post(
+            "/api/v1/cloud/auth/dev/login",
+            json={
+                "email": "dev@example.com",
+                "display_name": "Developer",
+                "invite_code": "api-atomic-dev",
+            },
+        )
+
+    assert failed.status_code == 500
+    assert await cloud_repository.invite_is_consumed("api-atomic-dev") is False
+    assert await cloud_repository.list_active_sessions("dev@example.com") == []
+    retried = client.post(
+        "/api/v1/cloud/auth/dev/login",
+        json={
+            "email": "dev@example.com",
+            "display_name": "Developer",
+            "invite_code": "api-atomic-dev",
+        },
+    )
+    assert retried.status_code == 200
 
 
 def test_cloud_me_rejects_malformed_bearer_without_server_error(
@@ -94,6 +223,7 @@ async def test_canary_invite_login_sets_a_30_day_secure_device_session(
             cloud_repository=cloud_repository,
             cloud_canary_invite_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         ),
         base_url="https://testserver",
     )
@@ -123,6 +253,7 @@ async def test_canary_invite_login_is_hidden_unless_explicitly_enabled(
             cloud_repository=cloud_repository,
             cloud_canary_invite_login_enabled=False,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         )
     )
 
@@ -143,6 +274,7 @@ async def test_canary_invite_login_rejects_a_fourth_device_without_consuming_inv
             cloud_repository=cloud_repository,
             cloud_canary_invite_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         )
     )
     for index in range(1, 5):
@@ -252,6 +384,7 @@ async def test_development_login_is_hidden_outside_development(
             cloud_repository=cloud_repository,
             cloud_dev_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         )
     )
 
@@ -271,6 +404,7 @@ async def test_production_session_cookie_is_secure_even_when_override_is_false(
     app = create_app(
         cloud_repository=cloud_repository,
         cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         cloud_secure_cookies=False,
     )
     # Bootstrap a test-only authenticated user without exposing the dev route.
@@ -316,6 +450,7 @@ async def test_device_tokens_authenticate_and_rotate_refresh_token(
             cloud_repository=cloud_repository,
             cloud_canary_invite_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         )
     )
 
@@ -376,6 +511,7 @@ async def test_device_token_logout_revokes_refresh_family(
             cloud_repository=cloud_repository,
             cloud_canary_invite_login_enabled=True,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
         )
     )
     login = client.post(

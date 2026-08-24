@@ -23,8 +23,6 @@ from fastapi import (
     Request,
     Response,
     WebSocket,
-    WebSocketException,
-    status,
 )
 from langchain_core.tools import BaseTool
 from sage_harness import (
@@ -377,18 +375,24 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         return
     sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
     runtime = sessions.get(session_id)
-    owner_user_id = runtime.owner_user_id if runtime is not None else None
-    if owner_user_id is None:
+    app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
+    if runtime is not None:
+        owner_user_id = runtime.owner_user_id
+        if owner_user_id is None and app_env == "production":
+            _raise_unknown_coding_session(connection, session_id)
+    else:
         store = CodingSessionStore(Path(connection.app.state.coding_storage_root) / "sessions")
         try:
             persisted = store.load(session_id)
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError:
+            return
+        except ValueError:
+            if app_env == "production":
+                _raise_unknown_coding_session(connection, session_id)
             return
         owner_user_id = str(persisted.get("owner_user_id", "")).strip() or None
     if owner_user_id is None:
-        if str(getattr(connection.app.state, "cloud_app_env", "development")).lower() == (
-            "production"
-        ):
+        if app_env == "production":
             _raise_unknown_coding_session(connection, session_id)
         return
     cloud = getattr(connection.app.state, "cloud_repository", None)
@@ -403,8 +407,6 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
 
 def _raise_unknown_coding_session(connection: HTTPConnection, session_id: str) -> None:
     detail = f"Unknown coding session: {session_id}"
-    if connection.scope.get("type") == "websocket":
-        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=detail)
     raise HTTPException(status_code=404, detail=detail)
 
 

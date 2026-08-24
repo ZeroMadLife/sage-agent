@@ -50,6 +50,19 @@ def _is_expired(value: datetime | None, now: datetime) -> bool:
     return value <= now
 
 
+def _is_development_bootstrap_conflict(exc: IntegrityError) -> bool:
+    message = str(exc.orig).lower()
+    return any(
+        marker in message
+        for marker in (
+            "cloud_users.email",
+            "cloud_users_email_key",
+            "cloud_identity_provider_subject_key",
+            "cloud_auth_identities.provider, cloud_auth_identities.provider_subject",
+        )
+    )
+
+
 async def _get_or_insert_user(
     session: AsyncSession,
     *,
@@ -225,13 +238,20 @@ class CloudRepository:
         token: str,
         device_name: str,
         expires_at: datetime,
+        refresh_token: str | None = None,
+        refresh_expires_at: datetime | None = None,
         max_active_sessions: int = 3,
     ) -> tuple[CloudUser, CloudLoginSession]:
         """Atomically consume one email-bound invite and create one device session."""
         if not invite_code or not token:
             raise ValueError("invite code and session token are required")
+        if (refresh_token is None) != (refresh_expires_at is None):
+            raise ValueError("refresh token and expiry must be provided together")
+        if refresh_token == "":
+            raise ValueError("refresh token must not be empty")
         now = _utc_now()
         async with self._session_factory() as session:
+            await session.begin()
             invite = await session.scalar(
                 select(CloudInviteRecord)
                 .where(CloudInviteRecord.code_hash == _digest(invite_code))
@@ -263,11 +283,17 @@ class CloudRepository:
                 await session.rollback()
                 raise PermissionError("invite is invalid or already consumed")
 
-            user, _ = await _get_or_insert_user(
-                session,
-                email=email,
-                display_name=email.partition("@")[0],
+            user = await session.scalar(
+                select(CloudUserRecord).where(CloudUserRecord.email == email).with_for_update()
             )
+            if user is None:
+                user = CloudUserRecord(
+                    id=str(uuid4()),
+                    email=email,
+                    display_name=email.partition("@")[0],
+                )
+                session.add(user)
+                await session.flush()
             if user.disabled_at is not None:
                 raise PermissionError("cloud user is disabled")
 
@@ -308,7 +334,142 @@ class CloudRepository:
                 last_seen_at=now,
             )
             session.add(record)
-            await session.commit()
+            if refresh_token is not None and refresh_expires_at is not None:
+                session.add(
+                    CloudRefreshTokenRecord(
+                        id=str(uuid4()),
+                        user_id=user.id,
+                        family_id=record.id,
+                        token_hash=_digest(refresh_token),
+                        expires_at=refresh_expires_at,
+                    )
+                )
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+            return _to_user(user), _to_login_session(record)
+
+    async def create_development_invite_session(
+        self,
+        *,
+        email: str,
+        display_name: str,
+        invite_code: str,
+        token: str,
+        device_name: str,
+        expires_at: datetime,
+        refresh_token: str | None = None,
+        refresh_expires_at: datetime | None = None,
+        max_active_sessions: int = 3,
+    ) -> tuple[CloudUser, CloudLoginSession]:
+        """Atomically bootstrap one development identity and its first session."""
+        normalized_email = email.strip().lower()
+        if not normalized_email or not invite_code or not token:
+            raise ValueError("email, invite code, and session token are required")
+        if (refresh_token is None) != (refresh_expires_at is None):
+            raise ValueError("refresh token and expiry must be provided together")
+        if refresh_token == "":
+            raise ValueError("refresh token must not be empty")
+        now = _utc_now()
+        async with self._session_factory() as session:
+            await session.begin()
+            identity = await session.scalar(
+                select(AuthIdentityRecord)
+                .where(
+                    AuthIdentityRecord.provider == "development",
+                    AuthIdentityRecord.provider_subject == normalized_email,
+                )
+                .with_for_update()
+            )
+            if identity is not None:
+                raise PermissionError("development identity is already bootstrapped")
+            user = await session.scalar(
+                select(CloudUserRecord)
+                .where(CloudUserRecord.email == normalized_email)
+                .with_for_update()
+            )
+            if user is None:
+                user = CloudUserRecord(
+                    id=str(uuid4()),
+                    email=normalized_email,
+                    display_name=display_name.strip(),
+                )
+                session.add(user)
+                try:
+                    await session.flush()
+                except IntegrityError as exc:
+                    await session.rollback()
+                    if _is_development_bootstrap_conflict(exc):
+                        raise PermissionError(
+                            "development identity is already bootstrapped"
+                        ) from exc
+                    raise
+            if user.disabled_at is not None:
+                raise PermissionError("cloud user is disabled")
+            consumed = await session.execute(
+                update(CloudInviteRecord)
+                .where(
+                    CloudInviteRecord.code_hash == _digest(invite_code),
+                    CloudInviteRecord.consumed_at.is_(None),
+                    (CloudInviteRecord.expires_at.is_(None))
+                    | (CloudInviteRecord.expires_at > func.now()),
+                    (CloudInviteRecord.email.is_(None))
+                    | (CloudInviteRecord.email == normalized_email),
+                )
+                .values(consumed_at=now, consumed_by_user_id=user.id)
+            )
+            if consumed.rowcount != 1:
+                await session.rollback()
+                raise PermissionError("invite is invalid or already consumed")
+            session.add(
+                AuthIdentityRecord(
+                    id=str(uuid4()),
+                    user_id=user.id,
+                    provider="development",
+                    provider_subject=normalized_email,
+                )
+            )
+            active_sessions = await session.scalar(
+                select(func.count(CloudLoginSessionRecord.id)).where(
+                    CloudLoginSessionRecord.user_id == user.id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                    CloudLoginSessionRecord.expires_at > func.now(),
+                )
+            )
+            if int(active_sessions or 0) >= max_active_sessions:
+                await session.rollback()
+                raise DeviceLimitReached
+            record = CloudLoginSessionRecord(
+                id=str(uuid4()),
+                user_id=user.id,
+                token_hash=_digest(token),
+                device_name=_normalize_device_name(device_name),
+                expires_at=expires_at,
+                last_seen_at=now,
+            )
+            session.add(record)
+            if refresh_token is not None and refresh_expires_at is not None:
+                session.add(
+                    CloudRefreshTokenRecord(
+                        id=str(uuid4()),
+                        user_id=user.id,
+                        family_id=record.id,
+                        token_hash=_digest(refresh_token),
+                        expires_at=refresh_expires_at,
+                    )
+                )
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                if _is_development_bootstrap_conflict(exc):
+                    raise PermissionError("development identity is already bootstrapped") from exc
+                raise
+            except Exception:
+                await session.rollback()
+                raise
             return _to_user(user), _to_login_session(record)
 
     async def authenticated_user(self, token: str) -> CloudUser | None:
