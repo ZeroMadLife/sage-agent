@@ -283,6 +283,79 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - **发布边界**：不沿用首轮 `b55f0f2` receipt。当前仍只是 macOS arm64 ad-hoc/local dev 候选，
   等待第二轮中枢三镜头复审；Cloud OAuth、updater、Developer ID、公证、stapled DMG 均未交付。
 
+### D2.2 Runtime/Standards 复审修复 mini-spec（2026-08-25）
+
+本增量只修 supervisor 与 desktop adapter 的并发、所有权和关闭语义；D2.1 已放行的 durable
+journal、active Provider、capability 派生和 artifact 行为合同保持不变。
+
+**Supervisor generation 与 ownership 不变量**
+
+- backoff 或可恢复配置 timer 醒来后，任何 failure accounting 必须在同一状态临界区先验证
+  `launch_generation`。`desktop_launch_superseded` 是取消结果：不清 PID/child/orphan，不记录 crash
+  budget，不发布旧状态，也不为旧 generation 安排下一次 retry。
+- 配置重启同一时刻只有一个 stop owner；第二个快速 action 合并到进行中的 restart，不再捕获或终止
+  同一 orphan。stop completion 只有在 generation 与 orphan identity 均匹配时才能提交；迟到 completion
+  是 no-op，不得重写 orphan、PID 或新 snapshot。
+- `terminate_verified` 只有 `TerminationOutcome::Stopped` 才证明旧进程已停止；`IdentityChanged`、
+  `KillSent` 和 I/O failure 都保持 blocked。只有停止结论明确且 ownership 清除已持久化成功，才能启动
+  新 generation；启动 orphan cleanup 与配置 restart 使用同一放行语义。
+
+**Provider runtime invalidation 不变量**
+
+- Provider operation outcome 在成功和可恢复失败上都携带 `runtime_invalidated`。active Provider 的
+  rotate/disconnect/delete 一旦 metadata 已 fail closed 或 journal 进入未决阶段，即使 Keychain cleanup
+  失败也立即停止旧 sidecar；未决 journal 未 reconciliation 前，runtime 配置读取继续 fail closed，
+  不得用旧 secret 重启。
+
+**Desktop WebSocket 不变量**
+
+- 恢复期间若 session revision 已变化且当前 session 为 null，adapter 不把 null 当作永久结果；它以
+  当前 revision 继续重新读取 host status。`ready(old) -> starting/degraded(null) -> ready(new)` 必须安装
+  new session socket，epoch 只负责丢弃迟到结果，不消耗无意义的 terminal budget。
+- 用户 `close()`、CodingStream session 切换和组件卸载是 clean close，不发布全局 `degraded`；只有异常
+  transport close、retry exhaustion 或宿主真实断线影响 HostGate。retry exhaustion 仍只派发一次 terminal
+  close 并清除对应 session。
+
+**Red/Green 与收口**
+
+- 逐项先添加 deterministic Rust/Vitest Red，再做最小 Green；focused 覆盖旧 timer 晚于新 ready、双
+  configuration action、乱序 completion、两入口 `IdentityChanged`、active cleanup failure、null-session
+  host recovery、session switch/unmount 与 exhaustion。
+- 最终运行 Rust full/fmt/clippy、Vue focused/full/build、Python desktop/auth/full、临时 Keychain round-trip
+  cleanup、source product smoke、secret scan、精确进程零残留和 `git diff --check`。代码与文档分别使用
+  中文职责 commit；因 Rust/TS 产品源码改变，必须从新的 clean docs HEAD 重做正式 arm64 bundle，并
+  固定 code/docs/receipt SHA、strict codesign、manifest 与 `.app` 分类计数后等待第三轮三镜头复审。
+
+### D2.2 实施收口（2026-08-25）
+
+- **代码候选**：`71e3467610b12552672b3c0df5d4f48a12e43632`。launch failure accounting
+  在同一状态临界区先核对 generation；`desktop_launch_superseded` 与任何旧 generation failure 都作为
+  取消，不改变新 PID/child/orphan、snapshot 或 crash budget，也不继续旧 timer retry。
+- **配置重启**：快速重复 action 合并到一个 configuration stop owner，不再次捕获同一 orphan；stop
+  completion 以 generation + orphan identity CAS 提交，迟到成功/失败均为 no-op。只有明确
+  `TerminationOutcome::Stopped` 且 orphan 清除持久化成功才放行；`IdentityChanged`、`KillSent`、I/O
+  与持久化失败保持 blocked。启动 orphan cleanup 使用同一严格 outcome 语义。
+- **Provider runtime invalidation**：active rotate/disconnect/delete 的 operation outcome 在成功和 Err
+  上都携带 `runtime_invalidated`；metadata fail closed 或 pending journal 后的 Keychain cleanup failure
+  仍触发 supervisor stop。pending journal 使 `runtime_configuration()` 返回
+  `provider_reconciliation_required`，在 sidecar spawn 前禁止旧 secret runtime 重启。
+- **连接关闭语义**：session revision 改变且当前 session 为 null 时，WebSocket 按当前 revision 继续
+  有界读取 host status，已覆盖 `ready(old) -> starting(null) -> ready(new)` 并安装 new socket。用户
+  `close()`、CodingStream session switch 与 stop/unmount 不发布全局 degraded；异常 close 与 retry
+  exhaustion 仍发布 degraded、清 session 并只派发一次 terminal close。
+- **Red 证据**：旧 supervisor 分别把新 PID 清为 null、接受 `IdentityChanged`、让迟到 completion
+  覆盖新状态；旧 adapter 在 transient null 后只调用两次 host status，主动 cleanup 发布两次
+  degraded；旧 Provider API 无法返回 runtime invalidation。上述断言均先失败，再以最小实现 Green。
+- **源码门禁**：Rust full `56 passed`（含唯一临时 Keychain service/account round-trip 与清理）、fmt、
+  clippy `-D warnings` 通过；Provider focused `14 passed`；Vue focused `46 passed`、full
+  `72 files / 552 tests`、production build 通过；Python desktop/auth 各 `61 passed`，完整门禁为 Ruff
+  lint、466 files format、Mypy 231 source files 与 `2054 passed, 12 skipped`；source product smoke、
+  changed-diff secret scan、精确进程检查和 `git diff --check` 通过。secret scan 仅命中三个明确的
+  `test-secret-*` 测试夹具，不含真实凭据。
+- **待固定 artifact**：Rust/TS 产品源码已改变，当前不沿用 `8479a2c` 的正式 receipt。下一步只能从
+  本段所在的 clean docs HEAD 运行唯一 arm64 bundle 入口；完成 receipt SHA、manifest/`.app` 分类
+  计数、strict codesign、secret scan 与进程零残留后，再写最终收据并等待第三轮三镜头复审。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
