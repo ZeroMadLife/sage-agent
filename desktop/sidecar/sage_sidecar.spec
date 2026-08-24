@@ -21,6 +21,7 @@ hidden_imports = sorted(
     )
 )
 datas = collect_data_files("certifi")
+datas.append((str(ROOT / "config" / "coding_models.toml"), "config"))
 for distribution in (
     "aiosqlite",
     "cryptography",

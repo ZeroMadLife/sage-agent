@@ -266,6 +266,12 @@ def test_desktop_product_runtime_versions_match_the_sage_release() -> None:
     assert harness["project"]["requires-python"] == ">=3.12"
 
 
+def test_pyinstaller_spec_bundles_the_versioned_coding_model_manifest() -> None:
+    spec = (ROOT / "desktop" / "sidecar" / "sage_sidecar.spec").read_text(encoding="utf-8")
+
+    assert '(str(ROOT / "config" / "coding_models.toml"), "config")' in spec
+
+
 @pytest.mark.parametrize(
     "requirement",
     [
@@ -399,6 +405,18 @@ def test_artifact_hygiene_rejects_secret_and_unapproved_resources(
 
     with pytest.raises(ArtifactHygieneError, match=message):
         verify_artifact_hygiene(artifact, forbidden_roots=())
+
+
+def test_artifact_hygiene_allows_only_the_versioned_coding_model_manifest(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "artifact"
+    manifest = artifact / "_internal" / "config" / "coding_models.toml"
+    manifest.parent.mkdir(parents=True)
+    (artifact / "artifact").write_bytes(b"sidecar")
+    manifest.write_bytes((ROOT / "config" / "coding_models.toml").read_bytes())
+
+    verify_artifact_hygiene(artifact, forbidden_roots=())
 
 
 @pytest.mark.parametrize("live_mode", ["404", "wrong-schema"])

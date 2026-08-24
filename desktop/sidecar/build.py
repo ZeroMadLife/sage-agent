@@ -312,7 +312,7 @@ def _matches_pattern(path: Path, pattern: re.Pattern[bytes]) -> bool:
 
 def _is_allowlisted_config_resource(path: Path, artifact_dir: Path) -> bool:
     relative = path.relative_to(artifact_dir).as_posix()
-    return bool(
+    return relative == "_internal/config/coding_models.toml" or bool(
         re.fullmatch(
             r"_internal/cryptography-[^/]+\.dist-info/sboms/[^/]+\.json",
             relative,
