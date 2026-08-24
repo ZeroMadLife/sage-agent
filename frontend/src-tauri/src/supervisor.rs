@@ -1,14 +1,16 @@
+use crate::diagnostics::DiagnosticLog;
 use crate::lifecycle::{
-    atomic_write_private, lifecycle_action, startup_action, terminate_verified, CrashBudget,
-    LifecycleAction, LifecycleEvent, ObservedProcess, OrphanRecord, ProcessSignal, StartupAction,
+    lifecycle_action, startup_action, terminate_verified, LifecycleAction, LifecycleEvent,
+    ObservedProcess, OrphanRecord, ProcessSignal, StartupAction,
 };
 use crate::protocol::{validate_handshake, DesktopSession, ExpectedHandshake, Handshake};
+use crate::state_repository::{DesktopStateRepository, HostDiskState};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
@@ -78,19 +80,13 @@ impl HostSnapshot {
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
-struct HostDiskState {
-    crash_budget: CrashBudget,
-    orphan: Option<OrphanRecord>,
-}
-
 struct HostInner {
     snapshot: HostSnapshot,
     stopping: bool,
     pid: Option<u32>,
     child: Option<CommandChild>,
-    disk_path: Option<PathBuf>,
-    diagnostics_dir: Option<PathBuf>,
+    repository: Option<DesktopStateRepository>,
+    diagnostic_log: Option<DiagnosticLog>,
     disk: HostDiskState,
 }
 
@@ -101,8 +97,8 @@ impl Default for HostInner {
             stopping: false,
             pid: None,
             child: None,
-            disk_path: None,
-            diagnostics_dir: None,
+            repository: None,
+            diagnostic_log: None,
             disk: HostDiskState::default(),
         }
     }
@@ -147,8 +143,9 @@ pub fn desktop_open_diagnostics(state: State<'_, SharedHostState>) -> Result<(),
         .0
         .lock()
         .expect("host state poisoned")
-        .diagnostics_dir
-        .clone()
+        .diagnostic_log
+        .as_ref()
+        .map(|log| log.directory().to_path_buf())
         .ok_or("desktop_diagnostics_unavailable")?;
     std::process::Command::new("/usr/bin/open")
         .arg(diagnostics_dir)
@@ -206,24 +203,26 @@ pub fn start(app: AppHandle) {
         );
         return;
     }
-    let disk_path = data_dir.join("desktop-host-state.json");
-    let diagnostics_dir = data_dir.join("diagnostics");
-    if fs::create_dir_all(&diagnostics_dir).is_err() {
-        set_problem(
-            &shared,
-            "blocked",
-            "desktop_diagnostics_unavailable",
-            "restart_sage",
-        );
-        return;
-    }
-    let mut disk = load_disk_state(&disk_path);
+    let repository = DesktopStateRepository::new(data_dir.join("desktop-host-state.json"));
+    let diagnostic_log = match DiagnosticLog::create(data_dir.join("diagnostics")) {
+        Ok(log) => log,
+        Err(_) => {
+            set_problem(
+                &shared,
+                "blocked",
+                "desktop_diagnostics_unavailable",
+                "restart_sage",
+            );
+            return;
+        }
+    };
+    let mut disk = repository.load();
     let cleanup_result = clean_known_orphan(&mut disk);
     let startup = startup_action(&mut disk.crash_budget, unix_seconds());
     let persisted = {
         let mut inner = shared.0.lock().expect("host state poisoned");
-        inner.disk_path = Some(disk_path);
-        inner.diagnostics_dir = Some(diagnostics_dir);
+        inner.repository = Some(repository);
+        inner.diagnostic_log = Some(diagnostic_log);
         inner.disk = disk;
         persist_disk_locked(&inner)
     };
@@ -724,22 +723,14 @@ fn clean_known_orphan(disk: &mut HostDiskState) -> std::io::Result<()> {
     Ok(())
 }
 
-fn load_disk_state(path: &Path) -> HostDiskState {
-    fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
-}
-
 fn persist_disk_locked(inner: &HostInner) -> std::io::Result<()> {
-    let Some(path) = inner.disk_path.as_ref() else {
+    let Some(repository) = inner.repository.as_ref() else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "desktop state path unavailable",
         ));
     };
-    let bytes = serde_json::to_vec(&inner.disk).map_err(std::io::Error::other)?;
-    atomic_write_private(path, &bytes)
+    repository.save(&inner.disk)
 }
 
 fn terminate_runtime(
@@ -772,57 +763,33 @@ fn terminate_runtime(
     )
 }
 
-#[derive(Serialize)]
-struct DiagnosticRecord<'a> {
-    timestamp: u64,
-    event: &'a str,
-    state: &'a str,
-    reason_code: &'a str,
-}
-
 fn append_diagnostic(
     shared: &SharedHostState,
     event: &str,
     state: &str,
     reason_code: &str,
 ) -> std::io::Result<()> {
-    let path = shared
+    let log = shared
         .0
         .lock()
         .expect("host state poisoned")
-        .diagnostics_dir
-        .as_ref()
-        .map(|directory| directory.join("desktop-host.jsonl"));
-    let Some(path) = path else {
+        .diagnostic_log
+        .clone();
+    let Some(log) = log else {
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             "desktop diagnostics path unavailable",
         ));
     };
-    let record = DiagnosticRecord {
-        timestamp: unix_seconds(),
-        event,
-        state,
-        reason_code,
-    };
-    let mut encoded = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
-    encoded.push(b'\n');
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        file.set_permissions(fs::Permissions::from_mode(0o600))?;
-    }
-    file.write_all(&encoded)?;
-    file.sync_all()
+    log.append(event, state, reason_code)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         append_diagnostic, finish_runtime_termination, origin_for_profile,
-        post_handshake_reject_reason, runtime_origin, HostSnapshot, SharedHostState,
-        DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
+        post_handshake_reject_reason, runtime_origin, DesktopStateRepository, DiagnosticLog,
+        HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
     };
     use crate::lifecycle::OrphanRecord;
     use tauri_plugin_shell::process::CommandEvent;
@@ -869,9 +836,11 @@ mod tests {
         };
         {
             let mut inner = shared.0.lock().unwrap();
-            inner.disk_path = Some(root.path().join("desktop-host-state.json"));
-            inner.diagnostics_dir = Some(root.path().join("diagnostics"));
-            std::fs::create_dir_all(inner.diagnostics_dir.as_ref().unwrap()).unwrap();
+            inner.repository = Some(DesktopStateRepository::new(
+                root.path().join("desktop-host-state.json"),
+            ));
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
             inner.disk.orphan = Some(record.clone());
         }
 
@@ -906,7 +875,8 @@ mod tests {
     fn diagnostic_log_contains_only_the_public_allowlist() {
         let root = tempfile::tempdir().unwrap();
         let shared = SharedHostState::default();
-        shared.0.lock().unwrap().diagnostics_dir = Some(root.path().to_path_buf());
+        shared.0.lock().unwrap().diagnostic_log =
+            Some(DiagnosticLog::create(root.path().to_path_buf()).unwrap());
 
         append_diagnostic(
             &shared,

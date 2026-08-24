@@ -1,5 +1,7 @@
+pub mod diagnostics;
 pub mod lifecycle;
 pub mod protocol;
+pub mod state_repository;
 mod supervisor;
 
 use lifecycle::{
