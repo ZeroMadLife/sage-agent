@@ -2,7 +2,9 @@
 
 > 状态：已获 CTO 全权实施授权，按阶段本地开发与审查；公开 push、PR 合并、签名凭据和发布仍按外部变更门禁单独执行。
 >
-> L2 状态（2026-08-25）：Assistant 最终代码候选 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已获 Runtime/Standards 放行，等待 Spec 快速复核；仅本地 commit，未 push、未建 PR。
+> L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
+>
+> L3 状态（2026-08-25）：Research、Synthesize 与 Learning Artifact code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 已在固定 L2 docs 候选 `ca6e618d6df993dff40ed3a304ca942c239e7d84` 上本地完成，等待中枢三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -332,12 +334,13 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 **依赖与非目标**
 
 - 依赖 L0/L1；不重写 CodingView。
-- `AssistantHomeView` 大表单/确认区拆分登记为 L3 前技术债，本轮不做无关重构。
-- `input_origin + emit_user_event` 收敛为 `TurnInputKind/learning_kickoff` 类型合同，以及 `LearningKickoffErrorCode` + 结构化 OpenAPI error responses，均登记为 L3 前技术债。
+- `AssistantHomeView` 学习确认表单、`TurnInputKind/learning_kickoff` 类型合同、`LearningKickoffErrorCode` 与结构化 OpenAPI error responses 已在 L3 前置提交 `ace45c4` 收敛；不把该重构扩大到旧 Coding 入口。
 - 不修改 L1 只读授权合同；不生成 LearningPlan、Task DAG、Artifact、Practice 或 Mastery。
-- 当前结论是“code candidate 已本地提交，Runtime/Standards 已放行，等待 Spec 快速复核”，不是已合入 `dev/sage-v7` 或已发布。
+- 当前结论是“code candidate 与 docs candidate 已完成最终复审并成为 L3 固定起点”，不是已合入 `dev/sage-v7` 或已发布。
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
+
+> 本地 code candidate：`c15fa6743e97979d24b886b2b130469124ed2018`；mini-spec：`9a52a7a`。当前结论是“可提交并等待中枢三镜头复审”，不是已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 
@@ -362,6 +365,18 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 **依赖与非目标**
 
 - 依赖 L1/L2；不执行任意 HTML/JS，不自动写 Knowledge/Memory。
+
+**当前实现与收口证据（2026-08-25）**
+
+- `LearningPlan/KnowledgeUnit` 以 Goal、task/source/capability/catalog revision 和 canonical DAG hash 形成稳定 identity；Knowledge-first 零证据保持 `source_gap/unverified`，计划与 Artifact status 不写成 Mastery。
+- 条件 Research 复用现有 `SubagentExecutorPort` research profile、Web Search/Fetch 和 `EvidenceBundlePort`；只在 policy、sufficiency、capability、预算与风险均允许时创建只读 child。Research receipt 持久绑定 parent/child run、query hash、revision、预算/usage、域名/freshness 与 URL/title/content hash/fetched_at；失败保持确定性 reason code。
+- Artifact Store 持久保存 schema、Goal/Plan/Unit identity、content hash/media type、evidence/source revision、retention、幂等 digest 和可选 Research receipt ref；同 revision 重试/重启/Resume 返回同一 Artifact，不同内容冲突拒绝覆盖。Checkpoint 使用 CAS 与递增 fencing token，大正文只存在 Artifact。
+- `POST .../advance` 每次只推进一个 durable stage；`GET .../resume` 和 scoped Artifact GET 均为 browser-safe `no-store` 投影。共享 Coding 会话展示 DAG、checkpoint、Artifact 和来源，刷新从 canonical Resume 恢复。
+- 最终串行 B1/B2/B3、L0-L2 Learning 与完整 Coding routes 邻接：`214 passed, 1 warning`；warning 为既有 GPT-2 fallback tokenizer。
+- 完整 Vue：`71 files / 525 tests passed`；private/public production build 均通过，private build 只有既有大 chunk warning；仓库化 Playwright：`2 passed`。
+- 全仓 Ruff lint 通过；Mypy `254 source files` 通过；本切片 25 个 Python 文件 format check 与 `git diff --check` 通过。全仓 format check 仍只有 5 个未修改 Harness 文件的历史漂移（`telemetry.py`、`deferred_tools.py`、`message_compaction.py`、`subagents/tool.py`、`task_dag.py`），本片不扩大无关 diff。
+- Playwright 使用隔离 FastAPI/Vite、确定性 Knowledge/Web fixtures 与非敏感 fake provider，只证明合同、恢复和 UI 投影，不证明真实 Provider/Web 检索质量、学习效果、生产准确率或 SLA。
+- Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀、书本 RAG projection 修改和 B4 跨领域 Eval 均保持未交付。
 
 ## 13. 切片 L4：Practice、Mastery 与 Resume
 

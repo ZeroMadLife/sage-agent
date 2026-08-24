@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已获 Runtime/Standards 放行，等待 Spec 快速复核；B-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3/L3 本地 code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 等待中枢三镜头复审；B4-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -15,8 +15,11 @@
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
-| A4 Assistant 确认 | Runtime/Standards 已放行，等待 Spec 快速复核 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
-| B-E | 未开始 | - | Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
+| A4 Assistant 确认 | L2 docs candidate 已最终复审通过 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`、`ca6e618d6df993dff40ed3a304ca942c239e7d84` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
+| B1 Knowledge-only map | L3 本地候选，待三镜头复审 | `35af1ee` | 稳定 LearningPlan/KnowledgeUnit、Knowledge-first map、source gap 与 citation-bound Markdown；不代表 Mastery |
+| B2 条件 Research | L3 本地候选，待三镜头复审 | `1fec631`、`c15fa67` | 复用既有只读 Research/Web/Evidence runtime；receipt durable、revision-bound、预算/来源可追溯，失败 fail closed |
+| B3 Artifact + Resume | L3 本地候选，待三镜头复审 | `5402ec8`、`e7708f0`、`ee58e48`、`c15fa67` | scoped Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享 UI 已接线；未合入 `dev/sage-v7` |
+| B4-E | 未开始 | - | 跨领域 Eval、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
 Learning SQLite、Session JSON 与 Journal 之间的跨存储事务。Task、activation 和
@@ -25,7 +28,7 @@ canonical workspace path 派生，不接受客户端认领。
 
 ## 1. 交付目标
 
-本计划描述完整可恢复学习任务的历史路线。当前 L0/L1 提供可恢复 bootstrap 与首轮只读范围，A4/L2 code candidate 提供 Assistant 确认和进入共享会话；Knowledge/Research、LearningPlan、Artifact、Mastery 和运行中 Resume 仍属于后续切片，不能按本文目标态视为已实现。
+本计划描述完整可恢复学习任务的历史路线。当前 L0/L1 提供可恢复 bootstrap 与首轮只读范围，A4/L2 code candidate 提供 Assistant 确认和进入共享会话；B1-B3/L3 code candidate 已实现 Knowledge/Research、LearningPlan、Artifact 和运行中 Resume，但仍是本地待复审候选。Mastery、Practice 与 B4 跨领域门禁仍属于后续切片，不能按本文目标态视为已实现。
 
 第一阶段交付两个入口，但只维护一套 Harness：
 
@@ -331,7 +334,7 @@ private build 仅有既有大 chunk warning。最终 Runtime 复审指出的 no-
 
 ### Slice A4：Assistant 任务确认与进入会话
 
-> 最终代码候选（2026-08-25）：`2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`，仅本地 commit，未 push、未建 PR；Runtime/Standards 已放行，等待 Spec 快速复核。初版候选 `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 的复审聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
+> 最终代码候选（2026-08-25）：`2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`，最终复审通过的 docs candidate 为 `ca6e618d6df993dff40ed3a304ca942c239e7d84`；均为本地 commit，未 push、未建 PR、未合入。初版候选 `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 的复审聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
 
 **交付行为**
 
@@ -375,8 +378,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 - 依赖 A1-A3；使用现有 Assistant 入口和 Coding 页面作为会话承载。
 - 不在本片重写 CodingView；只显示最小任务状态和恢复摘要。
-- `AssistantHomeView` 大表单/确认区拆分登记为 L3 前技术债，本轮不做无关重构。
-- `input_origin + emit_user_event` 收敛为 `TurnInputKind/learning_kickoff` 类型合同，以及 `LearningKickoffErrorCode` + 结构化 OpenAPI error responses，均登记为 L3 前技术债。
+- `AssistantHomeView` 学习确认表单、`TurnInputKind/learning_kickoff` 类型合同、`LearningKickoffErrorCode` 与结构化 OpenAPI error responses 已由 L3 前置提交 `ace45c4` 完成；旧 Coding/L2 入口保持回归保护。
 - 不生成 LearningPlan、Task DAG、Learning Artifact 或 Mastery Evidence，不实现 L3 Research/Artifact。
 
 **验证**
@@ -403,6 +405,8 @@ git diff --check
 ```
 
 ### Slice B1：Knowledge-only 学习地图与 source gap
+
+> 本地候选：`35af1ee`，最终 code candidate 祖先链收口于 `c15fa67`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -432,6 +436,8 @@ git diff --check
 
 ### Slice B2：条件 Web Research 与 citation
 
+> 本地候选：`1fec631`，receipt/Artifact identity 持久化复核补强为 `c15fa67`；未 push、未建 PR、未合入。
+
 **交付行为**
 
 - 仅当 source policy 允许、Knowledge sufficiency 不足且预算/风险规则通过时，创建只读 Research child。
@@ -457,6 +463,8 @@ git diff --check
 ```
 
 ### Slice B3：LearningMap Artifact + Resume Summary
+
+> 本地候选：`5402ec8`（store）、`e7708f0`（execution/API）、`ee58e48`（UI），最终持久化补强收口于 `c15fa67`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -706,6 +714,8 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 - private/public production build 与 `git diff --check` 通过；private build 只有既有大 chunk warning；
 - 本轮仍停在 L0：没有执行首轮 Turn，没有生成 LearningPlan、Task DAG、Learning Artifact、Mastery Evidence 或运行中 Checkpoint Resume。
 
-A4/L2 最终代码候选 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已把 run hydration 与完整 runtime reconstruction 拆成两层 per-session single-flight：跨 Session 磁盘恢复并行，同 Session waiters 共享结果/错误且取消隔离；既有握手 readiness、bounded error、固定 run 并发收敛与 Task 缺失 fail-closed 均保留。Runtime/Standards 已放行，当前仅等待 Spec 快速复核；不能写成已合入 `dev/sage-v7` 或已发布。
+A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 已完成最终复审，作为本轮 L3 固定起点；它们仍未合入 `dev/sage-v7` 或发布。
 
-下一步只在 A3 最后短复审与 L2 三镜头复审通过、按 PR 合入后进入 L3：实现真实 Knowledge/Research、LearningPlan、Synthesize 和 Learning Artifact。L3 前不开放 Coding Practice，不生成 Mastery Evidence，也不把当前 kickoff TurnContextPlan 说成完整 LearningPlan 或 Task DAG。
+B1-B3/L3 code candidate `c15fa6743e97979d24b886b2b130469124ed2018` 已形成真实 Knowledge-first LearningPlan、条件只读 Research、durable Research receipt、citation-bound Learning Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享会话 UI。最终串行邻接为 `214 passed, 1 warning`；完整 Vue `71 files / 525 tests passed`；private/public build、全仓 Ruff、Mypy `254 source files`、本切片 25 个 Python 文件 format check、Playwright `2 passed` 与 `git diff --check` 均通过。全仓 format check 仅剩 5 个未修改 Harness 文件的历史漂移。
+
+当前停止在 L3 本地候选，等待中枢三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；确定性 fixture 也不证明真实 Provider/Web 质量或学习效果。
