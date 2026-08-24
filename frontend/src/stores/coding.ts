@@ -1796,30 +1796,6 @@ export const useCodingStore = defineStore('coding', () => {
     return createNewSession(prompt, surfaceContext)
   }
 
-  async function enterActivatedSessionWithPrompt(
-    targetSessionId: string,
-    content: string,
-    surfaceContext?: HarnessSurfaceContext | null,
-  ): Promise<string> {
-    const prompt = content.trim()
-    if (!targetSessionId) throw new Error('激活收据缺少会话标识')
-    if (!prompt) throw new Error('请输入内容后再开始学习')
-    pendingInitialPrompts.set(targetSessionId, { content: prompt, surfaceContext })
-    try {
-      if (targetSessionId !== sessionId.value) {
-        await selectSession(targetSessionId)
-      } else if (connectionState.value === 'connected') {
-        if (sendMessage(prompt, surfaceContext)) pendingInitialPrompts.delete(targetSessionId)
-      } else {
-        connectSocket()
-      }
-      return targetSessionId
-    } catch (cause) {
-      pendingInitialPrompts.delete(targetSessionId)
-      throw cause
-    }
-  }
-
   async function restoreCurrentSession() {
     const targetSessionId = sessionId.value
     if (!targetSessionId) return
@@ -2153,7 +2129,6 @@ export const useCodingStore = defineStore('coding', () => {
     selectSession,
     startNewSession,
     startSessionWithPrompt,
-    enterActivatedSessionWithPrompt,
     restoreCurrentSession,
     connectSocket,
     loadSkills,

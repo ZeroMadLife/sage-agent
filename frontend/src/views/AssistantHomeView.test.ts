@@ -97,6 +97,20 @@ function activationReceipt(): LearningActivationResponse {
   }
 }
 
+function kickoffReceipt() {
+  return {
+    version: 1 as const,
+    workspace_id: 'workspace-1', task_id: 'ltask-1', task_revision: 2,
+    activation_idempotency_key_hash: 'sha256:activation',
+    kickoff_idempotency_key_hash: 'sha256:kickoff', dispatch_id: 'lkick-1',
+    session_id: 'learning-session', message_id: 'learning-kickoff:1',
+    acceptance_run_id: 'run_learning_accept_1', turn_run_id: 'run_learning_turn_1',
+    content_hash: 'sha256:content', receipt_status: 'accepted' as const,
+    stage: 'accepted' as const, created_at: '2026-08-24T00:00:01Z',
+    updated_at: '2026-08-24T00:00:02Z', accepted_at: '2026-08-24T00:00:02Z',
+  }
+}
+
 async function mountHome() {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -230,7 +244,7 @@ it('creates a learning draft before showing confirmation details', async () => {
   wrapper.unmount()
 })
 
-it('does not enter or send to the shared session before the active receipt returns', async () => {
+it('does not enter the shared session before both activation and kickoff receipts are accepted', async () => {
   const home = useAssistantHomeStore()
   const coding = useCodingStore()
   home.summary = summary()
@@ -243,17 +257,25 @@ it('does not enter or send to the shared session before the active receipt retur
   home.activateCurrentLearningTask = vi.fn().mockReturnValue(
     new Promise((resolve) => { resolveActivation = resolve }),
   )
-  coding.enterActivatedSessionWithPrompt = vi.fn().mockResolvedValue('learning-session')
+  let resolveKickoff!: (receipt: ReturnType<typeof kickoffReceipt>) => void
+  home.dispatchCurrentLearningKickoff = vi.fn().mockReturnValue(
+    new Promise((resolve) => { resolveKickoff = resolve }),
+  )
+  coding.selectSession = vi.fn().mockResolvedValue(undefined)
   const { router, wrapper } = await mountHome()
 
   await wrapper.get('button[aria-label="确认并进入学习会话"]').trigger('click')
   expect(home.activateCurrentLearningTask).toHaveBeenCalledTimes(1)
-  expect(coding.enterActivatedSessionWithPrompt).not.toHaveBeenCalled()
+  expect(home.dispatchCurrentLearningKickoff).not.toHaveBeenCalled()
+  expect(coding.selectSession).not.toHaveBeenCalled()
 
   resolveActivation(activationReceipt())
-  await vi.waitFor(() => expect(coding.enterActivatedSessionWithPrompt).toHaveBeenCalledWith(
-    'learning-session', '学习 Timeline 与 Resume',
-  ))
+  await vi.waitFor(() => expect(home.dispatchCurrentLearningKickoff).toHaveBeenCalledTimes(1))
+  expect(coding.selectSession).not.toHaveBeenCalled()
+  expect(router.currentRoute.value.fullPath).toBe('/assistant')
+
+  resolveKickoff(kickoffReceipt())
+  await vi.waitFor(() => expect(coding.selectSession).toHaveBeenCalledWith('learning-session'))
   await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe('/coding/session/learning-session'))
   wrapper.unmount()
 })
@@ -268,7 +290,6 @@ it('shows activating, failed retry, and refresh-restored active states', async (
   home.learningState = 'activation_failed'
   home.learningError = 'bootstrap 暂时失败'
   home.activateCurrentLearningTask = vi.fn().mockResolvedValue(activationReceipt())
-  coding.enterActivatedSessionWithPrompt = vi.fn().mockResolvedValue('learning-session')
   coding.selectSession = vi.fn().mockResolvedValue(undefined)
   const { wrapper } = await mountHome()
 
@@ -276,14 +297,34 @@ it('shows activating, failed retry, and refresh-restored active states', async (
   expect(wrapper.find('button[aria-label="重试激活"]').exists()).toBe(true)
 
   home.learningState = 'activating'
-  await vi.waitFor(() => expect(wrapper.text()).toContain('正在建立可恢复会话'))
+  await vi.waitFor(() => expect(wrapper.text()).toContain('刷新激活状态'))
 
   home.learningState = 'active'
   home.activationReceipt = activationReceipt()
+  home.kickoffReceipt = kickoffReceipt()
   await vi.waitFor(() => expect(wrapper.find('button[aria-label="继续学习会话"]').exists()).toBe(true))
   await wrapper.get('button[aria-label="继续学习会话"]').trigger('click')
   expect(coding.selectSession).toHaveBeenCalledWith('learning-session')
-  expect(coding.enterActivatedSessionWithPrompt).not.toHaveBeenCalled()
+  wrapper.unmount()
+})
+
+it('shows receipt recovery and activating refresh actions instead of an unusable active CTA', async () => {
+  const home = useAssistantHomeStore()
+  home.summary = summary()
+  home.load = vi.fn().mockResolvedValue(undefined)
+  home.restoreLearningTask = vi.fn().mockResolvedValue(undefined)
+  home.learningTask = learningTask('active')
+  home.learningState = 'receipt_recovery_failed'
+  home.learningError = '激活凭据恢复失败'
+  const { wrapper } = await mountHome()
+
+  expect(wrapper.find('button[aria-label="继续学习会话"]').exists()).toBe(false)
+  expect(wrapper.find('button[aria-label="重试恢复凭据"]').exists()).toBe(true)
+  await wrapper.get('button[aria-label="重试恢复凭据"]').trigger('click')
+  expect(home.restoreLearningTask).toHaveBeenCalledWith(true)
+
+  home.learningState = 'activating'
+  await vi.waitFor(() => expect(wrapper.find('button[aria-label="刷新激活状态"]').exists()).toBe(true))
   wrapper.unmount()
 })
 

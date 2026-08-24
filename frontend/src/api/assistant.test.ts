@@ -2,7 +2,10 @@ import { afterEach, expect, it, vi } from 'vitest'
 import {
   activateLearningTask,
   createLearningDraft,
+  dispatchLearningKickoff,
   fetchAssistantHome,
+  fetchLearningActivation,
+  fetchLearningKickoff,
   fetchLearningTasks,
   updateLearningDraft,
 } from './assistant'
@@ -39,6 +42,9 @@ it('uses the browser-safe learning task control-plane contract', async () => {
     .mockResolvedValueOnce({ ok: true, json: async () => task })
     .mockResolvedValueOnce({ ok: true, json: async () => ({ ...task, task_revision: 3 }) })
     .mockResolvedValueOnce({ ok: true, json: async () => receipt })
+    .mockResolvedValueOnce({ ok: true, json: async () => receipt })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ...receipt, receipt_status: 'accepted' }) })
+    .mockResolvedValueOnce({ ok: true, json: async () => ({ ...receipt, receipt_status: 'accepted' }) })
   vi.stubGlobal('fetch', fetchMock)
 
   await expect(fetchLearningTasks()).resolves.toEqual([task])
@@ -48,6 +54,10 @@ it('uses the browser-safe learning task control-plane contract', async () => {
     desired_outcome: '能够解释恢复边界',
   })).resolves.toMatchObject({ task_revision: 3 })
   await expect(activateLearningTask('ltask_1', 2, 'learning-ltask_1-r2')).resolves.toEqual(receipt)
+  await expect(fetchLearningActivation('ltask_1')).resolves.toEqual(receipt)
+  await expect(fetchLearningKickoff('ltask_1')).resolves.toMatchObject({ receipt_status: 'accepted' })
+  await expect(dispatchLearningKickoff('ltask_1', 2, 'learning-kickoff-ltask_1-r2'))
+    .resolves.toMatchObject({ receipt_status: 'accepted' })
 
   expect(fetchMock).toHaveBeenNthCalledWith(1, expect.any(URL), {
     credentials: 'include', cache: 'no-store',
@@ -62,6 +72,11 @@ it('uses the browser-safe learning task control-plane contract', async () => {
   expect(fetchMock).toHaveBeenNthCalledWith(4, expect.any(URL), expect.objectContaining({
     method: 'POST', credentials: 'include',
     headers: expect.objectContaining({ 'Idempotency-Key': 'learning-ltask_1-r2' }),
+    body: JSON.stringify({ expected_revision: 2 }),
+  }))
+  expect(fetchMock).toHaveBeenNthCalledWith(7, expect.any(URL), expect.objectContaining({
+    method: 'POST', credentials: 'include',
+    headers: expect.objectContaining({ 'Idempotency-Key': 'learning-kickoff-ltask_1-r2' }),
     body: JSON.stringify({ expected_revision: 2 }),
   }))
 })

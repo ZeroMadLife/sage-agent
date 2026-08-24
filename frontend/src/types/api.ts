@@ -188,6 +188,26 @@ export type LearningActivationResponse = {
   completed_at: string | null
 }
 
+export type LearningKickoffDispatchResponse = {
+  version: 1
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  activation_idempotency_key_hash: string
+  kickoff_idempotency_key_hash: string
+  dispatch_id: string
+  session_id: string
+  message_id: string
+  acceptance_run_id: string
+  turn_run_id: string
+  content_hash: string
+  receipt_status: 'dispatching' | 'accepted'
+  stage: 'intent' | 'journal' | 'accepted'
+  created_at: string
+  updated_at: string
+  accepted_at: string | null
+}
+
 export type KnowledgeSourceRoot = {
   root_id: string
   kind: 'obsidian' | 'markdown' | 'github' | 'feishu'

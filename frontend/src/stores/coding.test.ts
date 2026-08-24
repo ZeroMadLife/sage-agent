@@ -2131,7 +2131,7 @@ describe('coding store', () => {
     store.disconnect()
   })
 
-  it('enters a server-activated session and sends the kickoff only after its stream opens', async () => {
+  it('enters a server-activated learning session without sending browser-owned content', async () => {
     const sockets: FakeSocket[] = []
     class FakeSocket {
       readyState = 0
@@ -2168,15 +2168,14 @@ describe('coding store', () => {
     vi.stubGlobal('WebSocket', FakeSocket)
     const store = useCodingStore()
 
-    await store.enterActivatedSessionWithPrompt('learning-session', '  学习 checkpoint  ')
+    await store.selectSession('learning-session')
 
     expect(store.sessionId).toBe('learning-session')
     expect(sockets).toHaveLength(1)
     expect(sockets[0].send).not.toHaveBeenCalled()
     sockets[0].open()
     sockets[0].open()
-    expect(sockets[0].send).toHaveBeenCalledTimes(1)
-    expect(sockets[0].send).toHaveBeenCalledWith(JSON.stringify({ content: '学习 checkpoint' }))
+    expect(sockets[0].send).not.toHaveBeenCalled()
     store.disconnect()
   })
 

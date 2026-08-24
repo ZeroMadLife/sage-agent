@@ -64,11 +64,15 @@ from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
 from core.learning import (
     LearningActivationService,
+    LearningKickoffService,
     LearningTaskRepository,
     LearningTaskService,
     MasteryLedger,
 )
-from core.learning.runtime_resources import SageLearningActivationResources
+from core.learning.runtime_resources import (
+    SageLearningActivationResources,
+    SageLearningKickoffResources,
+)
 from core.llm import create_llm
 from core.publication import PublicationCandidateRepository, PublicationCandidateService
 from db.database import AsyncSessionFactory
@@ -535,6 +539,10 @@ def create_app(
     app.state.learning_activation_service = LearningActivationService(
         learning_task_repository,
         learning_activation_resources,
+    )
+    app.state.learning_kickoff_service = LearningKickoffService(
+        learning_task_repository,
+        SageLearningKickoffResources(storage_root=app.state.coding_storage_root),
     )
     app.state.learning_readonly_scope_resolver = LearningReadonlyScopeResolver(
         learning_task_repository,

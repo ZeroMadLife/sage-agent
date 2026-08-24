@@ -2007,6 +2007,34 @@ class LearningTaskActivationRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class LearningKickoffDispatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class LearningKickoffDispatchResponse(BaseModel):
+    """Browser-safe acceptance receipt for one canonical learning kickoff."""
+
+    version: Literal[1]
+    workspace_id: str = Field(min_length=1, max_length=128)
+    task_id: str
+    task_revision: int = Field(ge=1)
+    activation_idempotency_key_hash: str
+    kickoff_idempotency_key_hash: str
+    dispatch_id: str
+    session_id: str
+    message_id: str
+    acceptance_run_id: str
+    turn_run_id: str
+    content_hash: str
+    receipt_status: Literal["dispatching", "accepted"]
+    stage: Literal["intent", "journal", "accepted"]
+    created_at: str
+    updated_at: str
+    accepted_at: str | None = None
+
+
 class LearningActivationResponse(BaseModel):
     """Browser-safe receipt for one cross-store learning bootstrap."""
 

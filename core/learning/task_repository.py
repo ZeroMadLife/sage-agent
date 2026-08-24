@@ -22,6 +22,12 @@ from core.learning.activation import (
     LearningGoalRef,
     LearningLegacyActivationCandidate,
 )
+from core.learning.kickoff import (
+    LearningKickoffDispatchRecord,
+    LearningKickoffError,
+    LearningKickoffReceiptStatus,
+    LearningKickoffStage,
+)
 from core.learning.tasks import (
     LearningClarification,
     LearningClarificationQuestion,
@@ -71,6 +77,27 @@ CREATE TABLE IF NOT EXISTS learning_task_activations (
     completed_at TEXT,
     PRIMARY KEY (owner_id, workspace_id, task_id, task_revision),
     UNIQUE (owner_id, workspace_id, idempotency_key)
+)
+"""
+
+_KICKOFF_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS learning_task_kickoffs (
+    owner_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
+    idempotency_key TEXT NOT NULL,
+    activation_idempotency_key TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    receipt_json TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    accepted_at TEXT,
+    PRIMARY KEY (owner_id, workspace_id, task_id, task_revision),
+    UNIQUE (owner_id, workspace_id, idempotency_key),
+    UNIQUE (owner_id, workspace_id, session_id)
 )
 """
 
@@ -505,6 +532,267 @@ class LearningTaskRepository:
                 code="learning_activation_session_conflict",
             )
         return _decode_activation_row(rows[0])
+
+    def begin_kickoff(
+        self,
+        *,
+        owner_id: str,
+        workspace_id: str,
+        task_id: str,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> tuple[LearningTask, LearningActivationRecord, LearningKickoffDispatchRecord]:
+        """Persist a revision-bound kickoff intent before touching the Session Journal."""
+        if isinstance(expected_revision, bool) or expected_revision < 1:
+            raise ValueError("expected_revision must be positive")
+        owner = _bounded_owner(owner_id)
+        workspace = _bounded_workspace(workspace_id)
+        task_key = _bounded_task_id(task_id)
+        key = _bounded_idempotency_key(idempotency_key)
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                task_row = connection.execute(
+                    "SELECT payload_json FROM learning_tasks WHERE owner_id = ? "
+                    "AND workspace_id = ? AND task_id = ?",
+                    (owner, workspace, task_key),
+                ).fetchone()
+                if task_row is None:
+                    raise LearningTaskNotFoundError(task_key)
+                task = _decode_scoped_task(
+                    str(task_row["payload_json"]), workspace_id=workspace, task_id=task_key
+                )
+                if task.task_revision != expected_revision:
+                    raise LearningTaskConflictError(
+                        "learning task revision conflict",
+                        current_revision=task.task_revision,
+                    )
+                activation_row = connection.execute(
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                    "session_id, kickoff_run_id, status, stage, receipt_json "
+                    "FROM learning_task_activations WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ?",
+                    (owner, workspace, task_key, expected_revision),
+                ).fetchone()
+                if activation_row is None or task.status != "active":
+                    raise LearningKickoffError(
+                        "learning task must be active before kickoff",
+                        code="learning_kickoff_activation_required",
+                    )
+                activation = _decode_activation_row(activation_row)
+                if activation.receipt_status != "active" or activation.stage != "active":
+                    raise LearningKickoffError(
+                        "learning activation must be active before kickoff",
+                        code="learning_kickoff_activation_required",
+                    )
+                existing = connection.execute(
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                    "activation_idempotency_key, session_id, receipt_json, status, stage "
+                    "FROM learning_task_kickoffs WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ?",
+                    (owner, workspace, task_key, expected_revision),
+                ).fetchone()
+                if existing is not None:
+                    record = _decode_kickoff_row(existing)
+                    if record.idempotency_key != key:
+                        raise LearningKickoffError(
+                            "learning task revision already uses a different kickoff key",
+                            code="learning_kickoff_idempotency_conflict",
+                        )
+                    _validate_kickoff_binding(task=task, activation=activation, record=record)
+                    connection.commit()
+                    return task, activation, record
+                reused_key = connection.execute(
+                    "SELECT task_id, task_revision FROM learning_task_kickoffs "
+                    "WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?",
+                    (owner, workspace, key),
+                ).fetchone()
+                if reused_key is not None:
+                    raise LearningKickoffError(
+                        "kickoff idempotency key already belongs to another learning task",
+                        code="learning_kickoff_idempotency_conflict",
+                    )
+                now = datetime.now(UTC).isoformat()
+                content_hash = _sha256(task.topic)
+                digest = hashlib.sha256(
+                    (
+                        f"{owner}\0{workspace}\0{task_key}\0{expected_revision}\0"
+                        f"{activation.idempotency_key}\0{key}\0{content_hash}"
+                    ).encode()
+                ).hexdigest()
+                record = LearningKickoffDispatchRecord(
+                    version=1,
+                    owner_id=owner,
+                    workspace_id=workspace,
+                    task_id=task_key,
+                    task_revision=expected_revision,
+                    idempotency_key=key,
+                    activation_idempotency_key_hash=_sha256(activation.idempotency_key),
+                    kickoff_idempotency_key_hash=_sha256(key),
+                    dispatch_id=f"lkick_{digest[:32]}",
+                    session_id=activation.session_id,
+                    message_id=f"learning-kickoff:{digest[:32]}",
+                    acceptance_run_id=f"run_learning_accept_{digest[:20]}",
+                    turn_run_id=f"run_learning_turn_{digest[:20]}",
+                    content_hash=content_hash,
+                    receipt_status="dispatching",
+                    stage="intent",
+                    created_at=now,
+                    updated_at=now,
+                    accepted_at=None,
+                )
+                connection.execute(
+                    "INSERT INTO learning_task_kickoffs ("
+                    "owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                    "activation_idempotency_key, session_id, receipt_json, status, stage, "
+                    "created_at, updated_at, accepted_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        owner,
+                        workspace,
+                        task_key,
+                        expected_revision,
+                        key,
+                        activation.idempotency_key,
+                        activation.session_id,
+                        _encode_kickoff(record),
+                        record.receipt_status,
+                        record.stage,
+                        now,
+                        now,
+                        None,
+                    ),
+                )
+                connection.commit()
+                return task, activation, record
+            except Exception:
+                connection.rollback()
+                raise
+
+    def save_kickoff(
+        self,
+        record: LearningKickoffDispatchRecord,
+        *,
+        stage: LearningKickoffStage,
+        receipt_status: LearningKickoffReceiptStatus,
+    ) -> LearningKickoffDispatchRecord:
+        """Advance one kickoff receipt without allowing stale writers to regress it."""
+        if (stage == "accepted") != (receipt_status == "accepted"):
+            raise ValueError("accepted kickoff stage and status must advance together")
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                    "activation_idempotency_key, session_id, receipt_json, status, stage "
+                    "FROM learning_task_kickoffs WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ? AND idempotency_key = ?",
+                    (
+                        record.owner_id,
+                        record.workspace_id,
+                        record.task_id,
+                        record.task_revision,
+                        record.idempotency_key,
+                    ),
+                ).fetchone()
+                if row is None:
+                    raise LearningKickoffError(
+                        "learning kickoff changed during dispatch",
+                        code="learning_kickoff_conflict",
+                    )
+                current = _decode_kickoff_row(row)
+                _validate_same_kickoff(current, record)
+                if current.receipt_status == "accepted":
+                    connection.commit()
+                    return current
+                if _kickoff_stage_rank(current.stage) > _kickoff_stage_rank(stage):
+                    connection.commit()
+                    return current
+                now = datetime.now(UTC).isoformat()
+                accepted_at = now if receipt_status == "accepted" else current.accepted_at
+                updated = replace(
+                    current,
+                    receipt_status=receipt_status,
+                    stage=stage,
+                    updated_at=now,
+                    accepted_at=accepted_at,
+                )
+                cursor = connection.execute(
+                    "UPDATE learning_task_kickoffs SET receipt_json = ?, status = ?, stage = ?, "
+                    "updated_at = ?, accepted_at = ? WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ? AND idempotency_key = ?",
+                    (
+                        _encode_kickoff(updated),
+                        updated.receipt_status,
+                        updated.stage,
+                        updated.updated_at,
+                        updated.accepted_at,
+                        updated.owner_id,
+                        updated.workspace_id,
+                        updated.task_id,
+                        updated.task_revision,
+                        updated.idempotency_key,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LearningKickoffError(
+                        "learning kickoff changed during dispatch",
+                        code="learning_kickoff_conflict",
+                    )
+                connection.commit()
+                return updated
+            except Exception:
+                connection.rollback()
+                raise
+
+    def kickoff(
+        self, *, owner_id: str, workspace_id: str, task_id: str
+    ) -> LearningKickoffDispatchRecord:
+        self._ensure_ready()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                "activation_idempotency_key, session_id, receipt_json, status, stage "
+                "FROM learning_task_kickoffs WHERE owner_id = ? AND workspace_id = ? "
+                "AND task_id = ? ORDER BY task_revision DESC LIMIT 1",
+                (
+                    _bounded_owner(owner_id),
+                    _bounded_workspace(workspace_id),
+                    _bounded_task_id(task_id),
+                ),
+            ).fetchone()
+        if row is None:
+            raise LearningKickoffError(
+                "learning kickoff receipt not found",
+                code="learning_kickoff_not_found",
+            )
+        return _decode_kickoff_row(row)
+
+    def accepted_kickoff_for_session(
+        self, *, owner_id: str, workspace_id: str, session_id: str
+    ) -> LearningKickoffDispatchRecord | None:
+        session_key = str(session_id).strip()
+        if not session_key:
+            raise ValueError("session_id must not be empty")
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                "activation_idempotency_key, session_id, receipt_json, status, stage "
+                "FROM learning_task_kickoffs WHERE owner_id = ? AND workspace_id = ? "
+                "AND session_id = ? AND status = 'accepted' LIMIT 2",
+                (_bounded_owner(owner_id), _bounded_workspace(workspace_id), session_key),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise LearningKickoffError(
+                "learning session has multiple accepted kickoffs",
+                code="learning_kickoff_session_conflict",
+            )
+        return _decode_kickoff_row(rows[0])
 
     def save_activation(
         self,
@@ -1084,6 +1372,125 @@ def _encode_activation(record: LearningActivationRecord) -> str:
     return json.dumps(asdict(record), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
+def _encode_kickoff(record: LearningKickoffDispatchRecord) -> str:
+    return json.dumps(asdict(record), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _decode_kickoff(payload: str) -> LearningKickoffDispatchRecord:
+    data = json.loads(payload)
+    if not isinstance(data, dict) or int(data.get("version", 0)) != 1:
+        raise ValueError("unsupported learning kickoff receipt")
+    status = data.get("receipt_status")
+    stage = data.get("stage")
+    if status not in {"dispatching", "accepted"}:
+        raise ValueError("invalid learning kickoff status")
+    if stage not in {"intent", "journal", "accepted"}:
+        raise ValueError("invalid learning kickoff stage")
+    if (status == "accepted") != (stage == "accepted"):
+        raise ValueError("learning kickoff accepted state mismatch")
+    accepted_at = data.get("accepted_at")
+    if status == "accepted" and not isinstance(accepted_at, str):
+        raise ValueError("accepted learning kickoff is missing accepted_at")
+    return LearningKickoffDispatchRecord(
+        version=1,
+        owner_id=_bounded_owner(str(data["owner_id"])),
+        workspace_id=_bounded_workspace(str(data["workspace_id"])),
+        task_id=_bounded_task_id(str(data["task_id"])),
+        task_revision=int(data["task_revision"]),
+        idempotency_key=_bounded_idempotency_key(str(data["idempotency_key"])),
+        activation_idempotency_key_hash=str(data["activation_idempotency_key_hash"]),
+        kickoff_idempotency_key_hash=str(data["kickoff_idempotency_key_hash"]),
+        dispatch_id=str(data["dispatch_id"]),
+        session_id=str(data["session_id"]),
+        message_id=str(data["message_id"]),
+        acceptance_run_id=str(data["acceptance_run_id"]),
+        turn_run_id=str(data["turn_run_id"]),
+        content_hash=str(data["content_hash"]),
+        receipt_status=cast(LearningKickoffReceiptStatus, status),
+        stage=cast(LearningKickoffStage, stage),
+        created_at=str(data["created_at"]),
+        updated_at=str(data["updated_at"]),
+        accepted_at=str(accepted_at) if accepted_at is not None else None,
+    )
+
+
+def _decode_kickoff_row(row: sqlite3.Row) -> LearningKickoffDispatchRecord:
+    try:
+        record = _decode_kickoff(str(row["receipt_json"]))
+        expected = {
+            "owner_id": record.owner_id,
+            "workspace_id": record.workspace_id,
+            "task_id": record.task_id,
+            "task_revision": record.task_revision,
+            "idempotency_key": record.idempotency_key,
+            "session_id": record.session_id,
+            "status": record.receipt_status,
+            "stage": record.stage,
+        }
+        if any(row[key] != value for key, value in expected.items()):
+            raise ValueError("kickoff row binding mismatch")
+        if _sha256(str(row["activation_idempotency_key"])) != (
+            record.activation_idempotency_key_hash
+        ):
+            raise ValueError("kickoff activation binding mismatch")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LearningKickoffError(
+            "learning kickoff receipt is corrupt",
+            code="learning_kickoff_corrupt",
+        ) from exc
+    return record
+
+
+def _validate_kickoff_binding(
+    *,
+    task: LearningTask,
+    activation: LearningActivationRecord,
+    record: LearningKickoffDispatchRecord,
+) -> None:
+    if (
+        record.task_id != task.task_id
+        or record.task_revision != task.task_revision
+        or record.session_id != activation.session_id
+        or record.activation_idempotency_key_hash != _sha256(activation.idempotency_key)
+        or record.content_hash != _sha256(task.topic)
+    ):
+        raise LearningKickoffError(
+            "learning kickoff canonical binding changed",
+            code="learning_kickoff_binding_conflict",
+        )
+
+
+def _validate_same_kickoff(
+    current: LearningKickoffDispatchRecord,
+    candidate: LearningKickoffDispatchRecord,
+) -> None:
+    immutable = (
+        "owner_id",
+        "workspace_id",
+        "task_id",
+        "task_revision",
+        "idempotency_key",
+        "activation_idempotency_key_hash",
+        "kickoff_idempotency_key_hash",
+        "dispatch_id",
+        "session_id",
+        "message_id",
+        "acceptance_run_id",
+        "turn_run_id",
+        "content_hash",
+        "created_at",
+    )
+    if any(getattr(current, field) != getattr(candidate, field) for field in immutable):
+        raise LearningKickoffError(
+            "learning kickoff immutable binding changed",
+            code="learning_kickoff_conflict",
+        )
+
+
+def _sha256(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+
+
 def _decode_activation(payload: str) -> LearningActivationRecord:
     data = json.loads(payload)
     if not isinstance(data, dict):
@@ -1299,6 +1706,11 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS learning_task_activations_active_session_idx "
         "ON learning_task_activations(session_id, status)"
     )
+    connection.execute(_KICKOFF_TABLE_SQL)
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS learning_task_kickoffs_status_idx "
+        "ON learning_task_kickoffs(status, updated_at)"
+    )
 
 
 def _activation_stage_rank(stage: str) -> int:
@@ -1309,6 +1721,10 @@ def _activation_stage_rank(stage: str) -> int:
         "turn_context_plan": 3,
         "active": 4,
     }[stage]
+
+
+def _kickoff_stage_rank(stage: str) -> int:
+    return {"intent": 0, "journal": 1, "accepted": 2}[stage]
 
 
 def _has_future_l0_identity(task: LearningTask) -> bool:

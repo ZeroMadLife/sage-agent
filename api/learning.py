@@ -11,6 +11,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from api.cloud_dependencies import SESSION_COOKIE, require_cloud_authentication_in_production
 from api.schemas import (
     LearningActivationResponse,
+    LearningKickoffDispatchRequest,
+    LearningKickoffDispatchResponse,
     LearningSourcePolicyRequest,
     LearningTaskActivationRequest,
     LearningTaskDraftRequest,
@@ -24,6 +26,9 @@ from core.learning import (
     LearningActivationError,
     LearningActivationRecord,
     LearningActivationService,
+    LearningKickoffDispatchRecord,
+    LearningKickoffError,
+    LearningKickoffService,
     LearningSourcePolicy,
     LearningTask,
     LearningTaskConflictError,
@@ -225,6 +230,74 @@ async def get_learning_activation(
 
 
 @router.post(
+    "/tasks/{task_id}/kickoff",
+    response_model=LearningKickoffDispatchResponse,
+)
+async def dispatch_learning_kickoff(
+    task_id: str,
+    payload: LearningKickoffDispatchRequest,
+    request: Request,
+    response: Response,
+    idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
+) -> LearningKickoffDispatchResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        receipt = await asyncio.to_thread(
+            _kickoff_service(request).dispatch,
+            owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
+            task_id=task_id,
+            expected_revision=payload.expected_revision,
+            idempotency_key=idempotency_key,
+        )
+    except LearningTaskNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="learning task not found") from exc
+    except LearningTaskConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "learning_task_revision_conflict",
+                "current_revision": exc.current_revision,
+            },
+        ) from exc
+    except LearningKickoffError as exc:
+        raise HTTPException(
+            status_code=503 if exc.code == "learning_kickoff_dispatch_failed" else 409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _kickoff_response(receipt)
+
+
+@router.get(
+    "/tasks/{task_id}/kickoff",
+    response_model=LearningKickoffDispatchResponse,
+)
+async def get_learning_kickoff(
+    task_id: str,
+    request: Request,
+    response: Response,
+) -> LearningKickoffDispatchResponse:
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        receipt = await asyncio.to_thread(
+            _kickoff_service(request).get,
+            owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
+            task_id=task_id,
+        )
+    except LearningKickoffError as exc:
+        raise HTTPException(
+            status_code=404 if exc.code == "learning_kickoff_not_found" else 409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _kickoff_response(receipt)
+
+
+@router.post(
     "/tasks/{task_id}/resume",
     response_model=LearningActivationResponse,
 )
@@ -269,6 +342,13 @@ def _activation_service(request: Request) -> LearningActivationService:
     return service
 
 
+def _kickoff_service(request: Request) -> LearningKickoffService:
+    service = getattr(request.app.state, "learning_kickoff_service", None)
+    if not isinstance(service, LearningKickoffService):
+        raise HTTPException(status_code=503, detail="learning kickoff service is unavailable")
+    return service
+
+
 async def _owner_id(request: Request) -> str:
     repository = getattr(request.app.state, "cloud_repository", None)
     if isinstance(repository, CloudRepository):
@@ -309,6 +389,15 @@ def _activation_response(record: LearningActivationRecord) -> LearningActivation
     payload["plan_id"] = record.turn_context_plan_id
     payload["plan_hash"] = record.turn_context_plan_hash
     return LearningActivationResponse.model_validate(payload)
+
+
+def _kickoff_response(
+    record: LearningKickoffDispatchRecord,
+) -> LearningKickoffDispatchResponse:
+    payload = asdict(record)
+    payload.pop("owner_id")
+    payload.pop("idempotency_key")
+    return LearningKickoffDispatchResponse.model_validate(payload)
 
 
 __all__ = ["router"]

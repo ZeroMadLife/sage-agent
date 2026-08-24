@@ -33,9 +33,68 @@ from core.learning.activation import (
     LearningActivationTurnContextBinding,
     LearningLegacyActivationCandidate,
 )
+from core.learning.kickoff import LearningKickoffDispatchRecord, LearningKickoffError
 from core.learning.tasks import LearningTask, source_policy_revision
 
 _INTERNAL_LEARNING_READ_CAPABILITIES = frozenset({"local:evidence_read", "local:memory_read"})
+
+
+class SageLearningKickoffResources:
+    """Persist one browser-safe user acceptance into the shared Session Journal."""
+
+    def __init__(self, *, storage_root: Path) -> None:
+        self.storage_root = storage_root.resolve()
+
+    def ensure_journal_acceptance(self, *, record: LearningKickoffDispatchRecord) -> None:
+        journal = SessionEventJournal(self.storage_root, record.session_id)
+        expected_payload = {
+            "type": "learning_user_turn",
+            "task_id": record.task_id,
+            "run_id": record.turn_run_id,
+            "status": "completed",
+            "reason_code": "user_content_withheld",
+            "dispatch_id": record.dispatch_id,
+            "message_id": record.message_id,
+        }
+        current = journal.events_for_run(record.acceptance_run_id)
+        if current:
+            self._validate_acceptance(current, record=record, payload=expected_payload)
+            return
+        try:
+            journal.append(
+                run_id=record.acceptance_run_id,
+                kind="user",
+                status="completed",
+                payload=expected_payload,
+                event_id=record.message_id,
+            )
+        except SessionEventJournalError:
+            current = journal.events_for_run(record.acceptance_run_id)
+            self._validate_acceptance(current, record=record, payload=expected_payload)
+
+    @staticmethod
+    def _validate_acceptance(
+        events: tuple[object, ...],
+        *,
+        record: LearningKickoffDispatchRecord,
+        payload: dict[str, str],
+    ) -> None:
+        if len(events) != 1:
+            raise LearningKickoffError(
+                "learning kickoff journal event count changed",
+                code="learning_kickoff_journal_conflict",
+            )
+        event = events[0]
+        if (
+            getattr(event, "event_id", None) != record.message_id
+            or getattr(event, "kind", None) != "user"
+            or getattr(event, "status", None) != "completed"
+            or getattr(event, "payload", None) != payload
+        ):
+            raise LearningKickoffError(
+                "learning kickoff journal binding changed",
+                code="learning_kickoff_journal_conflict",
+            )
 
 
 class SageLearningActivationResources:

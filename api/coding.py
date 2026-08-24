@@ -231,7 +231,12 @@ from core.knowledge.source_proposals import (
     KnowledgeSourceProposalEvent,
     KnowledgeSourceProposalNotFoundError,
 )
-from core.learning import MasteryEvidenceInput, MasteryLedger
+from core.learning import (
+    LearningKickoffError,
+    LearningKickoffService,
+    MasteryEvidenceInput,
+    MasteryLedger,
+)
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 logger = logging.getLogger(__name__)
@@ -611,6 +616,7 @@ async def _runtime_timeline_events(
     resume_value: object | None = None,
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
+    emit_user_event: bool = True,
     context_assembly_mode: ContextAssemblyMode = "shadow",
     learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
@@ -662,6 +668,7 @@ async def _runtime_timeline_events(
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
                 input_origin=input_origin,
+                emit_user_event=emit_user_event,
                 context_assembly_mode=context_assembly_mode,
                 learning_scope=learning_scope,
                 learning_scope_resolver=learning_scope_resolver,
@@ -709,13 +716,13 @@ async def _runtime_timeline_events(
         return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)
-    if input_origin == "user":
+    if input_origin == "user" and emit_user_event:
         yield RunEvent(
             kind="user",
             status="completed",
             payload={"type": "user", "content": content},
         )
-    else:
+    elif input_origin != "user":
         yield RunEvent(
             kind="harness",
             status="completed",
@@ -788,6 +795,7 @@ async def _deerflow_timeline_events(
     resume_value: object | None = None,
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
+    emit_user_event: bool = True,
     context_assembly_mode: ContextAssemblyMode = "shadow",
     learning_scope: LearningReadonlyScope | None = None,
     learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
@@ -899,7 +907,7 @@ async def _deerflow_timeline_events(
                 run_id=run_id,
                 input_origin=input_origin,
             )
-            if input_origin == "user":
+            if input_origin == "user" and emit_user_event:
                 yield RunEvent(
                     kind="user",
                     status="completed",
@@ -913,7 +921,7 @@ async def _deerflow_timeline_events(
                     ),
                     event_id=f"harness:{run_id}:user",
                 )
-            else:
+            elif input_origin != "user":
                 yield RunEvent(
                     kind="harness",
                     status="completed",
@@ -2850,6 +2858,75 @@ async def get_coding_session_messages(
     )
 
 
+async def _start_accepted_learning_kickoff(
+    app: Any,
+    runtime: CodingRuntime,
+    coordinator: Any,
+) -> asyncio.Task[None] | None:
+    """Start one accepted learning turn without depending on browser memory."""
+    service = getattr(app.state, "learning_kickoff_service", None)
+    if not isinstance(service, LearningKickoffService):
+        if runtime.session.get("session_kind") == "learning":
+            raise LearningKickoffError(
+                "learning kickoff service is unavailable",
+                code="learning_kickoff_service_unavailable",
+            )
+        return None
+    owner_id = runtime.owner_user_id or "local"
+    workspace_id = workspace_id_from_path(runtime.workspace.root)
+    accepted = await asyncio.to_thread(
+        service.accepted_for_session,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        session_id=runtime.session_id,
+    )
+    if accepted is None:
+        return None
+    receipt, task = accepted
+    existing = await asyncio.to_thread(
+        coordinator.journal.events_for_run,
+        receipt.turn_run_id,
+    )
+    if existing:
+        return None
+    thread_goal = coordinator.journal.thread_goal_context()
+    frozen_thread_goal_revision = coordinator.journal.current_thread_goal_revision()
+    stream = _runtime_timeline_events(
+        runtime,
+        content=task.topic,
+        skill_prompt=None,
+        command="",
+        arguments="",
+        run_id=receipt.turn_run_id,
+        surface_context=None,
+        thread_goal=thread_goal,
+        harness_checkpointer=getattr(app.state, "sage_harness_checkpointer", None),
+        harness_config=getattr(app.state, "coding_harness_config", None),
+        mcp_catalog=getattr(app.state, "coding_mcp_catalog", None),
+        web_fetch_port=getattr(app.state, "coding_web_fetch_port", None),
+        web_search_port=getattr(app.state, "coding_web_search_port", None),
+        knowledge_source_proposal_service=getattr(
+            app.state, "knowledge_source_proposal_service", None
+        ),
+        app_env=str(getattr(app.state, "cloud_app_env", "development")),
+        context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
+        learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
+        emit_user_event=False,
+    )
+    try:
+        run_task = await coordinator.start_run(
+            receipt.turn_run_id,
+            stream,
+            thread_goal=thread_goal,
+            expected_thread_goal_revision=frozen_thread_goal_revision,
+        )
+    except ActiveRunConflictError:
+        await stream.aclose()
+        return None
+    _attach_goal_post_turn(app, runtime.session_id, receipt.turn_run_id, run_task)
+    return cast(asyncio.Task[None], run_task)
+
+
 @router.websocket("/api/v1/coding/{session_id}/stream")
 async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     """Replay and stream durable events without owning the server run task."""
@@ -2874,6 +2951,11 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
         await websocket.close(code=1008, reason="after must be a non-negative integer")
         return
     coordinator = await websocket.app.state.coding_run_registry.hydrate(session_id)
+    try:
+        await _start_accepted_learning_kickoff(websocket.app, runtime, coordinator)
+    except LearningKickoffError as exc:
+        await websocket.close(code=1008, reason=exc.code)
+        return
 
     async def sender() -> None:
         async for event in coordinator.subscribe(after=after):

@@ -49,7 +49,10 @@ const promptIdeas = computed(() => [
   '深度研究一个问题，并给出可引用的结论',
   '把当前目标变成一项可验证的练习',
 ])
-const taskBusy = computed(() => confirming.value || home.learningState === 'activating' || home.learningState === 'loading')
+const taskBusy = computed(() => confirming.value || home.learningState === 'loading')
+const taskLocked = computed(() => taskBusy.value || [
+  'activating', 'kickoff_dispatching', 'active', 'receipt_recovery_failed',
+].includes(home.learningState))
 const sourcePolicyLabel = computed(() => {
   const knowledge = knowledgePolicy.value === 'required'
     ? '必须使用本地知识'
@@ -77,11 +80,14 @@ const formDirty = computed(() => {
 })
 const confirmationLabel = computed(() => {
   if (home.learningState === 'activation_failed') return '重试激活'
+  if (home.learningState === 'kickoff_dispatching') return '重试进入学习会话'
   return localReady.value ? '确认并进入学习会话' : '保存澄清'
 })
 const taskStateLabel = computed(() => {
   if (home.learningState === 'activation_failed') return '激活失败'
   if (home.learningState === 'activating') return '正在激活'
+  if (home.learningState === 'kickoff_dispatching') return '等待首轮接受'
+  if (home.learningState === 'receipt_recovery_failed') return '凭据恢复失败'
   if (home.learningState === 'active') return '已激活'
   if (home.learningState === 'loading') return '正在保存'
   return home.learningTask?.clarification.ready_to_activate ? '等待确认' : '需要澄清'
@@ -153,10 +159,11 @@ async function confirmAndEnter() {
       formError.value = '请先完成必要澄清，再确认学习任务。'
       return
     }
-    const receipt = await home.activateCurrentLearningTask()
-    await coding.enterActivatedSessionWithPrompt(receipt.session_id, task.topic)
-    localStorage.setItem('sage.coding.recentSessionId', receipt.session_id)
-    await routeToSession(receipt.session_id)
+    await home.activateCurrentLearningTask()
+    const kickoff = await home.dispatchCurrentLearningKickoff()
+    await coding.selectSession(kickoff.session_id)
+    localStorage.setItem('sage.coding.recentSessionId', kickoff.session_id)
+    await routeToSession(kickoff.session_id)
   } catch (cause) {
     formError.value = cause instanceof Error ? cause.message : '学习任务激活失败'
   } finally {
@@ -165,7 +172,9 @@ async function confirmAndEnter() {
 }
 
 async function continueActiveSession() {
-  const sessionId = home.activationReceipt?.session_id
+  const sessionId = home.kickoffReceipt?.receipt_status === 'accepted'
+    ? home.kickoffReceipt.session_id
+    : ''
   if (!sessionId || confirming.value) return
   confirming.value = true
   formError.value = ''
@@ -175,6 +184,19 @@ async function continueActiveSession() {
     await routeToSession(sessionId)
   } catch (cause) {
     formError.value = cause instanceof Error ? cause.message : '无法恢复学习会话'
+  } finally {
+    confirming.value = false
+  }
+}
+
+async function retryLearningRecovery() {
+  if (confirming.value) return
+  confirming.value = true
+  formError.value = ''
+  try {
+    await home.restoreLearningTask(true)
+  } catch (cause) {
+    formError.value = cause instanceof Error ? cause.message : '学习任务恢复失败'
   } finally {
     confirming.value = false
   }
@@ -265,32 +287,38 @@ onMounted(() => {
           <span class="task-status" :class="home.learningState">{{ taskStateLabel }}</span>
         </header>
         <div class="task-form">
-          <label class="wide-field"><span>学习主题</span><input v-model="topic" :disabled="taskBusy || home.learningState === 'active'" aria-label="学习主题" /></label>
-          <label class="wide-field"><span>期望结果</span><textarea v-model="desiredOutcome" rows="3" :disabled="taskBusy || home.learningState === 'active'" aria-label="学习结果"></textarea></label>
-          <label><span>当前基础</span><select v-model="startingLevel" :disabled="taskBusy || home.learningState === 'active'" aria-label="当前基础"><option value="">请选择</option><option value="beginner">初学</option><option value="intermediate">已有基础</option><option value="advanced">进阶</option></select></label>
-          <label><span>每周投入（分钟）</span><input v-model.number="timeBudget" type="number" min="15" max="10080" :disabled="taskBusy || home.learningState === 'active'" aria-label="每周投入分钟" /></label>
-          <label><span>目标日期</span><input v-model="targetDate" type="date" :disabled="taskBusy || home.learningState === 'active'" aria-label="目标日期" /></label>
+          <label class="wide-field"><span>学习主题</span><input v-model="topic" :disabled="taskLocked" aria-label="学习主题" /></label>
+          <label class="wide-field"><span>期望结果</span><textarea v-model="desiredOutcome" rows="3" :disabled="taskLocked" aria-label="学习结果"></textarea></label>
+          <label><span>当前基础</span><select v-model="startingLevel" :disabled="taskLocked" aria-label="当前基础"><option value="">请选择</option><option value="beginner">初学</option><option value="intermediate">已有基础</option><option value="advanced">进阶</option></select></label>
+          <label><span>每周投入（分钟）</span><input v-model.number="timeBudget" type="number" min="15" max="10080" :disabled="taskLocked" aria-label="每周投入分钟" /></label>
+          <label><span>目标日期</span><input v-model="targetDate" type="date" :disabled="taskLocked" aria-label="目标日期" /></label>
         </div>
         <div class="policy-band" aria-label="来源策略">
           <div class="policy-title"><BookOpenText :size="17" /><span><small>来源策略</small><strong>{{ sourcePolicyLabel }}</strong></span></div>
           <div class="policy-controls">
-            <label><span>本地知识</span><select v-model="knowledgePolicy" :disabled="taskBusy || home.learningState === 'active'" aria-label="本地知识策略"><option value="preferred">优先</option><option value="required">必须</option><option value="disabled">关闭</option></select></label>
-            <label><span>联网</span><select v-model="webPolicy" :disabled="taskBusy || home.learningState === 'active'" aria-label="联网策略"><option value="allowed_when_insufficient">证据不足时允许</option><option value="forbidden">禁止</option></select></label>
-            <label><span>时效</span><select v-model="freshness" :disabled="taskBusy || home.learningState === 'active'" aria-label="资料时效"><option value="all">不限</option><option value="current">当前</option></select></label>
-            <label class="domain-field"><span>限定域名</span><input v-model="domainsText" :disabled="taskBusy || webPolicy === 'forbidden' || home.learningState === 'active'" placeholder="example.com, docs.example.com" aria-label="限定域名" /></label>
+            <label><span>本地知识</span><select v-model="knowledgePolicy" :disabled="taskLocked" aria-label="本地知识策略"><option value="preferred">优先</option><option value="required">必须</option><option value="disabled">关闭</option></select></label>
+            <label><span>联网</span><select v-model="webPolicy" :disabled="taskLocked" aria-label="联网策略"><option value="allowed_when_insufficient">证据不足时允许</option><option value="forbidden">禁止</option></select></label>
+            <label><span>时效</span><select v-model="freshness" :disabled="taskLocked" aria-label="资料时效"><option value="all">不限</option><option value="current">当前</option></select></label>
+            <label class="domain-field"><span>限定域名</span><input v-model="domainsText" :disabled="taskLocked || webPolicy === 'forbidden'" placeholder="example.com, docs.example.com" aria-label="限定域名" /></label>
           </div>
         </div>
         <ul v-if="home.learningTask.clarification.questions.length" class="clarification-list" aria-label="仍需澄清"><li v-for="question in home.learningTask.clarification.questions" :key="question.field"><AlertTriangle :size="15" />{{ question.prompt }}</li></ul>
         <p class="risk-line" :class="home.learningTask.risk_class"><ShieldCheck :size="16" />{{ riskNotice }}</p>
         <p v-if="formError || home.learningError" class="home-error" role="alert">{{ formError || home.learningError }}</p>
         <div class="task-actions">
-          <template v-if="home.learningState === 'active'">
+          <template v-if="home.learningState === 'active' && home.kickoffReceipt?.receipt_status === 'accepted'">
             <button class="primary-action" type="button" :disabled="confirming" aria-label="继续学习会话" @click="continueActiveSession"><CheckCircle2 :size="17" />继续学习会话</button>
             <button class="secondary-action" type="button" :disabled="confirming" @click="startAnotherTask">新建学习任务</button>
           </template>
+          <template v-else-if="home.learningState === 'receipt_recovery_failed'">
+            <button class="primary-action" type="button" :disabled="confirming" aria-label="重试恢复凭据" @click="retryLearningRecovery"><RefreshCw :size="17" :class="{ spin: confirming }" />重试恢复凭据</button>
+          </template>
+          <template v-else-if="home.learningState === 'activating'">
+            <button class="primary-action" type="button" :disabled="confirming" aria-label="刷新激活状态" @click="retryLearningRecovery"><RefreshCw :size="17" :class="{ spin: confirming }" />刷新激活状态</button>
+          </template>
           <template v-else>
             <button class="secondary-action" type="button" :disabled="taskBusy" @click="startAnotherTask">稍后处理</button>
-            <button class="primary-action" type="button" :disabled="taskBusy" :aria-label="confirmationLabel" @click="confirmAndEnter"><RefreshCw v-if="taskBusy" :size="17" class="spin" /><ArrowRight v-else :size="17" />{{ home.learningState === 'activating' ? '正在建立可恢复会话' : confirmationLabel }}</button>
+            <button class="primary-action" type="button" :disabled="taskBusy" :aria-label="confirmationLabel" @click="confirmAndEnter"><RefreshCw v-if="taskBusy" :size="17" class="spin" /><ArrowRight v-else :size="17" />{{ confirmationLabel }}</button>
           </template>
         </div>
       </section>

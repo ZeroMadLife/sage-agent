@@ -7,6 +7,11 @@ from core.learning.activation import (
     LearningActivationTurnContextBinding,
     LearningGoalRef,
 )
+from core.learning.kickoff import (
+    LearningKickoffDispatchRecord,
+    LearningKickoffError,
+    LearningKickoffService,
+)
 from core.learning.mastery import (
     MASTERY_RUBRIC_REVISION,
     MasteryCapability,
@@ -52,6 +57,9 @@ __all__ = [
     "LearningClarification",
     "LearningClarificationQuestion",
     "LearningGoalRef",
+    "LearningKickoffDispatchRecord",
+    "LearningKickoffError",
+    "LearningKickoffService",
     "LearningLearnerProfile",
     "LearningSourcePolicy",
     "LearningTask",

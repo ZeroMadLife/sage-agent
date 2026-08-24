@@ -2,7 +2,9 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, expect, it, vi } from 'vitest'
 import { useAssistantHomeStore } from './assistantHome'
 
-function learningTask(status: 'draft' | 'active' | 'activation_failed' = 'draft') {
+function learningTask(
+  status: 'draft' | 'activating' | 'active' | 'activation_failed' = 'draft',
+) {
   return {
     version: 1,
     workspace_id: 'workspace-1',
@@ -65,6 +67,28 @@ function activationReceipt() {
   }
 }
 
+function kickoffReceipt(status: 'dispatching' | 'accepted' = 'accepted') {
+  return {
+    version: 1,
+    workspace_id: 'workspace-1',
+    task_id: 'ltask_1',
+    task_revision: 2,
+    activation_idempotency_key_hash: 'sha256:activation',
+    kickoff_idempotency_key_hash: 'sha256:kickoff',
+    dispatch_id: 'lkick_1',
+    session_id: 'learning-session',
+    message_id: 'learning-kickoff:1',
+    acceptance_run_id: 'run_learning_accept_1',
+    turn_run_id: 'run_learning_turn_1',
+    content_hash: 'sha256:content',
+    receipt_status: status,
+    stage: status === 'accepted' ? 'accepted' as const : 'intent' as const,
+    created_at: '2026-08-24T00:00:01Z',
+    updated_at: '2026-08-24T00:00:02Z',
+    accepted_at: status === 'accepted' ? '2026-08-24T00:00:02Z' : null,
+  }
+}
+
 beforeEach(() => setActivePinia(createPinia()))
 
 it('deduplicates concurrent home loads', async () => {
@@ -121,6 +145,9 @@ it('restores an active learning task from server state after refresh', async () 
     if (url.pathname.endsWith('/activation')) {
       return Promise.resolve({ ok: true, json: async () => receipt })
     }
+    if (url.pathname.endsWith('/kickoff')) {
+      return Promise.resolve({ ok: true, json: async () => kickoffReceipt() })
+    }
     return Promise.resolve({ ok: true, json: async () => [task] })
   }))
   const store = useAssistantHomeStore()
@@ -130,6 +157,38 @@ it('restores an active learning task from server state after refresh', async () 
   expect(store.learningState).toBe('active')
   expect(store.learningTask?.task_id).toBe('ltask_1')
   expect(store.activationReceipt?.session_id).toBe('learning-session')
+  expect(store.kickoffReceipt?.receipt_status).toBe('accepted')
+  vi.unstubAllGlobals()
+})
+
+it('makes active activation receipt recovery explicit and retryable', async () => {
+  const task = learningTask('active')
+  let activationAttempts = 0
+  vi.stubGlobal('fetch', vi.fn((input: URL | string) => {
+    const url = input instanceof URL ? input : new URL(input, window.location.origin)
+    if (url.pathname.endsWith('/activation')) {
+      activationAttempts += 1
+      if (activationAttempts === 1) {
+        return Promise.resolve({ ok: false, status: 503, json: async () => ({ detail: '暂时不可用' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => activationReceipt() })
+    }
+    if (url.pathname.endsWith('/kickoff')) {
+      return Promise.resolve({ ok: true, json: async () => kickoffReceipt() })
+    }
+    return Promise.resolve({ ok: true, json: async () => [task] })
+  }))
+  const store = useAssistantHomeStore()
+
+  await store.restoreLearningTask()
+  expect(store.learningState).toBe('receipt_recovery_failed')
+  expect(store.activationReceipt).toBeNull()
+  expect(store.learningError).toContain('暂时不可用')
+
+  await store.restoreLearningTask(true)
+  expect(store.learningState).toBe('active')
+  expect(store.activationReceipt?.session_id).toBe('learning-session')
+  expect(store.kickoffReceipt?.receipt_status).toBe('accepted')
   vi.unstubAllGlobals()
 })
 
@@ -155,7 +214,7 @@ it('deduplicates confirmation and returns one server-issued active receipt', asy
   resolveActivation({ ok: true, json: async () => receipt })
   await expect(first).resolves.toEqual(receipt)
   await expect(second).resolves.toEqual(receipt)
-  expect(store.learningState).toBe('active')
+  expect(store.learningState).toBe('kickoff_dispatching')
   vi.unstubAllGlobals()
 })
 
@@ -226,7 +285,68 @@ it('recovers the active receipt when the activation response is lost', async () 
   store.learningState = 'needs_confirmation'
 
   await expect(store.activateCurrentLearningTask()).resolves.toEqual(receipt)
-  expect(store.learningState).toBe('active')
+  expect(store.learningState).toBe('kickoff_dispatching')
   expect(store.activationReceipt?.session_id).toBe('learning-session')
+  vi.unstubAllGlobals()
+})
+
+it('preserves canonical activating when recovery observes an in-progress receipt', async () => {
+  const activatingTask = learningTask('activating')
+  const activatingReceipt = { ...activationReceipt(), receipt_status: 'activating' as const }
+  const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+    const url = input instanceof URL ? input : new URL(input, window.location.origin)
+    if (url.pathname.endsWith('/activate') && init?.method === 'POST') {
+      return Promise.resolve({ ok: false, status: 503, json: async () => ({ detail: '响应中断' }) })
+    }
+    if (url.pathname.endsWith('/activation')) {
+      return Promise.resolve({ ok: true, json: async () => activatingReceipt })
+    }
+    return Promise.resolve({ ok: true, json: async () => activatingTask })
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const store = useAssistantHomeStore()
+  store.learningTask = learningTask()
+  store.learningState = 'needs_confirmation'
+
+  await expect(store.activateCurrentLearningTask()).rejects.toThrow('响应中断')
+  expect(store.learningState).toBe('activating')
+  expect(store.activationReceipt?.receipt_status).toBe('activating')
+  vi.unstubAllGlobals()
+})
+
+it('recovers a lost kickoff response with canonical GET and the same revision key', async () => {
+  const accepted = kickoffReceipt()
+  let postAttempts = 0
+  let getAttempts = 0
+  const fetchMock = vi.fn((input: URL | string, init?: RequestInit) => {
+    const url = input instanceof URL ? input : new URL(input, window.location.origin)
+    if (url.pathname.endsWith('/kickoff') && init?.method === 'POST') {
+      postAttempts += 1
+      if (postAttempts === 1) {
+        return Promise.resolve({ ok: false, status: 503, json: async () => ({ detail: '响应连接已断开' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => accepted })
+    }
+    if (url.pathname.endsWith('/kickoff')) {
+      getAttempts += 1
+      return Promise.resolve({ ok: true, json: async () => kickoffReceipt('dispatching') })
+    }
+    throw new Error(`unexpected request: ${url.pathname}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  const store = useAssistantHomeStore()
+  store.learningTask = learningTask('active')
+  store.activationReceipt = activationReceipt()
+  store.learningState = 'kickoff_dispatching'
+
+  await expect(store.dispatchCurrentLearningKickoff()).resolves.toEqual(accepted)
+  expect(getAttempts).toBe(1)
+  expect(postAttempts).toBe(2)
+  const posts = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
+  expect(posts).toHaveLength(2)
+  expect(posts.map(([, init]) => (init?.headers as Record<string, string>)['Idempotency-Key']))
+    .toEqual(['learning-kickoff-ltask_1-r2', 'learning-kickoff-ltask_1-r2'])
+  expect(store.learningState).toBe('active')
+  expect(store.kickoffReceipt?.receipt_status).toBe('accepted')
   vi.unstubAllGlobals()
 })

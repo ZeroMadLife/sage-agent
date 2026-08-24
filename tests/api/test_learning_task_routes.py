@@ -129,6 +129,7 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
     assert set(paths["/api/v1/learning/tasks/{task_id}"]) == {"get", "patch"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/activate"]) == {"post"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/activation"]) == {"get"}
+    assert set(paths["/api/v1/learning/tasks/{task_id}/kickoff"]) == {"get", "post"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/resume"]) == {"post"}
     activation = openapi["components"]["schemas"]["LearningActivationResponse"]
     properties = activation["properties"]
@@ -146,3 +147,8 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
         "canonical_l0_v3",
         "legacy_l0_v2",
     ]
+    kickoff = openapi["components"]["schemas"]["LearningKickoffDispatchResponse"]
+    kickoff_properties = kickoff["properties"]
+    assert kickoff_properties["receipt_status"]["enum"] == ["dispatching", "accepted"]
+    assert kickoff_properties["stage"]["enum"] == ["intent", "journal", "accepted"]
+    assert "content" not in kickoff_properties
