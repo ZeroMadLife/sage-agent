@@ -53,6 +53,7 @@ class LearningPlan:
     plan_id: str
     plan_hash: str
     plan_revision: int
+    owner_id: str
     workspace_id: str
     task_id: str
     task_revision: int
@@ -112,13 +113,24 @@ class LearningMapService:
     async def build(
         self,
         *,
+        owner_id: str,
         task: LearningTask,
         parent_run_id: str,
         capability_revision: str,
         catalog_revision: str,
     ) -> LearningMapOutcome:
-        _validate_inputs(task, parent_run_id, capability_revision, catalog_revision)
-        unit = _unit_for_task(task)
+        _validate_inputs(owner_id, task, parent_run_id, capability_revision, catalog_revision)
+        dag = _learning_dag()
+        scope_digest = _canonical_hash(
+            _plan_scope_payload(
+                owner_id=owner_id,
+                task=task,
+                capability_revision=capability_revision,
+                catalog_revision=catalog_revision,
+                dag=dag,
+            )
+        )
+        unit = _unit_for_task(task, plan_scope_digest=scope_digest)
         citations: tuple[LearningCitation, ...] = ()
         gap_reason = ""
         if task.source_policy.knowledge == "disabled":
@@ -151,10 +163,12 @@ class LearningMapService:
                 source_revisions=tuple(sorted({item.source_revision for item in citations})),
             )
         plan = _plan_for_task(
+            owner_id,
             task,
             unit,
             capability_revision=capability_revision,
             catalog_revision=catalog_revision,
+            dag=dag,
         )
         artifact = _artifact_for_plan(task, plan, citations, gap_reason=gap_reason)
         return LearningMapOutcome(
@@ -166,6 +180,7 @@ class LearningMapService:
 
 
 def _validate_inputs(
+    owner_id: str,
     task: LearningTask,
     parent_run_id: str,
     capability_revision: str,
@@ -174,6 +189,7 @@ def _validate_inputs(
     if task.status != "active" or not task.learning_goal_ref:
         raise ValueError("learning map requires an active task with a Goal binding")
     for name, value in (
+        ("owner_id", owner_id),
         ("parent_run_id", parent_run_id),
         ("capability_revision", capability_revision),
         ("catalog_revision", catalog_revision),
@@ -182,13 +198,14 @@ def _validate_inputs(
             raise ValueError(f"{name} must be non-empty and bounded")
 
 
-def _unit_for_task(task: LearningTask) -> KnowledgeUnit:
+def _unit_for_task(task: LearningTask, *, plan_scope_digest: str) -> KnowledgeUnit:
     policy_revision = source_policy_revision(task.source_policy)
     title = task.topic
     objective = task.desired_outcome or f"建立对{task.topic}的可验证理解"
     identity = _canonical_hash(
         {
             "schema_version": 1,
+            "plan_scope_hash": f"sha256:{plan_scope_digest}",
             "ordinal": 1,
             "title": title,
             "objective": objective,
@@ -210,13 +227,47 @@ def _unit_for_task(task: LearningTask) -> KnowledgeUnit:
 
 
 def _plan_for_task(
+    owner_id: str,
     task: LearningTask,
     unit: KnowledgeUnit,
     *,
     capability_revision: str,
     catalog_revision: str,
+    dag: TaskDAGPlan,
 ) -> LearningPlan:
-    dag = TaskDAGPlan.create(
+    payload = _plan_scope_payload(
+        owner_id=owner_id,
+        task=task,
+        capability_revision=capability_revision,
+        catalog_revision=catalog_revision,
+        dag=dag,
+    )
+    payload["unit_ids"] = [unit.unit_id]
+    digest = _canonical_hash(payload)
+    goal = task.learning_goal_ref or {}
+    return LearningPlan(
+        schema_version=1,
+        plan_id=f"lplan_{digest[:24]}",
+        plan_hash=f"sha256:{digest}",
+        plan_revision=1,
+        owner_id=owner_id,
+        workspace_id=task.workspace_id,
+        task_id=task.task_id,
+        task_revision=task.task_revision,
+        goal_id=str(goal["goal_id"]),
+        goal_revision=str(goal["goal_revision"]),
+        source_policy=task.source_policy,
+        source_policy_revision=source_policy_revision(task.source_policy),
+        capability_revision=capability_revision,
+        catalog_revision=catalog_revision,
+        dag_id=dag.dag_id,
+        dag_hash=dag.dag_hash,
+        units=(unit,),
+    )
+
+
+def _learning_dag() -> TaskDAGPlan:
+    return TaskDAGPlan.create(
         nodes=(
             TaskDAGNode(
                 node_id="knowledge",
@@ -242,11 +293,22 @@ def _plan_for_task(
         max_concurrent=1,
         allowed_profiles=frozenset({"research", "synthesize"}),
     )
+
+
+def _plan_scope_payload(
+    *,
+    owner_id: str,
+    task: LearningTask,
+    capability_revision: str,
+    catalog_revision: str,
+    dag: TaskDAGPlan,
+) -> dict[str, object]:
     goal = task.learning_goal_ref or {}
     policy_revision = source_policy_revision(task.source_policy)
-    payload = {
+    return {
         "schema_version": 1,
         "plan_revision": 1,
+        "owner_id": owner_id,
         "workspace_id": task.workspace_id,
         "task_id": task.task_id,
         "task_revision": task.task_revision,
@@ -261,28 +323,81 @@ def _plan_for_task(
         "source_policy_revision": policy_revision,
         "capability_revision": capability_revision,
         "catalog_revision": catalog_revision,
+        "dag_id": dag.dag_id,
         "dag_hash": dag.dag_hash,
-        "unit_ids": [unit.unit_id],
     }
+
+
+def validate_learning_plan_identity(plan: LearningPlan) -> None:
+    """Recompute every stable Plan/Unit identity before persistence use."""
+    for name, value in (
+        ("owner_id", plan.owner_id),
+        ("workspace_id", plan.workspace_id),
+        ("task_id", plan.task_id),
+        ("goal_id", plan.goal_id),
+        ("goal_revision", plan.goal_revision),
+        ("capability_revision", plan.capability_revision),
+        ("catalog_revision", plan.catalog_revision),
+    ):
+        if not value.strip() or len(value) > 256:
+            raise ValueError(f"{name} must be non-empty and bounded")
+    if plan.schema_version != 1 or plan.plan_revision != 1 or not plan.units:
+        raise ValueError("Learning Plan schema or units are invalid")
+    if plan.source_policy_revision != source_policy_revision(plan.source_policy):
+        raise ValueError("Learning Plan source policy revision is invalid")
+    dag = _learning_dag()
+    if plan.dag_id != dag.dag_id or plan.dag_hash != dag.dag_hash:
+        raise ValueError("Learning Plan DAG identity is invalid")
+    scope_payload = {
+        "schema_version": plan.schema_version,
+        "plan_revision": plan.plan_revision,
+        "owner_id": plan.owner_id,
+        "workspace_id": plan.workspace_id,
+        "task_id": plan.task_id,
+        "task_revision": plan.task_revision,
+        "goal_id": plan.goal_id,
+        "goal_revision": plan.goal_revision,
+        "source_policy": {
+            "knowledge": plan.source_policy.knowledge,
+            "web": plan.source_policy.web,
+            "domains": list(plan.source_policy.domains),
+            "freshness": plan.source_policy.freshness,
+        },
+        "source_policy_revision": plan.source_policy_revision,
+        "capability_revision": plan.capability_revision,
+        "catalog_revision": plan.catalog_revision,
+        "dag_id": plan.dag_id,
+        "dag_hash": plan.dag_hash,
+    }
+    scope_digest = _canonical_hash(scope_payload)
+    seen_units: set[str] = set()
+    for unit in plan.units:
+        if unit.status not in {"grounded", "source_gap", "unverified"}:
+            raise ValueError("Learning Unit status is invalid")
+        if unit.source_policy_revision != plan.source_policy_revision:
+            raise ValueError("Learning Unit source policy revision is invalid")
+        identity = _canonical_hash(
+            {
+                "schema_version": 1,
+                "plan_scope_hash": f"sha256:{scope_digest}",
+                "ordinal": unit.ordinal,
+                "title": unit.title,
+                "objective": unit.objective,
+                "prerequisite_unit_ids": list(unit.prerequisite_unit_ids),
+                "source_policy_revision": unit.source_policy_revision,
+                "risk_class": unit.risk_class,
+            }
+        )
+        if unit.unit_id != f"lunit_{identity[:24]}" or unit.unit_id in seen_units:
+            raise ValueError("Learning Unit identity is invalid")
+        if unit.status == "grounded" and (not unit.evidence_refs or not unit.source_revisions):
+            raise ValueError("Grounded Learning Unit requires revision-bound evidence")
+        seen_units.add(unit.unit_id)
+    payload = dict(scope_payload)
+    payload["unit_ids"] = [unit.unit_id for unit in plan.units]
     digest = _canonical_hash(payload)
-    return LearningPlan(
-        schema_version=1,
-        plan_id=f"lplan_{digest[:24]}",
-        plan_hash=f"sha256:{digest}",
-        plan_revision=1,
-        workspace_id=task.workspace_id,
-        task_id=task.task_id,
-        task_revision=task.task_revision,
-        goal_id=str(goal["goal_id"]),
-        goal_revision=str(goal["goal_revision"]),
-        source_policy=task.source_policy,
-        source_policy_revision=policy_revision,
-        capability_revision=capability_revision,
-        catalog_revision=catalog_revision,
-        dag_id=dag.dag_id,
-        dag_hash=dag.dag_hash,
-        units=(unit,),
-    )
+    if plan.plan_id != f"lplan_{digest[:24]}" or plan.plan_hash != f"sha256:{digest}":
+        raise ValueError("Learning Plan canonical identity is invalid")
 
 
 def _valid_citations(evidence: tuple[KnowledgeEvidence, ...]) -> tuple[LearningCitation, ...]:
@@ -438,4 +553,5 @@ __all__ = [
     "LearningPlan",
     "LearningUnitStatus",
     "synthesize_research_map",
+    "validate_learning_plan_identity",
 ]

@@ -306,6 +306,7 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
     )
     plan = (
         await LearningMapService(knowledge_port=None).build(
+            owner_id="local",
             task=_task(),
             parent_run_id="run-parent",
             capability_revision="cap-r1",
@@ -392,6 +393,6 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
     stored_receipt = store.read_research_receipt(
         owner_id="local",
         workspace_id="workspace-1",
-        receipt_ref="sage://learning/research-receipts/lrsearch_execution_1",
+        receipt_ref=artifact.research_receipt_ref,
     )
     assert stored_receipt.receipt.parent_run_id == "run-parent"

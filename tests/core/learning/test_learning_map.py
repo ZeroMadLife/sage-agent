@@ -97,12 +97,14 @@ async def test_knowledge_first_map_has_stable_identity_and_grounded_citations() 
     service = LearningMapService(knowledge_port=port)
 
     first = await service.build(
+        owner_id="local",
         task=task,
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",
         catalog_revision="catalog-rev-1",
     )
     replay = await service.build(
+        owner_id="local",
         task=task,
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",
@@ -127,6 +129,7 @@ async def test_knowledge_first_map_has_stable_identity_and_grounded_citations() 
         task, source_policy=LearningSourcePolicy(web="allowed_when_insufficient")
     )
     changed = await service.build(
+        owner_id="local",
         task=changed_policy,
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",
@@ -136,10 +139,36 @@ async def test_knowledge_first_map_has_stable_identity_and_grounded_citations() 
 
 
 @pytest.mark.asyncio
+async def test_plan_and_unit_identity_are_owner_scoped() -> None:
+    service = LearningMapService(knowledge_port=FakeKnowledgePort(_result(_evidence())))
+
+    owner_a = await service.build(
+        owner_id="owner-a",
+        task=_task(),
+        parent_run_id="run-learning-1",
+        capability_revision="cap-rev-2",
+        catalog_revision="catalog-rev-1",
+    )
+    owner_b = await service.build(
+        owner_id="owner-b",
+        task=_task(),
+        parent_run_id="run-learning-1",
+        capability_revision="cap-rev-2",
+        catalog_revision="catalog-rev-1",
+    )
+
+    assert owner_a.plan.owner_id == "owner-a"
+    assert owner_b.plan.owner_id == "owner-b"
+    assert owner_a.plan.plan_id != owner_b.plan.plan_id
+    assert owner_a.plan.units[0].unit_id != owner_b.plan.units[0].unit_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("evidence", [None, _evidence(page_revision="")])
 async def test_zero_or_unrevisioned_knowledge_fails_closed_without_citation(evidence) -> None:
     port = FakeKnowledgePort(_result(*(() if evidence is None else (evidence,))))
     outcome = await LearningMapService(knowledge_port=port).build(
+        owner_id="local",
         task=_task(),
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",
@@ -157,6 +186,7 @@ async def test_zero_or_unrevisioned_knowledge_fails_closed_without_citation(evid
 async def test_disabled_knowledge_does_not_call_port() -> None:
     port = FakeKnowledgePort(_result(_evidence()))
     outcome = await LearningMapService(knowledge_port=port).build(
+        owner_id="local",
         task=_task(policy=LearningSourcePolicy(knowledge="disabled")),
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",
@@ -173,6 +203,7 @@ async def test_financial_map_is_education_only() -> None:
     outcome = await LearningMapService(
         knowledge_port=FakeKnowledgePort(_result(_evidence()))
     ).build(
+        owner_id="local",
         task=_task(financial=True),
         parent_run_id="run-learning-1",
         capability_revision="cap-rev-2",

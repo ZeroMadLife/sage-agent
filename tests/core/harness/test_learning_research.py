@@ -88,6 +88,7 @@ def _task(policy: LearningSourcePolicy | None = None) -> LearningTask:
 async def _plan(task: LearningTask):  # type: ignore[no-untyped-def]
     return (
         await LearningMapService(knowledge_port=None).build(
+            owner_id="local",
             task=task,
             parent_run_id="run-parent",
             capability_revision="cap-rev-1",

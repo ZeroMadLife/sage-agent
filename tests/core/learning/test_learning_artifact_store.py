@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from core.learning.artifact_store import (
     LearningArtifactConflictError,
     LearningArtifactNotFoundError,
     LearningArtifactStore,
+    LearningArtifactStoreError,
     LearningCheckpointConflictError,
     LearningFencingConflictError,
     LearningResumeConflictError,
@@ -80,8 +83,9 @@ def _task() -> LearningTask:
     )
 
 
-async def _outcome() -> LearningMapOutcome:
+async def _outcome(*, owner_id: str = "local") -> LearningMapOutcome:
     return await LearningMapService(knowledge_port=FakeKnowledgePort()).build(
+        owner_id=owner_id,
         task=_task(),
         parent_run_id="run-parent",
         capability_revision="cap-r1",
@@ -234,7 +238,7 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
     )
 
     assert replay == stored
-    assert stored.receipt_ref == "sage://learning/research-receipts/lrsearch_receipt_1"
+    assert stored.receipt_ref.startswith("sage://learning/research-receipts/lrsearch_")
     assert stored.receipt.query_receipt_hash == "lquery_hash_1"
     assert (
         LearningArtifactStore(path).read_research_receipt(
@@ -250,6 +254,57 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
             workspace_id="workspace-1",
             receipt_ref=stored.receipt_ref,
         )
+
+
+@pytest.mark.asyncio
+async def test_research_receipt_identity_is_scoped_across_owners(tmp_path: Path) -> None:
+    first_outcome = await _outcome(owner_id="owner-a")
+    second_outcome = await _outcome(owner_id="owner-b")
+
+    def receipt_for(outcome: LearningMapOutcome) -> LearningResearchReceipt:
+        return LearningResearchReceipt(
+            schema_version=1,
+            receipt_id="lrsearch_same_material",
+            task_id=_task().task_id,
+            task_revision=_task().task_revision,
+            plan_id=outcome.plan.plan_id,
+            plan_revision=outcome.plan.plan_revision,
+            unit_id=outcome.plan.units[0].unit_id,
+            parent_run_id="run-parent",
+            child_run_id="run-child",
+            capability_revision=outcome.plan.capability_revision,
+            source_policy_revision=outcome.plan.source_policy_revision,
+            query_receipt_hash="lquery_same_material",
+            token_budget=2_000,
+            max_steps=4,
+            timeout_seconds=20,
+            actual_token_usage=600,
+            actual_tool_count=2,
+            allowed_domains=(),
+            freshness="all",
+            risk_decision="general_education",
+            terminal_status="succeeded",
+            reason_code="",
+            evidence=(),
+        )
+
+    store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
+    first = store.save_research_receipt(
+        owner_id="owner-a",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=first_outcome.plan,
+        receipt=receipt_for(first_outcome),
+    )
+    second = store.save_research_receipt(
+        owner_id="owner-b",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=second_outcome.plan,
+        receipt=receipt_for(second_outcome),
+    )
+
+    assert first.receipt_ref != second.receipt_ref
 
 
 @pytest.mark.asyncio
@@ -431,3 +486,108 @@ def test_citation_payload_type_is_not_required_by_checkpoint() -> None:
         source_revision="source-r1",
     )
     assert "large body" in citation.content
+
+
+@pytest.mark.asyncio
+async def test_reopen_rejects_tampered_plan_identity(tmp_path: Path) -> None:
+    path = tmp_path / "learning-artifacts.sqlite3"
+    outcome = await _outcome()
+    store = LearningArtifactStore(path)
+    store.begin_execution(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        lease_owner_id="writer-a",
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE learning_plans SET plan_hash = 'sha256:tampered' WHERE task_id = ?",
+            (_task().task_id,),
+        )
+
+    with pytest.raises(LearningArtifactStoreError) as error:
+        LearningArtifactStore(path).load_plan(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task_id=_task().task_id,
+        )
+    assert error.value.code == "learning_persistence_integrity_error"
+
+
+@pytest.mark.asyncio
+async def test_reopen_rejects_tampered_unit_identity(tmp_path: Path) -> None:
+    path = tmp_path / "learning-artifacts.sqlite3"
+    outcome = await _outcome()
+    store = LearningArtifactStore(path)
+    store.begin_execution(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        lease_owner_id="writer-a",
+    )
+    with sqlite3.connect(path) as connection:
+        payload = json.loads(
+            connection.execute(
+                "SELECT payload_json FROM learning_plans WHERE task_id = ?",
+                (_task().task_id,),
+            ).fetchone()[0]
+        )
+        payload["units"][0]["unit_id"] = "lunit_tampered"
+        connection.execute(
+            "UPDATE learning_plans SET payload_json = ? WHERE task_id = ?",
+            (json.dumps(payload), _task().task_id),
+        )
+
+    with pytest.raises(LearningArtifactStoreError) as error:
+        LearningArtifactStore(path).load_plan(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task_id=_task().task_id,
+        )
+    assert error.value.code == "learning_persistence_integrity_error"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("content", "tampered body"),
+        ("goal_id", ""),
+        ("unit_ids_json", "[]"),
+        ("citations_json", "[]"),
+    ],
+)
+async def test_reopen_quarantines_tampered_or_legacy_empty_artifact_identity(
+    tmp_path: Path,
+    column: str,
+    value: str,
+) -> None:
+    path = tmp_path / "learning-artifacts.sqlite3"
+    outcome = await _outcome()
+    store = LearningArtifactStore(path)
+    artifact = store.save_artifact(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        artifact=outcome.artifact,
+        citations=outcome.citations,
+        idempotency_key="knowledge-map-r2",
+        retention="task",
+    )
+    assert column in {"content", "goal_id", "unit_ids_json", "citations_json"}
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            f"UPDATE learning_artifacts SET {column} = ? WHERE artifact_ref = ?",
+            (value, artifact.artifact_ref),
+        )
+
+    with pytest.raises(LearningArtifactStoreError) as error:
+        LearningArtifactStore(path).read_artifact(
+            owner_id="local",
+            workspace_id="workspace-1",
+            artifact_ref=artifact.artifact_ref,
+        )
+    assert error.value.code == "learning_persistence_integrity_error"

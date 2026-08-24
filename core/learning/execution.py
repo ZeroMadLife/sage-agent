@@ -157,6 +157,7 @@ class LearningExecutionService:
         idempotency_key: str,
     ) -> None:
         outcome = await self.map_service.build(
+            owner_id=owner_id,
             task=task,
             parent_run_id=context.parent_run_id,
             capability_revision=context.capability_revision,

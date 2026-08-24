@@ -18,6 +18,7 @@ from core.learning.materials import (
     LearningMapArtifact,
     LearningPlan,
     LearningUnitStatus,
+    validate_learning_plan_identity,
 )
 from core.learning.research import LearningResearchEvidence, LearningResearchReceipt
 from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
@@ -177,6 +178,10 @@ class LearningResumeNotFoundError(LearningArtifactStoreError, KeyError):
     code = "learning_resume_not_found"
 
 
+class LearningPersistenceIntegrityError(LearningArtifactStoreError):
+    code = "learning_persistence_integrity_error"
+
+
 @dataclass(frozen=True, slots=True)
 class StoredLearningCitation:
     evidence_ref: str
@@ -308,7 +313,7 @@ class LearningArtifactStore:
         gap_codes: Sequence[str] = (),
     ) -> LearningCheckpoint:
         _validate_scope(owner_id, workspace_id, task.task_id)
-        _validate_plan_binding(task, plan)
+        _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
         _bounded(lease_owner_id, "lease_owner_id", 256)
         if min(evidence_count, citation_count) < 0:
             raise ValueError("checkpoint counts must be non-negative")
@@ -583,14 +588,14 @@ class LearningArtifactStore:
                     raise LearningCheckpointConflictError("Learning checkpoint revision changed")
             else:
                 plan_row = connection.execute(
-                    """SELECT payload_json FROM learning_plans
+                    """SELECT * FROM learning_plans
                        WHERE owner_id = ? AND workspace_id = ? AND task_id = ?""",
                     (owner_id, workspace_id, task.task_id),
                 ).fetchone()
                 if plan_row is None:
                     raise LearningResumeConflictError("Learning plan is missing")
-                plan = _plan(json.loads(str(plan_row["payload_json"])))
-                _validate_plan_binding(task, plan)
+                plan = _validated_plan(plan_row)
+                _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
                 _assert_checkpoint_binding(task, plan, checkpoint)
                 if (
                     checkpoint.checkpoint_revision != expected_checkpoint_revision
@@ -734,10 +739,11 @@ class LearningArtifactStore:
         receipt: LearningResearchReceipt,
     ) -> StoredLearningResearchReceipt:
         _validate_scope(owner_id, workspace_id, task.task_id)
-        _validate_plan_binding(task, plan)
+        _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
         _validate_research_receipt(task, plan, receipt)
         receipt_id = _bounded(receipt.receipt_id, "receipt_id", 160)
-        receipt_ref = f"sage://learning/research-receipts/{receipt_id}"
+        scoped_identity = _sha256("\0".join((owner_id, workspace_id, plan.plan_id, receipt_id)))
+        receipt_ref = f"sage://learning/research-receipts/lrsearch_{scoped_identity[:24]}"
         payload = _json(asdict(receipt))
         with self._transaction() as connection:
             existing = connection.execute(
@@ -750,7 +756,9 @@ class LearningArtifactStore:
                     raise LearningArtifactConflictError(
                         "Learning Research receipt identity changed"
                     )
-                return _stored_research_receipt(existing)
+                stored = _stored_research_receipt(existing)
+                _validate_stored_research_receipt(existing, stored)
+                return stored
             timestamp = _now()
             connection.execute(
                 """INSERT INTO learning_research_receipts (
@@ -793,7 +801,16 @@ class LearningArtifactStore:
             ).fetchone()
         if row is None:
             raise LearningResumeNotFoundError("Learning Research receipt not found")
-        return _stored_research_receipt(row)
+        try:
+            stored = _stored_research_receipt(row)
+            _validate_stored_research_receipt(row, stored)
+        except LearningArtifactStoreError:
+            raise
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise LearningPersistenceIntegrityError(
+                "Learning Research receipt failed canonical integrity validation"
+            ) from exc
+        return stored
 
     def save_artifact(
         self,
@@ -809,7 +826,7 @@ class LearningArtifactStore:
         research_receipt_ref: str = "",
     ) -> StoredLearningArtifact:
         _validate_scope(owner_id, workspace_id, task.task_id)
-        _validate_plan_binding(task, plan)
+        _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
         key = _bounded(idempotency_key, "idempotency_key", 300)
         retention = _bounded(retention, "retention", 80)
         citation_payload = tuple(_citation_payload(item) for item in citations)
@@ -850,6 +867,12 @@ class LearningArtifactStore:
             ).fetchone()
             if existing is not None:
                 stored = _artifact(existing)
+                try:
+                    _validate_stored_artifact(existing, stored)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                    raise LearningPersistenceIntegrityError(
+                        "Learning Artifact failed canonical integrity validation"
+                    ) from exc
                 if (
                     stored.plan_id != plan.plan_id
                     or stored.content_hash != artifact.content_hash
@@ -938,19 +961,28 @@ class LearningArtifactStore:
             ).fetchone()
         if row is None:
             raise LearningArtifactNotFoundError("Learning Artifact not found")
-        return _artifact(row)
+        try:
+            artifact = _artifact(row)
+            _validate_stored_artifact(row, artifact)
+        except LearningArtifactStoreError:
+            raise
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise LearningPersistenceIntegrityError(
+                "Learning Artifact failed canonical integrity validation"
+            ) from exc
+        return artifact
 
     def load_plan(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningPlan:
         _validate_scope(owner_id, workspace_id, task_id)
         with self._connect() as connection:
             row = connection.execute(
-                """SELECT payload_json FROM learning_plans
+                """SELECT * FROM learning_plans
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?""",
                 (owner_id, workspace_id, task_id),
             ).fetchone()
         if row is None:
             raise LearningResumeNotFoundError("Learning plan not found")
-        return _plan(json.loads(str(row["payload_json"])))
+        return _validated_plan(row)
 
     def checkpoint(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningCheckpoint:
         with self._connect() as connection:
@@ -1298,6 +1330,7 @@ def _plan(data: dict[str, object]) -> LearningPlan:
         plan_id=str(data["plan_id"]),
         plan_hash=str(data["plan_hash"]),
         plan_revision=int(str(data["plan_revision"])),
+        owner_id=str(data["owner_id"]),
         workspace_id=str(data["workspace_id"]),
         task_id=str(data["task_id"]),
         task_revision=int(str(data["task_revision"])),
@@ -1332,9 +1365,45 @@ def _plan(data: dict[str, object]) -> LearningPlan:
     )
 
 
-def _validate_plan_binding(task: LearningTask, plan: LearningPlan) -> None:
+def _validated_plan(row: sqlite3.Row) -> LearningPlan:
+    try:
+        plan = _plan(json.loads(str(row["payload_json"])))
+        validate_learning_plan_identity(plan)
+        if (
+            str(row["owner_id"]) != plan.owner_id
+            or str(row["workspace_id"]) != plan.workspace_id
+            or str(row["task_id"]) != plan.task_id
+            or int(row["task_revision"]) != plan.task_revision
+            or str(row["plan_id"]) != plan.plan_id
+            or str(row["plan_hash"]) != plan.plan_hash
+            or str(row["source_policy_revision"]) != plan.source_policy_revision
+            or str(row["capability_revision"]) != plan.capability_revision
+            or str(row["catalog_revision"]) != plan.catalog_revision
+            or str(row["dag_hash"]) != plan.dag_hash
+        ):
+            raise ValueError("Learning Plan row binding is invalid")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LearningPersistenceIntegrityError(
+            "Learning Plan failed canonical integrity validation"
+        ) from exc
+    return plan
+
+
+def _validate_plan_binding(
+    task: LearningTask,
+    plan: LearningPlan,
+    *,
+    owner_id: str,
+    workspace_id: str,
+) -> None:
+    try:
+        validate_learning_plan_identity(plan)
+    except ValueError as exc:
+        raise LearningResumeConflictError("Learning plan identity changed") from exc
     if (
         task.status != "active"
+        or owner_id != plan.owner_id
+        or workspace_id != plan.workspace_id
         or task.workspace_id != plan.workspace_id
         or task.task_id != plan.task_id
         or task.task_revision != plan.task_revision
@@ -1344,6 +1413,100 @@ def _validate_plan_binding(task: LearningTask, plan: LearningPlan) -> None:
         or task.learning_goal_ref.get("goal_revision") != plan.goal_revision
     ):
         raise LearningResumeConflictError("Learning plan binding changed")
+
+
+def _validate_stored_artifact(
+    row: sqlite3.Row,
+    artifact: StoredLearningArtifact,
+) -> None:
+    owner_id = _bounded(str(row["owner_id"]), "owner_id", 256)
+    workspace_id = _bounded(str(row["workspace_id"]), "workspace_id", 256)
+    task_id = _bounded(artifact.task_id, "task_id", 256)
+    goal_id = _bounded(artifact.goal_id, "goal_id", 256)
+    goal_revision = _bounded(artifact.goal_revision, "goal_revision", 256)
+    plan_id = _bounded(artifact.plan_id, "plan_id", 256)
+    retention = _bounded(artifact.retention, "retention", 80)
+    key_hash = _bounded(str(row["idempotency_key_hash"]), "idempotency_key_hash", 64)
+    if any(not unit_id.strip() for unit_id in artifact.unit_ids):
+        raise ValueError("Learning Artifact Unit identity is empty")
+    if not artifact.unit_ids:
+        raise ValueError("Learning Artifact Unit identity is missing")
+    expected_identity = _sha256(
+        "\0".join(
+            (
+                owner_id,
+                workspace_id,
+                task_id,
+                str(artifact.task_revision),
+                plan_id,
+                key_hash,
+            )
+        )
+    )
+    expected_id = f"lart_{expected_identity[:24]}"
+    expected_ref = f"sage://learning/artifacts/{expected_id}"
+    expected_content_hash = f"sha256:{hashlib.sha256(artifact.content.encode()).hexdigest()}"
+    citation_refs = tuple(item.evidence_ref for item in artifact.citations)
+    source_revisions = tuple(sorted({item.source_revision for item in artifact.citations}))
+    if any(
+        not item.evidence_ref.strip()
+        or not item.content_hash.strip()
+        or not item.page_revision.strip()
+        or not item.source_revision.strip()
+        for item in artifact.citations
+    ):
+        raise ValueError("Learning Artifact citation binding is incomplete")
+    if len(citation_refs) != len(set(citation_refs)):
+        raise ValueError("Learning Artifact citation identity is duplicated")
+    if (
+        artifact.schema_version != 1
+        or artifact.kind != "learning_map"
+        or artifact.media_type != "text/markdown"
+        or artifact.status not in {"ready", "source_gap", "unverified", "blocked"}
+        or artifact.artifact_id != expected_id
+        or artifact.artifact_ref != expected_ref
+        or artifact.content_hash != expected_content_hash
+        or artifact.evidence_refs != citation_refs
+        or artifact.source_revisions != source_revisions
+        or (not artifact.citations and artifact.status == "ready")
+        or str(row["goal_id"]) != goal_id
+        or str(row["goal_revision"]) != goal_revision
+        or str(row["plan_id"]) != plan_id
+        or str(row["retention"]) != retention
+    ):
+        raise ValueError("Learning Artifact canonical binding is invalid")
+    if artifact.research_receipt_ref:
+        _research_receipt_id(artifact.research_receipt_ref)
+
+
+def _validate_stored_research_receipt(
+    row: sqlite3.Row,
+    stored: StoredLearningResearchReceipt,
+) -> None:
+    owner_id = _bounded(str(row["owner_id"]), "owner_id", 256)
+    workspace_id = _bounded(str(row["workspace_id"]), "workspace_id", 256)
+    receipt_id = _bounded(str(row["receipt_id"]), "receipt_id", 160)
+    plan_id = _bounded(str(row["plan_id"]), "plan_id", 256)
+    expected_identity = _sha256("\0".join((owner_id, workspace_id, plan_id, receipt_id)))
+    expected_ref = f"sage://learning/research-receipts/lrsearch_{expected_identity[:24]}"
+    receipt = stored.receipt
+    if (
+        stored.receipt_ref != expected_ref
+        or receipt.receipt_id != receipt_id
+        or receipt.task_id != str(row["task_id"])
+        or receipt.task_revision != int(row["task_revision"])
+        or receipt.plan_id != plan_id
+        or receipt.schema_version != 1
+        or receipt.plan_revision < 1
+        or not receipt.unit_id.strip()
+        or not receipt.parent_run_id.strip()
+        or not receipt.query_receipt_hash.startswith("lquery_")
+        or receipt.actual_token_usage < 0
+        or receipt.actual_token_usage > receipt.token_budget
+        or receipt.actual_tool_count < 0
+        or receipt.actual_tool_count > receipt.max_steps
+    ):
+        raise ValueError("Learning Research receipt canonical binding is invalid")
 
 
 def _validate_task_for_advance(task: LearningTask, *, workspace_id: str) -> None:
@@ -1427,6 +1590,7 @@ __all__ = [
     "LearningCheckpointConflictError",
     "LearningCheckpointStage",
     "LearningFencingConflictError",
+    "LearningPersistenceIntegrityError",
     "LearningResumeConflictError",
     "LearningResumeNotFoundError",
     "LearningResumeSummary",
