@@ -1,6 +1,6 @@
 # Sage 桌面端长期学习产品设计
 
-> 状态：产品方向已确认，实施尚未开始。首发平台为 macOS Apple Silicon；Windows x64 保留打包契约。本文已确定首版关键协议，具体实现仍须按 M0-M3 验证后晋级。
+> 状态：产品方向已确认；D0-D2 已形成 macOS Apple Silicon 本地开发候选并进入复审，D3 与学习产品后续切片仍按计划验证。Windows x64 仅保留打包契约。本文描述目标架构，当前实现边界以实施计划、代码与测试为准。
 
 ## 1. 目标
 
@@ -311,9 +311,16 @@ Proposal/Memory/Recall receipt、纠错/撤回/删除、诊断 ZIP、签名 upda
 - PostgreSQL 检索投影、Container Sandbox、Web Search、Cloud Provider；
 - Goal、Mastery、Artifact、Context Assembly 等底层原语，其中部分默认仍是 shadow、可选或尚未形成学习产品纵向接线。
 
-### 本设计新增且尚未交付
+### 本设计的当前交付状态
 
-Tauri 宿主、Python sidecar 打包与监督、安全动态端口、Keychain、桌面 OAuth、首次启动向导、桌面诊断与更新、LearningPlan/KnowledgeUnit/Learning Artifact、完整 Memory 控制面，以及 Plan/Learn/Practice/Timeline 统一工作台。
+D0-D2 已形成 macOS arm64 本地开发候选：PyInstaller one-dir sidecar、Tauri 安全宿主、动态
+loopback 与身份握手、crash budget/orphan 收敛、首次启动向导、Rust-owned Keychain、Local
+Provider 管理、能力诊断和无 Docker 降级。该候选仍待三镜头复审，不等于公开发行版。
+
+尚未交付桌面 Cloud OAuth、updater、Developer ID 签名、公证、stapled DMG、Windows 发行，
+以及 LearningPlan/KnowledgeUnit/Learning Artifact、完整 Memory 控制面和
+Plan/Learn/Practice/Timeline 统一学习工作台。桌面诊断已有受限 allowlist 与入口，但完整用户诊断
+产品及发布运维链仍属于后续范围。
 
 ## 15. 参考来源与事实边界
 

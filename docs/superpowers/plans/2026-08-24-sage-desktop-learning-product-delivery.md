@@ -162,6 +162,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ### D2 实施收口（2026-08-25）
 
+> 首轮候选记录保留用于追溯，但其正式 receipt 已被 D2.1 三镜头复审判定为假绿，
+> 不再作为 D2 最终验收证据；当前有效候选与门禁见下方 D2.1 收口。
+
 - **候选代码 SHA**：`b55f0f25e6f435a87389c56407afabb11a2a2d20`，分支
   `feat/desktop-provider-onboarding-v1`，仅本地 commit，未 push、未建 PR。
 - **基线职责**：先以 `7b1e655`、`71d340c`、`2a423de` 将 P0 三段认证提交整合到
@@ -191,6 +194,80 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - **遗留与下一步**：当前只可称 macOS arm64 本地开发 `.app`；大 chunk warning 仍在，且
   Developer ID、notarization、staple、DMG、updater、Cloud OAuth、Intel macOS、Windows 与
   Linux 均未交付。D2 等待中枢三镜头复审，不先行进入 D3 或发布。
+
+### D2.1 三镜头复审修复 mini-spec（2026-08-25）
+
+首轮 receipt 只证明产物可启动，不能证明本地模型回合、SQLite RAG 或副作用工具 fail-closed；
+因此撤销其 D2 最终验收效力。本增量不扩大到 Cloud OAuth、updater、Developer ID、公证或 DMG。
+
+**状态与进程不变量**
+
+- sidecar spawn 前的 onboarding、配置与 Keychain `locked/access_denied/missing` 是可恢复配置阻塞，
+  不属于进程 crash，不记录 crash budget；宿主直接发布同一 `reason_code/action`，即使 sidecar
+  尚未 ready，Vue 也必须读取 onboarding 并展示解锁、授权或重新录入入口。
+- 配置变更只在旧 sidecar 已验证退出、PID ownership/orphan 已持久化收敛后启动新 generation。
+  TERM、KILL、身份复核或持久化任一步失败均保持 `blocked`，保留旧 PID/orphan，禁止覆盖所有权
+  或产生第二实例；后续显式重试在收敛后才恢复。
+- `/capabilities` 是 sidecar 就绪后的运行能力权威，顶层状态由关键能力与可选能力派生：关键
+  `blocked` 为 `blocked`，否则任一可选 `degraded/blocked` 为 `degraded`，全部 ready 才为
+  `ready`。sidecar 未就绪时宿主/onboarding 只描述启动前修复状态，HostGate 不交叉掩盖冲突。
+
+**Provider 一致性不变量**
+
+- SQLite 持久化 `active_provider_id`；第一个 connected Provider 可自动成为 active，新增或探测
+  其他 Provider 不切换。`set_active_provider` 是固定 action union；修改非 active Provider 不重启
+  runtime。断连或删除 active 后清空 active，runtime fail closed，必须由用户显式重选。
+- Keychain 与 SQLite 的 add/rotate/disconnect/delete 使用 durable staged operation。每次操作先在
+  SQLite 记录 operation id、kind、phase、provider/key refs 与脱敏 error，再执行 Keychain 腿和
+  metadata 腿；BEGIN、commit、补偿任一失败都保留可诊断、可重试状态。启动时 reconciliation
+  幂等完成或回滚未决操作，不静默丢弃补偿错误，也不把 secret 写入 SQLite、环境、日志、
+  Timeline 或诊断包。
+
+**连接与 artifact 不变量**
+
+- Desktop WebSocket 使用 connection epoch 取消迟到的 host-status/socket；`close()` 后不得安装
+  新 socket。重试耗尽时清除对应 session、发布 degraded，并向上层派发一次 terminal `close`。
+  只有连接稳定跨过最短稳定窗口后才重置预算，open/immediate-close 不能无限续命。
+- 正式 receipt 的 `local_conversation`、`local_sqlite_rag`、`side_effect_tools_blocked` 仅在冻结
+  sidecar 隔离运行中完成真实断言后写入：本地无敏感 stub Provider 至少完成一次模型 turn；
+  通过公开产品合同完成 SQLite RAG ingest/search；真实请求 `/capabilities` 与
+  `/api/v1/harness/capabilities`；catalog 不含副作用工具且直接执行 fail closed。不得用常量、
+  源码扫描或空 session 代替 artifact 行为，不放宽生产 SSRF 与 secret 边界。
+
+**Red/Green 与验收矩阵**
+
+- 每项行为先执行对应 Rust/Vitest/Pytest Red 并记录失败断言，再按上述不变量 Green；重点覆盖
+  locked/denied/missing 不耗预算、TERM/KILL/persist 失败与恢复、跨资源 storage/compensation
+  失败和重启 reconciliation、add-two/select/model/rotate/delete-or-disconnect-active/restart、
+  capability 完整矩阵、WebSocket exhaustion/close-during-await/open-close churn。
+- 最终从 clean code HEAD 运行 Rust full/fmt/clippy、Python desktop/auth/full、Vue focused/full/build、
+  唯一临时 Keychain service/account round-trip 与清理、arm64 full product bundle、strict codesign、
+  secret 扫描、host/launcher/sidecar 零残留和 `git diff --check`。receipt 文件/symlink/目录计数均
+  取新候选实跑结果，不再把包含 symlink 的 entries 总数表述为“普通文件”。
+
+### D2.1 实施收口（2026-08-25）
+
+- **代码候选**：`59e96c547c2a16ca29e63d471d9b0502dee36995`。配置/Keychain pre-spawn
+  阻塞不再消费 crash budget；HostGate 在 sidecar 未 ready 时仍读取 onboarding 修复动作。
+- **进程所有权**：配置重启只有在旧 sidecar 已确认退出且 orphan ownership 持久化收敛后才启动
+  新 generation；TERM/KILL/identity/persist 任一失败均保持 blocked，不覆盖旧 PID。
+- **Provider 一致性**：schema v2 持久化 `active_provider_id` 与 `provider_operations` journal；
+  add/rotate/disconnect/delete 支持重启 reconciliation，未决 operation 存在时后续 Provider 变更
+  fail closed，避免交错操作留下孤儿 secret。active Provider 删除或断连后必须显式重选。
+- **连接与能力**：Desktop WebSocket 使用 epoch、稳定窗口和有界重试；耗尽后只派发一次 terminal
+  close 并清 session。`/capabilities` 按关键/可选子能力派生顶层状态，HostGate 以 sidecar 状态为
+  ready 后的唯一运行能力权威。
+- **artifact 合同**：冻结 sidecar 使用隔离 loopback stub Provider 完成真实模型 turn、SQLite RAG
+  ingest/search、两个 capability endpoint 查询、catalog 排除与直接副作用工具 fail-closed；receipt
+  字段只由已执行断言生成。
+- **Red 证据**：各修复先由 Rust/Vitest/Pytest 合同命中旧行为；logic-lens 复审又复现了“待删除
+  journal 后继续 rotate 会成功写入新 secret”的交错漏洞，新增测试在旧实现上因 `unwrap_err()`
+  收到 `Ok(LocalProviderView)` 失败，Green 后由 journal gate 阻断并在重启后收敛。
+- **源码门禁**：Rust `44 passed`、fmt/clippy 通过，真实临时 Keychain round-trip 已清理；Python
+  desktop/auth 均 `61 passed`，full `2054 passed, 12 skipped`，Ruff 与受影响 Python mypy 通过；
+  Vue focused `39 passed`、full `72 files / 549 tests`、production build 通过；source product smoke 与
+  `git diff --check` 通过。正式 clean arm64 artifact、strict codesign、计数与 receipt SHA 在 docs HEAD
+  固定后重跑，不沿用首轮 `b55f0f2` receipt。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
