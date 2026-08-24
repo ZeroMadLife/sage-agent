@@ -2,7 +2,7 @@
 
 > 状态：已获 CTO 全权实施授权，按阶段本地开发与审查；公开 push、PR 合并、签名凭据和发布仍按外部变更门禁单独执行。
 >
-> L2 状态（2026-08-25）：Assistant 第四候选并发修复 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已完成，等待第五轮最终复审；仅本地 commit，未 push、未建 PR。
+> L2 状态（2026-08-25）：Assistant 最终代码候选 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已获 Runtime/Standards 放行，等待 Spec 快速复核；仅本地 commit，未 push、未建 PR。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -309,7 +309,16 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 可复现 E2E 命令：
 
 ```bash
-PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_cloud_model_provider_routes.py \
+  tests/api/test_coding_surface_context.py tests/api/test_coding_thread_goal.py \
+  tests/core/coding/test_session_event_journal.py -q
 /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api/ core/ db/ evals/ tests/
 /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m mypy core/ api/ packages/sage_harness/
 npm --prefix frontend run test -- --run src/api/assistant.test.ts src/stores/assistantHome.test.ts src/views/AssistantHomeView.test.ts src/stores/coding.test.ts src/views/CodingView.test.ts src/components/coding/chat/CodingContextBudget.test.ts
@@ -326,7 +335,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - `AssistantHomeView` 大表单/确认区拆分登记为 L3 前技术债，本轮不做无关重构。
 - `input_origin + emit_user_event` 收敛为 `TurnInputKind/learning_kickoff` 类型合同，以及 `LearningKickoffErrorCode` + 结构化 OpenAPI error responses，均登记为 L3 前技术债。
 - 不修改 L1 只读授权合同；不生成 LearningPlan、Task DAG、Artifact、Practice 或 Mastery。
-- 当前结论是“code candidate 已本地提交，等待第五轮最终复审”，不是已合入 `dev/sage-v7` 或已发布。
+- 当前结论是“code candidate 已本地提交，Runtime/Standards 已放行，等待 Spec 快速复核”，不是已合入 `dev/sage-v7` 或已发布。
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 

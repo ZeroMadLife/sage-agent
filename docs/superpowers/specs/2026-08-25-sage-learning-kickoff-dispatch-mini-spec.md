@@ -2,7 +2,7 @@
 
 > 日期：2026-08-25
 >
-> 状态：第四候选并发修复已实现，等待第五轮最终复审
+> 状态：Runtime/Standards 已放行，复现命令已校正，等待 Spec 快速复核
 >
 > 固定起点：`d545c9b9bf34038f7c5f63c3adfc3ea237d8a428`
 >
@@ -112,6 +112,7 @@ Session Journal 的 user-accepted event 使用独立 `acceptance_run_id`，不�
 ```bash
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
   tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
@@ -125,6 +126,7 @@ PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   tests/core/learning/test_learning_tasks.py -q
 PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
   /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
   tests/api/test_cloud_model_provider_routes.py \
   tests/api/test_coding_surface_context.py tests/api/test_coding_thread_goal.py \
   tests/core/coding/test_session_event_journal.py -q
@@ -161,4 +163,4 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - `LearningKickoffErrorCode` 与结构化 OpenAPI error responses 在 L3 前补齐；本轮只局部映射 Task 缺失，不扩展全部错误 schema；
 - 不把 accepted receipt 描述成模型回答成功或完整运行恢复；运行中断继续遵守现有 Journal/Checkpoint 语义。
 
-当前停止在本地 code candidate，未 push、未建 PR；等待中枢第五轮最终复审。
+当前停止在本地 code candidate，未 push、未建 PR；Runtime/Standards 已放行，等待中枢 Spec 快速复核。

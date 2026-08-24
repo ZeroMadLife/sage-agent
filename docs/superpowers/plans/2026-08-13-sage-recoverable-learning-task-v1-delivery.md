@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 第四候选并发修复 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已完成，等待第五轮最终复审；B-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已获 Runtime/Standards 放行，等待 Spec 快速复核；B-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -15,7 +15,7 @@
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
-| A4 Assistant 确认 | 第四候选并发修复，等待第五轮最终复审 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
+| A4 Assistant 确认 | Runtime/Standards 已放行，等待 Spec 快速复核 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
 | B-E | 未开始 | - | Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -331,7 +331,7 @@ private build 仅有既有大 chunk warning。最终 Runtime 复审指出的 no-
 
 ### Slice A4：Assistant 任务确认与进入会话
 
-> 第四候选并发修复（2026-08-25）：`2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`，仅本地 commit，未 push、未建 PR，等待第五轮最终复审。初版候选 `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 的复审聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
+> 最终代码候选（2026-08-25）：`2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`，仅本地 commit，未 push、未建 PR；Runtime/Standards 已放行，等待 Spec 快速复核。初版候选 `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 的复审聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
 
 **交付行为**
 
@@ -382,7 +382,16 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 **验证**
 
 ```bash
-PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_cloud_model_provider_routes.py \
+  tests/api/test_coding_surface_context.py tests/api/test_coding_thread_goal.py \
+  tests/core/coding/test_session_event_journal.py -q
 /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api/ core/ db/ evals/ tests/
 /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m mypy core/ api/ packages/sage_harness/
 npm --prefix frontend run test -- --run src/api/assistant.test.ts src/stores/assistantHome.test.ts src/views/AssistantHomeView.test.ts src/stores/coding.test.ts src/views/CodingView.test.ts src/components/coding/chat/CodingContextBudget.test.ts
@@ -697,6 +706,6 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 - private/public production build 与 `git diff --check` 通过；private build 只有既有大 chunk warning；
 - 本轮仍停在 L0：没有执行首轮 Turn，没有生成 LearningPlan、Task DAG、Learning Artifact、Mastery Evidence 或运行中 Checkpoint Resume。
 
-A4/L2 第四候选并发修复 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已把 run hydration 与完整 runtime reconstruction 拆成两层 per-session single-flight：跨 Session 磁盘恢复并行，同 Session waiters 共享结果/错误且取消隔离；既有握手 readiness、bounded error、固定 run 并发收敛与 Task 缺失 fail-closed 均保留。当前停止在 L2 code candidate，等待第五轮最终复审；不能写成已合入 `dev/sage-v7` 或复审已关闭。
+A4/L2 最终代码候选 `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 已把 run hydration 与完整 runtime reconstruction 拆成两层 per-session single-flight：跨 Session 磁盘恢复并行，同 Session waiters 共享结果/错误且取消隔离；既有握手 readiness、bounded error、固定 run 并发收敛与 Task 缺失 fail-closed 均保留。Runtime/Standards 已放行，当前仅等待 Spec 快速复核；不能写成已合入 `dev/sage-v7` 或已发布。
 
 下一步只在 A3 最后短复审与 L2 三镜头复审通过、按 PR 合入后进入 L3：实现真实 Knowledge/Research、LearningPlan、Synthesize 和 Learning Artifact。L3 前不开放 Coding Practice，不生成 Mastery Evidence，也不把当前 kickoff TurnContextPlan 说成完整 LearningPlan 或 Task DAG。
