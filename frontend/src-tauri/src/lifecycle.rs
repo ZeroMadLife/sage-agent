@@ -69,6 +69,22 @@ pub fn single_instance_action() -> SingleInstanceAction {
     SingleInstanceAction::ShowAndFocusMainWindow
 }
 
+pub fn apply_single_instance_action<Show, Focus>(
+    action: SingleInstanceAction,
+    mut show: Show,
+    mut focus: Focus,
+) where
+    Show: FnMut(),
+    Focus: FnMut(),
+{
+    match action {
+        SingleInstanceAction::ShowAndFocusMainWindow => {
+            show();
+            focus();
+        }
+    }
+}
+
 pub fn lifecycle_action(event: LifecycleEvent) -> LifecycleAction {
     match event {
         LifecycleEvent::WindowHidden => LifecycleAction::KeepRunning,
@@ -77,7 +93,7 @@ pub fn lifecycle_action(event: LifecycleEvent) -> LifecycleAction {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 pub struct OrphanRecord {
     pub pid: u32,
     pub start_time: u64,

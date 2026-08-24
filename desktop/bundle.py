@@ -235,6 +235,27 @@ def _wait_for_restarted_sidecar(
     raise BundleContractError("desktop host did not restart and revalidate the sidecar")
 
 
+def _wait_for_webview_observations(state_path: Path, expected: int, timeout: float) -> None:
+    path = state_path.parent / "diagnostics" / "desktop-sidecar.jsonl"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with suppress(OSError, json.JSONDecodeError):
+            records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            observed = [
+                record
+                for record in records
+                if isinstance(record, dict)
+                and record.get("event") == "webview_capabilities_observed"
+                and record.get("state") == "ready"
+                and record.get("reason_code") == "desktop_session_authenticated"
+                and set(record) == {"timestamp", "event", "state", "reason_code"}
+            ]
+            if len(observed) >= expected:
+                return
+        time.sleep(0.1)
+    raise BundleContractError("WebView did not authenticate with the rotated sidecar session")
+
+
 def _observed_process(pid: int) -> tuple[int, Path] | None:
     result = subprocess.run(
         ["/bin/ps", "-p", str(pid), "-o", "lstart=", "-o", "comm="],
@@ -306,6 +327,7 @@ def smoke_bundled_app(app: Path, *, timeout: float = 30) -> dict[str, str]:
         sidecar_records: dict[int, dict[str, Any]] = {}
         try:
             state_path, state = _wait_for_disk_state(home, timeout)
+            _wait_for_webview_observations(state_path, 1, timeout)
             first_record = state["orphan"]
             first_pid = int(first_record["pid"])
             sidecar_records[first_pid] = first_record
@@ -315,6 +337,7 @@ def smoke_bundled_app(app: Path, *, timeout: float = 30) -> dict[str, str]:
             if not _record_matches_process(restarted_record):
                 raise BundleContractError("restarted sidecar identity does not match runtime")
             sidecar_records[restarted_pid] = restarted_record
+            _wait_for_webview_observations(state_path, 2, timeout)
             quit_result = subprocess.run(
                 [
                     "/usr/bin/osascript",
@@ -348,7 +371,7 @@ def smoke_bundled_app(app: Path, *, timeout: float = 30) -> dict[str, str]:
         "explicit_exit": "passed",
         "handshake_health": "passed",
         "process_cleanup": "passed",
-        "session_reconnect_contract": "passed",
+        "webview_reconnect": "passed",
     }
 
 

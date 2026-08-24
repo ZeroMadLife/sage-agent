@@ -69,6 +69,107 @@ describe('DesktopHostAdapter', () => {
     expect(websocket.mock.calls[0][0]).not.toContain('token')
   })
 
+  it('refreshes the host session once when an SSE body fails mid-stream', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const encoder = new TextEncoder()
+    const broken = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: old\n\n'))
+      },
+      pull(controller) {
+        controller.error(new TypeError('connection reset'))
+      },
+    })
+    const recovered = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: new\n\n'))
+        controller.close()
+      },
+    })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(broken, { headers: { 'Content-Type': 'text/event-stream' } }))
+      .mockResolvedValueOnce(new Response(recovered, { headers: { 'Content-Type': 'text/event-stream' } }))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+
+    const response = await desktopSse('/desktop/probe/sse')
+
+    await expect(response.text()).resolves.toBe('event: old\n\nevent: new\n\n')
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      'http://127.0.0.1:49153/desktop/probe/sse',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer new' }) }),
+    )
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(states).toContain('degraded')
+    expect(states.at(-1)).toBe('ready')
+  })
+
+  it('fails closed after the bounded SSE body reconnect is exhausted', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const brokenResponse = () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new TypeError('connection reset'))
+      },
+    }), { headers: { 'Content-Type': 'text/event-stream' } })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(brokenResponse())
+      .mockResolvedValueOnce(brokenResponse())
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+
+    const response = await desktopSse('/desktop/probe/sse')
+
+    await expect(response.text()).rejects.toThrow('connection reset')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(invoke).toHaveBeenCalledTimes(2)
+    expect(states.at(-1)).toBe('degraded')
+  })
+
+  it('forwards SSE reader cancellation to the active transport', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'token', instanceId: 'i' },
+    })
+    const cancel = vi.fn()
+    const stream = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise(() => undefined)
+      },
+      cancel,
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream)))
+    const { desktopHostStatus, desktopSse } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const response = await desktopSse('/desktop/probe/sse')
+
+    await response.body?.getReader().cancel('consumer stopped')
+
+    expect(cancel).toHaveBeenCalledWith('consumer stopped')
+  })
+
   it('refreshes a rotated host session once after an authorization failure', async () => {
     invoke
       .mockResolvedValueOnce({

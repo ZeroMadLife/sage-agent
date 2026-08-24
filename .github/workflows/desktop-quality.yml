@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   macos-arm64:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 75
 
     steps:
@@ -26,7 +26,7 @@ jobs:
           node-version: "24"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy,rustfmt
           targets: aarch64-apple-darwin

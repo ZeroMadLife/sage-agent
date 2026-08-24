@@ -113,10 +113,65 @@ export async function desktopCapabilities(): Promise<DesktopCapabilities> {
   return response.json() as Promise<DesktopCapabilities>
 }
 
-export function desktopSse(path: string, init: RequestInit = {}): Promise<Response> {
-  return desktopFetch(path, {
+function sseRequestInit(init: RequestInit): RequestInit {
+  return {
     ...init,
     headers: { ...Object.fromEntries(new Headers(init.headers).entries()), Accept: 'text/event-stream' },
+  }
+}
+
+export async function desktopSse(path: string, init: RequestInit = {}): Promise<Response> {
+  const requestInit = sseRequestInit(init)
+  const initial = await desktopFetch(path, requestInit)
+  if (!initial.ok || !initial.body) return initial
+
+  let reader = initial.body.getReader()
+  let reconnectAttempts = 0
+  let cancelled = false
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      while (!cancelled) {
+        try {
+          const chunk = await reader.read()
+          if (chunk.done) {
+            controller.close()
+          } else {
+            controller.enqueue(chunk.value)
+          }
+          return
+        } catch (error) {
+          publishConnectionState('degraded')
+          if (reconnectAttempts >= 1) {
+            session = null
+            controller.error(error)
+            return
+          }
+          reconnectAttempts += 1
+          await reader.cancel().catch(() => undefined)
+          try {
+            const refreshed = await recoverSession()
+            const response = await fetchWithSession(refreshed, path, requestInit)
+            if (!response.ok || !response.body) throw new Error('desktop_sse_reconnect_failed')
+            reader = response.body.getReader()
+            publishConnectionState('ready')
+          } catch (reconnectError) {
+            session = null
+            publishConnectionState('degraded')
+            controller.error(reconnectError)
+            return
+          }
+        }
+      }
+    },
+    async cancel(reason) {
+      cancelled = true
+      await reader.cancel(reason).catch(() => undefined)
+    },
+  })
+  return new Response(body, {
+    headers: new Headers(initial.headers),
+    status: initial.status,
+    statusText: initial.statusText,
   })
 }
 

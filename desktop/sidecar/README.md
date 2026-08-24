@@ -25,3 +25,11 @@ python3.12 -m desktop.bundle --output-dir /private/tmp/sage-desktop-<sha>
 ```
 
 入口会重新构建并验证 D0 receipt，原子 staging 到 Tauri resources，显式注入 `SAGE_BUILD_SHA`，生成和 ad-hoc 签名 `.app`，再执行真实启动、sidecar crash/restart、显式退出和零残留 smoke。禁止手工复用 `frontend/src-tauri/binaries/sidecar` 中被忽略的旧产物。
+
+### D1 macOS 构建前置
+
+- Apple Silicon macOS；CI 固定使用 GitHub 官方受支持的 arm64 `macos-15` runner，不使用已 deprecated 的 `macos-14` 或会漂移的 `macos-latest`。依据为 [actions/runner-images 支持表](https://github.com/actions/runner-images#available-images)，核对日期 2026-08-24。
+- Python 3.12、Node.js 24 和 npm；正式入口会自行创建隔离 Python 构建环境。
+- Rust `1.98.0`；`frontend/src-tauri/rust-toolchain.toml` 固定 toolchain、`rustfmt`、`clippy` 与 `aarch64-apple-darwin` target，`Cargo.toml` 同时声明 `rust-version = "1.98"`。可用 `rustc --version` 和 `rustup target list --installed` 核对。
+- Xcode 或 Xcode Command Line Tools 必须提供匹配本机 macOS 的 SDK、Apple Clang 和 `codesign`。用 `xcode-select -p`、`xcrun --sdk macosx --show-sdk-path`、`xcrun clang --version`、`command -v codesign` 核对；完整 Xcode 安装需确保 `xcode-select` 指向选定版本。
+- D1 只要求 `codesign --sign -` 的 ad-hoc/local dev 签名，并以 `codesign --verify --deep --strict Sage.app` 验证；Developer ID、notarization、staple 和 DMG 仍属于发行门禁，不得由本地包证据代替。

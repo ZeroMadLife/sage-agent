@@ -6,6 +6,10 @@ fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+fn repository_root() -> PathBuf {
+    crate_root().join("../..").canonicalize().unwrap()
+}
+
 #[test]
 fn production_bundle_has_one_fixed_sidecar_and_no_remote_navigation() {
     let config: Value = serde_json::from_slice(
@@ -69,6 +73,24 @@ fn release_build_identity_is_explicit_and_cache_sensitive() {
     assert!(build_script.contains("cargo:rerun-if-env-changed=SAGE_BUILD_SHA"));
     assert!(build_script.contains("std::env::var(\"SAGE_BUILD_SHA\")"));
     assert!(!build_script.contains("Command::new(\"git\")"));
+}
+
+#[test]
+fn desktop_ci_and_manifest_pin_the_supported_arm64_rust_toolchain() {
+    let workflow =
+        fs::read_to_string(repository_root().join(".github/workflows/desktop-quality.yml"))
+            .expect("desktop workflow must exist");
+    let manifest =
+        fs::read_to_string(crate_root().join("Cargo.toml")).expect("Cargo manifest must exist");
+    let toolchain = fs::read_to_string(crate_root().join("rust-toolchain.toml"))
+        .expect("desktop Rust toolchain must exist");
+
+    assert!(workflow.contains("runs-on: macos-15"));
+    assert!(!workflow.contains("runs-on: macos-14"));
+    assert!(workflow.contains("dtolnay/rust-toolchain@1.98.0"));
+    assert!(manifest.contains("rust-version = \"1.98\""));
+    assert!(toolchain.contains("channel = \"1.98.0\""));
+    assert!(toolchain.contains("targets = [\"aarch64-apple-darwin\"]"));
 }
 
 #[test]

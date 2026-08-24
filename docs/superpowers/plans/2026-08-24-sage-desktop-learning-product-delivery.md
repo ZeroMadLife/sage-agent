@@ -132,6 +132,8 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 7. 切片 D2：首次启动、Keychain 与 Local Provider
 
+进入 D2 前先关闭 D1 技术债：在不改变既有 handshake、PID identity、crash budget 和真机 smoke 合同的前提下，从 `supervisor.rs` 提取 diagnostics 与 state repository；该拆分不得与 Keychain/Provider 功能混在同一职责提交中。
+
 **交付行为**
 
 - 首次启动选择 Local/Cloud，完成数据目录、迁移、workspace 和 capability 检查；
@@ -350,4 +352,3 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - 需要不可逆数据库迁移、用户数据物理删除策略或公开发布；
 - sidecar 打包证明当前 Python 原生依赖无法可靠分发，需要切换 Electron/服务端路线；
 - 产品方向、收费、隐私承诺或公开 SLA 发生变化。
-

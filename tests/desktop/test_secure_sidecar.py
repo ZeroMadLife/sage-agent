@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from desktop.sidecar import app as sidecar_app
 from desktop.sidecar.app import DESKTOP_API_VERSION, create_desktop_app
 from desktop.sidecar.security import DesktopBootstrap, DesktopSecurity
 
@@ -199,6 +200,7 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
     with TestClient(app) as client:
         live = client.get("/health/live", headers=_headers())
         capabilities = client.get("/capabilities", headers=_headers())
+        repeated_capabilities = client.get("/capabilities", headers=_headers())
         sse = client.get("/desktop/probe/sse", headers=_headers())
         with client.websocket_connect(
             "/desktop/probe/ws",
@@ -211,6 +213,7 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
     assert live.headers["access-control-allow-origin"] == ORIGIN
     assert live.headers["vary"] == "Origin"
     assert capabilities.status_code == 200
+    assert repeated_capabilities.status_code == 200
     assert capabilities.json()["status"] == "degraded"
     assert capabilities.json()["capabilities"]["provider"] == {
         "status": "blocked",
@@ -220,6 +223,40 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
     assert sse.headers["content-type"].startswith("text/event-stream")
     assert "event: ready" in sse.text
     assert ws_payload == {"status": "ready", "api_version": DESKTOP_API_VERSION}
+    diagnostic_lines = (tmp_path / "diagnostics" / "desktop-sidecar.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert len(diagnostic_lines) == 1
+    diagnostic = json.loads(diagnostic_lines[0])
+    assert set(diagnostic) == {"timestamp", "event", "state", "reason_code"}
+    assert diagnostic["event"] == "webview_capabilities_observed"
+    assert diagnostic["reason_code"] == "desktop_session_authenticated"
+    assert BEARER not in diagnostic_lines[0]
+
+
+def test_capability_observation_retries_after_diagnostic_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+    real_record = sidecar_app._record_capability_observation
+    attempts = 0
+
+    def flaky_record(data_dir: Path) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return False if attempts == 1 else real_record(data_dir)
+
+    monkeypatch.setattr(sidecar_app, "_record_capability_observation", flaky_record)
+    with TestClient(app) as client:
+        assert client.get("/capabilities", headers=_headers()).status_code == 200
+        assert client.get("/capabilities", headers=_headers()).status_code == 200
+
+    lines = (tmp_path / "diagnostics" / "desktop-sidecar.jsonl").read_text(
+        encoding="utf-8"
+    ).splitlines()
+    assert attempts == 2
+    assert len(lines) == 1
 
 
 @pytest.mark.parametrize(

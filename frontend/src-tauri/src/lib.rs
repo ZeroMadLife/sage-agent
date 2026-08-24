@@ -2,22 +2,44 @@ pub mod lifecycle;
 pub mod protocol;
 mod supervisor;
 
-use lifecycle::{lifecycle_action, LifecycleAction, LifecycleEvent};
+use lifecycle::{
+    apply_single_instance_action, lifecycle_action, single_instance_action, LifecycleAction,
+    LifecycleEvent,
+};
 use supervisor::{desktop_exit, desktop_host_status, desktop_open_diagnostics, SharedHostState};
 use tauri::{Manager, RunEvent, WindowEvent};
 
+fn allow_navigation_for_profile(url: &tauri::Url, debug: bool) -> bool {
+    let no_credentials = url.username().is_empty() && url.password().is_none();
+    if debug {
+        url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.port() == Some(5173)
+            && no_credentials
+    } else {
+        url.scheme() == "tauri"
+            && url.host_str() == Some("localhost")
+            && url.port().is_none()
+            && no_credentials
+    }
+}
+
 fn allow_navigation(url: &tauri::Url) -> bool {
-    (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
-        || (cfg!(debug_assertions)
-            && matches!(url.scheme(), "http" | "https")
-            && matches!(url.host_str(), Some("127.0.0.1" | "localhost")))
+    allow_navigation_for_profile(url, cfg!(debug_assertions))
 }
 
 pub fn run() {
     let single_instance = tauri_plugin_single_instance::init(|app, _, _| {
         if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
+            apply_single_instance_action(
+                single_instance_action(),
+                || {
+                    let _ = window.show();
+                },
+                || {
+                    let _ = window.set_focus();
+                },
+            );
         }
     });
     let navigation_guard = tauri::plugin::Builder::<tauri::Wry, ()>::new("navigation-guard")
@@ -67,11 +89,32 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::allow_navigation;
+    use super::allow_navigation_for_profile;
 
     #[test]
-    fn navigation_guard_rejects_remote_hosts() {
-        assert!(!allow_navigation(&"https://example.com".parse().unwrap()));
-        assert!(allow_navigation(&"tauri://localhost".parse().unwrap()));
+    fn navigation_guard_accepts_only_the_profile_origin() {
+        assert!(allow_navigation_for_profile(
+            &"tauri://localhost/status".parse().unwrap(),
+            false
+        ));
+        assert!(!allow_navigation_for_profile(
+            &"http://127.0.0.1:5173".parse().unwrap(),
+            false
+        ));
+        assert!(allow_navigation_for_profile(
+            &"http://127.0.0.1:5173/status".parse().unwrap(),
+            true
+        ));
+        for rejected in [
+            "http://127.0.0.1:5174",
+            "http://localhost:5173",
+            "https://127.0.0.1:5173",
+            "https://example.com",
+        ] {
+            assert!(!allow_navigation_for_profile(
+                &rejected.parse().unwrap(),
+                true
+            ));
+        }
     }
 }

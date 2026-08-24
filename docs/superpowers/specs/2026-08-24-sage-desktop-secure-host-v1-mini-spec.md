@@ -56,6 +56,8 @@ Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state
 
 WebView 的带 `Authorization` 跨 Origin 请求允许一次最小预检：OPTIONS 不要求 bearer，但 Host、Origin、requested method 和 requested headers 必须精确匹配；只返回当前 Origin、`GET`、`Authorization` 和 `Vary: Origin`，不返回 wildcard 或 credentials。实际响应继续校验 bearer/Host/Origin，并只向可信 Origin 返回精确 ACAO。失败只返回稳定 `reason_code`，不回显 bearer、nonce、路径或用户内容。
 
+debug WebView navigation 只允许 `http://127.0.0.1:5173` 同源页面，拒绝 `localhost`、其他端口和 HTTPS；release 只允许 `tauri://localhost` 自有 Origin。SSE 由 `DesktopHostAdapter` 持有可取消 body reader；headers 成功后的 body 断流必须进入 degraded，仅刷新一次宿主 session 并用轮换后的 endpoint/bearer 有界重连，第二次失败 fail closed，不保留旧 ready/session。
+
 ### 2.4 健康与能力
 
 - `/health/live`：进程活着；
@@ -85,9 +87,12 @@ crash 时间戳和已知 sidecar 的 pid/start-time/executable identity 可以�
 - 禁止任意远程导航、新窗口和生产 devtools；
 - D1 不开放文件系统 API，因而不存在跨 workspace 文件访问能力；
 - single-instance plugin 必须在其他 plugin 之前初始化。
+- plugin 的真实 second-instance callback 必须调用与测试相同的 `single_instance_action`/effect seam，固定执行 show 后 focus。
 
 ## 5. 验收证据
 
 自动测试覆盖错误 nonce/PID/build/API version/端口、错误 bearer/Host/Origin、HTTP/SSE/WS 一致门禁、第二实例回调、已知 orphan 身份、窗口隐藏/连接断开/crash/显式退出、10 分钟 crash budget。最终在 clean commit 上构建 D0 one-dir sidecar，作为 Tauri external binary 构建 macOS arm64 local dev app，并以临时应用数据目录完成真实 handshake、live/ready/capabilities 和进程清理 smoke。
 
-唯一正式入口为 `python3.12 -m desktop.bundle --output-dir <仓库外新目录>`。入口要求 clean HEAD，从隔离 D0 构建开始，验证 source SHA/dirty/target/依赖 manifest/Harness hash/逐文件 hash/全部 smoke，原子 staging 新 sidecar，显式注入 `SAGE_BUILD_SHA`，构建 `.app` 后核对 bundle 内 receipt、ad-hoc 签名并执行真实 launch/crash/restart/explicit-exit/零残留 smoke。macOS CI 使用同一入口；Developer ID、公证、DMG 仍不在 D1。
+唯一正式入口为 `python3.12 -m desktop.bundle --output-dir <仓库外新目录>`。入口要求 clean HEAD，从隔离 D0 构建开始，验证 source SHA/dirty/target/依赖 manifest/Harness hash/逐文件 hash/全部 smoke，原子 staging 新 sidecar，显式注入 `SAGE_BUILD_SHA`，构建 `.app` 后核对 bundle 内 receipt、ad-hoc 签名并执行真实 launch/crash/restart/WebView 新会话认证/explicit-exit/零残留 smoke。WebView 证据是每个 sidecar 进程只写一次的脱敏 capabilities 访问记录，只含 timestamp/event/state/reason_code。macOS CI 使用同一入口；Developer ID、公证、DMG 仍不在 D1。
+
+CI 固定 GitHub 官方 arm64 `macos-15` runner和 Rust `1.98.0`，本地前置条件见 `desktop/sidecar/README.md`。终止 sidecar 时，只有已验证的目标进程退出后才能清除 orphan；信号失败或 SIGKILL 后同一身份仍存活时必须保留记录、持久化 blocked 状态并写脱敏诊断。`supervisor.rs` 的 800+ 行多职责仍是已登记技术债，D1 不为拆分牺牲现有真机证据；进入 D2 前优先无行为变化地提取 diagnostics/state repository，再承载 Keychain/Provider 生命周期。

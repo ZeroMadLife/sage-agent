@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import threading
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,6 +37,8 @@ def create_desktop_app(
         yield
 
     app = FastAPI(title="Sage Desktop Sidecar", lifespan=lifespan)
+    capability_observed = False
+    capability_observation_lock = threading.Lock()
     if security is not None:
         app.add_middleware(DesktopSecurityMiddleware, security=security)
 
@@ -75,6 +81,11 @@ def create_desktop_app(
 
     @app.get("/capabilities")
     async def capabilities() -> dict[str, object]:
+        nonlocal capability_observed
+        if security is not None:
+            with capability_observation_lock:
+                if not capability_observed:
+                    capability_observed = _record_capability_observation(data_dir)
         return {
             "status": "degraded",
             "api_version": DESKTOP_API_VERSION,
@@ -131,6 +142,28 @@ def create_desktop_app(
         await websocket.close(code=1000)
 
     return app
+
+
+def _record_capability_observation(data_dir: Path) -> bool:
+    """Record one credential-free proof that this process served the WebView."""
+    record = {
+        "timestamp": int(time.time()),
+        "event": "webview_capabilities_observed",
+        "state": "ready",
+        "reason_code": "desktop_session_authenticated",
+    }
+    try:
+        diagnostics = data_dir / "diagnostics"
+        diagnostics.mkdir(parents=True, exist_ok=True)
+        path = diagnostics / "desktop-sidecar.jsonl"
+        descriptor = os.open(path, os.O_APPEND | os.O_CREAT | os.O_WRONLY, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        return True
+    except OSError:
+        return False
 
 
 __all__ = [

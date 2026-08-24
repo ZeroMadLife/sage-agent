@@ -1,9 +1,10 @@
 use sage_desktop_lib::lifecycle::{
-    atomic_write_private, can_clean_orphan, lifecycle_action, single_instance_action,
-    startup_action, terminate_verified, CrashBudget, LifecycleAction, LifecycleEvent,
-    ObservedProcess, OrphanRecord, ProcessSignal, SingleInstanceAction, StartupAction,
-    TerminationOutcome,
+    apply_single_instance_action, atomic_write_private, can_clean_orphan, lifecycle_action,
+    single_instance_action, startup_action, terminate_verified, CrashBudget, LifecycleAction,
+    LifecycleEvent, ObservedProcess, OrphanRecord, ProcessSignal, SingleInstanceAction,
+    StartupAction, TerminationOutcome,
 };
+use std::cell::RefCell;
 use std::fs;
 
 #[test]
@@ -30,10 +31,17 @@ fn persisted_open_circuit_remains_blocked_after_host_restart() {
 
 #[test]
 fn second_instance_only_reveals_the_existing_main_window() {
-    assert_eq!(
-        single_instance_action(),
-        SingleInstanceAction::ShowAndFocusMainWindow
+    let action = single_instance_action();
+    let effects = RefCell::new(Vec::new());
+
+    apply_single_instance_action(
+        action,
+        || effects.borrow_mut().push("show"),
+        || effects.borrow_mut().push("focus"),
     );
+
+    assert_eq!(action, SingleInstanceAction::ShowAndFocusMainWindow);
+    assert_eq!(*effects.borrow(), ["show", "focus"]);
 }
 
 #[test]
@@ -124,6 +132,61 @@ fn sigkill_path_waits_until_the_same_process_is_gone() {
 
     assert_eq!(outcome, TerminationOutcome::KillSent);
     assert_eq!(signals, vec![ProcessSignal::Term, ProcessSignal::Kill]);
+}
+
+#[test]
+fn signal_failure_is_reported_without_claiming_the_process_stopped() {
+    let record = OrphanRecord {
+        pid: 42,
+        start_time: 100,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+    let matching = ObservedProcess {
+        pid: 42,
+        start_time: 100,
+        executable: record.executable.clone(),
+    };
+
+    let error = terminate_verified(
+        &record,
+        || Some(matching.clone()),
+        |_| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        || {},
+        1,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+}
+
+#[test]
+fn process_still_alive_after_sigkill_is_reported_as_timeout() {
+    let record = OrphanRecord {
+        pid: 42,
+        start_time: 100,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+    let matching = ObservedProcess {
+        pid: 42,
+        start_time: 100,
+        executable: record.executable.clone(),
+    };
+    let mut signals = Vec::new();
+
+    let error = terminate_verified(
+        &record,
+        || Some(matching.clone()),
+        |signal| {
+            signals.push(signal);
+            Ok(())
+        },
+        || {},
+        1,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert_eq!(signals, [ProcessSignal::Term, ProcessSignal::Kill]);
 }
 
 #[test]
