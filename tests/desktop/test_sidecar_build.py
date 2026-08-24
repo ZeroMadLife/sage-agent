@@ -438,22 +438,79 @@ def test_packaged_smoke_detects_and_cleans_orphaned_grandchild(tmp_path: Path) -
 def test_packaged_smoke_cleans_process_when_cleanup_snapshot_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    executable = _fake_sidecar(tmp_path, live_mode="ready")
+    executable = _fake_sidecar(tmp_path, live_mode="ready", spawn_orphan=True)
     real_snapshot = sidecar_build._process_snapshot
     snapshot_calls = 0
 
     def flaky_snapshot() -> dict[int, sidecar_build._ProcessState]:
         nonlocal snapshot_calls
         snapshot_calls += 1
-        if snapshot_calls == 2:
+        if snapshot_calls >= 2:
             raise subprocess.CalledProcessError(1, "/bin/ps")
         return real_snapshot()
 
     monkeypatch.setattr(sidecar_build, "_process_snapshot", flaky_snapshot)
 
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(ExceptionGroup, match="smoke and cleanup failed"):
         smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
 
+    sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
+    orphan_pid = int((tmp_path / "orphan.pid").read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(sidecar_pid, 0)
+    with pytest.raises(ProcessLookupError):
+        os.kill(orphan_pid, 0)
+
+
+def test_packaged_smoke_finishes_cleanup_when_both_waits_time_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode="ready")
+    real_wait = subprocess.Popen.wait
+    wait_calls = 0
+
+    def flaky_wait(process: subprocess.Popen[str], timeout: float | None = None) -> int:
+        nonlocal wait_calls
+        args = process.args
+        executable_arg = args[0] if isinstance(args, list | tuple) else args
+        if executable_arg != str(executable):
+            return real_wait(process, timeout)
+        wait_calls += 1
+        if wait_calls <= 2:
+            raise subprocess.TimeoutExpired(process.args, timeout or 0)
+        return real_wait(process, timeout)
+
+    monkeypatch.setattr(subprocess.Popen, "wait", flaky_wait)
+
+    with pytest.raises(ExceptionGroup, match="smoke and cleanup failed"):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(sidecar_pid, 0)
+
+
+def test_packaged_smoke_preserves_protocol_and_cleanup_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode="ready")
+
+    def protocol_failure(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("protocol sentinel")
+
+    def audit_failure() -> dict[int, sidecar_build._ProcessState]:
+        raise subprocess.CalledProcessError(1, "/bin/ps")
+
+    monkeypatch.setattr(sidecar_build, "_validate_liveness", protocol_failure)
+    monkeypatch.setattr(sidecar_build, "_process_snapshot", audit_failure)
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    messages = [str(error) for error in exc_info.value.exceptions]
+    assert "protocol sentinel" in messages
+    assert messages.count("packaged sidecar cleanup audit failed") == 1
+    assert messages.count("packaged sidecar final cleanup audit failed") == 1
     sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
     with pytest.raises(ProcessLookupError):
         os.kill(sidecar_pid, 0)

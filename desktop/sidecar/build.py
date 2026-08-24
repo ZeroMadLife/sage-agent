@@ -553,11 +553,7 @@ def _signal_process_tree(
 ) -> None:
     with suppress(ProcessLookupError):
         os.killpg(process_group_id, signal_number)
-    processes = _process_snapshot()
     for pid in tracked_descendants:
-        process = processes.get(pid)
-        if process is None or process.process_group_id == process_group_id:
-            continue
         with suppress(ProcessLookupError):
             os.kill(pid, signal_number)
 
@@ -598,8 +594,7 @@ def smoke_packaged_artifact(
             process_group_id = process.pid
             tracked_descendants: set[int] = set()
             failure: Exception | None = None
-            graceful_exit = True
-            orphaned: tuple[int, ...] = ()
+            cleanup_failures: list[Exception] = []
             try:
                 startup = _read_startup_receipt(process, timeout)
                 if process.stdout is not None:
@@ -619,12 +614,16 @@ def smoke_packaged_artifact(
             except Exception as exc:
                 failure = exc
             finally:
+                audit_unknown = False
                 try:
                     tracked_descendants.update(
                         _descendant_process_ids(process.pid, _process_snapshot())
                     )
                 except Exception as exc:
-                    failure = failure or exc
+                    audit_unknown = True
+                    cleanup_error = RuntimeError("packaged sidecar cleanup audit failed")
+                    cleanup_error.__cause__ = exc
+                    cleanup_failures.append(cleanup_error)
                 if process.poll() is None:
                     try:
                         _signal_process_tree(
@@ -633,61 +632,95 @@ def smoke_packaged_artifact(
                             signal.SIGTERM,
                         )
                     except Exception as exc:
-                        failure = failure or exc
+                        needs_kill = True
+                        cleanup_error = RuntimeError("packaged sidecar SIGTERM failed")
+                        cleanup_error.__cause__ = exc
+                        cleanup_failures.append(cleanup_error)
+                needs_kill = audit_unknown
                 try:
                     process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    graceful_exit = False
-                    try:
-                        _signal_process_tree(
-                            process_group_id,
-                            tracked_descendants,
-                            signal.SIGKILL,
-                        )
-                    except Exception as exc:
-                        failure = failure or exc
-                    process.wait(timeout=5)
-                try:
-                    orphaned = _wait_for_process_cleanup(
-                        process_group_id,
-                        tracked_descendants,
-                        timeout=0.5,
+                except subprocess.TimeoutExpired as exc:
+                    needs_kill = True
+                    cleanup_error = RuntimeError(
+                        "packaged sidecar did not terminate gracefully"
                     )
-                except Exception as exc:
-                    failure = failure or exc
-                if orphaned:
-                    try:
-                        _signal_process_tree(
-                            process_group_id,
-                            tracked_descendants,
-                            signal.SIGKILL,
-                        )
-                    except Exception as exc:
-                        failure = failure or exc
+                    cleanup_error.__cause__ = exc
+                    cleanup_failures.append(cleanup_error)
+                if not needs_kill:
                     try:
                         remaining = _wait_for_process_cleanup(
                             process_group_id,
                             tracked_descendants,
-                            timeout=5,
+                            timeout=0.5,
                         )
                     except Exception as exc:
-                        failure = failure or exc
-                        remaining = orphaned
-                    if remaining:
-                        orphaned = remaining
-                stderr_stream.seek(0)
-                stderr = stderr_stream.read()
-                if process.stdout is not None:
-                    process.stdout.close()
-            if orphaned:
-                raise RuntimeError(
-                    "packaged sidecar left process group or descendant "
-                    f"processes: {list(orphaned)}"
-                )
-            if not graceful_exit:
-                raise RuntimeError("packaged sidecar did not terminate gracefully")
-            if failure is not None:
-                raise failure
+                        audit_unknown = True
+                        needs_kill = True
+                        cleanup_error = RuntimeError(
+                            "packaged sidecar cleanup audit failed"
+                        )
+                        cleanup_error.__cause__ = exc
+                        cleanup_failures.append(cleanup_error)
+                    else:
+                        if remaining:
+                            needs_kill = True
+                            cleanup_failures.append(
+                                RuntimeError(
+                                    "packaged sidecar left process group or descendant "
+                                    f"processes: {list(remaining)}"
+                                )
+                            )
+                if needs_kill:
+                    try:
+                        _signal_process_tree(
+                            process_group_id,
+                            tracked_descendants,
+                            signal.SIGKILL,
+                        )
+                    except Exception as exc:
+                        cleanup_error = RuntimeError("packaged sidecar SIGKILL failed")
+                        cleanup_error.__cause__ = exc
+                        cleanup_failures.append(cleanup_error)
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired as exc:
+                        cleanup_error = RuntimeError(
+                            "packaged sidecar remained alive after SIGKILL"
+                        )
+                        cleanup_error.__cause__ = exc
+                        cleanup_failures.append(cleanup_error)
+                    process.poll()
+                    try:
+                        final_remaining = _wait_for_process_cleanup(
+                            process_group_id, tracked_descendants, timeout=5
+                        )
+                    except Exception as exc:
+                        cleanup_error = RuntimeError(
+                            "packaged sidecar final cleanup audit failed"
+                        )
+                        cleanup_error.__cause__ = exc
+                        cleanup_failures.append(cleanup_error)
+                    else:
+                        if final_remaining:
+                            cleanup_failures.append(
+                                RuntimeError(
+                                    "packaged sidecar still has process group or descendant "
+                                    f"processes after SIGKILL: {list(final_remaining)}"
+                                )
+                            )
+                    with suppress(subprocess.TimeoutExpired):
+                        process.wait(timeout=0)
+                try:
+                    stderr_stream.seek(0)
+                    stderr = stderr_stream.read()
+                finally:
+                    if process.stdout is not None:
+                        process.stdout.close()
+            failures = ([failure] if failure is not None else []) + cleanup_failures
+            if len(failures) == 1:
+                raise failures[0]
+            if failures:
+                raise ExceptionGroup("packaged sidecar smoke and cleanup failed", failures)
         if process.returncode != 0:
             raise RuntimeError(
                 f"packaged sidecar exited with {process.returncode}: {stderr[-1000:]}"
