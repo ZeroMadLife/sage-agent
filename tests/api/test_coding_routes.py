@@ -1,5 +1,6 @@
 """Coding API route tests."""
 
+import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,6 +10,7 @@ from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
 
+from api import coding as coding_api
 from api.coding import _coding_knowledge_store
 from api.main import create_app
 
@@ -937,6 +939,156 @@ def test_restarted_coding_stream_lazily_rehydrates_ordinary_session(tmp_path: Pa
         assert session_id in restarted_app.state.coding_sessions
 
     assert any(event["type"] == "final" for event in events)
+
+
+def test_websocket_handshake_waits_for_slow_ordinary_session_rehydrate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A successful handshake means the ordinary runtime is already REST-ready."""
+    options = {
+        "coding_model_factory": FakeModel,
+        "coding_workspace_root": tmp_path,
+        "coding_storage_root": tmp_path / ".coding",
+    }
+    with TestClient(create_app(**options)) as first:
+        session_id = first.post("/api/v1/coding/session", json={}).json()["session_id"]
+
+    restarted_app = create_app(**options)
+    original_load = coding_api.load_account_model_context
+    rehydrate_started = threading.Event()
+    allow_rehydrate = threading.Event()
+    websocket_opened = threading.Event()
+    worker_errors: list[BaseException] = []
+
+    async def slow_load(connection, *, include_credentials=False):  # type: ignore[no-untyped-def]
+        rehydrate_started.set()
+        await asyncio.to_thread(allow_rehydrate.wait)
+        return await original_load(connection, include_credentials=include_credentials)
+
+    monkeypatch.setattr(coding_api, "load_account_model_context", slow_load)
+    with TestClient(restarted_app) as restarted:
+
+        def connect() -> None:
+            try:
+                with restarted.websocket_connect(
+                    f"/api/v1/coding/{session_id}/stream"
+                ) as websocket:
+                    websocket_opened.set()
+                    websocket.send_json({"content": "读 README.md"})
+                    _receive_until(websocket, "final")
+            except BaseException as exc:  # pragma: no cover - surfaced by assertion
+                worker_errors.append(exc)
+
+        worker = threading.Thread(target=connect)
+        worker.start()
+        assert rehydrate_started.wait(timeout=2)
+        opened_before_runtime_ready = websocket_opened.wait(timeout=0.05)
+        absent_before_release = session_id not in restarted_app.state.coding_sessions
+
+        allow_rehydrate.set()
+        assert websocket_opened.wait(timeout=2)
+        pending = restarted.get(f"/api/v1/coding/{session_id}/approval/pending")
+        worker.join(timeout=3)
+
+    assert not opened_before_runtime_ready
+    assert absent_before_release
+    assert pending.status_code == 200
+    assert not worker.is_alive()
+    assert worker_errors == []
+
+
+def test_rehydrate_locks_are_session_scoped_single_flight_and_cleaned(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Different sessions restore in parallel while duplicate restores construct once."""
+    options = {
+        "coding_model_factory": FakeModel,
+        "coding_workspace_root": tmp_path,
+        "coding_storage_root": tmp_path / ".coding",
+    }
+    app = create_app(**options)
+    with TestClient(app) as client:
+        session_a = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        session_b = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        app.state.coding_sessions.clear()
+
+        original_load = coding_api.load_account_model_context
+        started = {session_a: threading.Event(), session_b: threading.Event()}
+        allow = threading.Event()
+        load_counts = {session_a: 0, session_b: 0}
+
+        async def slow_load(connection, *, include_credentials=False):  # type: ignore[no-untyped-def]
+            session_id = str(connection.path_params["session_id"])
+            load_counts[session_id] += 1
+            started[session_id].set()
+            await asyncio.to_thread(allow.wait)
+            return await original_load(connection, include_credentials=include_credentials)
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", slow_load)
+        responses: list[int] = []
+
+        def resume(session_id: str) -> None:
+            response = client.post(f"/api/v1/coding/session/{session_id}/resume")
+            responses.append(response.status_code)
+
+        workers = [
+            threading.Thread(target=resume, args=(session_a,)),
+            threading.Thread(target=resume, args=(session_a,)),
+            threading.Thread(target=resume, args=(session_b,)),
+        ]
+        for worker in workers:
+            worker.start()
+        session_a_started = started[session_a].wait(timeout=2)
+        session_b_started = started[session_b].wait(timeout=2)
+        counts_while_blocked = dict(load_counts)
+
+        allow.set()
+        for worker in workers:
+            worker.join(timeout=3)
+
+    assert session_a_started
+    assert session_b_started
+    assert counts_while_blocked == {session_a: 1, session_b: 1}
+    assert sorted(responses) == [200, 200, 200]
+    assert all(not worker.is_alive() for worker in workers)
+    assert app.state.coding_session_rehydrate_locks == {}
+
+
+def test_failed_rehydrate_cleans_session_lock_and_can_retry(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """A bounded restore failure leaves no runtime or lock entry behind."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        app.state.coding_sessions.clear()
+        original_load = coding_api.load_account_model_context
+
+        async def failed_load(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("credential-secret-must-not-leak")
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", failed_load)
+        failed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+        assert failed.status_code == 503
+        assert failed.json()["detail"]["code"] == "coding_session_rehydrate_failed"
+        assert "credential-secret-must-not-leak" not in failed.text
+        assert session_id not in app.state.coding_sessions
+        assert app.state.coding_session_rehydrate_locks == {}
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", original_load)
+        retried = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+    assert retried.status_code == 200
+    assert session_id in app.state.coding_sessions
+    assert app.state.coding_session_rehydrate_locks == {}
 
 
 def test_resume_recovers_an_interrupted_persisted_run_before_rehydrating(tmp_path: Path) -> None:

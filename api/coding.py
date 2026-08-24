@@ -8,8 +8,8 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator, Mapping
-from contextlib import suppress
-from dataclasses import replace
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass, replace
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -117,7 +117,6 @@ from api.schemas import (
     CodingTimelineEvent,
     CodingTimelineResponse,
     CodingUsageSummary,
-    ErrorEvent,
     HarnessCapabilitiesResponse,
     HarnessCapabilityHealthItem,
     HarnessCapabilityHealthResponse,
@@ -240,6 +239,26 @@ from core.learning import (
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 logger = logging.getLogger(__name__)
+
+
+class CodingRuntimeRehydrateError(RuntimeError):
+    """Bound an internal runtime restore failure at public transport edges."""
+
+    code = "coding_session_rehydrate_failed"
+
+    @property
+    def public_detail(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": "Coding session runtime could not be restored",
+            "retryable": True,
+        }
+
+
+@dataclass(slots=True)
+class _CodingRuntimeRehydrateLockEntry:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 def _port_available(port: object) -> bool:
@@ -2416,7 +2435,10 @@ async def resume_coding_session(
 ) -> CodingSessionResponse:
     """Rehydrate a persisted coding runtime session."""
     _require_valid_session_id(session_id)
-    runtime = await _rehydrate_coding_runtime(request, session_id)
+    try:
+        runtime = await _rehydrate_coding_runtime(request, session_id)
+    except CodingRuntimeRehydrateError as exc:
+        raise HTTPException(status_code=503, detail=exc.public_detail) from exc
     return CodingSessionResponse(
         session_id=session_id,
         workspace_root=str(runtime.workspace.root.resolve()),
@@ -2428,7 +2450,51 @@ async def resume_coding_session(
     )
 
 
+@asynccontextmanager
+async def _coding_runtime_rehydrate_lock(
+    connection: HTTPConnection,
+    session_id: str,
+) -> AsyncGenerator[None, None]:
+    """Serialize one session restore while allowing unrelated sessions to proceed."""
+    guard: asyncio.Lock = connection.app.state.coding_session_rehydrate_locks_guard
+    entries: dict[str, _CodingRuntimeRehydrateLockEntry] = (
+        connection.app.state.coding_session_rehydrate_locks
+    )
+    async with guard:
+        entry = entries.get(session_id)
+        if entry is None:
+            entry = _CodingRuntimeRehydrateLockEntry(lock=asyncio.Lock())
+            entries[session_id] = entry
+        entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        async with guard:
+            entry.users -= 1
+            if entry.users == 0 and entries.get(session_id) is entry:
+                entries.pop(session_id, None)
+
+
 async def _rehydrate_coding_runtime(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Restore one runtime with a bounded public failure contract."""
+    try:
+        return await _rehydrate_coding_runtime_inner(connection, session_id)
+    except (HTTPException, CodingRuntimeRehydrateError):
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Coding runtime rehydrate failed for %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        raise CodingRuntimeRehydrateError from exc
+
+
+async def _rehydrate_coding_runtime_inner(
     connection: HTTPConnection,
     session_id: str,
 ) -> CodingRuntime:
@@ -2438,8 +2504,7 @@ async def _rehydrate_coding_runtime(
     if runtime is not None:
         await connection.app.state.coding_run_registry.hydrate(session_id)
         return runtime
-    lock: asyncio.Lock = connection.app.state.coding_session_rehydrate_lock
-    async with lock:
+    async with _coding_runtime_rehydrate_lock(connection, session_id):
         runtime = sessions.get(session_id)
         if runtime is not None:
             return runtime
@@ -2961,20 +3026,8 @@ async def _start_accepted_learning_kickoff(
 @router.websocket("/api/v1/coding/{session_id}/stream")
 async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     """Replay and stream durable events without owning the server run task."""
-    await websocket.accept()
     if not _valid_session_id(session_id):
         await websocket.close(code=1008, reason="invalid coding session id")
-        return
-    try:
-        runtime = await _rehydrate_coding_runtime(websocket, session_id)
-    except HTTPException as exc:
-        if exc.status_code == 404:
-            await websocket.send_json(
-                ErrorEvent(message=f"Unknown coding session: {session_id}").model_dump()
-            )
-            await websocket.close()
-            return
-        await websocket.close(code=1008, reason="coding_session_rehydrate_failed")
         return
     raw_after = websocket.query_params.get("after", "0")
     try:
@@ -2984,6 +3037,18 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     except ValueError:
         await websocket.close(code=1008, reason="after must be a non-negative integer")
         return
+    try:
+        runtime = await _rehydrate_coding_runtime(websocket, session_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            await websocket.close(code=1008, reason="coding_session_not_found")
+            return
+        await websocket.close(code=1008, reason="coding_session_rehydrate_failed")
+        return
+    except CodingRuntimeRehydrateError as exc:
+        await websocket.close(code=1011, reason=exc.code)
+        return
+    await websocket.accept()
     coordinator = await websocket.app.state.coding_run_registry.hydrate(session_id)
     try:
         await _start_accepted_learning_kickoff(websocket.app, runtime, coordinator)

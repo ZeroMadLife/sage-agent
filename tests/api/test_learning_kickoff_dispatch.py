@@ -4,12 +4,14 @@ import asyncio
 import json
 import os
 import sqlite3
+import threading
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from api import coding as coding_api
 from api.coding import _start_accepted_learning_kickoff
 from api.main import create_app
 from core.coding.persistence import CodingSessionStore
@@ -164,6 +166,70 @@ def test_restarted_coding_stream_lazily_rehydrates_and_starts_accepted_kickoff(
     turn_events = journal.events_for_run(accepted["turn_run_id"])
     assert sum(event.payload.get("event") == "run_started" for event in turn_events) == 1
     assert sum(event.kind == "terminal" for event in turn_events) == 1
+
+
+def test_learning_websocket_handshake_waits_for_slow_runtime_rehydrate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Learning exposes the shared session only after its runtime is REST-ready."""
+    first_app = _app(tmp_path)
+    with TestClient(first_app) as client:
+        task, activation = _active_task(client)
+        accepted = _post(
+            client,
+            task["task_id"],
+            key=f"kickoff-{task['task_id']}-r1",
+        ).json()
+
+    restarted_app = _app(tmp_path)
+    original_load = coding_api.load_account_model_context
+    rehydrate_started = threading.Event()
+    allow_rehydrate = threading.Event()
+    websocket_opened = threading.Event()
+    worker_errors: list[BaseException] = []
+
+    async def slow_load(connection, *, include_credentials=False):  # type: ignore[no-untyped-def]
+        rehydrate_started.set()
+        await asyncio.to_thread(allow_rehydrate.wait)
+        return await original_load(connection, include_credentials=include_credentials)
+
+    monkeypatch.setattr(coding_api, "load_account_model_context", slow_load)
+    with TestClient(restarted_app) as client:
+
+        def connect() -> None:
+            try:
+                with client.websocket_connect(
+                    f"/api/v1/coding/{activation['session_id']}/stream?after=0"
+                ) as websocket:
+                    websocket_opened.set()
+                    for _ in range(30):
+                        event = websocket.receive_json()
+                        if (
+                            event["kind"] == "terminal"
+                            and event["run_id"] == accepted["turn_run_id"]
+                        ):
+                            return
+                    raise AssertionError("accepted kickoff did not reach a terminal event")
+            except BaseException as exc:  # pragma: no cover - surfaced by assertion
+                worker_errors.append(exc)
+
+        worker = threading.Thread(target=connect)
+        worker.start()
+        assert rehydrate_started.wait(timeout=2)
+        opened_before_runtime_ready = websocket_opened.wait(timeout=0.05)
+        absent_before_release = activation["session_id"] not in restarted_app.state.coding_sessions
+
+        allow_rehydrate.set()
+        assert websocket_opened.wait(timeout=2)
+        pending = client.get(f"/api/v1/coding/{activation['session_id']}/approval/pending")
+        worker.join(timeout=3)
+
+    assert not opened_before_runtime_ready
+    assert absent_before_release
+    assert pending.status_code == 200
+    assert not worker.is_alive()
+    assert worker_errors == []
 
 
 @pytest.mark.parametrize("point", ["after_intent", "after_journal", "after_accepted"])
