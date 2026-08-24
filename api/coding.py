@@ -170,6 +170,7 @@ from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalPort,
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_public import LearningPublicProjector
 from core.harness.learning_scope import (
     LearningReadonlyScope,
     LearningReadonlyScopeResolver,
@@ -297,29 +298,30 @@ def _turn_context_plan_failure_events(
     )
 
 
-def _learning_scope_failure_events(run_id: str, reason_code: str) -> tuple[RunEvent, RunEvent]:
+def _learning_scope_failure_events(
+    run_id: str,
+    reason_code: str,
+    *,
+    runtime_profile: str = "deerflow_v2",
+) -> tuple[RunEvent, RunEvent]:
     """Return one content-free scope denial and a stable terminal event."""
     return (
         RunEvent(
             kind="harness",
             status="error",
-            payload={
-                "type": "learning_scope_rejected",
-                "version": 1,
-                "run_id": run_id,
-                "status": "denied",
-                "reason_code": reason_code,
-            },
+            payload=LearningPublicProjector.scope_rejection(
+                run_id=run_id,
+                reason_code=reason_code,
+            ),
             event_id=f"harness:{run_id}:learning-scope-denied",
         ),
         RunEvent(
             kind="terminal",
             status="error",
-            payload={
-                "event": "run_error",
-                "runtime_profile": "deerflow_v2",
-                "error_type": "learning_scope_conflict",
-            },
+            payload=LearningPublicProjector.terminal_failure(
+                reason_code=reason_code,
+                runtime_profile=runtime_profile,
+            ),
             event_id=f"harness:{run_id}:terminal",
         ),
     )
@@ -330,13 +332,7 @@ def _learning_workspace_diff_payload(
     payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Return a path-free Learning diff receipt for browser timelines."""
-    changed_files = payload.get("changed_files")
-    return {
-        "type": "workspace_diff_ready",
-        "run_id": run_id,
-        "status": "completed",
-        "changed_file_count": len(changed_files) if isinstance(changed_files, list) else 0,
-    }
+    return LearningPublicProjector.workspace_diff(run_id, payload)
 
 
 def _learning_run_detail_payload(
@@ -345,77 +341,12 @@ def _learning_run_detail_payload(
     task_id: str,
 ) -> dict[str, Any]:
     """Project an internal Learning trace into browser-safe identity receipts."""
-    run_id = str(payload.get("run_id", ""))[:256]
-    raw_events = payload.get("events")
-    events = (
-        [
-            _learning_run_event(event, task_id=task_id)
-            for event in raw_events
-            if isinstance(event, Mapping)
-        ]
-        if isinstance(raw_events, list)
-        else []
-    )
-    raw_audit = payload.get("audit")
-    audit = raw_audit if isinstance(raw_audit, Mapping) else {}
-    status = str(audit.get("status", "running"))[:64] or "running"
-    tool_count = sum(event.get("type") == "tool_call" for event in events)
-    completed_tool_count = sum(
-        event.get("type") == "tool_result" and event.get("status") != "error" for event in events
-    )
-    failed_tool_count = sum(
-        event.get("type") == "tool_result" and event.get("status") == "error" for event in events
-    )
-    return {
-        "run_id": run_id,
-        "events": events,
-        "timeline": [],
-        "audit": {
-            "run_id": run_id,
-            "status": status,
-            "headline": f"Learning run: {status}",
-            "tool_count": tool_count,
-            "completed_tool_count": completed_tool_count,
-            "failed_tool_count": failed_tool_count,
-            "approval_count": 0,
-            "duration_ms": _non_negative_int(audit.get("duration_ms")),
-            "changed_files": [],
-            "steps": [],
-        },
-    }
+    return LearningPublicProjector.run_detail(payload, task_id=task_id)
 
 
 def _learning_run_summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Remove paths and previews from one Learning run-list item."""
-    run_id = str(payload.get("run_id", ""))[:256]
-    status = str(payload.get("status", "running"))[:64] or "running"
-    raw_audit = payload.get("audit")
-    audit = raw_audit if isinstance(raw_audit, Mapping) else {}
-    tool_count = _non_negative_int(payload.get("tool_count"))
-    error_count = _non_negative_int(payload.get("error_count"))
-    return {
-        "run_id": run_id,
-        "status": status,
-        "event_count": _non_negative_int(payload.get("event_count")),
-        "tool_count": tool_count,
-        "error_count": error_count,
-        "last_event_type": str(payload.get("last_event_type", ""))[:128],
-        "started_at": str(payload.get("started_at", ""))[:80],
-        "updated_at": str(payload.get("updated_at", ""))[:80],
-        "changed_files": [],
-        "audit": {
-            "run_id": run_id,
-            "status": status,
-            "headline": f"Learning run: {status}",
-            "tool_count": tool_count,
-            "completed_tool_count": max(0, tool_count - error_count),
-            "failed_tool_count": min(tool_count, error_count),
-            "approval_count": 0,
-            "duration_ms": _non_negative_int(audit.get("duration_ms")),
-            "changed_files": [],
-            "steps": [],
-        },
-    }
+    return LearningPublicProjector.run_summary(payload)
 
 
 def _learning_run_event(
@@ -423,39 +354,7 @@ def _learning_run_event(
     *,
     task_id: str,
 ) -> dict[str, Any]:
-    public: dict[str, Any] = {
-        "type": str(payload.get("type", "custom"))[:128],
-        "task_id": task_id[:256],
-    }
-    for key in (
-        "run_id",
-        "parent_run_id",
-        "child_run_id",
-        "agent_run_id",
-        "tool_call_id",
-        "capability_id",
-        "approval_id",
-        "interrupt_id",
-    ):
-        value = payload.get(key)
-        if isinstance(value, str) and value.strip():
-            public[key] = value.strip()[:256]
-    status = payload.get("status")
-    public["status"] = (
-        status.strip()[:64]
-        if isinstance(status, str) and status.strip()
-        else "error"
-        if payload.get("is_error") is True
-        else "completed"
-    )
-    reason = payload.get("reason_code") or payload.get("error_code")
-    if isinstance(reason, str) and reason.strip():
-        public["reason_code"] = reason.strip()[:128]
-    return public
-
-
-def _non_negative_int(value: object) -> int:
-    return value if type(value) is int and value >= 0 else 0
+    return LearningPublicProjector.event(payload, task_id=task_id)
 
 
 def _graph_approval_resume_value(
@@ -655,26 +554,12 @@ async def _runtime_timeline_events(
         if learning_scope is not None and runtime.runtime_profile != "deerflow_v2":
             raise LearningScopeConflict("learning_scope_runtime_profile_unsupported")
     except LearningScopeConflict as exc:
-        yield RunEvent(
-            kind="system",
-            status="error",
-            payload={
-                "type": "learning_scope_rejected",
-                "status": "denied",
-                "reason_code": exc.code,
-            },
-            event_id=f"learning-scope:{run_id}:denied",
-        )
-        yield RunEvent(
-            kind="terminal",
-            status="error",
-            payload={
-                "event": "run_error",
-                "runtime_profile": runtime.runtime_profile,
-                "error_type": "learning_scope_conflict",
-            },
-            event_id=f"learning-scope:{run_id}:terminal",
-        )
+        for failure_event in _learning_scope_failure_events(
+            run_id,
+            exc.code,
+            runtime_profile=runtime.runtime_profile,
+        ):
+            yield failure_event
         return
     if runtime.runtime_profile == "deerflow_v2":
         if harness_checkpointer is None:
@@ -942,7 +827,14 @@ async def _deerflow_timeline_events(
                 yield RunEvent(
                     kind="user",
                     status="completed",
-                    payload={"type": "user", "content": content, "run_id": run_id},
+                    payload=(
+                        LearningPublicProjector.user_turn_receipt(
+                            task_id=learning_scope.task_id,
+                            run_id=run_id,
+                        )
+                        if learning_scope is not None
+                        else {"type": "user", "content": content, "run_id": run_id}
+                    ),
                     event_id=f"harness:{run_id}:user",
                 )
             else:
@@ -1042,6 +934,13 @@ async def _deerflow_timeline_events(
             if memory_result is not None:
                 for memory_event in memory_retrieval_events(memory_result, run_id=run_id):
                     yield memory_event
+        if learning_scope is not None:
+            try:
+                learning_scope.assert_required_sources(frozenset(retrieval_sources or ()))
+            except LearningScopeConflict as exc:
+                for event in _learning_scope_failure_events(run_id, exc.code):
+                    yield event
+                return
         context_event = (
             None if is_resume else context_status_event(runtime, run_id, durable_context)
         )
@@ -1167,12 +1066,22 @@ async def _deerflow_timeline_events(
             ):
                 yield event
             return
-        if mcp_catalog is not None and not is_resume:
+        if mcp_catalog is not None and not is_resume and learning_scope is None:
             yield await mcp_catalog_event(
                 mcp_catalog,
                 session_id=runtime.session_id,
                 run_id=run_id,
                 servers=mcp_servers,
+            )
+        elif learning_scope is not None and not is_resume:
+            yield RunEvent(
+                kind="harness",
+                status="blocked",
+                payload=LearningPublicProjector.mcp_blocked_receipt(
+                    task_id=learning_scope.task_id,
+                    run_id=run_id,
+                ),
+                event_id=f"harness:{run_id}:learning-mcp-blocked",
             )
         sandbox = create_coding_sandbox(
             runtime.workspace,
@@ -1607,6 +1516,7 @@ async def _deerflow_timeline_events(
                     "summary_text": summary_text,
                 }
             response_parts: list[str] = []
+            learning_output_observed = False
             current_resume_attempt = resume_attempt
             resume = is_resume
             current_resume_value = resume_value
@@ -1630,6 +1540,8 @@ async def _deerflow_timeline_events(
                 ):
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
+                    elif event.payload.get("type") == "learning_model_output":
+                        learning_output_observed = True
                     yield event
                     observed_retrieval = retrieval_source_event(event, run_id=run_id)
                     if observed_retrieval is not None:
@@ -1660,9 +1572,25 @@ async def _deerflow_timeline_events(
                     approval_to_resume,
                     choice,
                 )
+        except LearningScopeConflict as exc:
+            for event in _learning_scope_failure_events(run_id, exc.code):
+                yield event
+            return
         finally:
             await sandbox.aclose()
         answer = "".join(response_parts).strip()
+        if learning_scope is not None:
+            if not learning_output_observed:
+                raise RuntimeError(
+                    "deerflow_v2 learning graph completed without a public output receipt"
+                )
+            yield RunEvent(
+                kind="terminal",
+                status="completed",
+                payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
+                event_id=f"harness:{run_id}:terminal",
+            )
+            return
         if not answer:
             raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
         runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
@@ -1810,12 +1738,34 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
         run_id=source_run_id,
         events=await asyncio.to_thread(journal.events_for_run, source_run_id),
     )
-    if terminal.status != "completed":
+    learning_scope_failure: str | None = None
+    if terminal.status == "completed" and isinstance(frozen_goal.get("learning_goal"), Mapping):
+        try:
+            await asyncio.to_thread(_assert_goal_evaluator_learning_scope, app, runtime)
+        except LearningScopeConflict as exc:
+            learning_scope_failure = exc.code
+            await asyncio.to_thread(
+                _append_goal_learning_scope_failure,
+                journal,
+                source_run_id,
+                exc.code,
+            )
+    if terminal.status != "completed" or learning_scope_failure is not None:
         decision = GoalEvaluationDecision(
             status="blocked",
-            blocker="run_failed" if terminal.status == "error" else "external_wait",
+            blocker=(
+                "external_wait"
+                if learning_scope_failure is not None
+                else "run_failed"
+                if terminal.status == "error"
+                else "external_wait"
+            ),
             evidence_refs=(),
-            next_action="上一轮未正常完成；请检查运行状态后由用户决定是否继续",
+            next_action=(
+                "Learning 只读范围已变化；请重新验证任务后继续"
+                if learning_scope_failure is not None
+                else "上一轮未正常完成；请检查运行状态后由用户决定是否继续"
+            ),
             criteria=tuple(
                 GoalCriterionDecision(index=index, status="blocked", evidence_refs=())
                 for index, _ in enumerate(request.completion_criteria)
@@ -1853,6 +1803,36 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
     await _drain_mastery_outbox(app, session_id)
     if result.reservation is not None:
         await _start_pending_goal_followup(app, session_id)
+
+
+def _assert_goal_evaluator_learning_scope(app: Any, runtime: CodingRuntime) -> None:
+    """Reload every active Learning authority before the evaluator model call."""
+    resolver = getattr(app.state, "learning_readonly_scope_resolver", None)
+    scope = _resolve_runtime_learning_scope(runtime, resolver)
+    if scope is None or resolver is None:
+        raise LearningScopeConflict("learning_scope_not_active")
+    scope.assert_current(resolver.revalidate(scope))
+
+
+def _append_goal_learning_scope_failure(
+    journal: SessionEventJournal,
+    run_id: str,
+    reason_code: str,
+) -> None:
+    """Persist one content-free evaluator denial without replacing the run terminal."""
+    try:
+        journal.append(
+            run_id=run_id,
+            kind="harness",
+            status="error",
+            payload=LearningPublicProjector.scope_rejection(
+                run_id=run_id,
+                reason_code=reason_code,
+            ),
+            event_id=f"harness:{run_id}:goal-evaluator-learning-scope",
+        )
+    except SessionEventJournalError:
+        return
 
 
 async def _drain_mastery_outbox(app: Any, session_id: str) -> None:

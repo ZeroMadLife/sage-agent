@@ -19,6 +19,7 @@ import httpx
 from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
 from pydantic import BaseModel, Field, field_validator
 from sage_harness import (
+    PolicyAwareWebFetchPort,
     ToolArtifactPort,
     WebFetchedDocument,
     WebFetchPort,
@@ -339,8 +340,7 @@ async def fetch_web_evidence(
     if not _MIN_TOKEN_BUDGET <= token_budget <= _MAX_TOKEN_BUDGET:
         raise ValueError("token_budget must be between 256 and 8000")
     if domains:
-        policy_fetch = getattr(port, "fetch_with_policy", None)
-        if not callable(policy_fetch):
+        if not isinstance(port, PolicyAwareWebFetchPort):
             return (
                 json.dumps(
                     {
@@ -356,7 +356,7 @@ async def fetch_web_evidence(
                 ),
                 {},
             )
-        result = await policy_fetch(validated_url, domains=tuple(domains))
+        result = await port.fetch_with_policy(validated_url, domains=tuple(domains))
     else:
         result = await port.fetch(validated_url)
     if result.document is None:

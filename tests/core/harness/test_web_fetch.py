@@ -10,7 +10,7 @@ from pathlib import Path
 
 import httpx
 from langchain_core.messages import ToolMessage
-from sage_harness import WebFetchResult
+from sage_harness import PolicyAwareWebFetchPort, WebFetchResult
 from sage_harness.runtime.events import HarnessStreamItem
 
 from core.coding.persistence.tool_result_store import ToolResultStore
@@ -145,6 +145,17 @@ def test_fetch_revalidates_frozen_domain_before_cross_domain_redirect() -> None:
     assert result.status == "unavailable"
     assert result.error_code == "source_policy_domain_forbidden"
     assert seen == ["https://example.com/start"]
+
+
+def test_safe_fetch_adapter_implements_explicit_policy_aware_port() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html><body>evidence</body></html>",
+        )
+
+    assert isinstance(_adapter(handler), PolicyAwareWebFetchPort)
 
 
 def test_fetch_evidence_preserves_legacy_port_contract_without_domain_policy(

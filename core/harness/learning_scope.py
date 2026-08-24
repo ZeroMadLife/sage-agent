@@ -208,6 +208,11 @@ class LearningReadonlyScope:
         ):
             raise LearningScopeConflict("learning_scope_source_policy_mismatch")
 
+    def assert_required_sources(self, selected_sources: frozenset[str]) -> None:
+        """Do not let a required Knowledge route degrade into an ungrounded model call."""
+        if self.knowledge_policy == "required" and "knowledge" not in selected_sources:
+            raise LearningScopeConflict("learning_scope_source_gap")
+
     def skill_allowed_tool_names(
         self,
         lifecycle: SkillLifecycleSnapshot,

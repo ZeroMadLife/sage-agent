@@ -556,7 +556,6 @@ def build_deerflow_coding_tool_bundle(
         ),
     )
 
-    execution_tools = [*resident_tools, *deferred_tools]
     catalog_registry = capability_registry
     catalog_residents = resident_tools
     catalog_deferred = deferred_tools
@@ -590,9 +589,6 @@ def build_deerflow_coding_tool_bundle(
         surface="coding",
         allowed_tool_names=active_skill_allowed_tools,
     )
-    if learning_scope is not None:
-        graph_names = {tool.name for tool in graph_tools}
-        graph_tools.extend(tool for tool in execution_tools if tool.name not in graph_names)
     visible_tools = [*catalog_residents, *catalog_deferred]
     return CodingToolBundle(
         tuple(graph_tools),

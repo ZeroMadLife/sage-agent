@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 已形成 L1 本地候选，三镜头独立复审通过并等待中枢复审；后续切片未开始
+> 状态：A1、A2 已迁移到 L0；A3 首个候选 `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1` 中枢复审未通过，修复候选等待重新复审；后续切片未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
-| A3 Learning allowlist | L1 本地候选，三镜头通过 | `feat/learning-readonly-scope-v1` | active receipt 已接入模型 catalog 过滤、ToolNode 执行前 canonical 重验与安全 denial receipt；尚待中枢复审，未合入 `dev/sage-v7` |
+| A3 Learning allowlist | L1 修复候选，待中枢复审 | `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1`（首个未通过候选） | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验与统一安全投影；修复提交尚待重新复审，未合入 `dev/sage-v7` |
 | A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -228,7 +228,9 @@ git diff --check
 > Retrieval Gate 的 `selected_sources` 在写 Timeline 与 TurnContextPlan 前按同一 scope 收敛：
 > `allowed_when_insufficient` 在没有 durable sufficiency receipt 时只声明并路由 Knowledge，
 > 不再公开一个真实入口不可用的 Web source。model 前的 canonical 漂移保留稳定
-> `learning_scope_*` 冲突，不包装成 Provider 故障。
+> `learning_scope_*` 冲突，不包装成 Provider 故障。`knowledge=required` 但 Knowledge 当前不可用时，
+> L1 只保证 Provider 前 `learning_scope_source_gap`；Knowledge zero-hit 后的完整 sufficiency receipt、
+> Web 提升和引用完整性仍由 L3 实现。
 
 **交付行为**
 
@@ -244,11 +246,14 @@ git diff --check
 
 **验收证据**
 
-- `不要联网` 的任务首轮不存在 Web/Research capability；无本地来源返回 `source_gap`。
+- `不要联网` 的任务首轮不存在 Web/Research capability；`knowledge=required` 且 Knowledge 不可用时在 Provider 前返回 `learning_scope_source_gap`。Knowledge zero-hit 的 sufficiency 尚未实现。
 - 伪造 tool call、改写 capability revision、重放旧 plan 均被拒绝，且不触发真实工具。
 - 降级或删除 Session 的 Learning marker 仍由 active repository binding 识别并拒绝，Run API 不恢复原始 trace/diff。
 - Skill 仅可发现但未激活时不扩大权限；策略解析异常时保留最小框架安全工具。
 - Learning Timeline、Run List/Detail 和 workspace diff 公开投影不包含 query、source path、Skill prompt、网页全文或 token；原始 child trace 仍是 `.coding/` 内部恢复数据，不是浏览器合同。
+- Learning stream、Timeline、Run List/Detail 和 workspace diff 复用同一个公开 projector；AIMessage 正文不进入 Learning 公共审计事件。
+- Learning 完全跳过 MCP catalog port；不读取 server/transport/tool names，catalog 故障不能阻断 Learning。
+- frozen domains 非空时，仅显式实现 policy-aware Web port 才能获得 `web:fetch`。
 
 **依赖与非目标**
 
@@ -264,6 +269,10 @@ uv run pytest tests/api/test_coding_surface_context.py tests/api/test_coding_dee
 uv run ruff check api core packages tests
 git diff --check
 ```
+
+当前修复候选的已执行事实：L0/L1 与普通 Coding 相邻组 `216 passed`，完整普通 Coding
+Routes `58 passed`，Mypy `248 source files` 无问题；未触及 frontend，frontend test/build
+为 N/A。Standards/Spec/Runtime 三镜头仍待中枢重新复审。
 
 ### Slice A4：Assistant 任务确认与进入会话
 

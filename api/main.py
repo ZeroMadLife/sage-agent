@@ -15,6 +15,7 @@ from sage_harness import (
     HarnessConfig,
     McpCatalogPort,
     McpManager,
+    PolicyAwareWebFetchPort,
     WebFetchPort,
     WebSearchPort,
 )
@@ -525,6 +526,10 @@ def create_app(
         web_fetch_available=(
             app.state.coding_web_fetch_port is not None
             and getattr(app.state.coding_web_fetch_port, "available", True)
+        ),
+        web_fetch_policy_aware=isinstance(
+            app.state.coding_web_fetch_port,
+            PolicyAwareWebFetchPort,
         ),
     )
     app.state.learning_activation_service = LearningActivationService(

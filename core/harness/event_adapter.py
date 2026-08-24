@@ -15,6 +15,7 @@ from sage_harness.runtime.events import (
 )
 
 from core.coding.run_coordinator import RunEvent
+from core.harness.learning_public import LearningPublicProjector
 
 _PUBLIC_TOOL_CONTENT_LIMIT = 4_000
 _PUBLIC_KNOWLEDGE_CITATION_LIMIT = 12
@@ -146,6 +147,7 @@ class HarnessEventAdapter:
             for name, capability_id in (learning_capability_ids_by_tool_name or {}).items()
             if str(name).strip() and str(capability_id).strip()
         }
+        self._learning_model_output_seen = False
 
     def adapt(self, item: HarnessStreamItem) -> tuple[RunEvent, ...]:
         """Return zero or more Sage events for one graph stream item."""
@@ -159,6 +161,9 @@ class HarnessEventAdapter:
 
     def finish(self) -> tuple[RunEvent, ...]:
         """Flush a trailing public fragment after the graph stream closes."""
+        if self._learning_scope_task_id:
+            self._assistant_protocol_filter.finish()
+            return ()
         content = self._assistant_protocol_filter.finish()
         if not content:
             return ()
@@ -207,6 +212,21 @@ class HarnessEventAdapter:
                             "message_id": projected.get("id", ""),
                         }
                 return ()
+            if self._learning_scope_task_id:
+                if not str(content) or self._learning_model_output_seen:
+                    return ()
+                self._learning_model_output_seen = True
+                return (
+                    self._event(
+                        "assistant",
+                        "completed",
+                        LearningPublicProjector.model_output_receipt(
+                            task_id=self._learning_scope_task_id,
+                            run_id=self.run_id,
+                        ),
+                        source_event_id=source_event_id,
+                    ),
+                )
             content = self._assistant_protocol_filter.feed(str(content))
             if content:
                 return (
@@ -229,17 +249,20 @@ class HarnessEventAdapter:
             if isinstance(learning_scope, Mapping):
                 tool_call_id = str(projected.get("tool_call_id", ""))
                 self._discard_pending_tool_call(tool_call_id, tool_name)
+                public = LearningPublicProjector.event(
+                    {
+                        "type": "learning_scope_denied",
+                        "tool_call_id": tool_call_id,
+                        "status": "denied",
+                        "reason_code": learning_scope.get("reason_code"),
+                    },
+                    task_id=_public_string(learning_scope.get("task_id"), 256),
+                )
                 return (
                     self._event(
                         "tool",
                         "error",
-                        {
-                            "type": "learning_scope_denied",
-                            "task_id": _public_string(learning_scope.get("task_id"), 256),
-                            "tool_call_id": tool_call_id,
-                            "status": "denied",
-                            "reason_code": _public_string(learning_scope.get("reason_code"), 128),
-                        },
+                        public,
                         source_event_id=source_event_id,
                     ),
                 )
@@ -578,35 +601,17 @@ class HarnessEventAdapter:
         }:
             return ()
 
-        public: dict[str, Any] = {
-            "type": event_type,
-            "task_id": self._learning_scope_task_id,
-        }
-        for key in (
-            "capability_id",
-            "tool_call_id",
-            "approval_id",
-            "interrupt_id",
-            "agent_run_id",
-            "child_run_id",
-            "parent_run_id",
-        ):
-            value = _public_string(payload.get(key), 256)
-            if value:
-                public[key] = value
-        if event_type.startswith("subagent") and "agent_run_id" not in public:
-            child_run_id = str(public.get("child_run_id", ""))
+        projected = dict(payload)
+        projected["status"] = _learning_event_status(event_type, payload.get("status"))
+        if event_type.startswith("subagent") and not projected.get("agent_run_id"):
+            child_run_id = _public_string(projected.get("child_run_id"), 256)
             if child_run_id:
-                public["agent_run_id"] = child_run_id
-
-        event_status = _learning_event_status(event_type, payload.get("status"))
-        public["status"] = event_status
-        reason_code = _public_string(
-            payload.get("reason_code") or payload.get("error_code"),
-            128,
+                projected["agent_run_id"] = child_run_id
+        public = LearningPublicProjector.event(
+            projected,
+            task_id=self._learning_scope_task_id,
         )
-        if reason_code:
-            public["reason_code"] = reason_code
+        event_status = str(public["status"])
         kind = (
             "approval"
             if event_type.startswith("approval")

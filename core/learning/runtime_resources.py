@@ -52,6 +52,7 @@ class SageLearningActivationResources:
         knowledge_available: bool,
         web_search_available: bool,
         web_fetch_available: bool,
+        web_fetch_policy_aware: bool = False,
     ) -> None:
         self.storage_root = storage_root.resolve()
         self.workspace_root = workspace_root.resolve()
@@ -61,6 +62,7 @@ class SageLearningActivationResources:
         self.knowledge_available = knowledge_available
         self.web_search_available = web_search_available
         self.web_fetch_available = web_fetch_available
+        self.web_fetch_policy_aware = web_fetch_policy_aware
 
     def ensure_session(self, *, activation: LearningActivationRecord, task: LearningTask) -> None:
         """Create or validate one stable shared session, then make it visible again."""
@@ -451,7 +453,9 @@ class SageLearningActivationResources:
         if task.source_policy.web != "forbidden":
             if self.web_search_available:
                 candidates.append("web:search")
-            if self.web_fetch_available:
+            if self.web_fetch_available and (
+                not task.source_policy.domains or self.web_fetch_policy_aware
+            ):
                 candidates.append("web:fetch")
             research = registry.get("subagent:research")
             if research is not None and research.availability == "available":

@@ -214,21 +214,26 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 10. 切片 L1：首轮只读 Learning Scope
 
-> 候选状态（2026-08-24）：`feat/learning-readonly-scope-v1` 已实现本节后端最小纵向切片，
-> 当前已通过 Standards/Spec/Runtime 三镜头独立复审，仍待中枢复审，尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
+> 候选状态（2026-08-24）：首个 immutable 候选 `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1`
+> 未通过中枢固定比较点复审；当前修复提交仍待中枢重新执行 Standards/Spec/Runtime 三镜头审查，
+> 尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
 > validation、Capability Registry、ToolBundle 和 Harness middleware：模型 catalog 与真实
 > ToolNode 调用均受 `AllowedCapabilitySet + capability_revision + turn_context_plan_hash`
 > 约束；host Memory retrieval 与 Research child 的每次 model/tool 边界也会 canonical 重验。
 > `knowledge=disabled` 可按冻结策略直接开放只读 Web；`web=allowed_when_insufficient` 在 L1 尚无
 > durable sufficiency receipt，因此保持隐藏直到 L3 以 source-gap receipt 提升。Web
-> domains/freshness 由服务端冻结值覆盖模型参数；Learning Timeline 与 Run API 只投影安全 ID、
-> 状态、计数和 reason code。由于当前 MCP descriptor 不能证明工具只读，Learning Scope 暂不开放 MCP。
+> domains/freshness 由显式 policy-aware Web port 执行服务端冻结值；实现不能执行 domain policy 时不授予
+> `web:fetch`。Learning Timeline、stream 与 Run API 共用单一公开投影，只保留安全 ID、状态、计数和
+> reason code；模型正文不作为公共审计事件。由于当前 MCP descriptor 不能证明工具只读，Learning
+> Scope 暂不开放 MCP，且 Learning 路径不会读取 MCP catalog、server、transport 或 tool metadata。
 > 本候选不包含 L2 UI、真实 Provider 首轮、LearningPlan、Artifact、Practice 或 Mastery。
 > Evidence/Memory read 是 receipt 内部 authority，不作为伪工具加入普通公共 Capability Registry。
 > active `session_id` 通过 Learning repository 的 owner/workspace binding 反查；可变 Session JSON
 > 只作为待校验投影，marker 缺失或降级会稳定拒绝，不能恢复普通 Coding 的写权限或 raw Run API。
 > Retrieval receipt 在进入 Timeline/TurnContextPlan 前收敛为实际可执行来源；model 前重验失败保留
-> `learning_scope_*` reason，不包装为 Provider error。
+> `learning_scope_*` reason，不包装为 Provider error。`knowledge=required` 且 Knowledge 当前不可用时，
+> 在 Provider 前稳定返回 `learning_scope_source_gap`；Knowledge 已调用但 zero-hit 的完整 sufficiency
+> 判定和有界 Web 提升仍属于 L3，L1 不宣称完成。
 
 **交付行为**
 
@@ -241,7 +246,16 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - `不要联网`、旧 capability revision、伪造 tool call 和 Skill 未激活均 fail closed；
 - active Learning Session marker 被删除或降级时仍由 server-owned binding 识别，运行与 raw Run API 均 fail closed；
 - L0 REST activation/resume 漂移返回明确 `409`；L1 已启动 run 的 admission、model、retrieval 或 tool 漂移返回稳定 `learning_scope_*` 事件/error receipt，不触发 Provider 或真实工具；
+- 成功 Learning run 的 post-turn Goal evaluator 在额外 Provider call 前重新解析 active Task/receipt/Session/TurnContextPlan，任一 revision 漂移均不调用 evaluator；
 - Timeline 不公开 query、source path、Skill prompt 或网页正文。
+
+**当前验证边界**
+
+- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻组：`216 passed`；
+- 完整普通 Coding Routes：`58 passed`；
+- Ruff、12 个改动 Python 文件 format check、Mypy（`248 source files`）和 `git diff --check`：通过；
+- 未触及 `frontend/**`，frontend test/build 为 N/A，不列为通过证据；
+- 中枢三镜头复审仍待重新执行，不能写成已关闭。
 
 **依赖与非目标**
 

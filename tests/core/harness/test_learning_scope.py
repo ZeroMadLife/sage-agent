@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,22 +17,29 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from sage_harness.runtime.events import HarnessStreamItem
 
 from api.coding import (
+    _deerflow_timeline_events,
     _learning_run_detail_payload,
     _learning_run_summary_payload,
+    _learning_scope_failure_events,
     _learning_workspace_diff_payload,
+    _post_turn_goal_followup,
     _runtime_timeline_events,
 )
 from core.coding.memory import workspace_id_from_path
 from core.coding.persistence import CodingSessionStore, TurnPlanStore
+from core.coding.persistence.session_event_journal import SessionEventJournal
+from core.coding.run_coordinator import RunEvent
 from core.coding.runtime import CodingRuntime
 from core.coding.skills import SkillLifecycleSnapshot
 from core.harness.event_adapter import HarnessEventAdapter
+from core.harness.learning_public import LearningPublicProjector
 from core.harness.learning_scope import (
     LearningReadonlyScope,
     LearningReadonlyScopeResolver,
     LearningScopeConflict,
     LearningScopeMiddleware,
 )
+from core.harness.thread_goal import ThreadGoalService
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
 from core.learning import (
     LearningActivationService,
@@ -234,9 +242,223 @@ def test_learning_tool_bundle_snapshot_contains_only_frozen_visible_capabilities
     assert bundle.snapshot.resident_ids == ("local:knowledge_search",)
     assert bundle.snapshot.deferred_ids == ()
     assert bundle.deferred_setup.enabled is False
-    # Forbidden handlers remain registered only so middleware can return a stable
-    # denial for a forged call; they are absent from the projected model catalog.
-    assert "run_shell" in {tool.name for tool in bundle.tools}
+    assert {tool.name for tool in bundle.tools} == {"knowledge_search"}
+
+
+@pytest.mark.asyncio
+async def test_required_knowledge_gap_stops_before_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = CodingRuntime(
+        session_id="session_scope",
+        workspace_root=workspace,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+        runtime_profile="deerflow_v2",
+    )
+    scope = _scope(
+        allowed=("local:knowledge_search",),
+        web_policy="forbidden",
+        knowledge_policy="required",
+    )
+    provider = MagicMock(side_effect=AssertionError("provider must not be constructed"))
+    monkeypatch.setattr("api.coding.SageHarnessRuntimeAdapter", provider)
+
+    events = [
+        event
+        async for event in _deerflow_timeline_events(
+            runtime,
+            content="请只用知识库解释源码调用链 PRIVATE_QUERY_SENTINEL",
+            run_id="run-source-gap",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            learning_scope=scope,
+            learning_scope_resolver=SimpleNamespace(revalidate=lambda frozen: frozen),
+        )
+    ]
+
+    provider.assert_not_called()
+    assert [event.payload.get("reason_code") for event in events[-2:]] == [
+        "learning_scope_source_gap",
+        "learning_scope_source_gap",
+    ]
+    assert "PRIVATE_QUERY_SENTINEL" not in str(events)
+    assert events[0].payload["type"] == "learning_user_turn"
+
+
+@pytest.mark.asyncio
+async def test_learning_mcp_catalog_is_never_read_and_emits_fixed_blocked_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingCatalog:
+        calls = 0
+
+        async def snapshot(self) -> object:
+            self.calls += 1
+            raise AssertionError("Learning must not read MCP catalog")
+
+    class CompletingAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def stream_turn(self, **kwargs: object):  # type: ignore[no-untyped-def]
+            del kwargs
+            yield RunEvent(
+                kind="assistant",
+                status="completed",
+                payload=LearningPublicProjector.model_output_receipt(
+                    task_id="ltask_scope",
+                    run_id="run-mcp-blocked",
+                ),
+            )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = CodingRuntime(
+        session_id="session_scope",
+        workspace_root=workspace,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+        runtime_profile="deerflow_v2",
+    )
+    scope = _scope(
+        allowed=("local:memory_read",),
+        web_policy="forbidden",
+        knowledge_policy="disabled",
+    )
+    catalog = FailingCatalog()
+    monkeypatch.setattr("api.coding.SageHarnessRuntimeAdapter", CompletingAdapter)
+
+    events = [
+        event
+        async for event in _deerflow_timeline_events(
+            runtime,
+            content="复习已有记忆",
+            run_id="run-mcp-blocked",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            mcp_catalog=catalog,  # type: ignore[arg-type]
+            learning_scope=scope,
+            learning_scope_resolver=SimpleNamespace(revalidate=lambda frozen: frozen),
+        )
+    ]
+
+    assert catalog.calls == 0
+    blocked = next(
+        event.payload for event in events if event.payload.get("type") == "learning_mcp_blocked"
+    )
+    assert blocked == {
+        "type": "learning_mcp_blocked",
+        "task_id": "ltask_scope",
+        "run_id": "run-mcp-blocked",
+        "status": "blocked",
+        "reason_code": "learning_scope_mcp_forbidden",
+        "server_count": 0,
+        "tool_count": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_boundary_scope_conflict_keeps_specific_public_reason(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DriftingAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def stream_turn(self, **kwargs: object):  # type: ignore[no-untyped-def]
+            del kwargs
+            raise LearningScopeConflict("learning_scope_catalog_revision_mismatch")
+            yield  # pragma: no cover
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = CodingRuntime(
+        session_id="session_scope",
+        workspace_root=workspace,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+        runtime_profile="deerflow_v2",
+    )
+    scope = _scope(
+        allowed=("local:memory_read",),
+        web_policy="forbidden",
+        knowledge_policy="disabled",
+    )
+    monkeypatch.setattr("api.coding.SageHarnessRuntimeAdapter", DriftingAdapter)
+
+    events = [
+        event
+        async for event in _deerflow_timeline_events(
+            runtime,
+            content="复习已有记忆",
+            run_id="run-model-drift",
+            surface_context=None,
+            thread_goal=None,
+            checkpointer=object(),
+            learning_scope=scope,
+            learning_scope_resolver=SimpleNamespace(revalidate=lambda frozen: frozen),
+        )
+    ]
+
+    assert [event.payload.get("reason_code") for event in events[-2:]] == [
+        "learning_scope_catalog_revision_mismatch",
+        "learning_scope_catalog_revision_mismatch",
+    ]
+    assert events[-1].payload["error_type"] == "learning_scope_conflict"
+
+
+@pytest.mark.asyncio
+async def test_learning_graph_without_public_output_receipt_is_not_completed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class EmptyAdapter:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        async def stream_turn(self, **kwargs: object):  # type: ignore[no-untyped-def]
+            del kwargs
+            if False:
+                yield
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime = CodingRuntime(
+        session_id="session_scope",
+        workspace_root=workspace,
+        model=object(),
+        storage_root=tmp_path / ".coding",
+        runtime_profile="deerflow_v2",
+    )
+    scope = _scope(
+        allowed=("local:memory_read",),
+        web_policy="forbidden",
+        knowledge_policy="disabled",
+    )
+    monkeypatch.setattr("api.coding.SageHarnessRuntimeAdapter", EmptyAdapter)
+
+    with pytest.raises(RuntimeError, match="without a public output receipt"):
+        _ = [
+            event
+            async for event in _deerflow_timeline_events(
+                runtime,
+                content="复习已有记忆",
+                run_id="run-empty-output",
+                surface_context=None,
+                thread_goal=None,
+                checkpointer=object(),
+                learning_scope=scope,
+                learning_scope_resolver=SimpleNamespace(revalidate=lambda frozen: frozen),
+            )
+        ]
 
 
 @pytest.mark.asyncio
@@ -274,9 +496,12 @@ async def test_learning_session_cannot_bypass_scope_through_legacy_runtime(
     assert len(events) == 2
     assert events[0].payload == {
         "type": "learning_scope_rejected",
+        "version": 1,
+        "run_id": "run_scope",
         "status": "denied",
         "reason_code": "learning_scope_runtime_profile_unsupported",
     }
+    assert events[-1].payload["runtime_profile"] == "legacy"
     assert "PRIVATE_QUERY_SENTINEL" not in str(events)
 
 
@@ -474,6 +699,58 @@ def test_real_l0_receipt_resolves_to_web_forbidden_readonly_scope(tmp_path: Path
     assert session["learning_task_id"] == scope.task_id
 
 
+@pytest.mark.parametrize(
+    ("policy_aware", "expects_fetch"),
+    [(False, False), (True, True)],
+)
+def test_domain_frozen_activation_grants_fetch_only_to_policy_aware_port(
+    tmp_path: Path,
+    policy_aware: bool,
+    expects_fetch: bool,
+) -> None:
+    case_root = tmp_path / ("aware" if policy_aware else "legacy")
+    workspace = case_root / "workspace"
+    workspace.mkdir(parents=True)
+    storage = case_root / ".coding"
+    repository = LearningTaskRepository(storage / "learning-tasks.sqlite3")
+    resources = SageLearningActivationResources(
+        storage_root=storage,
+        workspace_root=workspace,
+        runtime_profile="deerflow_v2",
+        sandbox_provider="local_workspace",
+        sandbox_image="python:3.11-slim",
+        knowledge_available=True,
+        web_search_available=True,
+        web_fetch_available=True,
+        web_fetch_policy_aware=policy_aware,
+    )
+    task = LearningTaskService(repository).create_draft(
+        owner_id="local",
+        workspace_id=workspace_id_from_path(workspace),
+        request=LearningTaskCreate(
+            topic="学习指定官方站点",
+            desired_outcome="能引用指定站点解释关键概念",
+            starting_level="beginner",
+            time_budget_minutes_per_week=120,
+            source_policy=LearningSourcePolicy(
+                knowledge="disabled",
+                web="allowed_when_insufficient",
+                domains=("example.com",),
+            ),
+        ),
+    )
+
+    receipt = LearningActivationService(repository, resources).activate(
+        owner_id="local",
+        workspace_id=task.workspace_id,
+        task_id=task.task_id,
+        expected_revision=task.task_revision,
+        idempotency_key=f"domain-policy-{policy_aware}",
+    )
+
+    assert ("web:fetch" in receipt.allowed_capabilities) is expects_fetch
+
+
 def test_real_plan_tamper_is_denied_before_tool_handler(tmp_path: Path) -> None:
     scope, resolver, _, storage, kickoff_run_id = _real_scope(tmp_path)
     plan_store = TurnPlanStore(storage, scope.session_id)
@@ -497,6 +774,67 @@ def test_real_plan_tamper_is_denied_before_tool_handler(tmp_path: Path) -> None:
     assert isinstance(result, ToolMessage)
     assert result.content == "learning_scope_validation_failed"
     assert "PRIVATE_QUERY_SENTINEL" not in str(result)
+
+
+@pytest.mark.asyncio
+async def test_post_turn_learning_goal_revalidates_scope_before_evaluator(
+    tmp_path: Path,
+) -> None:
+    scope, resolver, session, storage, kickoff_run_id = _real_scope(tmp_path)
+    runtime = CodingRuntime(
+        session_id=scope.session_id,
+        workspace_root=tmp_path / "workspace",
+        model=object(),
+        storage_root=storage,
+        session_state=session,
+        runtime_profile="deerflow_v2",
+    )
+    journal = SessionEventJournal(storage, scope.session_id)
+    goal = ThreadGoalService(journal).get()
+    assert goal is not None
+    source_run_id = "run-goal-evaluation"
+    journal.append(
+        run_id=source_run_id,
+        kind="system",
+        status="running",
+        payload={"type": "run_started", "thread_goal": goal},
+    )
+    journal.append_terminal_once(
+        run_id=source_run_id,
+        status="completed",
+        payload={"event": "run_completed"},
+    )
+    plan_store = TurnPlanStore(storage, scope.session_id)
+    with sqlite3.connect(plan_store.path) as connection:
+        connection.execute(
+            "UPDATE turn_context_plans SET plan_hash = ? WHERE run_id = ?",
+            ("sha256:tampered-before-goal-evaluator", kickoff_run_id),
+        )
+        connection.commit()
+    evaluator = MagicMock()
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            coding_sessions={scope.session_id: runtime},
+            coding_run_registry=SimpleNamespace(
+                get=lambda session_id: SimpleNamespace(journal=journal)
+            ),
+            learning_readonly_scope_resolver=resolver,
+            coding_goal_evaluator_factory=evaluator,
+            coding_goal_followup_tasks=set(),
+            coding_goal_followup_shutdown=True,
+            mastery_ledger=None,
+        )
+    )
+
+    await _post_turn_goal_followup(app, scope.session_id, source_run_id)
+
+    evaluator.assert_not_called()
+    failures = [
+        event.payload
+        for event in journal.events_for_run(source_run_id)
+        if event.payload.get("type") == "learning_scope_rejected"
+    ]
+    assert failures[-1]["reason_code"] == "learning_scope_validation_failed"
 
 
 def test_learning_scope_denial_timeline_discards_pending_tool_arguments() -> None:
@@ -566,6 +904,67 @@ def test_learning_scope_denial_timeline_discards_pending_tool_arguments() -> Non
     assert "/private/source-secret" not in serialized
     assert "SKILL_PROMPT_SENTINEL" not in serialized
     assert "SECRET_TOKEN_SENTINEL" not in serialized
+
+
+def test_learning_model_text_is_replaced_by_one_content_free_public_receipt() -> None:
+    adapter = HarnessEventAdapter(
+        session_id="session_scope",
+        run_id="run_scope",
+        learning_scope_task_id="ltask_scope",
+    )
+
+    first = adapter.adapt(
+        HarnessStreamItem(
+            sequence=1,
+            mode="messages",
+            payload=(
+                AIMessage(
+                    content=(
+                        "PRIVATE_QUERY_SENTINEL /private/source-secret "
+                        "WEB_BODY_SENTINEL SECRET_TOKEN_SENTINEL"
+                    )
+                ),
+                {},
+            ),
+            source_event_id="graph:messages:1:text",
+        )
+    )
+    second = adapter.adapt(
+        HarnessStreamItem(
+            sequence=2,
+            mode="messages",
+            payload=(AIMessage(content="another private chunk"), {}),
+            source_event_id="graph:messages:2:text",
+        )
+    )
+
+    expected = LearningPublicProjector.model_output_receipt(
+        task_id="ltask_scope",
+        run_id="run_scope",
+    )
+    expected["session_id"] = "session_scope"
+    assert [event.payload for event in first] == [expected]
+    assert second == ()
+    assert adapter.finish() == ()
+    serialized = str((first, second))
+    assert "text_delta" not in serialized
+    assert "PRIVATE_QUERY_SENTINEL" not in serialized
+    assert "/private/source-secret" not in serialized
+    assert "WEB_BODY_SENTINEL" not in serialized
+    assert "SECRET_TOKEN_SENTINEL" not in serialized
+
+
+def test_learning_scope_failure_receipt_keeps_specific_reason_in_terminal() -> None:
+    events = _learning_scope_failure_events(
+        "run_scope",
+        "learning_scope_capability_revision_mismatch",
+    )
+
+    assert [event.payload["reason_code"] for event in events] == [
+        "learning_scope_capability_revision_mismatch",
+        "learning_scope_capability_revision_mismatch",
+    ]
+    assert events[-1].payload["error_type"] == "learning_scope_conflict"
 
 
 def test_learning_scope_success_timeline_contains_only_safe_capability_receipts() -> None:
@@ -780,6 +1179,13 @@ def test_learning_run_api_projections_hide_trace_and_workspace_paths() -> None:
     )
     summary = _learning_run_summary_payload(raw_summary)
     diff = _learning_workspace_diff_payload(
+        "run_scope",
+        {"changed_files": ["/private/source-secret"]},
+    )
+
+    assert detail == LearningPublicProjector.run_detail(raw_detail, task_id="ltask_scope")
+    assert summary == LearningPublicProjector.run_summary(raw_summary)
+    assert diff == LearningPublicProjector.workspace_diff(
         "run_scope",
         {"changed_files": ["/private/source-secret"]},
     )
