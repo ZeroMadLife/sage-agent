@@ -3,14 +3,184 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
 import tomllib
 from pathlib import Path
 
 import pytest
 
-from desktop.sidecar.build import ArtifactHygieneError, build_receipt, verify_artifact_hygiene
+from desktop.sidecar.build import (
+    ArtifactHygieneError,
+    BuildEnvironmentError,
+    build_receipt,
+    parse_lock_manifest,
+    smoke_packaged_artifact,
+    verify_artifact_hygiene,
+    verify_environment_manifest,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _fake_sidecar(
+    tmp_path: Path,
+    *,
+    live_mode: str,
+    ready_mode: str = "ready",
+    additive_fields: bool = False,
+    spawn_orphan: bool = False,
+) -> Path:
+    executable = tmp_path / "fake-sidecar"
+    orphan_pid_file = tmp_path / "orphan.pid"
+    child_code = textwrap.dedent(
+        """\
+        import os
+        import signal
+        import sys
+        import time
+        from pathlib import Path
+
+        grandchild = os.fork()
+        if grandchild == 0:
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            Path(sys.argv[1]).write_text(str(os.getpid()), encoding="utf-8")
+            while True:
+                time.sleep(1)
+        while True:
+            time.sleep(1)
+        """
+    )
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        + textwrap.dedent(
+            f"""\
+            import argparse
+            import json
+            import os
+            import signal
+            import subprocess
+            import sys
+            import threading
+            import time
+            from http.server import BaseHTTPRequestHandler, HTTPServer
+
+            LIVE_MODE = {live_mode!r}
+            READY_MODE = {ready_mode!r}
+            ADDITIVE_FIELDS = {additive_fields!r}
+            BUILD_SHA = "fake-sha"
+            SPAWN_ORPHAN = {spawn_orphan!r}
+            ORPHAN_PID_FILE = {str(orphan_pid_file)!r}
+            CHILD_CODE = {child_code!r}
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--bind")
+            parser.add_argument("--port")
+            parser.add_argument("--data-dir")
+            args = parser.parse_args()
+            os.makedirs(args.data_dir, exist_ok=True)
+            open(os.path.join(args.data_dir, "sage.sqlite3"), "wb").close()
+            open(os.path.join(args.data_dir, "checkpoints.sqlite3"), "wb").close()
+            child = (
+                subprocess.Popen(
+                    [sys.executable, "-c", CHILD_CODE, ORPHAN_PID_FILE],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                if SPAWN_ORPHAN
+                else None
+            )
+            if child is not None:
+                deadline = time.monotonic() + 2
+                while not os.path.exists(ORPHAN_PID_FILE):
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("fake orphan did not start")
+                    time.sleep(0.01)
+
+            class Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == "/health/live":
+                        if LIVE_MODE == "404":
+                            self.send_error(404)
+                            return
+                        payload = (
+                            {{"status": "ok"}}
+                            if LIVE_MODE == "wrong-schema"
+                            else {{
+                                "status": "live",
+                                "profile": "desktop-minimal",
+                                "api_version": "1",
+                                "build_sha": BUILD_SHA,
+                            }}
+                        )
+                    elif self.path == "/health/ready":
+                        payload = {{
+                            "status": "ready",
+                            "profile": "desktop-minimal",
+                            "api_version": "1",
+                            "build_sha": BUILD_SHA,
+                            "checks": {{
+                                name: {{"status": "ready", "version": "1"}}
+                                for name in (
+                                    "api", "build", "schema", "storage",
+                                    "checkpoint", "tls", "core_imports"
+                                )
+                            }},
+                        }}
+                        if READY_MODE == "missing-check":
+                            del payload["checks"]["tls"]
+                        elif READY_MODE == "blocked-check":
+                            payload["checks"]["checkpoint"]["status"] = "blocked"
+                        elif READY_MODE == "wrong-version-type":
+                            payload["checks"]["storage"]["version"] = 1
+                    else:
+                        self.send_error(404)
+                        return
+                    if ADDITIVE_FIELDS:
+                        payload["diagnostic"] = {{"generation": 2}}
+                        if "checks" in payload:
+                            payload["version"] = "2"
+                            payload["checks"]["api"]["diagnostic"] = "compatible"
+                            payload["checks"]["future_probe"] = {{
+                                "status": "blocked",
+                                "version": "2",
+                                "diagnostic": "not required by D0",
+                            }}
+                    body = json.dumps(payload).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *_):
+                    pass
+
+            server = HTTPServer(("127.0.0.1", 0), Handler)
+            def stop(*_):
+                if child is not None:
+                    child.terminate()
+                    child.wait(timeout=2)
+                threading.Thread(target=server.shutdown, daemon=True).start()
+            signal.signal(signal.SIGTERM, stop)
+            print(json.dumps({{
+                "event": "sidecar_started",
+                "pid": os.getpid(),
+                "bind": "127.0.0.1",
+                "port": server.server_port,
+                "profile": "desktop-minimal",
+                "api_version": "1",
+                "build_sha": BUILD_SHA,
+            }}), flush=True)
+            server.serve_forever()
+            server.server_close()
+            """
+        ),
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+    return executable
 
 
 def _pinned_requirements(path: Path) -> dict[str, str]:
@@ -21,6 +191,21 @@ def _pinned_requirements(path: Path) -> dict[str, str]:
             name, version = line.split("==", 1)
             pins[name.split("[", 1)[0].lower()] = version
     return pins
+
+
+def test_build_module_imports_without_runtime_dependencies() -> None:
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", "import desktop.sidecar.build"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_minimal_runtime_versions_match_the_sage_release() -> None:
@@ -38,6 +223,10 @@ def test_minimal_runtime_versions_match_the_sage_release() -> None:
             "cryptography",
             "fastapi",
             "httpx",
+            "langchain",
+            "langchain-core",
+            "langgraph",
+            "langgraph-checkpoint-sqlite",
             "orjson",
             "psycopg2-binary",
             "pydantic",
@@ -47,26 +236,86 @@ def test_minimal_runtime_versions_match_the_sage_release() -> None:
     }
     assert lock_pins.items() >= desktop_pins.items()
     assert lock_pins["pyinstaller"] == "6.16.0"
+    assert lock_pins["pyinstaller-hooks-contrib"] == "2026.6"
+    assert lock_pins["hatchling"] == "1.27.0"
+    assert all(
+        not line.startswith("-e ")
+        for line in (ROOT / "desktop" / "sidecar" / "requirements-lock.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     assert harness["project"]["requires-python"] == ">=3.12"
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "-e ./packages/sage_harness\n",
+        "sage-harness @ file:///tmp/sage_harness.whl\n",
+        "httpx @ https://example.invalid/httpx.whl\n",
+    ],
+)
+def test_lock_manifest_rejects_editable_local_and_url_requirements(
+    tmp_path: Path, requirement: str
+) -> None:
+    lock = tmp_path / "requirements-lock.txt"
+    lock.write_text(requirement, encoding="utf-8")
+
+    with pytest.raises(BuildEnvironmentError, match="immutable name==version"):
+        parse_lock_manifest(lock)
+
+
+def test_environment_manifest_fails_closed_on_drift_extra_or_direct_url() -> None:
+    expected = {"fastapi": "0.115.6", "pyinstaller": "6.16.0"}
+
+    with pytest.raises(BuildEnvironmentError, match="does not match lock"):
+        verify_environment_manifest(
+            expected,
+            {"fastapi": "0.115.7", "pyinstaller": "6.16.0"},
+            direct_url_distributions=(),
+        )
+    with pytest.raises(BuildEnvironmentError, match="does not match lock"):
+        verify_environment_manifest(
+            expected,
+            {**expected, "unlocked-package": "1.0.0"},
+            direct_url_distributions=(),
+        )
+    with pytest.raises(BuildEnvironmentError, match="direct URL"):
+        verify_environment_manifest(
+            expected,
+            expected,
+            direct_url_distributions=("fastapi",),
+        )
 
 
 def test_build_receipt_is_relative_deterministic_and_secret_free(tmp_path: Path) -> None:
     artifact = tmp_path / "sage-api-aarch64-apple-darwin"
     artifact.mkdir()
     (artifact / "sage-api-aarch64-apple-darwin").write_bytes(b"sidecar")
+    environment = {
+        "lock_sha256": "a" * 64,
+        "manifest": {"pyinstaller": "6.16.0", "sage-harness": "0.1.0"},
+        "harness": {
+            "name": "sage-harness",
+            "version": "0.1.0",
+            "wheel": "sage_harness-0.1.0-py3-none-any.whl",
+            "wheel_sha256": "b" * 64,
+            "source_sha256": "c" * 64,
+        },
+    }
 
     first = build_receipt(
         artifact_dir=artifact,
         source_sha="abc123",
         source_dirty=False,
-        pyinstaller_version="6.16.0",
+        build_environment=environment,
         smoke={"live": "passed", "ready": "passed"},
     )
     second = build_receipt(
         artifact_dir=artifact,
         source_sha="abc123",
         source_dirty=False,
-        pyinstaller_version="6.16.0",
+        build_environment=environment,
         smoke={"live": "passed", "ready": "passed"},
     )
 
@@ -75,6 +324,7 @@ def test_build_receipt_is_relative_deterministic_and_secret_free(tmp_path: Path)
     assert first["source_sha"] == "abc123"
     assert first["source_dirty"] is False
     assert len(first["dependency_lock_sha256"]) == 64
+    assert first["build_environment"] == environment
     assert first["artifact"]["name"] == "sage-api-aarch64-apple-darwin"
     assert first["artifact"]["files"][0]["path"] == "sage-api-aarch64-apple-darwin"
     serialized = json.dumps(first, sort_keys=True)
@@ -96,3 +346,86 @@ def test_artifact_hygiene_rejects_env_files_and_absolute_development_paths(
     (artifact / "binary").write_bytes(f"prefix:{Path.cwd()}".encode())
     with pytest.raises(ArtifactHygieneError, match="development path"):
         verify_artifact_hygiene(artifact, forbidden_roots=(Path.cwd(),))
+
+
+@pytest.mark.parametrize(
+    ("filename", "contents", "message"),
+    [
+        (
+            "config.json",
+            b'{"api_key":"sk-live-secret-sentinel-1234567890"}',
+            "secret material",
+        ),
+        (
+            "identity.pem",
+            b"-----BEGIN PRIVATE KEY-----\nprivate-sentinel\n-----END PRIVATE KEY-----\n",
+            "private key",
+        ),
+        (
+            "direct_url.json",
+            b'{"url":"file:///private/tmp/sage-harness"}',
+            "direct_url",
+        ),
+        ("settings.json", b"{}", "resource is not allowlisted"),
+    ],
+)
+def test_artifact_hygiene_rejects_secret_and_unapproved_resources(
+    tmp_path: Path, filename: str, contents: bytes, message: str
+) -> None:
+    artifact = tmp_path / "artifact"
+    internal = artifact / "_internal"
+    internal.mkdir(parents=True)
+    (artifact / "artifact").write_bytes(b"sidecar")
+    (internal / filename).write_bytes(contents)
+
+    with pytest.raises(ArtifactHygieneError, match=message):
+        verify_artifact_hygiene(artifact, forbidden_roots=())
+
+
+@pytest.mark.parametrize("live_mode", ["404", "wrong-schema"])
+def test_packaged_smoke_rejects_missing_or_invalid_liveness(tmp_path: Path, live_mode: str) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode=live_mode)
+
+    with pytest.raises(RuntimeError, match="liveness"):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+
+def test_packaged_smoke_accepts_additive_health_fields(tmp_path: Path) -> None:
+    executable = _fake_sidecar(
+        tmp_path,
+        live_mode="ready",
+        additive_fields=True,
+    )
+
+    smoke = smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    assert smoke["liveness"] == "passed"
+    assert smoke["readiness"] == "passed"
+
+
+@pytest.mark.parametrize(
+    "ready_mode",
+    ["missing-check", "blocked-check", "wrong-version-type"],
+)
+def test_packaged_smoke_rejects_missing_or_invalid_required_readiness_check(
+    tmp_path: Path, ready_mode: str
+) -> None:
+    executable = _fake_sidecar(
+        tmp_path,
+        live_mode="ready",
+        ready_mode=ready_mode,
+    )
+
+    with pytest.raises(RuntimeError, match="readiness"):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+
+def test_packaged_smoke_detects_and_cleans_orphaned_grandchild(tmp_path: Path) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode="ready", spawn_orphan=True)
+
+    with pytest.raises(RuntimeError, match="process group or descendant"):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    orphan_pid = int((tmp_path / "orphan.pid").read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(orphan_pid, 0)

@@ -35,7 +35,7 @@ for distribution in (
 
 a = Analysis(
     [str(ROOT / "desktop" / "sidecar" / "__main__.py")],
-    pathex=[str(ROOT), str(ROOT / "packages" / "sage_harness")],
+    pathex=[str(ROOT)],
     binaries=[],
     datas=datas,
     hiddenimports=hidden_imports,
