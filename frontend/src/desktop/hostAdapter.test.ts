@@ -5,8 +5,12 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => { resolve = done })
-  return { promise, resolve }
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done
+    reject = fail
+  })
+  return { promise, resolve, reject }
 }
 
 describe('DesktopHostAdapter', () => {
@@ -304,6 +308,153 @@ describe('DesktopHostAdapter', () => {
     await response.body?.getReader().cancel('consumer stopped')
 
     expect(cancel).toHaveBeenCalledWith('consumer stopped')
+  })
+
+  it('does not recover or clear the session for an initially aborted SSE signal', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'current', instanceId: 'current' },
+    })
+    const fetch = vi.fn().mockResolvedValue(new Response('{}'))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, desktopFetch, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+    const caller = new AbortController()
+    caller.abort(new DOMException('caller stopped', 'AbortError'))
+
+    await expect(desktopSse('/desktop/probe/sse', { signal: caller.signal }))
+      .rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(fetch).not.toHaveBeenCalled()
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(states).not.toContain('degraded')
+
+    await desktopFetch('/capabilities')
+    expect(fetch).toHaveBeenCalledWith(
+      'http://127.0.0.1:49152/capabilities',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer current' }) }),
+    )
+  })
+
+  it('cancels an active SSE read for the caller signal without recovering the session', async () => {
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'current', instanceId: 'current' },
+    })
+    let transportController!: ReadableStreamDefaultController<Uint8Array>
+    const transportCancel = vi.fn()
+    const transport = new ReadableStream<Uint8Array>({
+      start(controller) { transportController = controller },
+      cancel: transportCancel,
+    })
+    const fetch = vi.fn()
+      .mockImplementationOnce((_url: string, init: RequestInit) => {
+        init.signal?.addEventListener('abort', () => transportController.error(init.signal?.reason), { once: true })
+        return Promise.resolve(new Response(transport))
+      })
+      .mockResolvedValueOnce(new Response('{}'))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, desktopFetch, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+    const caller = new AbortController()
+    const response = await desktopSse('/desktop/probe/sse', { signal: caller.signal })
+    const pendingRead = response.body!.getReader().read()
+
+    caller.abort(new DOMException('caller stopped', 'AbortError'))
+
+    await expect(pendingRead).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(invoke).toHaveBeenCalledTimes(1)
+    expect(states).not.toContain('degraded')
+
+    await desktopFetch('/capabilities')
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:49152/capabilities',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer current' }) }),
+    )
+  })
+
+  it('keeps a concurrent new session when a cancelled SSE recovery resolves late', async () => {
+    const recovery = deferred<unknown>()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'stream-a', instanceId: 'stream-a' },
+      })
+      .mockReturnValueOnce(recovery.promise)
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49154', bearer: 'session-b', instanceId: 'session-b' },
+      })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream({
+        start(controller) { controller.close() },
+      })))
+      .mockResolvedValueOnce(new Response('{}'))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, desktopFetch } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
+    const pendingRead = reader.read()
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2))
+
+    const cancellation = reader.cancel('stream a stopped')
+    await desktopHostStatus()
+    recovery.resolve({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49153', bearer: 'late-a', instanceId: 'late-a' },
+    })
+    await cancellation
+    await pendingRead
+
+    await desktopFetch('/capabilities')
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:49154/capabilities',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer session-b' }) }),
+    )
+  })
+
+  it('keeps a concurrent new session when a cancelled SSE recovery rejects late', async () => {
+    const recovery = deferred<unknown>()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'stream-a', instanceId: 'stream-a' },
+      })
+      .mockReturnValueOnce(recovery.promise)
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49154', bearer: 'session-b', instanceId: 'session-b' },
+      })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream({
+        start(controller) { controller.close() },
+      })))
+      .mockResolvedValueOnce(new Response('{}'))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, desktopFetch } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
+    const pendingRead = reader.read()
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2))
+
+    const cancellation = reader.cancel('stream a stopped')
+    await desktopHostStatus()
+    recovery.reject(new Error('late recovery failed'))
+    await cancellation
+    await pendingRead
+
+    await desktopFetch('/capabilities')
+    expect(fetch).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:49154/capabilities',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer session-b' }) }),
+    )
   })
 
   it('refreshes a rotated host session once after an authorization failure', async () => {

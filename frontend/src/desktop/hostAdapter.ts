@@ -9,6 +9,11 @@ interface DesktopSession {
   instanceId: string
 }
 
+interface DesktopSessionLease {
+  session: DesktopSession
+  revision: number
+}
+
 export interface DesktopHostSnapshot {
   state: HostState
   reasonCode: string | null
@@ -30,6 +35,7 @@ export interface DesktopCapabilities {
 }
 
 let session: DesktopSession | null = null
+let sessionRevision = 0
 type DesktopConnectionState = 'ready' | 'degraded'
 type DesktopConnectionListener = (state: DesktopConnectionState) => void
 const connectionListeners = new Set<DesktopConnectionListener>()
@@ -49,13 +55,28 @@ export function isDesktopRuntime(): boolean {
 
 export async function desktopHostStatus(): Promise<DesktopHostSnapshot> {
   const snapshot = await invoke<DesktopHostSnapshot>('desktop_host_status')
-  session = snapshot.state === 'ready' ? snapshot.session : null
+  replaceSession(snapshot.state === 'ready' ? snapshot.session : null)
   return snapshot
 }
 
-function currentSession(): DesktopSession {
+function replaceSession(next: DesktopSession | null): void {
+  session = next
+  sessionRevision += 1
+}
+
+function replaceSessionIfRevision(next: DesktopSession | null, expectedRevision: number): boolean {
+  if (sessionRevision !== expectedRevision) return false
+  replaceSession(next)
+  return true
+}
+
+function currentSessionLease(): DesktopSessionLease {
   if (!session) throw new Error('desktop_session_unavailable')
-  return session
+  return { session, revision: sessionRevision }
+}
+
+function currentSession(): DesktopSession {
+  return currentSessionLease().session
 }
 
 function endpointUrl(active: DesktopSession, path: string): string {
@@ -78,33 +99,53 @@ async function fetchWithSession(
   })
 }
 
-async function recoverSession(): Promise<DesktopSession> {
-  session = null
+async function recoverSession(
+  expectedRevision: number,
+  isActive: () => boolean = () => true,
+): Promise<DesktopSessionLease | null> {
+  if (!isActive()) return null
+  if (sessionRevision !== expectedRevision) {
+    return isActive() ? currentSessionLease() : null
+  }
   publishConnectionState('degraded')
-  await desktopHostStatus()
-  return currentSession()
+  const snapshot = await invoke<DesktopHostSnapshot>('desktop_host_status')
+  if (!isActive()) return null
+  const next = snapshot.state === 'ready' ? snapshot.session : null
+  if (!replaceSessionIfRevision(next, expectedRevision)) {
+    return isActive() ? currentSessionLease() : null
+  }
+  return currentSessionLease()
 }
 
-export async function desktopFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const active = currentSession()
+async function desktopFetchWithSession(
+  path: string,
+  init: RequestInit,
+): Promise<{ response: Response, lease: DesktopSessionLease }> {
+  const active = currentSessionLease()
   try {
-    const response = await fetchWithSession(active, path, init)
+    const response = await fetchWithSession(active.session, path, init)
     if (response.status !== 401 && response.status !== 403) {
       publishConnectionState('ready')
-      return response
+      return { response, lease: active }
     }
-  } catch {
+  } catch (error) {
+    if (init.signal?.aborted) throw init.signal.reason ?? error
     // The bounded retry below refreshes the in-memory session after a transport failure.
   }
-  const refreshed = await recoverSession()
-  const response = await fetchWithSession(refreshed, path, init)
+  const refreshed = await recoverSession(active.revision)
+  if (!refreshed) throw new Error('desktop_session_unavailable')
+  const response = await fetchWithSession(refreshed.session, path, init)
   if (response.status === 401 || response.status === 403) {
-    session = null
+    replaceSessionIfRevision(null, refreshed.revision)
     publishConnectionState('degraded')
   } else {
     publishConnectionState('ready')
   }
-  return response
+  return { response, lease: refreshed }
+}
+
+export async function desktopFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  return (await desktopFetchWithSession(path, init)).response
 }
 
 export async function desktopCapabilities(): Promise<DesktopCapabilities> {
@@ -122,15 +163,26 @@ function sseRequestInit(init: RequestInit): RequestInit {
 
 export async function desktopSse(path: string, init: RequestInit = {}): Promise<Response> {
   const requestInit = sseRequestInit(init)
-  const initial = await desktopFetch(path, requestInit)
+  const callerSignal = requestInit.signal
+  if (callerSignal?.aborted) {
+    throw callerSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+  }
+  const initialResult = await desktopFetchWithSession(path, requestInit)
+  const initial = initialResult.response
+  if (callerSignal?.aborted) {
+    await initial.body?.cancel(callerSignal.reason).catch(() => undefined)
+    throw callerSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+  }
   if (!initial.ok || !initial.body) return initial
 
   let reader = initial.body.getReader()
+  let activeLease = initialResult.lease
   let reconnectAttempts = 0
   let cancelled = false
   let generation = 0
   let cancellationReason: unknown
   let reconnectAbort: AbortController | null = null
+  let outputController: ReadableStreamDefaultController<Uint8Array> | null = null
   let detachCallerAbort: (() => void) | null = null
 
   function isCurrent(expectedGeneration: number): boolean {
@@ -140,19 +192,32 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
   function stopReconnectTransport(reason?: unknown): void {
     const abort = reconnectAbort
     reconnectAbort = null
+    abort?.abort(reason)
+  }
+
+  async function cancelFlow(reason: unknown, errorOutput = false): Promise<void> {
+    if (cancelled) return
+    cancelled = true
+    generation += 1
+    cancellationReason = reason
     detachCallerAbort?.()
     detachCallerAbort = null
-    abort?.abort(reason)
+    stopReconnectTransport(reason)
+    if (errorOutput) outputController?.error(reason)
+    await reader.cancel(reason).catch(() => undefined)
   }
 
   async function reconnect(
     controller: ReadableStreamDefaultController<Uint8Array>,
     cause: unknown,
   ): Promise<boolean> {
+    if (callerSignal?.aborted || cancelled) return false
     publishConnectionState('degraded')
     stopReconnectTransport(cause)
     if (reconnectAttempts >= 1) {
-      session = null
+      replaceSessionIfRevision(null, activeLease.revision)
+      detachCallerAbort?.()
+      detachCallerAbort = null
       controller.error(cause)
       return false
     }
@@ -161,29 +226,17 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
     await reader.cancel().catch(() => undefined)
     if (!isCurrent(expectedGeneration)) return false
 
+    let refreshed: DesktopSessionLease | null = null
     try {
-      const refreshed = await recoverSession()
-      if (!isCurrent(expectedGeneration)) {
-        session = null
-        return false
-      }
+      refreshed = await recoverSession(activeLease.revision, () => isCurrent(expectedGeneration))
+      if (!refreshed || !isCurrent(expectedGeneration)) return false
       const abort = new AbortController()
       reconnectAbort = abort
-      const callerSignal = requestInit.signal
-      if (callerSignal) {
-        const forwardAbort = () => abort.abort(callerSignal.reason)
-        if (callerSignal.aborted) forwardAbort()
-        else {
-          callerSignal.addEventListener('abort', forwardAbort, { once: true })
-          detachCallerAbort = () => callerSignal.removeEventListener('abort', forwardAbort)
-        }
-      }
-      const response = await fetchWithSession(refreshed, path, {
+      const response = await fetchWithSession(refreshed.session, path, {
         ...requestInit,
         signal: abort.signal,
       })
       if (!isCurrent(expectedGeneration)) {
-        session = null
         await response.body?.cancel(cancellationReason).catch(() => undefined)
         return false
       }
@@ -193,27 +246,29 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
       }
       const nextReader = response.body.getReader()
       if (!isCurrent(expectedGeneration)) {
-        session = null
         await nextReader.cancel(cancellationReason).catch(() => undefined)
         return false
       }
       reader = nextReader
+      activeLease = refreshed
       publishConnectionState('ready')
       return true
     } catch (reconnectError) {
-      if (!isCurrent(expectedGeneration)) {
-        session = null
-        return false
-      }
+      if (!isCurrent(expectedGeneration)) return false
       stopReconnectTransport(reconnectError)
-      session = null
+      replaceSessionIfRevision(null, refreshed?.revision ?? activeLease.revision)
       publishConnectionState('degraded')
+      detachCallerAbort?.()
+      detachCallerAbort = null
       controller.error(reconnectError)
       return false
     }
   }
 
   const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      outputController = controller
+    },
     async pull(controller) {
       while (!cancelled) {
         let chunk: ReadableStreamReadResult<Uint8Array>
@@ -233,13 +288,18 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
       }
     },
     async cancel(reason) {
-      cancelled = true
-      generation += 1
-      cancellationReason = reason
-      stopReconnectTransport(reason)
-      await reader.cancel(reason).catch(() => undefined)
+      await cancelFlow(reason)
     },
   })
+  if (callerSignal) {
+    const abortFlow = () => {
+      const reason = callerSignal.reason ?? new DOMException('The operation was aborted', 'AbortError')
+      void cancelFlow(reason, true)
+    }
+    callerSignal.addEventListener('abort', abortFlow, { once: true })
+    detachCallerAbort = () => callerSignal.removeEventListener('abort', abortFlow)
+    if (callerSignal.aborted) abortFlow()
+  }
   return new Response(body, {
     headers: new Headers(initial.headers),
     status: initial.status,
@@ -341,7 +401,7 @@ export async function desktopWebSocket(path: string): Promise<DesktopWebSocketCo
 }
 
 export async function desktopExit(): Promise<void> {
-  session = null
+  replaceSession(null)
   await invoke('desktop_exit')
 }
 
