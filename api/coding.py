@@ -152,6 +152,7 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.coding.skills import SkillLifecycleError
+from core.coding.turn_input import TurnInputKind
 from core.coding.usage_store import normalize_usage
 from core.harness import RuntimeProfile, normalize_runtime_profile
 from core.harness.book_learning_coordinator import (
@@ -233,6 +234,7 @@ from core.knowledge.source_proposals import (
 )
 from core.learning import (
     LearningKickoffError,
+    LearningKickoffErrorCode,
     LearningKickoffService,
     MasteryEvidenceInput,
     MasteryLedger,
@@ -635,8 +637,7 @@ async def _runtime_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
-    input_origin: Literal["user", "goal_followup"] = "user",
-    emit_user_event: bool = True,
+    input_kind: TurnInputKind = TurnInputKind.USER,
     context_assembly_mode: ContextAssemblyMode = "shadow",
     learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
@@ -687,8 +688,7 @@ async def _runtime_timeline_events(
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
-                input_origin=input_origin,
-                emit_user_event=emit_user_event,
+                input_kind=input_kind,
                 context_assembly_mode=context_assembly_mode,
                 learning_scope=learning_scope,
                 learning_scope_resolver=learning_scope_resolver,
@@ -736,13 +736,13 @@ async def _runtime_timeline_events(
         return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)
-    if input_origin == "user" and emit_user_event:
+    if input_kind.emits_user_event:
         yield RunEvent(
             kind="user",
             status="completed",
             payload={"type": "user", "content": content},
         )
-    elif input_origin != "user":
+    elif input_kind.emits_goal_followup_event:
         yield RunEvent(
             kind="harness",
             status="completed",
@@ -814,8 +814,7 @@ async def _deerflow_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
-    input_origin: Literal["user", "goal_followup"] = "user",
-    emit_user_event: bool = True,
+    input_kind: TurnInputKind = TurnInputKind.USER,
     context_assembly_mode: ContextAssemblyMode = "shadow",
     learning_scope: LearningReadonlyScope | None = None,
     learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
@@ -925,9 +924,9 @@ async def _deerflow_timeline_events(
                 role="user",
                 content=content,
                 run_id=run_id,
-                input_origin=input_origin,
+                input_origin=input_kind.input_origin,
             )
-            if input_origin == "user" and emit_user_event:
+            if input_kind.emits_user_event:
                 yield RunEvent(
                     kind="user",
                     status="completed",
@@ -941,7 +940,7 @@ async def _deerflow_timeline_events(
                     ),
                     event_id=f"harness:{run_id}:user",
                 )
-            elif input_origin != "user":
+            elif input_kind.emits_goal_followup_event:
                 yield RunEvent(
                     kind="harness",
                     status="completed",
@@ -1375,7 +1374,7 @@ async def _deerflow_timeline_events(
                     run_id=run_id,
                     owner_id=owner_id,
                     workspace_id=workspace_id,
-                    input_origin=input_origin,
+                    input_origin=input_kind.input_origin,
                     user_message=user_message,
                     surface_context=surface_context,
                     thread_goal=thread_goal,
@@ -2086,7 +2085,7 @@ async def _start_pending_goal_followup(app: Any, session_id: str) -> None:
             app.state, "knowledge_source_proposal_service", None
         ),
         app_env=str(getattr(app.state, "cloud_app_env", "development")),
-        input_origin="goal_followup",
+        input_kind=TurnInputKind.GOAL_FOLLOWUP,
         context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
         learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
     )
@@ -2966,7 +2965,7 @@ async def _start_accepted_learning_kickoff(
         if runtime.session.get("session_kind") == "learning":
             raise LearningKickoffError(
                 "learning kickoff service is unavailable",
-                code="learning_kickoff_service_unavailable",
+                code=LearningKickoffErrorCode.SERVICE_UNAVAILABLE,
             )
         return None
     owner_id = runtime.owner_user_id or "local"
@@ -3008,7 +3007,7 @@ async def _start_accepted_learning_kickoff(
         app_env=str(getattr(app.state, "cloud_app_env", "development")),
         context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
         learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
-        emit_user_event=False,
+        input_kind=TurnInputKind.LEARNING_KICKOFF,
     )
     try:
         run_task = await coordinator.start_run(

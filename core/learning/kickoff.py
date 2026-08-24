@@ -5,12 +5,30 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal, Protocol
 
 from core.learning.activation import LearningActivationError, LearningActivationRecord
 from core.learning.tasks import LearningTask
 
 LearningKickoffReceiptStatus = Literal["dispatching", "accepted"]
+
+
+class LearningKickoffErrorCode(StrEnum):
+    """Closed browser-safe kickoff failure contract."""
+
+    ACTIVATION_REQUIRED = "learning_kickoff_activation_required"
+    BINDING_CONFLICT = "learning_kickoff_binding_conflict"
+    CONFLICT = "learning_kickoff_conflict"
+    CORRUPT = "learning_kickoff_corrupt"
+    DISPATCH_FAILED = "learning_kickoff_dispatch_failed"
+    IDEMPOTENCY_CONFLICT = "learning_kickoff_idempotency_conflict"
+    JOURNAL_CONFLICT = "learning_kickoff_journal_conflict"
+    NOT_FOUND = "learning_kickoff_not_found"
+    SERVICE_UNAVAILABLE = "learning_kickoff_service_unavailable"
+    SESSION_CONFLICT = "learning_kickoff_session_conflict"
+
+
 LearningKickoffStage = Literal["intent", "journal", "accepted"]
 
 
@@ -42,9 +60,9 @@ class LearningKickoffDispatchRecord:
 class LearningKickoffError(RuntimeError):
     """Stable public failure code for kickoff acceptance and replay."""
 
-    def __init__(self, message: str, *, code: str) -> None:
+    def __init__(self, message: str, *, code: str | LearningKickoffErrorCode) -> None:
         super().__init__(message)
-        self.code = code
+        self.code = LearningKickoffErrorCode(code)
 
 
 class LearningKickoffRepositoryPort(Protocol):
@@ -145,7 +163,7 @@ class LearningKickoffService:
         except Exception as exc:
             raise LearningKickoffError(
                 "learning kickoff dispatch failed",
-                code="learning_kickoff_dispatch_failed",
+                code=LearningKickoffErrorCode.DISPATCH_FAILED,
             ) from exc
 
     def get(
@@ -204,7 +222,7 @@ class LearningKickoffService:
         ):
             raise LearningKickoffError(
                 "learning kickoff canonical binding changed",
-                code="learning_kickoff_binding_conflict",
+                code=LearningKickoffErrorCode.BINDING_CONFLICT,
             )
 
     def _active_activation(
@@ -219,7 +237,7 @@ class LearningKickoffService:
         except LearningActivationError as exc:
             raise LearningKickoffError(
                 "learning kickoff activation binding changed",
-                code="learning_kickoff_binding_conflict",
+                code=LearningKickoffErrorCode.BINDING_CONFLICT,
             ) from exc
 
     def _canonical_task(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningTask:
@@ -232,7 +250,7 @@ class LearningKickoffService:
         except KeyError as exc:
             raise LearningKickoffError(
                 "learning kickoff task binding changed",
-                code="learning_kickoff_binding_conflict",
+                code=LearningKickoffErrorCode.BINDING_CONFLICT,
             ) from exc
 
     def _inject(self, point: str, record: LearningKickoffDispatchRecord) -> None:
@@ -248,6 +266,7 @@ __all__ = [
     "FailureInjector",
     "LearningKickoffDispatchRecord",
     "LearningKickoffError",
+    "LearningKickoffErrorCode",
     "LearningKickoffReceiptStatus",
     "LearningKickoffResources",
     "LearningKickoffService",

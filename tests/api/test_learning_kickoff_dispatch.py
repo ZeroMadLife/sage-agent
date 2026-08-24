@@ -34,6 +34,14 @@ def _app(tmp_path: Path):
     )
 
 
+def test_learning_kickoff_openapi_declares_structured_errors(tmp_path: Path) -> None:
+    schema = _app(tmp_path).openapi()
+    post = schema["paths"]["/api/v1/learning/tasks/{task_id}/kickoff"]["post"]
+    for status_code in ("409", "503"):
+        response_schema = post["responses"][status_code]["content"]["application/json"]["schema"]
+        assert response_schema["$ref"].endswith("/LearningErrorResponse")
+
+
 def _active_task(client: TestClient) -> tuple[dict, dict]:
     task = client.post(
         "/api/v1/learning/tasks/draft",

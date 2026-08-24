@@ -33,7 +33,11 @@ from core.learning.activation import (
     LearningActivationTurnContextBinding,
     LearningLegacyActivationCandidate,
 )
-from core.learning.kickoff import LearningKickoffDispatchRecord, LearningKickoffError
+from core.learning.kickoff import (
+    LearningKickoffDispatchRecord,
+    LearningKickoffError,
+    LearningKickoffErrorCode,
+)
 from core.learning.tasks import LearningTask, source_policy_revision
 
 _INTERNAL_LEARNING_READ_CAPABILITIES = frozenset({"local:evidence_read", "local:memory_read"})
@@ -82,7 +86,7 @@ class SageLearningKickoffResources:
         if len(events) != 1:
             raise LearningKickoffError(
                 "learning kickoff journal event count changed",
-                code="learning_kickoff_journal_conflict",
+                code=LearningKickoffErrorCode.JOURNAL_CONFLICT,
             )
         event = events[0]
         if (
@@ -93,7 +97,7 @@ class SageLearningKickoffResources:
         ):
             raise LearningKickoffError(
                 "learning kickoff journal binding changed",
-                code="learning_kickoff_journal_conflict",
+                code=LearningKickoffErrorCode.JOURNAL_CONFLICT,
             )
 
 

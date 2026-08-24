@@ -25,6 +25,7 @@ from core.learning.activation import (
 from core.learning.kickoff import (
     LearningKickoffDispatchRecord,
     LearningKickoffError,
+    LearningKickoffErrorCode,
     LearningKickoffReceiptStatus,
     LearningKickoffStage,
 )
@@ -578,13 +579,13 @@ class LearningTaskRepository:
                 if activation_row is None or task.status != "active":
                     raise LearningKickoffError(
                         "learning task must be active before kickoff",
-                        code="learning_kickoff_activation_required",
+                        code=LearningKickoffErrorCode.ACTIVATION_REQUIRED,
                     )
                 activation = _decode_activation_row(activation_row)
                 if activation.receipt_status != "active" or activation.stage != "active":
                     raise LearningKickoffError(
                         "learning activation must be active before kickoff",
-                        code="learning_kickoff_activation_required",
+                        code=LearningKickoffErrorCode.ACTIVATION_REQUIRED,
                     )
                 existing = connection.execute(
                     "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
@@ -598,7 +599,7 @@ class LearningTaskRepository:
                     if record.idempotency_key != key:
                         raise LearningKickoffError(
                             "learning task revision already uses a different kickoff key",
-                            code="learning_kickoff_idempotency_conflict",
+                            code=LearningKickoffErrorCode.IDEMPOTENCY_CONFLICT,
                         )
                     _validate_kickoff_binding(task=task, activation=activation, record=record)
                     connection.commit()
@@ -611,7 +612,7 @@ class LearningTaskRepository:
                 if reused_key is not None:
                     raise LearningKickoffError(
                         "kickoff idempotency key already belongs to another learning task",
-                        code="learning_kickoff_idempotency_conflict",
+                        code=LearningKickoffErrorCode.IDEMPOTENCY_CONFLICT,
                     )
                 now = datetime.now(UTC).isoformat()
                 content_hash = _sha256(task.topic)
@@ -700,7 +701,7 @@ class LearningTaskRepository:
                 if row is None:
                     raise LearningKickoffError(
                         "learning kickoff changed during dispatch",
-                        code="learning_kickoff_conflict",
+                        code=LearningKickoffErrorCode.CONFLICT,
                     )
                 current = _decode_kickoff_row(row)
                 _validate_same_kickoff(current, record)
@@ -739,7 +740,7 @@ class LearningTaskRepository:
                 if cursor.rowcount != 1:
                     raise LearningKickoffError(
                         "learning kickoff changed during dispatch",
-                        code="learning_kickoff_conflict",
+                        code=LearningKickoffErrorCode.CONFLICT,
                     )
                 connection.commit()
                 return updated
@@ -766,7 +767,7 @@ class LearningTaskRepository:
         if row is None:
             raise LearningKickoffError(
                 "learning kickoff receipt not found",
-                code="learning_kickoff_not_found",
+                code=LearningKickoffErrorCode.NOT_FOUND,
             )
         return _decode_kickoff_row(row)
 
@@ -790,7 +791,7 @@ class LearningTaskRepository:
         if len(rows) != 1:
             raise LearningKickoffError(
                 "learning session has multiple accepted kickoffs",
-                code="learning_kickoff_session_conflict",
+                code=LearningKickoffErrorCode.SESSION_CONFLICT,
             )
         return _decode_kickoff_row(rows[0])
 
@@ -1436,7 +1437,7 @@ def _decode_kickoff_row(row: sqlite3.Row) -> LearningKickoffDispatchRecord:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise LearningKickoffError(
             "learning kickoff receipt is corrupt",
-            code="learning_kickoff_corrupt",
+            code=LearningKickoffErrorCode.CORRUPT,
         ) from exc
     return record
 
@@ -1456,7 +1457,7 @@ def _validate_kickoff_binding(
     ):
         raise LearningKickoffError(
             "learning kickoff canonical binding changed",
-            code="learning_kickoff_binding_conflict",
+            code=LearningKickoffErrorCode.BINDING_CONFLICT,
         )
 
 
@@ -1483,7 +1484,7 @@ def _validate_same_kickoff(
     if any(getattr(current, field) != getattr(candidate, field) for field in immutable):
         raise LearningKickoffError(
             "learning kickoff immutable binding changed",
-            code="learning_kickoff_conflict",
+            code=LearningKickoffErrorCode.CONFLICT,
         )
 
 

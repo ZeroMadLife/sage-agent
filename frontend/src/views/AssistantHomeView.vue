@@ -8,7 +8,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAssistantHomeStore } from '../stores/assistantHome'
 import { useCodingStore } from '../stores/coding'
 import { runViewTransition } from '../composables/useViewTransition'
-import type { LearningSourcePolicy, LearningTaskResponse } from '../types/api'
+import { useLearningConfirmationForm } from '../composables/useLearningConfirmationForm'
 
 const home = useAssistantHomeStore()
 const coding = useCodingStore()
@@ -21,15 +21,11 @@ const sending = ref(false)
 const confirming = ref(false)
 const sendError = ref('')
 const formError = ref('')
-const topic = ref('')
-const desiredOutcome = ref('')
-const startingLevel = ref<'' | 'beginner' | 'intermediate' | 'advanced'>('')
-const timeBudget = ref<number | null>(null)
-const targetDate = ref('')
-const knowledgePolicy = ref<LearningSourcePolicy['knowledge']>('preferred')
-const webPolicy = ref<LearningSourcePolicy['web']>('allowed_when_insufficient')
-const freshness = ref<LearningSourcePolicy['freshness']>('all')
-const domainsText = ref('')
+const confirmationForm = useLearningConfirmationForm()
+const {
+  desiredOutcome, domainsText, freshness, knowledgePolicy, sourcePolicyLabel,
+  startingLevel, targetDate, timeBudget, topic, webPolicy,
+} = confirmationForm
 
 const canSend = computed(() => Boolean(prompt.value.trim()) && !sending.value)
 const recentSession = computed(() => home.summary?.sessions.items[0] ?? null)
@@ -53,31 +49,9 @@ const taskBusy = computed(() => confirming.value || home.learningState === 'load
 const taskLocked = computed(() => taskBusy.value || [
   'activating', 'kickoff_dispatching', 'active', 'receipt_recovery_failed',
 ].includes(home.learningState))
-const sourcePolicyLabel = computed(() => {
-  const knowledge = knowledgePolicy.value === 'required'
-    ? '必须使用本地知识'
-    : knowledgePolicy.value === 'disabled' ? '不使用本地知识' : '优先使用本地知识'
-  const web = webPolicy.value === 'forbidden' ? '不联网' : '证据不足时允许联网'
-  return `${knowledge}，${web}${freshness.value === 'current' ? '，仅使用当前资料' : ''}`
-})
 const riskNotice = computed(() => home.learningTask?.risk_notice || '确认前不会启动运行时；激活后仅开放只读学习能力。')
-const localReady = computed(() => Boolean(
-  topic.value.trim() && desiredOutcome.value.trim() && startingLevel.value
-  && timeBudget.value !== null && timeBudget.value >= 15,
-))
-const formDirty = computed(() => {
-  const task = home.learningTask
-  if (!task) return false
-  return topic.value.trim() !== task.topic
-    || desiredOutcome.value.trim() !== (task.desired_outcome ?? '')
-    || (startingLevel.value || null) !== task.learner_profile.starting_level
-    || timeBudget.value !== task.learner_profile.time_budget_minutes_per_week
-    || (targetDate.value || null) !== task.learner_profile.target_date
-    || knowledgePolicy.value !== task.source_policy.knowledge
-    || webPolicy.value !== task.source_policy.web
-    || freshness.value !== task.source_policy.freshness
-    || normalizedDomains().join(',') !== task.source_policy.domains.join(',')
-})
+const localReady = confirmationForm.localReady
+const formDirty = confirmationForm.dirty
 const confirmationLabel = computed(() => {
   if (home.learningState === 'activation_failed') return '重试激活'
   if (home.learningState === 'kickoff_dispatching') return '重试进入学习会话'
@@ -95,27 +69,12 @@ const taskStateLabel = computed(() => {
 
 watch(
   () => home.learningTask ? `${home.learningTask.task_id}:${home.learningTask.task_revision}` : '',
-  () => syncTaskForm(home.learningTask),
+  () => {
+    confirmationForm.sync(home.learningTask)
+    formError.value = ''
+  },
   { immediate: true },
 )
-
-function normalizedDomains() {
-  return domainsText.value.split(',').map((domain) => domain.trim().toLowerCase()).filter(Boolean)
-}
-
-function syncTaskForm(task: LearningTaskResponse | null) {
-  if (!task) return
-  topic.value = task.topic
-  desiredOutcome.value = task.desired_outcome ?? ''
-  startingLevel.value = task.learner_profile.starting_level ?? ''
-  timeBudget.value = task.learner_profile.time_budget_minutes_per_week
-  targetDate.value = task.learner_profile.target_date ?? ''
-  knowledgePolicy.value = task.source_policy.knowledge
-  webPolicy.value = task.source_policy.web
-  freshness.value = task.source_policy.freshness
-  domainsText.value = task.source_policy.domains.join(', ')
-  formError.value = ''
-}
 
 async function send() {
   const content = prompt.value.trim()
@@ -145,15 +104,7 @@ async function confirmAndEnter() {
   try {
     let task = home.learningTask
     if (formDirty.value) {
-      task = await home.updateCurrentLearningTask({
-        topic: topic.value.trim(), desired_outcome: desiredOutcome.value.trim() || null,
-        starting_level: startingLevel.value || null, time_budget_minutes_per_week: timeBudget.value,
-        target_date: targetDate.value || null,
-        source_policy: {
-          knowledge: knowledgePolicy.value, web: webPolicy.value,
-          domains: normalizedDomains(), freshness: freshness.value,
-        },
-      })
+      task = await home.updateCurrentLearningTask(confirmationForm.toPatch())
     }
     if (!task.clarification.ready_to_activate) {
       formError.value = '请先完成必要澄清，再确认学习任务。'

@@ -2013,6 +2013,20 @@ class LearningKickoffDispatchRequest(BaseModel):
     expected_revision: int = Field(ge=1)
 
 
+class LearningErrorDetail(BaseModel):
+    """Stable browser-safe error detail for Learning control-plane APIs."""
+
+    code: str
+    message: str = ""
+    current_revision: int | None = None
+
+
+class LearningErrorResponse(BaseModel):
+    """FastAPI error envelope exposed in OpenAPI."""
+
+    detail: LearningErrorDetail
+
+
 class LearningKickoffDispatchResponse(BaseModel):
     """Browser-safe acceptance receipt for one canonical learning kickoff."""
 

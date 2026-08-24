@@ -10,6 +10,7 @@ from core.learning.activation import (
 from core.learning.kickoff import (
     LearningKickoffDispatchRecord,
     LearningKickoffError,
+    LearningKickoffErrorCode,
     LearningKickoffService,
 )
 from core.learning.mastery import (
@@ -59,6 +60,7 @@ __all__ = [
     "LearningGoalRef",
     "LearningKickoffDispatchRecord",
     "LearningKickoffError",
+    "LearningKickoffErrorCode",
     "LearningKickoffService",
     "LearningLearnerProfile",
     "LearningSourcePolicy",

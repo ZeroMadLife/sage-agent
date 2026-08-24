@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from api.cloud_dependencies import SESSION_COOKIE, require_cloud_authentication_in_production
 from api.schemas import (
     LearningActivationResponse,
+    LearningErrorResponse,
     LearningKickoffDispatchRequest,
     LearningKickoffDispatchResponse,
     LearningSourcePolicyRequest,
@@ -232,6 +233,10 @@ async def get_learning_activation(
 @router.post(
     "/tasks/{task_id}/kickoff",
     response_model=LearningKickoffDispatchResponse,
+    responses={
+        409: {"model": LearningErrorResponse, "description": "Kickoff contract conflict"},
+        503: {"model": LearningErrorResponse, "description": "Kickoff dispatch unavailable"},
+    },
 )
 async def dispatch_learning_kickoff(
     task_id: str,
