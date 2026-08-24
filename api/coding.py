@@ -8,8 +8,9 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator, Mapping
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass, replace
+from functools import partial
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -256,9 +257,9 @@ class CodingRuntimeRehydrateError(RuntimeError):
 
 
 @dataclass(slots=True)
-class _CodingRuntimeRehydrateLockEntry:
-    lock: asyncio.Lock
-    users: int = 0
+class _CodingRuntimeRehydrateFlight:
+    task: asyncio.Task[CodingRuntime]
+    waiters: int = 0
 
 
 def _port_available(port: object) -> bool:
@@ -2450,37 +2451,65 @@ async def resume_coding_session(
     )
 
 
-@asynccontextmanager
-async def _coding_runtime_rehydrate_lock(
+def _finish_coding_runtime_rehydrate_flight(
     connection: HTTPConnection,
     session_id: str,
-) -> AsyncGenerator[None, None]:
-    """Serialize one session restore while allowing unrelated sessions to proceed."""
-    guard: asyncio.Lock = connection.app.state.coding_session_rehydrate_locks_guard
-    entries: dict[str, _CodingRuntimeRehydrateLockEntry] = (
-        connection.app.state.coding_session_rehydrate_locks
+    _completed: asyncio.Task[CodingRuntime],
+) -> None:
+    entries: dict[str, _CodingRuntimeRehydrateFlight] = (
+        connection.app.state.coding_runtime_rehydrate_flights
     )
-    async with guard:
-        entry = entries.get(session_id)
-        if entry is None:
-            entry = _CodingRuntimeRehydrateLockEntry(lock=asyncio.Lock())
-            entries[session_id] = entry
-        entry.users += 1
-    try:
-        async with entry.lock:
-            yield
-    finally:
-        async with guard:
-            entry.users -= 1
-            if entry.users == 0 and entries.get(session_id) is entry:
-                entries.pop(session_id, None)
+    entry = entries.get(session_id)
+    if entry is None or not entry.task.done():
+        return
+    with suppress(asyncio.CancelledError):
+        entry.task.exception()
+    if entry.waiters == 0 and entries.get(session_id) is entry:
+        entries.pop(session_id, None)
 
 
 async def _rehydrate_coding_runtime(
     connection: HTTPConnection,
     session_id: str,
 ) -> CodingRuntime:
-    """Restore one runtime with a bounded public failure contract."""
+    """Join one complete runtime reconstruction flight per persisted Session."""
+    sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
+    if sessions.get(session_id) is not None:
+        return await _execute_coding_runtime_rehydrate(connection, session_id)
+    guard: asyncio.Lock = connection.app.state.coding_runtime_rehydrate_flights_guard
+    entries: dict[str, _CodingRuntimeRehydrateFlight] = (
+        connection.app.state.coding_runtime_rehydrate_flights
+    )
+    async with guard:
+        runtime = sessions.get(session_id)
+        if runtime is not None:
+            return runtime
+        entry = entries.get(session_id)
+        if entry is None:
+            task = asyncio.create_task(
+                _execute_coding_runtime_rehydrate(connection, session_id),
+                name=f"coding-runtime-rehydrate:{session_id}",
+            )
+            entry = _CodingRuntimeRehydrateFlight(task=task)
+            entries[session_id] = entry
+            task.add_done_callback(
+                partial(_finish_coding_runtime_rehydrate_flight, connection, session_id)
+            )
+        entry.waiters += 1
+    try:
+        return await asyncio.shield(entry.task)
+    finally:
+        async with guard:
+            entry.waiters -= 1
+            if entry.waiters == 0 and entry.task.done() and entries.get(session_id) is entry:
+                entries.pop(session_id, None)
+
+
+async def _execute_coding_runtime_rehydrate(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Execute one reconstruction and bound its shared public result or error."""
     try:
         return await _rehydrate_coding_runtime_inner(connection, session_id)
     except (HTTPException, CodingRuntimeRehydrateError):
@@ -2504,91 +2533,85 @@ async def _rehydrate_coding_runtime_inner(
     if runtime is not None:
         await connection.app.state.coding_run_registry.hydrate(session_id)
         return runtime
-    async with _coding_runtime_rehydrate_lock(connection, session_id):
-        runtime = sessions.get(session_id)
-        if runtime is not None:
-            return runtime
-        model_factory = getattr(connection.app.state, "coding_model_factory", None)
-        if model_factory is None:
-            raise RuntimeError("Coding model factory is not configured")
-        storage_root = Path(connection.app.state.coding_storage_root)
-        store = CodingSessionStore(storage_root / "sessions")
-        try:
-            persisted = store.load(session_id)
-        except FileNotFoundError as exc:
-            raise HTTPException(
-                status_code=404, detail=f"Unknown coding session: {session_id}"
-            ) from exc
-        coordinator = await connection.app.state.coding_run_registry.hydrate(session_id)
-        active_run_id = coordinator.active_run_id or coordinator.journal.active_run_id()
-        if active_run_id is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="active coding run has no in-memory runtime",
+    model_factory = getattr(connection.app.state, "coding_model_factory", None)
+    if model_factory is None:
+        raise RuntimeError("Coding model factory is not configured")
+    storage_root = Path(connection.app.state.coding_storage_root)
+    store = CodingSessionStore(storage_root / "sessions")
+    try:
+        persisted = store.load(session_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"Unknown coding session: {session_id}"
+        ) from exc
+    coordinator = await connection.app.state.coding_run_registry.hydrate(session_id)
+    active_run_id = coordinator.active_run_id or coordinator.journal.active_run_id()
+    if active_run_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="active coding run has no in-memory runtime",
+        )
+    try:
+        runtime_profile = _require_enabled_runtime_profile(
+            persisted.get("runtime_profile"), connection
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="invalid persisted runtime profile") from exc
+    account = await load_account_model_context(connection, include_credentials=True)
+    catalog = combined_catalog(connection, account)
+    model_factory = combined_model_factory(connection, account)
+    registry = combined_capabilities(connection, account)
+    reasoning_modes = combined_reasoning_modes(connection, account)
+    model_id = str(persisted.get("model_spec") or connection.app.state.coding_default_model)
+    if model_id not in _catalog_model_ids(catalog):
+        raise HTTPException(status_code=422, detail="unknown coding model")
+    default_workspace = Path(connection.app.state.coding_workspace_root).resolve()
+    persisted_workspace = _resolve_persisted_workspace_root(
+        default_workspace, persisted.get("workspace_root")
+    )
+    persisted["workspace_root"] = str(persisted_workspace)
+    reasoning_mode = _resolved_reasoning_mode(
+        model_id,
+        str(persisted.get("reasoning_mode", "off")),
+        reasoning_modes,
+    )
+    runtime = CodingRuntime(
+        session_id=session_id,
+        workspace_root=persisted_workspace,
+        model=_build_model(model_factory, model_id, reasoning_mode),
+        storage_root=storage_root,
+        model_factory=model_factory,
+        approval_policy="ask",
+        session_state=persisted,
+        save_on_init=False,
+        model_capabilities=registry,
+        checkpoint_anchor_key=connection.app.state.coding_checkpoint_anchor_key,
+        model_spec=model_id,
+        reasoning_mode=reasoning_mode,
+        model_reasoning_modes=reasoning_modes,
+        usage_store=connection.app.state.coding_usage_store,
+        knowledge_store=_coding_knowledge_store(connection),
+        runtime_profile=runtime_profile,
+        sandbox_provider=str(
+            persisted.get(
+                "sandbox_provider",
+                getattr(connection.app.state, "coding_sandbox_provider", "local_workspace"),
             )
-        try:
-            runtime_profile = _require_enabled_runtime_profile(
-                persisted.get("runtime_profile"), connection
+        ),
+        sandbox_image=str(
+            persisted.get(
+                "sandbox_image",
+                getattr(connection.app.state, "coding_sandbox_image", "python:3.11-slim"),
             )
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=422, detail="invalid persisted runtime profile"
-            ) from exc
-        account = await load_account_model_context(connection, include_credentials=True)
-        catalog = combined_catalog(connection, account)
-        model_factory = combined_model_factory(connection, account)
-        registry = combined_capabilities(connection, account)
-        reasoning_modes = combined_reasoning_modes(connection, account)
-        model_id = str(persisted.get("model_spec") or connection.app.state.coding_default_model)
-        if model_id not in _catalog_model_ids(catalog):
-            raise HTTPException(status_code=422, detail="unknown coding model")
-        default_workspace = Path(connection.app.state.coding_workspace_root).resolve()
-        persisted_workspace = _resolve_persisted_workspace_root(
-            default_workspace, persisted.get("workspace_root")
-        )
-        persisted["workspace_root"] = str(persisted_workspace)
-        reasoning_mode = _resolved_reasoning_mode(
-            model_id,
-            str(persisted.get("reasoning_mode", "off")),
-            reasoning_modes,
-        )
-        runtime = CodingRuntime(
-            session_id=session_id,
-            workspace_root=persisted_workspace,
-            model=_build_model(model_factory, model_id, reasoning_mode),
-            storage_root=storage_root,
-            model_factory=model_factory,
-            approval_policy="ask",
-            session_state=persisted,
-            save_on_init=False,
-            model_capabilities=registry,
-            checkpoint_anchor_key=connection.app.state.coding_checkpoint_anchor_key,
-            model_spec=model_id,
-            reasoning_mode=reasoning_mode,
-            model_reasoning_modes=reasoning_modes,
-            usage_store=connection.app.state.coding_usage_store,
-            knowledge_store=_coding_knowledge_store(connection),
-            runtime_profile=runtime_profile,
-            sandbox_provider=str(
-                persisted.get(
-                    "sandbox_provider",
-                    getattr(connection.app.state, "coding_sandbox_provider", "local_workspace"),
-                )
-            ),
-            sandbox_image=str(
-                persisted.get(
-                    "sandbox_image",
-                    getattr(connection.app.state, "coding_sandbox_image", "python:3.11-slim"),
-                )
-            ),
-        )
-        pending_approval = coordinator.journal.recoverable_approval()
-        if pending_approval is not None:
-            runtime.approval_manager.restore_pending(pending_approval)
-        sessions[session_id] = runtime
-        if pending_approval is None:
-            _schedule_goal_reconciliation(connection.app, session_id)
-        return runtime
+        ),
+    )
+    pending_approval = coordinator.journal.recoverable_approval()
+    if pending_approval is not None:
+        runtime.approval_manager.restore_pending(pending_approval)
+    sessions[session_id] = runtime
+    if pending_approval is None:
+        _schedule_goal_reconciliation(connection.app, session_id)
+    return runtime
 
 
 async def _thread_goal_service(request: Request, session_id: str) -> ThreadGoalService:

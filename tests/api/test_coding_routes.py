@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
@@ -998,7 +999,7 @@ def test_websocket_handshake_waits_for_slow_ordinary_session_rehydrate(
     assert worker_errors == []
 
 
-def test_rehydrate_locks_are_session_scoped_single_flight_and_cleaned(
+def test_runtime_rehydrate_flights_are_session_scoped_single_flight_and_cleaned(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -1053,14 +1054,14 @@ def test_rehydrate_locks_are_session_scoped_single_flight_and_cleaned(
     assert counts_while_blocked == {session_a: 1, session_b: 1}
     assert sorted(responses) == [200, 200, 200]
     assert all(not worker.is_alive() for worker in workers)
-    assert app.state.coding_session_rehydrate_locks == {}
+    assert app.state.coding_runtime_rehydrate_flights == {}
 
 
-def test_failed_rehydrate_cleans_session_lock_and_can_retry(
+def test_failed_rehydrate_cleans_session_flight_and_can_retry(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """A bounded restore failure leaves no runtime or lock entry behind."""
+    """A bounded restore failure leaves no runtime or flight entry behind."""
     app = create_app(
         coding_model_factory=FakeModel,
         coding_workspace_root=tmp_path,
@@ -1081,14 +1082,114 @@ def test_failed_rehydrate_cleans_session_lock_and_can_retry(
         assert failed.json()["detail"]["code"] == "coding_session_rehydrate_failed"
         assert "credential-secret-must-not-leak" not in failed.text
         assert session_id not in app.state.coding_sessions
-        assert app.state.coding_session_rehydrate_locks == {}
+        assert app.state.coding_runtime_rehydrate_flights == {}
 
         monkeypatch.setattr(coding_api, "load_account_model_context", original_load)
         retried = client.post(f"/api/v1/coding/session/{session_id}/resume")
 
     assert retried.status_code == 200
     assert session_id in app.state.coding_sessions
-    assert app.state.coding_session_rehydrate_locks == {}
+    assert app.state.coding_runtime_rehydrate_flights == {}
+
+
+async def test_concurrent_failed_runtime_rehydrate_shares_one_public_error_and_retries(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Concurrent REST waiters observe one failed reconstruction flight."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        session_id = (await client.post("/api/v1/coding/session", json={})).json()["session_id"]
+        app.state.coding_sessions.clear()
+        original_load = coding_api.load_account_model_context
+        started = asyncio.Event()
+        allow_failure = asyncio.Event()
+        attempts = 0
+
+        async def failed_load(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+            nonlocal attempts
+            attempts += 1
+            started.set()
+            await allow_failure.wait()
+            raise RuntimeError("shared-sensitive-error")
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", failed_load)
+        first = asyncio.create_task(client.post(f"/api/v1/coding/session/{session_id}/resume"))
+        await started.wait()
+        second = asyncio.create_task(client.post(f"/api/v1/coding/session/{session_id}/resume"))
+        turn_completed = asyncio.Event()
+        asyncio.get_running_loop().call_soon(turn_completed.set)
+        await turn_completed.wait()
+        allow_failure.set()
+        responses = await asyncio.gather(first, second)
+
+        assert attempts == 1
+        assert [response.status_code for response in responses] == [503, 503]
+        assert responses[0].json() == responses[1].json()
+        assert responses[0].json()["detail"]["code"] == "coding_session_rehydrate_failed"
+        assert "shared-sensitive-error" not in responses[0].text + responses[1].text
+        assert session_id not in app.state.coding_sessions
+        assert app.state.coding_runtime_rehydrate_flights == {}
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", original_load)
+        retried = await client.post(f"/api/v1/coding/session/{session_id}/resume")
+        await asyncio.gather(*tuple(app.state.coding_goal_followup_tasks))
+
+    assert retried.status_code == 200
+    assert session_id in app.state.coding_sessions
+    assert app.state.coding_runtime_rehydrate_flights == {}
+
+
+async def test_cancelled_runtime_rehydrate_waiter_does_not_cancel_shared_flight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """One disconnected REST waiter cannot abort reconstruction for another waiter."""
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        session_id = (await client.post("/api/v1/coding/session", json={})).json()["session_id"]
+        app.state.coding_sessions.clear()
+        original_load = coding_api.load_account_model_context
+        started = asyncio.Event()
+        allow_success = asyncio.Event()
+        attempts = 0
+
+        async def slow_load(connection, *, include_credentials=False):  # type: ignore[no-untyped-def]
+            nonlocal attempts
+            attempts += 1
+            started.set()
+            await allow_success.wait()
+            return await original_load(connection, include_credentials=include_credentials)
+
+        monkeypatch.setattr(coding_api, "load_account_model_context", slow_load)
+        cancelled = asyncio.create_task(client.post(f"/api/v1/coding/session/{session_id}/resume"))
+        await started.wait()
+        survivor = asyncio.create_task(client.post(f"/api/v1/coding/session/{session_id}/resume"))
+        turn_completed = asyncio.Event()
+        asyncio.get_running_loop().call_soon(turn_completed.set)
+        await turn_completed.wait()
+
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        allow_success.set()
+        response = await survivor
+        await asyncio.gather(*tuple(app.state.coding_goal_followup_tasks))
+
+    assert response.status_code == 200
+    assert attempts == 1
+    assert session_id in app.state.coding_sessions
+    assert app.state.coding_runtime_rehydrate_flights == {}
 
 
 def test_resume_recovers_an_interrupted_persisted_run_before_rehydrating(tmp_path: Path) -> None:

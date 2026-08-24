@@ -553,8 +553,8 @@ def create_app(
         or PublicationCandidateService(PublicationCandidateRepository(AsyncSessionFactory))
     )
     app.state.coding_sessions = {}
-    app.state.coding_session_rehydrate_locks = {}
-    app.state.coding_session_rehydrate_locks_guard = asyncio.Lock()
+    app.state.coding_runtime_rehydrate_flights = {}
+    app.state.coding_runtime_rehydrate_flights_guard = asyncio.Lock()
     from api.coding_runs import CodingRunRegistry
 
     app.state.coding_run_registry = CodingRunRegistry(

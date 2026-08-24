@@ -307,7 +307,7 @@ async def test_account_session_rehydrate_failures_are_bounded_for_rest_and_webso
     }
     assert sentinel not in resumed.text
     assert session_id not in client.app.state.coding_sessions
-    assert client.app.state.coding_session_rehydrate_locks == {}
+    assert client.app.state.coding_runtime_rehydrate_flights == {}
 
     with (
         pytest.raises(WebSocketDisconnect) as closed,
@@ -319,7 +319,7 @@ async def test_account_session_rehydrate_failures_are_bounded_for_rest_and_webso
     assert closed.value.reason == "coding_session_rehydrate_failed"
     assert sentinel not in closed.value.reason
     assert session_id not in client.app.state.coding_sessions
-    assert client.app.state.coding_session_rehydrate_locks == {}
+    assert client.app.state.coding_runtime_rehydrate_flights == {}
 
 
 async def test_account_model_sessions_are_hidden_from_other_users(
