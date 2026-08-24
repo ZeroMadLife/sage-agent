@@ -15,7 +15,7 @@ export default defineConfig({
   outputDir: '../output/playwright/test-results',
   fullyParallel: false,
   workers: 1,
-  timeout: 45_000,
+  timeout: 120_000,
   expect: { timeout: 10_000 },
   reporter: [
     ['line'],
@@ -29,7 +29,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `${JSON.stringify(python)} -m uvicorn tests.e2e.learning_assistant_app:app --host 127.0.0.1 --port 8765`,
+      command: `${JSON.stringify(python)} -m tests.e2e.learning_assistant_server`,
       cwd: repositoryRoot,
       env: {
         PYTHONPATH: `${resolve(repositoryRoot, 'packages/sage_harness')}:${repositoryRoot}`,

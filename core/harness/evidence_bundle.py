@@ -235,6 +235,7 @@ def _web_search_items(
                 metadata={
                     "provider": str(payload.get("provider", ""))[:80],
                     "fetched_at": str(citation.get("retrieved_at", ""))[:80],
+                    "conflict_group": str(citation.get("conflict_group", ""))[:160],
                 },
             )
         )

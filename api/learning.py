@@ -554,7 +554,10 @@ async def _execution_service(
     from api.coding import _rehydrate_coding_runtime
 
     runtime = await _rehydrate_coding_runtime(request, scope.session_id)
-    knowledge = CodingKnowledgePort(runtime)
+    knowledge_factory = getattr(request.app.state, "learning_knowledge_port_factory", None)
+    knowledge = (
+        knowledge_factory(runtime) if callable(knowledge_factory) else CodingKnowledgePort(runtime)
+    )
     knowledge_port = knowledge if scope.knowledge_policy != "disabled" else None
     web_search = (
         getattr(request.app.state, "coding_web_search_port", None)

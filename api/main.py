@@ -114,6 +114,7 @@ def create_app(
     coding_mcp_catalog: McpCatalogPort | None = None,
     coding_web_fetch_port: WebFetchPort | None = None,
     coding_web_search_port: WebSearchPort | None = None,
+    learning_knowledge_port_factory: Any | None = None,
     database_auto_migrate: bool | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
@@ -399,6 +400,7 @@ def create_app(
         )
     else:
         app.state.coding_web_search_port = None
+    app.state.learning_knowledge_port_factory = learning_knowledge_port_factory
     if coding_web_fetch_port is not None:
         app.state.coding_web_fetch_port = coding_web_fetch_port
     elif settings.sage_web_fetch_enabled:
@@ -526,7 +528,10 @@ def create_app(
         runtime_profile=app.state.coding_default_runtime_profile,
         sandbox_provider=app.state.coding_sandbox_provider,
         sandbox_image=app.state.coding_sandbox_image,
-        knowledge_available=app.state.knowledge_store is not None,
+        knowledge_available=(
+            app.state.knowledge_store is not None
+            or app.state.learning_knowledge_port_factory is not None
+        ),
         web_search_available=(
             app.state.coding_web_search_port is not None
             and getattr(app.state.coding_web_search_port, "available", True)

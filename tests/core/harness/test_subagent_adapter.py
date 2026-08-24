@@ -21,6 +21,7 @@ from sage_harness import (
 
 from core.coding.memory import workspace_id_from_path
 from core.coding.runtime import CodingRuntime
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
 from core.harness.learning_scope import LearningReadonlyScope
 from core.harness.subagent_adapter import (
     CodingSubagentExecutor,
@@ -90,6 +91,7 @@ class FakeWebSearchPort:
                     retrieved_at="2026-07-19T00:00:00Z",
                     content_hash="a" * 64,
                     rank=1,
+                    metadata={"conflict_group": "checkpoint-contract"},
                 ),
             ),
         )
@@ -637,6 +639,18 @@ def test_research_subagent_uses_bounded_evidence_tools_and_records_progress(
     assert result.token_usage == request.token_budget
     assert [event["phase"] for event in progress].count("tool_completed") == 2
     assert progress[-1]["evidence_count"] == 2
+    bundle = asyncio.run(
+        CodingEvidenceBundlePort(runtime).read(
+            runtime.session_id,
+            request.parent_run_id,
+            child_run_ids=(result.child_run_id,),
+            evidence_refs=("wcite_research",),
+            token_budget=1_000,
+        )
+    )
+    web = next(item for item in bundle.items if item.evidence_ref == "wcite_research")
+    assert web.metadata["fetched_at"] == "2026-07-19T00:00:00Z"
+    assert web.metadata["conflict_group"] == "checkpoint-contract"
     trace = runtime.run_store.get_run("child_research")["events"]
     terminal = next(event for event in reversed(trace) if event["type"] == "subagent_terminal")
     assert terminal["evidence_refs"] == ["kcite_research", "wcite_research"]

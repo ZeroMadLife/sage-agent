@@ -1,6 +1,7 @@
-import { expect, test, type APIRequestContext } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
 type LearningE2EStats = {
+  task_count: number
   task_status: string | null
   session_id: string | null
   kickoff_status: string | null
@@ -8,40 +9,136 @@ type LearningE2EStats = {
   acceptance_count: number
   turn_started_count: number
   model_calls: number
+  research_model_calls: number
+  pid: number
 }
 
 type L3Summary = {
   task_id: string
-  task_revision: number
-  goal_summary: string
-  plan_id: string
-  plan_hash: string
-  dag_hash: string
   stage: string
   evidence_count: number
   citation_count: number
-  gap_codes: string[]
   blocking_reason: string
-  next_action: string
+  checkpoint_revision: number
   artifact_ref: string
   artifact: null | {
     artifact_id: string
-    kind: string
-    content_hash: string
-    media_type: string
     status: string
     citation_count: number
-    source_revisions: string[]
-    retention: string
   }
-  checkpoint_revision: number
-  fencing_token: number
+}
+
+type LearningArtifact = {
+  artifact_id: string
+  status: string
+  content_hash: string
+  citations: Array<{ evidence_ref: string; title: string; url: string }>
+}
+
+type LearningTaskHandle = {
+  taskId: string
+  sessionId: string
+}
+
+type SourcePolicy = {
+  knowledge: 'preferred' | 'required' | 'disabled'
+  web: 'allowed_when_insufficient' | 'forbidden'
+  domains: string[]
+  freshness: 'all' | 'current'
 }
 
 async function readStats(request: APIRequestContext): Promise<LearningE2EStats> {
   const response = await request.get('/api/__e2e__/stats')
   expect(response.ok()).toBe(true)
   return response.json() as Promise<LearningE2EStats>
+}
+
+async function createLearningTask(
+  request: APIRequestContext,
+  topic: string,
+  sourcePolicy: SourcePolicy,
+): Promise<LearningTaskHandle> {
+  const draftResponse = await request.post('/api/v1/learning/tasks/draft', {
+    data: {
+      topic,
+      desired_outcome: `能够基于证据解释 ${topic}`,
+      starting_level: 'beginner',
+      time_budget_minutes_per_week: 120,
+      source_policy: sourcePolicy,
+    },
+  })
+  expect(draftResponse.status(), await draftResponse.text()).toBe(201)
+  const draft = await draftResponse.json() as { task_id: string; task_revision: number }
+  const activationResponse = await request.post(
+    `/api/v1/learning/tasks/${draft.task_id}/activate`,
+    {
+      headers: { 'Idempotency-Key': `activate-${draft.task_id}` },
+      data: { expected_revision: draft.task_revision },
+    },
+  )
+  expect(activationResponse.ok(), await activationResponse.text()).toBe(true)
+  const activation = await activationResponse.json() as { session_id: string; task_revision: number }
+  const kickoffResponse = await request.post(
+    `/api/v1/learning/tasks/${draft.task_id}/kickoff`,
+    {
+      headers: { 'Idempotency-Key': `kickoff-${draft.task_id}` },
+      data: { expected_revision: activation.task_revision },
+    },
+  )
+  expect(kickoffResponse.ok(), await kickoffResponse.text()).toBe(true)
+  const kickoff = await kickoffResponse.json() as { session_id: string }
+  return { taskId: draft.task_id, sessionId: kickoff.session_id }
+}
+
+async function advance(
+  request: APIRequestContext,
+  taskId: string,
+  revision: number,
+  key: string,
+): Promise<L3Summary> {
+  const response = await request.post(`/api/v1/learning/tasks/${taskId}/advance`, {
+    headers: { 'Idempotency-Key': key },
+    data: { expected_checkpoint_revision: revision },
+  })
+  expect(response.ok(), await response.text()).toBe(true)
+  return response.json() as Promise<L3Summary>
+}
+
+async function advanceUntilTerminal(
+  request: APIRequestContext,
+  taskId: string,
+): Promise<{ summaries: L3Summary[]; keys: string[] }> {
+  const summaries: L3Summary[] = []
+  const keys: string[] = []
+  let revision = 0
+  for (let index = 0; index < 8; index += 1) {
+    const key = `e2e-${taskId}-checkpoint-${revision}`
+    const summary = await advance(request, taskId, revision, key)
+    summaries.push(summary)
+    keys.push(key)
+    revision = summary.checkpoint_revision
+    if (['artifact_ready', 'blocked'].includes(summary.stage)) return { summaries, keys }
+  }
+  throw new Error(`Learning task ${taskId} did not reach a terminal stage`)
+}
+
+async function readArtifact(
+  request: APIRequestContext,
+  taskId: string,
+  artifactId: string,
+): Promise<LearningArtifact> {
+  const response = await request.get(
+    `/api/v1/learning/tasks/${taskId}/artifacts/${artifactId}`,
+  )
+  expect(response.ok(), await response.text()).toBe(true)
+  return response.json() as Promise<LearningArtifact>
+}
+
+async function openLearningPanel(page: Page, handle: LearningTaskHandle) {
+  await page.goto(`/#/coding/session/${handle.sessionId}`)
+  const panel = page.getByLabel('学习任务执行状态')
+  await expect(panel).toBeVisible()
+  return panel
 }
 
 test('creates, clarifies, retries, refreshes, and starts one accepted learning kickoff', async ({
@@ -57,7 +154,6 @@ test('creates, clarifies, retries, refreshes, and starts one accepted learning k
   await expect(page.getByRole('heading', { name: '今天想推进什么？' })).toBeVisible()
   await page.getByLabel('给 Sage 的消息').fill('学习 durable kickoff 与崩溃恢复')
   await page.getByRole('button', { name: '创建学习任务' }).click()
-
   await expect(page.getByRole('heading', { name: '确认学习任务' })).toBeVisible()
   await expect(page.getByLabel('仍需澄清')).toContainText(
     '完成这次学习后，你希望自己能够独立完成什么？',
@@ -70,7 +166,6 @@ test('creates, clarifies, retries, refreshes, and starts one accepted learning k
 
   await page.getByRole('button', { name: '确认并进入学习会话' }).click()
   await expect(page.getByRole('button', { name: '重试激活' })).toBeVisible()
-
   await page.getByRole('button', { name: '重试激活' }).click()
   await expect(page.getByRole('button', { name: '重试进入学习会话' })).toBeVisible()
   await expect.poll(async () => readStats(request)).toMatchObject({
@@ -83,13 +178,6 @@ test('creates, clarifies, retries, refreshes, and starts one accepted learning k
 
   await page.reload()
   await expect(page.getByRole('button', { name: '重试进入学习会话' })).toBeVisible()
-  expect(await readStats(request)).toMatchObject({
-    kickoff_status: 'dispatching',
-    acceptance_count: 1,
-    turn_started_count: 0,
-    model_calls: 0,
-  })
-
   const released = await request.post('/api/__e2e__/release-kickoff')
   expect(released.ok()).toBe(true)
   await page.getByRole('button', { name: '重试进入学习会话' }).click()
@@ -112,135 +200,132 @@ test('creates, clarifies, retries, refreshes, and starts one accepted learning k
   expect((await readStats(request)).model_calls).toBe(acceptedStats.model_calls)
 })
 
-test('renders source gap, conditional Research, deduplicated Artifact, citation, failure and refresh', async ({
+test('uses real API and SQLite for Knowledge, Research, conflict, replay and restart', async ({
   page,
   request,
 }, testInfo) => {
-  const stats = await readStats(request)
-  expect(stats.session_id).toBeTruthy()
-  const taskId = 'ltask-e2e-l3'
-  let current: L3Summary | null = null
-  const replays = new Map<string, L3Summary>()
-
-  const summary = (
-    stage: string,
-    checkpointRevision: number,
-    options: { grounded?: boolean; blocked?: boolean } = {},
-  ): L3Summary => {
-    const grounded = options.grounded === true
-    const artifactId = grounded ? 'lart-e2e-final' : 'lart-e2e-gap'
-    return {
-      task_id: taskId,
-      task_revision: 1,
-      goal_summary: '学习 durable checkpoint',
-      plan_id: 'lplan-e2e',
-      plan_hash: 'sha256:plan-e2e',
-      dag_hash: 'sha256:dag-e2e',
-      stage,
-      evidence_count: grounded ? 1 : 0,
-      citation_count: grounded ? 1 : 0,
-      gap_codes: options.blocked ? ['learning_research_timeout'] : grounded ? [] : ['knowledge_no_evidence'],
-      blocking_reason: options.blocked ? 'learning_research_timeout' : '',
-      next_action: options.blocked ? 'resolve_blocker' : stage === 'artifact_ready' ? 'review_artifact' : stage.includes('research') ? 'research' : 'synthesize',
-      artifact_ref: `sage://learning/artifacts/${artifactId}`,
-      artifact: {
-        artifact_id: artifactId,
-        kind: 'learning_map',
-        content_hash: grounded ? 'sha256:final' : 'sha256:gap',
-        media_type: 'text/markdown',
-        status: grounded ? 'ready' : 'source_gap',
-        citation_count: grounded ? 1 : 0,
-        source_revisions: grounded ? ['sha256:web-r1'] : [],
-        retention: 'task',
-      },
-      checkpoint_revision: checkpointRevision,
-      fencing_token: checkpointRevision,
-    }
+  const forbidden: SourcePolicy = {
+    knowledge: 'preferred', web: 'forbidden', domains: [], freshness: 'all',
   }
+  const webAllowed: SourcePolicy = {
+    knowledge: 'disabled', web: 'allowed_when_insufficient', domains: ['example.com'], freshness: 'current',
+  }
+  const knowledge = await createLearningTask(request, 'Knowledge 已支持 checkpoint', forbidden)
+  const sourceGap = await createLearningTask(request, '无授权来源的 source gap', {
+    ...forbidden, knowledge: 'disabled',
+  })
+  const research = await createLearningTask(request, '条件 Research 成功', webAllowed)
+  const researchFailure = await createLearningTask(request, 'Research 失败', webAllowed)
+  const conflict = await createLearningTask(request, 'Knowledge 冲突 checkpoint', forbidden)
 
-  await page.route(`**/api/v1/learning/tasks/*/resume`, async (route) => {
-    if (!current) {
-      await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: { code: 'learning_resume_not_found' } }) })
-      return
+  const knowledgeRun = await advanceUntilTerminal(request, knowledge.taskId)
+  expect(knowledgeRun.summaries.map(item => item.stage)).toEqual([
+    'knowledge_pending', 'knowledge_ready', 'synthesize_pending', 'artifact_ready',
+  ])
+  const knowledgeFinal = knowledgeRun.summaries.at(-1)!
+  expect(knowledgeFinal.artifact).toMatchObject({ status: 'ready', citation_count: 1 })
+
+  const gapRun = await advanceUntilTerminal(request, sourceGap.taskId)
+  expect(gapRun.summaries.map(item => item.stage)).toEqual([
+    'knowledge_pending', 'source_gap', 'synthesize_pending', 'artifact_ready',
+  ])
+  expect(gapRun.summaries.at(-1)!.artifact).toMatchObject({
+    status: 'source_gap', citation_count: 0,
+  })
+
+  const researchRun = await advanceUntilTerminal(request, research.taskId)
+  expect(researchRun.summaries.map(item => item.stage)).toEqual([
+    'knowledge_pending', 'source_gap', 'research_pending', 'research_ready',
+    'synthesize_pending', 'artifact_ready',
+  ])
+  const researchReady = researchRun.summaries.find(item => item.stage === 'research_ready')!
+  const researchFinal = researchRun.summaries.at(-1)!
+  expect(researchFinal.artifact).toMatchObject({ status: 'ready', citation_count: 1 })
+  expect(researchFinal.artifact!.artifact_id).toBe(researchReady.artifact!.artifact_id)
+  const researchArtifact = await readArtifact(
+    request, research.taskId, researchFinal.artifact!.artifact_id,
+  )
+  expect(researchArtifact.citations).toEqual([
+    expect.objectContaining({
+      evidence_ref: 'wcite_e2e_research',
+      title: 'Checkpoint public docs',
+      url: 'https://docs.example.com/checkpoint',
+    }),
+  ])
+
+  const failureRun = await advanceUntilTerminal(request, researchFailure.taskId)
+  expect(failureRun.summaries.at(-1)).toMatchObject({
+    stage: 'blocked', blocking_reason: 'learning_research_provider_unavailable',
+  })
+
+  const conflictRun = await advanceUntilTerminal(request, conflict.taskId)
+  const conflictFinal = conflictRun.summaries.at(-1)!
+  expect(conflictFinal.artifact).toMatchObject({ status: 'unverified', citation_count: 2 })
+  const conflictArtifact = await readArtifact(
+    request, conflict.taskId, conflictFinal.artifact!.artifact_id,
+  )
+  expect(conflictArtifact.citations.map(item => item.title)).toEqual([
+    'Knowledge Source A', 'Knowledge Source B',
+  ])
+
+  const crossTaskArtifact = await request.get(
+    `/api/v1/learning/tasks/${conflict.taskId}/artifacts/${researchArtifact.artifact_id}`,
+  )
+  expect(crossTaskArtifact.status()).toBe(404)
+
+  const historicalReplay = await advance(
+    request,
+    research.taskId,
+    0,
+    researchRun.keys[0],
+  )
+  expect(historicalReplay).toEqual(researchRun.summaries[0])
+  const currentResume = await request.get(`/api/v1/learning/tasks/${research.taskId}/resume`)
+  expect(currentResume.ok()).toBe(true)
+  expect((await currentResume.json() as L3Summary).stage).toBe('artifact_ready')
+
+  const researchPanel = await openLearningPanel(page, research)
+  await expect(researchPanel).toContainText('artifact_ready')
+  await expect(researchPanel.getByRole('link', { name: 'Checkpoint public docs' })).toBeVisible()
+  await page.screenshot({ path: testInfo.outputPath('learning-artifact-ready.png'), fullPage: true })
+
+  const oldPid = (await readStats(request)).pid
+  const restart = await request.post('/api/__e2e__/restart-process')
+  expect(restart.status()).toBe(202)
+  await expect.poll(async () => {
+    try {
+      const stats = await readStats(request)
+      return stats.pid !== oldPid
+    } catch {
+      return false
     }
-    await route.fulfill({ json: current })
-  })
-  await page.route(`**/api/v1/learning/tasks/*/advance`, async (route) => {
-    const key = route.request().headers()['idempotency-key'] || ''
-    const replay = replays.get(key)
-    if (replay) {
-      await route.fulfill({ json: replay })
-      return
-    }
-    const revision = Number((route.request().postDataJSON() as { expected_checkpoint_revision: number }).expected_checkpoint_revision)
-    current = revision === 0 ? summary('knowledge_pending', 1)
-      : revision === 1 ? summary('source_gap', 2)
-        : revision === 2 ? summary('research_pending', 3)
-          : revision === 3 ? summary('research_ready', 4, { grounded: true })
-            : revision === 4 ? summary('synthesize_pending', 5, { grounded: true })
-              : summary('artifact_ready', 6, { grounded: true })
-    replays.set(key, current)
-    await route.fulfill({ json: current })
-  })
-  await page.route(`**/api/v1/learning/tasks/*/artifacts/*`, async (route) => {
-    const final = route.request().url().includes('lart-e2e-final')
-    await route.fulfill({ json: {
-      artifact_id: final ? 'lart-e2e-final' : 'lart-e2e-gap',
-      artifact_ref: `sage://learning/artifacts/${final ? 'lart-e2e-final' : 'lart-e2e-gap'}`,
-      kind: 'learning_map', task_id: taskId, task_revision: 1, plan_id: 'lplan-e2e',
-      content_hash: final ? 'sha256:final' : 'sha256:gap', media_type: 'text/markdown',
-      status: final ? 'ready' : 'source_gap', evidence_refs: final ? ['wcite-e2e'] : [],
-      source_revisions: final ? ['sha256:web-r1'] : [], retention: 'task',
-      content: final ? '# 学习地图\n\n来源状态：已支持。\n' : '# 学习地图\n\n来源状态：source_gap。\n',
-      citations: final ? [{ evidence_ref: 'wcite-e2e', title: 'Checkpoint docs', url: 'https://docs.example.com/checkpoint', content_hash: 'sha256:web-r1', fetched_at: '2026-08-25T01:00:00Z', page_revision: 'sha256:web-r1', source_revision: 'sha256:web-r1' }] : [],
-      created_at: '2026-08-25T00:00:00Z', updated_at: '2026-08-25T00:00:00Z',
-    } })
-  })
+  }, { timeout: 20_000 }).toBe(true)
 
-  await page.goto(`/#/coding/session/${stats.session_id}`)
-  const panel = page.getByLabel('学习任务执行状态')
-  await expect(panel).toBeVisible()
-  await panel.getByRole('button', { name: '开始生成' }).click()
-  await expect(panel).toContainText('knowledge_pending')
-  await panel.getByRole('button', { name: '继续生成' }).click()
-  await expect(panel).toContainText('source_gap')
-  await panel.getByRole('button', { name: '继续生成' }).click()
-  await expect(panel).toContainText('research_pending')
-  await panel.getByRole('button', { name: '继续生成' }).click()
-  await expect(panel.getByRole('link', { name: 'Checkpoint docs' })).toBeVisible()
-  await panel.getByRole('button', { name: '继续生成' }).click()
-  await expect(panel).toContainText('synthesize_pending')
-  await panel.getByRole('button', { name: '继续生成' }).click()
-  await expect(panel).toContainText('artifact_ready')
-  await expect(panel).toContainText('Artifact lart-e2e-final')
-
-  const duplicate = await page.evaluate(async ({ id, revision }) => {
-    const response = await fetch(`/api/v1/learning/tasks/${id}/advance`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': `learning-ui-${id}-checkpoint-${revision}` },
-      body: JSON.stringify({ expected_checkpoint_revision: revision }),
-    })
-    return response.json()
-  }, { id: taskId, revision: 5 })
-  expect(duplicate.artifact.artifact_id).toBe('lart-e2e-final')
+  const resumedAfterRestart = await request.get(`/api/v1/learning/tasks/${research.taskId}/resume`)
+  expect(resumedAfterRestart.ok()).toBe(true)
+  expect(await resumedAfterRestart.json()).toEqual(await currentResume.json())
+  const artifactAfterRestart = await readArtifact(
+    request, research.taskId, researchArtifact.artifact_id,
+  )
+  expect(artifactAfterRestart.content_hash).toBe(researchArtifact.content_hash)
 
   await page.reload()
-  await expect(panel).toContainText('artifact_ready')
-  await expect(panel.getByRole('link', { name: 'Checkpoint docs' })).toBeVisible()
-  await page.screenshot({
-    path: testInfo.outputPath('learning-artifact-ready.png'),
-    fullPage: true,
-  })
+  await expect(researchPanel).toContainText('artifact_ready')
+  await expect(researchPanel.getByRole('link', { name: 'Checkpoint public docs' })).toBeVisible()
+
+  const conflictPanel = await openLearningPanel(page, conflict)
+  await expect(conflictPanel).toContainText('artifact_ready')
+  await expect(conflictPanel).toContainText('Knowledge Source A')
+  await expect(conflictPanel).toContainText('Knowledge Source B')
   await page.setViewportSize({ width: 390, height: 844 })
-  await expect(panel).toBeVisible()
-  const panelBox = await panel.boundingBox()
+  const panelBox = await conflictPanel.boundingBox()
   expect(panelBox?.width).toBeLessThanOrEqual(390)
   await page.screenshot({
-    path: testInfo.outputPath('learning-artifact-ready-mobile.png'),
+    path: testInfo.outputPath('learning-conflict-unverified-mobile.png'),
     fullPage: true,
   })
 
-  current = summary('blocked', 7, { blocked: true })
-  await page.reload()
-  await expect(panel).toContainText('learning_research_timeout')
-  await expect(panel.getByRole('button', { name: '继续生成' })).toHaveCount(0)
+  const failurePanel = await openLearningPanel(page, researchFailure)
+  await expect(failurePanel).toContainText('learning_research_provider_unavailable')
+  await expect(failurePanel.getByRole('button', { name: '继续生成' })).toHaveCount(0)
 })

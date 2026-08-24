@@ -501,7 +501,7 @@ class SageLearningActivationResources:
             skills=SkillRegistry(root=self.workspace_root).list(),
             web_search_available=self.web_search_available,
             web_fetch_available=self.web_fetch_available,
-            research_subagent_available=(self.knowledge_available and self.web_search_available),
+            research_subagent_available=(self.knowledge_available or self.web_search_available),
             practice_subagent_available=True,
         )
 

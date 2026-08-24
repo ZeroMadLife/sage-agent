@@ -795,6 +795,8 @@ class CodingSubagentExecutor:
                     "title": item.title,
                     "excerpt": item.excerpt,
                     "content_hash": item.content_hash,
+                    "retrieved_at": item.retrieved_at,
+                    "conflict_group": str(item.metadata.get("conflict_group", ""))[:160],
                 }
                 for item in result.evidence
             ],
