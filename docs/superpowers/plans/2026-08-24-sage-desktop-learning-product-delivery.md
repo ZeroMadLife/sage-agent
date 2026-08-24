@@ -601,8 +601,28 @@ Provider/Keychain/onboarding/capability 与 artifact 合同保持不变，不复
 - **环境恢复记录**：工作树 `.venv` 是 bundle verifier 环境且没有 pytest；Anaconda pytest 又先后暴露
   未设置 `packages/sage_harness` 与 LangChain 版本不兼容，均在 collection 阶段退出、未计入证据。最终
   使用仓库根工作区已固定的 Python 3.12 开发环境，并显式设置
-  `PYTHONPATH=packages/sage_harness:.` 完整重跑通过。正式 arm64 artifact 尚待从下一笔 clean docs HEAD 和
-  全新输出目录构建，不能复用 D2.4 receipt。
+  `PYTHONPATH=packages/sage_harness:.` 完整重跑通过。源码门禁阶段尚未生成 arm64 artifact，之后只从
+  下一笔 clean docs HEAD 和全新输出目录构建，不复用 D2.4 receipt。
+- **正式 artifact**：从 clean docs HEAD `fa5799b109ad9c1b84b60cb74c239ba7e6a1cec5` 运行唯一
+  bundle 入口；有效 receipt 位于
+  `/private/tmp/sage-desktop-fa5799b-r1/desktop-bundle-receipt.json`，SHA-256
+  `f6e19d9cb9526ceb857494abf85c7dc1fa14fe3350e97f022628b98240971f67`。`source_dirty=false`、
+  Python `3.12.13`、target `aarch64-apple-darwin`；冻结 sidecar 12 项真实 product smoke 与 `.app` 6 项
+  lifecycle smoke 全部 `passed`。
+- **manifest 与计数**：sidecar receipt SHA-256 为
+  `04ee98384893dad89b39f26b4e26a6573d9dc982c7d10ed4d00a661c78497cb3`；269 manifest entries
+  逐项 SHA 复核 `269/269` 匹配，类型为 247 个 regular files、22 个 symlinks、0 missing。写入
+  `build-receipt.json` 后 sidecar 为 248 个 regular files、116 个 directories、22 个 symlinks；最终
+  `.app` 为 274 个 regular files、121 个 directories、0 symlink。
+- **签名与安全**：host、launcher、sidecar 均为 arm64 Mach-O；app deep strict 与三个嵌套 executable
+  strict codesign 全部通过，签名为 ad-hoc。正式 artifact hygiene、packaged secret/bearer、通用 `sk-*`、
+  private-key marker、Provider key 文件与 `.env` 均零命中；唯一 `.pem` 为 certifi 公共 CA trust bundle。
+  `sage-desktop`、`sage-api`、`sage-api-aarch64-apple-darwin`、`sage-sidecar-launcher` 精确进程检查均为零，
+  仓库保持 clean。
+- **复核恢复记录**：正式入口第一次 `r1` 构建完整成功，没有失败目录。随后手工 strict/file 复核沿用
+  旧布局，错误检查了两个不存在的 Resources 嵌套路径；只读 `find` 确认当前 launcher 位于
+  `Contents/MacOS/sage-api`、sidecar 是 `Contents/Resources/sidecar/sage-api-aarch64-apple-darwin`
+  文件后，以真实路径重做 strict/file 全部通过。该错误不改变产物，未重跑或复用任何失败构建。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
