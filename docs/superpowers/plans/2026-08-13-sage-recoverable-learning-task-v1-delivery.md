@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 等待中枢最后短复审；后续切片未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 已完成，等待中枢三镜头复审；B-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -15,7 +15,8 @@
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
-| A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
+| A4 Assistant 确认 | code candidate，待中枢三镜头复审 | `7df3d11a08398b91852d61da3e4fb8b2a64409d8` | draft/CAS/activate 已接入 Assistant；首轮消息晚于 active receipt；失败可编辑、可重试，刷新按服务端 Task/receipt 恢复 |
+| B-E | 未开始 | - | Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
 Learning SQLite、Session JSON 与 Journal 之间的跨存储事务。Task、activation 和
@@ -24,7 +25,7 @@ canonical workspace path 派生，不接受客户端认领。
 
 ## 1. 交付目标
 
-本计划描述完整可恢复学习任务的历史路线。当前 L0 只迁移确定性澄清、确认和可恢复 bootstrap；首轮执行、Knowledge/Research、LearningPlan、Artifact、Mastery 和运行中 Resume 仍属于后续切片，不能按本文目标态视为已实现。
+本计划描述完整可恢复学习任务的历史路线。当前 L0/L1 提供可恢复 bootstrap 与首轮只读范围，A4/L2 code candidate 提供 Assistant 确认和进入共享会话；Knowledge/Research、LearningPlan、Artifact、Mastery 和运行中 Resume 仍属于后续切片，不能按本文目标态视为已实现。
 
 第一阶段交付两个入口，但只维护一套 Harness：
 
@@ -330,6 +331,8 @@ private build 仅有既有大 chunk warning。最终 Runtime 复审指出的 no-
 
 ### Slice A4：Assistant 任务确认与进入会话
 
+> code candidate（2026-08-25）：`7df3d11a08398b91852d61da3e4fb8b2a64409d8`，仅本地 commit，未 push、未建 PR，等待中枢三镜头复审。
+
 **交付行为**
 
 - Assistant 展示 draft 摘要、澄清项、来源策略和风险提示；用户确认后只调用一次 activate API。
@@ -343,17 +346,30 @@ private build 仅有既有大 chunk warning。最终 Runtime 复审指出的 no-
 - Playwright 覆盖新任务、澄清、确认、失败重试、刷新后恢复；首轮消息不得早于 activation。
 - 旧 Coding 首页和直接 Coding session 测试保持通过。
 
+**当前实现与证据**
+
+- Assistant 默认学习任务模式先创建服务端 draft，再展示可编辑主题、期望结果、澄清问题、来源策略和风险边界；显式“直接对话”模式继续复用旧 `startSessionWithPrompt`。
+- Assistant store 以服务端 Task/activation receipt 恢复 `draft/loading/needs_confirmation/activating/active/activation_failed`；同一确认并发只发起一次 activate，并使用稳定 revision-bound idempotency key。
+- 新 `enterActivatedSessionWithPrompt` 只选择 activation receipt 已创建的共享 Session；首条消息在 active receipt 返回且 WebSocket open 后才发送。active 刷新只继续 Session，不重复首条消息。
+- activate 响应丢失时会重新读取 canonical Task/receipt；服务端已 active 则继续进入会话，真实 failed receipt 保留可编辑 draft 和同 revision 重试入口。
+- 聚焦 Assistant API/store/view、Coding store/CodingView 与 Context Budget：`131 passed`；最终完整前端：`69 files / 517 tests passed`。
+- private/public production build 与 `git diff --check` 通过；private build 只有既有大 chunk warning。
+- ego-lite 使用隔离 storage 覆盖创建、澄清、一次失败注入、保留字段、重试和完整刷新恢复；成功顺序为 `activate:end:200 -> ws:send:{content:...}`，失败时没有首轮 content。
+- ego-lite 在 `1249x753` 和 `390x844` 检查确认页；移动端无横向溢出，操作按钮不重叠。隔离 E2E 只使用不可达本地 Provider URL 验证会话进入与失败投影，不构成真实模型质量证据。
+
 **依赖与非目标**
 
 - 依赖 A1-A3；使用现有 Assistant 入口和 Coding 页面作为会话承载。
 - 不在本片重写 CodingView；只显示最小任务状态和恢复摘要。
+- 不生成 LearningPlan、Task DAG、Learning Artifact 或 Mastery Evidence，不实现 L3 Research/Artifact。
 
 **验证**
 
 ```bash
 npm --prefix frontend run test -- --run
 npm --prefix frontend run build
-npx playwright test tests/e2e/learning-task-bootstrap.spec.ts
+npm --prefix frontend run build:public
+# ego-lite：隔离 storage 下执行创建、确认、失败重试和刷新恢复
 git diff --check
 ```
 
@@ -661,6 +677,6 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 - private/public production build 与 `git diff --check` 通过；private build 只有既有大 chunk warning；
 - 本轮仍停在 L0：没有执行首轮 Turn，没有生成 LearningPlan、Task DAG、Learning Artifact、Mastery Evidence 或运行中 Checkpoint Resume。
 
-下一步只进入 L1：用 receipt 中冻结的 `allowed_capabilities`、`capability_revision` 和
-`turn_context_plan_hash` 同时约束模型可见工具目录与实际执行入口。L1 完成前，不集成真实 Knowledge、Web
-Research、Learning Map 或 Coding Practice，也不把 A2 的 kickoff TurnContextPlan 说成已经开始学习执行。
+A4/L2 code candidate `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 已把服务端 draft/receipt 接回 Assistant，并完成创建、确认、失败重试、刷新恢复和首轮消息顺序的前端/E2E 证据。当前停止在 L2 code candidate，等待中枢对需求、Runtime/恢复和前端兼容三个镜头复审；不能写成已合入 `dev/sage-v7` 或复审已关闭。
+
+下一步只在 A3 最后短复审与 L2 三镜头复审通过、按 PR 合入后进入 L3：实现真实 Knowledge/Research、LearningPlan、Synthesize 和 Learning Artifact。L3 前不开放 Coding Practice，不生成 Mastery Evidence，也不把当前 kickoff TurnContextPlan 说成完整 LearningPlan 或 Task DAG。
