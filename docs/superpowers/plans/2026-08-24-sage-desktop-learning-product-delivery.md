@@ -2,7 +2,7 @@
 
 > 状态：已获 CTO 全权实施授权，按阶段本地开发与审查；公开 push、PR 合并、签名凭据和发布仍按外部变更门禁单独执行。
 >
-> L2 状态（2026-08-25）：Assistant 任务确认 code candidate `7df3d11a08398b91852d61da3e4fb8b2a64409d8` 已完成，等待中枢三镜头复审；仅本地 commit，未 push、未建 PR。
+> L2 状态（2026-08-25）：Assistant 任务确认 durable kickoff 修复候选 `18af841ca05cbca7b31f78e1f9accad0656af9df` 已完成，等待中枢三镜头再审；仅本地 commit，未 push、未建 PR。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -272,36 +272,46 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 11. 切片 L2：Assistant 任务确认与进入会话
 
-> code candidate：`7df3d11a08398b91852d61da3e4fb8b2a64409d8`。当前只交付 Assistant 确认与共享会话入口，不包含 L3 Research/Artifact。
+> code candidate：`18af841ca05cbca7b31f78e1f9accad0656af9df`。当前只交付 Assistant 确认、durable kickoff accepted receipt 与共享会话入口，不包含 L3 Research/Artifact。初版候选复审的聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
 
 **交付行为**
 
 - 在 Assistant 展示 draft、澄清项、来源策略和风险边界；
-- 用户确认后只调用一次 activate，成功后进入共享会话；
+- 用户确认后只调用一次 activate；active receipt 后请求 durable kickoff，服务端确认 accepted 后才进入并显示共享会话；
 - 失败保留 draft 和重试入口，刷新后恢复真实状态。
 
 **验收证据**
 
-- 前端覆盖 `draft/needs_confirmation/activating/active/activation_failed`；
-- 首轮消息不早于 activation receipt；
+- 前端覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed/kickoff_dispatching/receipt_recovery_failed`；
+- canonical `activating` 保持可恢复，active receipt GET 失败可显式重试；
+- 首轮不得早于 kickoff accepted receipt，同一 task revision/activation 只接受并启动一次；
 - 旧 Assistant/Coding 入口保持兼容；
-- ego-lite/Playwright 覆盖创建、确认、失败重试和刷新恢复。
+- 仓库内 Playwright 覆盖创建、澄清、确认、失败重试、刷新恢复与 accepted 前后的一次启动边界。
 
 **当前实现与验证**
 
 - Assistant 默认学习模式接入现有 Learning draft/CAS/activate API，展示可编辑摘要、确定性澄清、完整 source policy 和浏览器安全风险提示；“直接对话”模式保留旧 Assistant 行为。
-- store 覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed`，双击确认去重为一次 activate；同 revision 使用稳定 idempotency key，响应丢失后以 canonical Task/receipt 收敛。
-- active receipt 返回前不调用 `enterActivatedSessionWithPrompt`；receipt 返回后选择共享 Session，WebSocket open 才发送首条消息。刷新 active 只恢复 Session，不重复 kickoff。
+- store 覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed/kickoff_dispatching/receipt_recovery_failed`，双击确认去重为一次 activate；同 revision 使用稳定 idempotency key，响应丢失后以 canonical Task/receipt 收敛。
+- active activation receipt 后调用 `POST /api/v1/learning/tasks/{task_id}/kickoff`；服务端以 Learning SQLite + Session Journal 持久化 revision/key/session/content-bound receipt。响应丢失后 canonical GET 或同 key POST 返回同一 accepted receipt，进程重启可查询、继续或重放。
+- kickoff accepted 后才选择并显示共享 Session；Coding WebSocket 以稳定 `turn_run_id` 启动一次。普通 Coding 的 `startSessionWithPrompt` 与 `UserMessage` 路径不变。
 - 激活失败保留原 draft 字段和重试入口；编辑 failed draft 会经 CAS 形成新 revision，再使用新 revision key 激活。
-- 前端聚焦与 Coding 邻接回归 `131 passed`；完整 Vue `69 files / 517 tests passed`；private/public production build 与 `git diff --check` 通过，private build 只有既有大 chunk warning。
-- ego-lite 隔离 E2E 覆盖创建、澄清、失败注入、字段保留、重试、刷新恢复和 Coding 共享会话渲染；观察到 `activate:end:200` 早于首个 WebSocket content。`390x844` 无横向溢出或按钮重叠。
-- E2E Provider 使用不可达本地 URL 的非敏感占位配置，只验证 Session/Timeline/失败恢复；没有验证真实 Provider 生成质量、Learning Artifact 或引用质量。
+- 后端 Learning kickoff、Task/Activation 与 Coding 邻接 `69 passed`；聚焦前端 `5 files / 138 passed`；完整 Vue `69 files / 521 tests passed`。
+- 全仓 Ruff、Mypy（`270 source files`）、private/public production build 与 `git diff --check` 通过，private build 只有既有大 chunk warning。
+- 仓库内 Playwright `1 passed`，隔离 FastAPI/Vite 与非敏感 fake provider 覆盖创建、三项澄清、activation 失败重试、kickoff dispatching 和 Assistant 刷新恢复；accepted 前 `turn_started=0`，accepted 后稳定 `turn_started=1`，Coding 刷新重连不重复。
+
+可复现 E2E 命令：
+
+```bash
+SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
+  npm --prefix frontend run test:e2e
+```
 
 **依赖与非目标**
 
 - 依赖 L0/L1；不重写 CodingView。
+- `AssistantHomeView` 大表单/确认区拆分登记为 L3 前技术债，本轮不做无关重构。
 - 不修改 L1 只读授权合同；不生成 LearningPlan、Task DAG、Artifact、Practice 或 Mastery。
-- 当前结论是“code candidate 可提交，等待中枢三镜头复审”，不是已合入 `dev/sage-v7` 或已发布。
+- 当前结论是“code candidate 已本地提交，等待中枢三镜头再审”，不是已合入 `dev/sage-v7` 或已发布。
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
