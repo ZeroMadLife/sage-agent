@@ -2,7 +2,8 @@ pub mod lifecycle;
 pub mod protocol;
 mod supervisor;
 
-use supervisor::{desktop_exit, desktop_host_status, SharedHostState};
+use lifecycle::{lifecycle_action, LifecycleAction, LifecycleEvent};
+use supervisor::{desktop_exit, desktop_host_status, desktop_open_diagnostics, SharedHostState};
 use tauri::{Manager, RunEvent, WindowEvent};
 
 fn allow_navigation(url: &tauri::Url) -> bool {
@@ -28,7 +29,11 @@ pub fn run() {
         .plugin(navigation_guard)
         .plugin(tauri_plugin_shell::init())
         .manage(SharedHostState::default())
-        .invoke_handler(tauri::generate_handler![desktop_host_status, desktop_exit])
+        .invoke_handler(tauri::generate_handler![
+            desktop_host_status,
+            desktop_exit,
+            desktop_open_diagnostics
+        ])
         .setup(|app| {
             supervisor::start(app.handle().clone());
             Ok(())
@@ -36,7 +41,9 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<SharedHostState>();
-                if !state.is_stopping() {
+                if lifecycle_action(LifecycleEvent::WindowHidden) == LifecycleAction::KeepRunning
+                    && !state.is_stopping()
+                {
                     api.prevent_close();
                     let _ = window.hide();
                 }

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { Power, RefreshCw } from 'lucide-vue-next'
+import { FolderOpen, Power, RefreshCw } from 'lucide-vue-next'
 import {
   desktopCapabilities,
   desktopExit,
   desktopHostStatus,
+  desktopOpenDiagnostics,
+  onDesktopConnectionState,
   type DesktopCapabilities,
   type DesktopHostSnapshot,
 } from '../../desktop/hostAdapter'
@@ -17,10 +19,13 @@ const snapshot = ref<DesktopHostSnapshot>({
 })
 const capabilities = ref<DesktopCapabilities | null>(null)
 let pollTimer: ReturnType<typeof setTimeout> | undefined
+let unsubscribeConnection: (() => void) | undefined
 
 const title = computed(() => {
   if (snapshot.value.state === 'blocked') return 'Sage 无法启动'
-  if (snapshot.value.state === 'degraded') return 'Sage 正在恢复'
+  if (snapshot.value.state === 'degraded') {
+    return capabilities.value ? 'Sage 部分能力受限' : 'Sage 正在恢复'
+  }
   if (snapshot.value.state === 'ready') return 'Sage 已启动'
   return '正在启动 Sage'
 })
@@ -39,25 +44,53 @@ async function refresh(): Promise<void> {
   try {
     snapshot.value = await desktopHostStatus()
     if (snapshot.value.state === 'ready') {
-      capabilities.value = await desktopCapabilities()
-      return
+      try {
+        capabilities.value = await desktopCapabilities()
+        snapshot.value = {
+          ...snapshot.value,
+          state: capabilities.value.status,
+          reasonCode: capabilities.value.status === 'ready' ? null : 'desktop_capability_degraded',
+          action: capabilities.value.status === 'ready' ? null : 'review_capabilities',
+        }
+      } catch {
+        capabilities.value = null
+        snapshot.value = {
+          state: 'degraded',
+          reasonCode: 'desktop_connection_lost',
+          action: 'wait_for_restart',
+          session: null,
+        }
+      }
     }
   } catch {
     snapshot.value = {
-      state: 'blocked',
+      state: 'degraded',
       reasonCode: 'desktop_host_unavailable',
       action: 'restart_sage',
       session: null,
     }
   }
-  if (snapshot.value.state === 'starting' || snapshot.value.state === 'degraded') {
-    pollTimer = setTimeout(refresh, 500)
-  }
+  const delay = snapshot.value.state === 'ready' ? 1000 : 500
+  if (snapshot.value.state !== 'blocked') pollTimer = setTimeout(refresh, delay)
 }
 
-onMounted(refresh)
+onMounted(() => {
+  unsubscribeConnection = onDesktopConnectionState((state) => {
+    if (state === 'degraded' && snapshot.value.state === 'ready') {
+      snapshot.value = {
+        state: 'degraded',
+        reasonCode: 'desktop_connection_lost',
+        action: 'wait_for_restart',
+        session: null,
+      }
+      void refresh()
+    }
+  })
+  void refresh()
+})
 onBeforeUnmount(() => {
   if (pollTimer) clearTimeout(pollTimer)
+  unsubscribeConnection?.()
 })
 </script>
 
@@ -71,6 +104,16 @@ onBeforeUnmount(() => {
       <div class="desktop-status__actions">
         <button type="button" title="重新检查" aria-label="重新检查" @click="refresh">
           <RefreshCw :size="17" aria-hidden="true" />
+        </button>
+        <button
+          v-if="snapshot.action === 'open_diagnostics'"
+          type="button"
+          title="打开诊断"
+          aria-label="打开诊断"
+          data-action="diagnostics"
+          @click="desktopOpenDiagnostics"
+        >
+          <FolderOpen :size="17" aria-hidden="true" />
         </button>
         <button
           type="button"

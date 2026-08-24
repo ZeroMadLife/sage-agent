@@ -54,9 +54,34 @@ fn main_window_capability_does_not_expose_shell_or_filesystem() {
     .expect("main capability must be JSON");
     assert_eq!(
         capability.get("permissions").unwrap(),
-        &serde_json::json!(["core:default"])
+        &serde_json::json!([])
     );
     let serialized = capability.to_string();
     assert!(!serialized.contains("shell"));
     assert!(!serialized.contains("fs:"));
+}
+
+#[test]
+fn release_build_identity_is_explicit_and_cache_sensitive() {
+    let build_script =
+        fs::read_to_string(crate_root().join("build.rs")).expect("desktop build script must exist");
+
+    assert!(build_script.contains("cargo:rerun-if-env-changed=SAGE_BUILD_SHA"));
+    assert!(build_script.contains("std::env::var(\"SAGE_BUILD_SHA\")"));
+    assert!(!build_script.contains("Command::new(\"git\")"));
+}
+
+#[test]
+fn registered_commands_are_the_three_fixed_desktop_host_actions() {
+    let source = fs::read_to_string(crate_root().join("src/lib.rs"))
+        .expect("desktop host source must exist");
+    let compact: String = source
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .collect();
+
+    assert!(compact.contains(
+        "tauri::generate_handler![desktop_host_status,desktop_exit,desktop_open_diagnostics]"
+    ));
+    assert!(!source.contains("core:default"));
 }

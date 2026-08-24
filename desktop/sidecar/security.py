@@ -15,6 +15,7 @@ from starlette.responses import Response
 
 _BOOTSTRAP_FIELDS = {"instance_id", "nonce", "bearer", "origin", "data_dir"}
 _MAX_BOOTSTRAP_BYTES = 64 * 1024
+_DESKTOP_ORIGINS = {"tauri://localhost", "http://127.0.0.1:5173"}
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class DesktopBootstrap:
             values = {name: payload[name] for name in _BOOTSTRAP_FIELDS}
             if not all(isinstance(value, str) and value for value in values.values()):
                 raise ValueError
-            if values["origin"] != "tauri://localhost":
+            if values["origin"] not in _DESKTOP_ORIGINS:
                 raise ValueError
             data_dir = Path(values["data_dir"])
             if not data_dir.is_absolute():
@@ -104,17 +105,61 @@ class DesktopSecurityMiddleware(BaseHTTPMiddleware):
         self._security = security
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.method == "OPTIONS":
+            reason = self._preflight_reject_reason(request)
+            if reason is not None:
+                return self._rejection(reason)
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": self._security.origin,
+                    "Access-Control-Allow-Methods": "GET",
+                    "Access-Control-Allow-Headers": "Authorization",
+                    "Vary": "Origin",
+                },
+            )
         reason = self._security.reject_reason(
             authorization=request.headers.get("authorization"),
             host=request.headers.get("host"),
             origin=request.headers.get("origin"),
         )
         if reason is not None:
-            return JSONResponse(
-                {"reason_code": reason, "action": "restart_sage"},
-                status_code=403,
-            )
-        return await call_next(request)
+            return self._rejection(reason, expose_to_trusted_origin=request.headers.get("origin"))
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = self._security.origin
+        response.headers["Vary"] = "Origin"
+        return response
+
+    def _preflight_reject_reason(self, request: Request) -> str | None:
+        if request.headers.get("host") != self._security.host:
+            return "desktop_host_rejected"
+        if request.headers.get("origin") != self._security.origin:
+            return "desktop_origin_rejected"
+        if request.headers.get("access-control-request-method") != "GET":
+            return "desktop_preflight_rejected"
+        requested_headers = {
+            value.strip().lower()
+            for value in request.headers.get("access-control-request-headers", "").split(",")
+            if value.strip()
+        }
+        if requested_headers != {"authorization"}:
+            return "desktop_preflight_rejected"
+        return None
+
+    def _rejection(
+        self,
+        reason: str,
+        *,
+        expose_to_trusted_origin: str | None = None,
+    ) -> JSONResponse:
+        response = JSONResponse(
+            {"reason_code": reason, "action": "restart_sage"},
+            status_code=403,
+        )
+        if expose_to_trusted_origin == self._security.origin:
+            response.headers["Access-Control-Allow-Origin"] = self._security.origin
+            response.headers["Vary"] = "Origin"
+        return response
 
 
 __all__ = ["DesktopBootstrap", "DesktopSecurity", "DesktopSecurityMiddleware"]

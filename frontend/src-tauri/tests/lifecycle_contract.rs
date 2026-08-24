@@ -1,8 +1,10 @@
 use sage_desktop_lib::lifecycle::{
-    can_clean_orphan, lifecycle_action, single_instance_action, startup_action, CrashBudget,
-    LifecycleAction, LifecycleEvent, ObservedProcess, OrphanRecord, SingleInstanceAction,
-    StartupAction,
+    atomic_write_private, can_clean_orphan, lifecycle_action, single_instance_action,
+    startup_action, terminate_verified, CrashBudget, LifecycleAction, LifecycleEvent,
+    ObservedProcess, OrphanRecord, ProcessSignal, SingleInstanceAction, StartupAction,
+    TerminationOutcome,
 };
+use std::fs;
 
 #[test]
 fn crash_budget_allows_three_restarts_in_ten_minutes_then_blocks() {
@@ -35,13 +37,9 @@ fn second_instance_only_reveals_the_existing_main_window() {
 }
 
 #[test]
-fn lifecycle_matrix_keeps_sidecar_for_hide_and_disconnect() {
+fn lifecycle_matrix_keeps_sidecar_for_hide_and_restarts_real_crashes() {
     assert_eq!(
         lifecycle_action(LifecycleEvent::WindowHidden),
-        LifecycleAction::KeepRunning
-    );
-    assert_eq!(
-        lifecycle_action(LifecycleEvent::ConnectionLost),
         LifecycleAction::KeepRunning
     );
     assert_eq!(
@@ -52,6 +50,92 @@ fn lifecycle_matrix_keeps_sidecar_for_hide_and_disconnect() {
         lifecycle_action(LifecycleEvent::ExplicitExit),
         LifecycleAction::GracefulStop
     );
+}
+
+#[test]
+fn grace_period_identity_change_never_reaches_sigkill() {
+    let record = OrphanRecord {
+        pid: 42,
+        start_time: 100,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+    let matching = ObservedProcess {
+        pid: 42,
+        start_time: 100,
+        executable: record.executable.clone(),
+    };
+    let changed = ObservedProcess {
+        pid: 42,
+        start_time: 101,
+        executable: record.executable.clone(),
+    };
+    let mut observations = [Some(matching.clone()), Some(matching), Some(changed)].into_iter();
+    let mut signals = Vec::new();
+
+    let outcome = terminate_verified(
+        &record,
+        || observations.next().flatten(),
+        |signal| {
+            signals.push(signal);
+            Ok(())
+        },
+        || {},
+        5,
+    )
+    .unwrap();
+
+    assert_eq!(outcome, TerminationOutcome::IdentityChanged);
+    assert_eq!(signals, vec![ProcessSignal::Term]);
+}
+
+#[test]
+fn sigkill_path_waits_until_the_same_process_is_gone() {
+    let record = OrphanRecord {
+        pid: 42,
+        start_time: 100,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+    let matching = ObservedProcess {
+        pid: 42,
+        start_time: 100,
+        executable: record.executable.clone(),
+    };
+    let mut observations = [
+        Some(matching.clone()),
+        Some(matching.clone()),
+        Some(matching.clone()),
+        Some(matching.clone()),
+        None,
+    ]
+    .into_iter();
+    let mut signals = Vec::new();
+
+    let outcome = terminate_verified(
+        &record,
+        || observations.next().flatten(),
+        |signal| {
+            signals.push(signal);
+            Ok(())
+        },
+        || {},
+        1,
+    )
+    .unwrap();
+
+    assert_eq!(outcome, TerminationOutcome::KillSent);
+    assert_eq!(signals, vec![ProcessSignal::Term, ProcessSignal::Kill]);
+}
+
+#[test]
+fn private_state_write_reports_write_and_rename_failures() {
+    let root = tempfile::tempdir().unwrap();
+    let blocked_parent = root.path().join("not-a-directory");
+    fs::write(&blocked_parent, b"file").unwrap();
+    assert!(atomic_write_private(&blocked_parent.join("state.json"), b"{}").is_err());
+
+    let target = root.path().join("state.json");
+    fs::create_dir(&target).unwrap();
+    assert!(atomic_write_private(&target, b"{}").is_err());
 }
 
 #[test]

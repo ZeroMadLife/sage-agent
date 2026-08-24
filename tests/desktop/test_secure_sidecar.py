@@ -19,6 +19,7 @@ from desktop.sidecar.security import DesktopBootstrap, DesktopSecurity
 
 BEARER = "test-only-bearer"
 ORIGIN = "tauri://localhost"
+DEV_ORIGIN = "http://127.0.0.1:5173"
 HOST = "127.0.0.1:43123"
 
 
@@ -92,6 +93,74 @@ def test_bootstrap_rejects_missing_or_unknown_fields() -> None:
         DesktopBootstrap.from_json(json.dumps({**valid, "secret": "must-fail"}))
 
 
+@pytest.mark.parametrize("origin", [ORIGIN, DEV_ORIGIN])
+def test_bootstrap_accepts_only_the_two_exact_desktop_origins(origin: str) -> None:
+    payload = {
+        "instance_id": "instance",
+        "nonce": "nonce",
+        "bearer": "bearer",
+        "origin": origin,
+        "data_dir": "/tmp/sage",
+    }
+
+    assert DesktopBootstrap.from_json(json.dumps(payload)).origin == origin
+    with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+        DesktopBootstrap.from_json(json.dumps({**payload, "origin": f"{origin}/"}))
+
+
+def test_exact_desktop_preflight_allows_authorization_without_bearer(tmp_path: Path) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/capabilities",
+            headers={
+                "Origin": ORIGIN,
+                "Host": HOST,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+
+    assert response.status_code == 204
+    assert response.headers["access-control-allow-origin"] == ORIGIN
+    assert response.headers["access-control-allow-methods"] == "GET"
+    assert response.headers["access-control-allow-headers"] == "Authorization"
+    assert response.headers["vary"] == "Origin"
+    assert response.headers.get("access-control-allow-credentials") is None
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason_code"),
+    [
+        ({"Origin": "https://evil.example"}, "desktop_origin_rejected"),
+        ({"Host": "localhost:43123"}, "desktop_host_rejected"),
+        ({"Access-Control-Request-Method": "POST"}, "desktop_preflight_rejected"),
+        ({"Access-Control-Request-Headers": "authorization, x-extra"}, "desktop_preflight_rejected"),
+    ],
+)
+def test_desktop_preflight_fails_closed(
+    tmp_path: Path,
+    headers: dict[str, str],
+    reason_code: str,
+) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+    request_headers = {
+        "Origin": ORIGIN,
+        "Host": HOST,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+        **headers,
+    }
+
+    with TestClient(app) as client:
+        response = client.options("/capabilities", headers=request_headers)
+
+    assert response.status_code == 403
+    assert response.json() == {"reason_code": reason_code, "action": "restart_sage"}
+    assert "access-control-allow-origin" not in response.headers
+
+
 @pytest.mark.parametrize(
     ("headers", "reason_code"),
     [
@@ -139,6 +208,8 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
             ws_payload = websocket.receive_json()
 
     assert live.status_code == 200
+    assert live.headers["access-control-allow-origin"] == ORIGIN
+    assert live.headers["vary"] == "Origin"
     assert capabilities.status_code == 200
     assert capabilities.json()["status"] == "degraded"
     assert capabilities.json()["capabilities"]["provider"] == {

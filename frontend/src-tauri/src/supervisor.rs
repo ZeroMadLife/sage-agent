@@ -1,5 +1,6 @@
 use crate::lifecycle::{
-    can_clean_orphan, startup_action, CrashBudget, ObservedProcess, OrphanRecord, StartupAction,
+    atomic_write_private, lifecycle_action, startup_action, terminate_verified, CrashBudget,
+    LifecycleAction, LifecycleEvent, ObservedProcess, OrphanRecord, ProcessSignal, StartupAction,
 };
 use crate::protocol::{validate_handshake, DesktopSession, ExpectedHandshake, Handshake};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -7,20 +8,21 @@ use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use sysinfo::{Pid, ProcessesToUpdate, Signal, System};
+use sysinfo::{Pid, ProcessesToUpdate, System};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use uuid::Uuid;
 
 const API_VERSION: &str = "1";
-const ORIGIN: &str = "tauri://localhost";
+const PRODUCTION_ORIGIN: &str = "tauri://localhost";
+const DEVELOPMENT_ORIGIN: &str = "http://127.0.0.1:5173";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 const HANDSHAKE_QUIET_PERIOD: Duration = Duration::from_millis(50);
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -62,6 +64,14 @@ impl HostSnapshot {
             session: None,
         }
     }
+
+    fn persistence_failure() -> Self {
+        Self::problem(
+            "blocked",
+            "desktop_state_persist_failed",
+            "open_diagnostics",
+        )
+    }
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -76,6 +86,7 @@ struct HostInner {
     pid: Option<u32>,
     child: Option<CommandChild>,
     disk_path: Option<PathBuf>,
+    diagnostics_dir: Option<PathBuf>,
     disk: HostDiskState,
 }
 
@@ -87,6 +98,7 @@ impl Default for HostInner {
             pid: None,
             child: None,
             disk_path: None,
+            diagnostics_dir: None,
             disk: HostDiskState::default(),
         }
     }
@@ -106,7 +118,7 @@ struct Bootstrap<'a> {
     instance_id: &'a str,
     nonce: &'a str,
     bearer: &'a str,
-    origin: &'static str,
+    origin: &'a str,
     data_dir: &'a Path,
 }
 
@@ -125,7 +137,26 @@ pub fn desktop_exit(app: AppHandle, state: State<'_, SharedHostState>) {
     request_exit(app, state.inner().clone());
 }
 
+#[tauri::command]
+pub fn desktop_open_diagnostics(state: State<'_, SharedHostState>) -> Result<(), &'static str> {
+    let diagnostics_dir = state
+        .0
+        .lock()
+        .expect("host state poisoned")
+        .diagnostics_dir
+        .clone()
+        .ok_or("desktop_diagnostics_unavailable")?;
+    std::process::Command::new("/usr/bin/open")
+        .arg(diagnostics_dir)
+        .spawn()
+        .map_err(|_| "desktop_diagnostics_unavailable")?;
+    Ok(())
+}
+
 pub fn request_exit(app: AppHandle, shared: SharedHostState) {
+    if lifecycle_action(LifecycleEvent::ExplicitExit) != LifecycleAction::GracefulStop {
+        return;
+    }
     {
         let mut inner = shared.0.lock().expect("host state poisoned");
         if inner.stopping {
@@ -164,14 +195,35 @@ pub fn start(app: AppHandle) {
         return;
     }
     let disk_path = data_dir.join("desktop-host-state.json");
+    let diagnostics_dir = data_dir.join("diagnostics");
+    if fs::create_dir_all(&diagnostics_dir).is_err() {
+        set_problem(
+            &shared,
+            "blocked",
+            "desktop_diagnostics_unavailable",
+            "restart_sage",
+        );
+        return;
+    }
     let mut disk = load_disk_state(&disk_path);
-    clean_known_orphan(&mut disk);
+    let cleanup_result = clean_known_orphan(&mut disk);
     let startup = startup_action(&mut disk.crash_budget, unix_seconds());
-    {
+    let persisted = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         inner.disk_path = Some(disk_path);
+        inner.diagnostics_dir = Some(diagnostics_dir);
         inner.disk = disk;
-        persist_disk_locked(&inner);
+        persist_disk_locked(&inner)
+    };
+    if cleanup_result.is_err() || persisted.is_err() {
+        set_snapshot(&shared, HostSnapshot::persistence_failure());
+        let _ = append_diagnostic(
+            &shared,
+            "state_persist_failed",
+            "blocked",
+            "desktop_state_persist_failed",
+        );
+        return;
     }
     if startup == StartupAction::Blocked {
         set_problem(
@@ -179,6 +231,12 @@ pub fn start(app: AppHandle) {
             "blocked",
             "desktop_crash_budget_exhausted",
             "open_diagnostics",
+        );
+        let _ = append_diagnostic(
+            &shared,
+            "crash_budget_open",
+            "blocked",
+            "desktop_crash_budget_exhausted",
         );
         return;
     }
@@ -195,7 +253,8 @@ fn schedule_launch(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, d
         }
         match launch_once(&app, &shared, &data_dir).await {
             Ok(receiver) => monitor(app, shared, data_dir, receiver).await,
-            Err(reason) => handle_crash(app, shared, data_dir, reason),
+            Err(reason) if !shared.is_stopping() => handle_crash(app, shared, data_dir, reason),
+            Err(_) => {}
         }
     });
 }
@@ -209,6 +268,7 @@ async fn launch_once(
     let instance_id = Uuid::new_v4().to_string();
     let nonce = random_secret();
     let bearer = random_secret();
+    let origin = runtime_origin();
     let command = app
         .shell()
         .sidecar("sage-api")
@@ -218,11 +278,15 @@ async fn launch_once(
         .spawn()
         .map_err(|_| "desktop_sidecar_spawn_failed")?;
     let child_pid = child.pid();
+    if shared.is_stopping() {
+        let _ = child.kill();
+        return Err("desktop_stopping");
+    }
     let bootstrap = Bootstrap {
         instance_id: &instance_id,
         nonce: &nonce,
         bearer: &bearer,
-        origin: ORIGIN,
+        origin,
         data_dir,
     };
     let mut encoded = serde_json::to_vec(&bootstrap).map_err(|_| "desktop_bootstrap_failed")?;
@@ -257,13 +321,37 @@ async fn launch_once(
         let _ = child.kill();
         return Err(reason);
     }
-    if probe_health(handshake.port, &bearer, &expected.build_sha).is_err() {
+    if probe_health(handshake.port, &bearer, &expected.build_sha, origin).is_err() {
         let _ = child.kill();
         return Err("desktop_health_rejected");
     }
-    if !persist_orphan(shared, child_pid) {
+    if shared.is_stopping() {
         let _ = child.kill();
-        return Err("desktop_process_identity_unavailable");
+        return Err("desktop_stopping");
+    }
+    if let Err(reason) = persist_orphan(shared, child_pid) {
+        let _ = child.kill();
+        return Err(reason);
+    }
+    if shared.is_stopping() {
+        let record = {
+            shared
+                .0
+                .lock()
+                .expect("host state poisoned")
+                .disk
+                .orphan
+                .clone()
+        };
+        if let Some(record) = record {
+            let _ = terminate_runtime(&record);
+        } else {
+            let _ = child.kill();
+        }
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        inner.disk.orphan = None;
+        let _ = persist_disk_locked(&inner);
+        return Err("desktop_stopping");
     }
     {
         let mut inner = shared.0.lock().expect("host state poisoned");
@@ -353,60 +441,83 @@ async fn monitor(
 }
 
 fn handle_crash(app: AppHandle, shared: SharedHostState, data_dir: PathBuf, reason: &'static str) {
-    let delay = {
+    if lifecycle_action(LifecycleEvent::SidecarCrash) != LifecycleAction::RestartWithBackoff {
+        return;
+    }
+    let (delay, persistence_failed) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         inner.pid = None;
         inner.child = None;
         inner.disk.orphan = None;
         let result = inner.disk.crash_budget.record_crash(unix_seconds());
-        persist_disk_locked(&inner);
-        if result.is_some() {
+        let persistence_failed = persist_disk_locked(&inner).is_err();
+        if persistence_failed {
+            inner.snapshot = HostSnapshot::persistence_failure();
+            (None, true)
+        } else if result.is_some() {
             inner.snapshot = HostSnapshot::problem("degraded", reason, "wait_for_restart");
+            (result, false)
         } else {
             inner.snapshot = HostSnapshot::problem(
                 "blocked",
                 "desktop_crash_budget_exhausted",
                 "open_diagnostics",
             );
+            (result, false)
         }
-        result
     };
+    let _ = append_diagnostic(
+        &shared,
+        if persistence_failed {
+            "state_persist_failed"
+        } else {
+            "sidecar_crash"
+        },
+        if persistence_failed || delay.is_none() {
+            "blocked"
+        } else {
+            "degraded"
+        },
+        if persistence_failed {
+            "desktop_state_persist_failed"
+        } else if delay.is_none() {
+            "desktop_crash_budget_exhausted"
+        } else {
+            reason
+        },
+    );
     if let Some(seconds) = delay {
         schedule_launch(app, shared, data_dir, Duration::from_secs(seconds));
     }
 }
 
 async fn stop_sidecar(shared: &SharedHostState) {
-    let (pid, child) = {
+    let (record, child) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
-        (inner.pid, inner.child.take())
+        (inner.disk.orphan.clone(), inner.child.take())
     };
-    drop(child);
-    if let Some(pid) = pid {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
-        let deadline = std::time::Instant::now() + EXIT_GRACE;
-        while process_exists(pid) && std::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if process_exists(pid) {
-            unsafe {
-                libc::kill(pid as i32, libc::SIGKILL);
-            }
-        }
+    if let Some(record) = record {
+        let _ = tauri::async_runtime::spawn_blocking(move || {
+            let _child = child;
+            terminate_runtime(&record)
+        })
+        .await;
+    } else {
+        drop(child);
     }
     let mut inner = shared.0.lock().expect("host state poisoned");
     inner.pid = None;
     inner.disk.orphan = None;
-    persist_disk_locked(&inner);
+    if persist_disk_locked(&inner).is_err() {
+        inner.snapshot = HostSnapshot::persistence_failure();
+    }
 }
 
-fn probe_health(port: u16, bearer: &str, build_sha: &str) -> Result<(), ()> {
+fn probe_health(port: u16, bearer: &str, build_sha: &str, origin: &str) -> Result<(), ()> {
     let deadline = std::time::Instant::now() + HEALTH_TIMEOUT;
     loop {
-        let live = http_json(port, "/health/live", bearer);
-        let ready = http_json(port, "/health/ready", bearer);
+        let live = http_json(port, "/health/live", bearer, origin);
+        let ready = http_json(port, "/health/ready", bearer, origin);
         if live.as_ref().is_ok_and(|payload| {
             payload.get("status").and_then(Value::as_str) == Some("live")
                 && payload.get("api_version").and_then(Value::as_str) == Some(API_VERSION)
@@ -453,7 +564,7 @@ fn validate_ready(payload: &Value, build_sha: &str) -> bool {
     })
 }
 
-fn http_json(port: u16, path: &str, bearer: &str) -> Result<Value, ()> {
+fn http_json(port: u16, path: &str, bearer: &str, origin: &str) -> Result<Value, ()> {
     let address = ("127.0.0.1", port)
         .to_socket_addrs()
         .map_err(|_| ())?
@@ -465,7 +576,7 @@ fn http_json(port: u16, path: &str, bearer: &str) -> Result<Value, ()> {
         .set_read_timeout(Some(Duration::from_secs(1)))
         .map_err(|_| ())?;
     let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {ORIGIN}\r\nAuthorization: Bearer {bearer}\r\nConnection: close\r\n\r\n"
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: {origin}\r\nAuthorization: Bearer {bearer}\r\nConnection: close\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).map_err(|_| ())?;
     let mut response = Vec::new();
@@ -507,8 +618,16 @@ fn unix_seconds() -> u64 {
         .as_secs()
 }
 
-fn process_exists(pid: u32) -> bool {
-    unsafe { libc::kill(pid as i32, 0) == 0 }
+fn runtime_origin() -> &'static str {
+    origin_for_profile(cfg!(debug_assertions))
+}
+
+fn origin_for_profile(debug: bool) -> &'static str {
+    if debug {
+        DEVELOPMENT_ORIGIN
+    } else {
+        PRODUCTION_ORIGIN
+    }
 }
 
 fn observe_process(pid: u32) -> Option<ObservedProcess> {
@@ -523,9 +642,9 @@ fn observe_process(pid: u32) -> Option<ObservedProcess> {
     })
 }
 
-fn persist_orphan(shared: &SharedHostState, pid: u32) -> bool {
+fn persist_orphan(shared: &SharedHostState, pid: u32) -> Result<(), &'static str> {
     let Some(observed) = observe_process(pid) else {
-        return false;
+        return Err("desktop_process_identity_unavailable");
     };
     let mut inner = shared.0.lock().expect("host state poisoned");
     inner.disk.orphan = Some(OrphanRecord {
@@ -533,34 +652,16 @@ fn persist_orphan(shared: &SharedHostState, pid: u32) -> bool {
         start_time: observed.start_time,
         executable: observed.executable,
     });
-    persist_disk_locked(&inner);
-    true
+    persist_disk_locked(&inner).map_err(|_| "desktop_state_persist_failed")
 }
 
-fn clean_known_orphan(disk: &mut HostDiskState) {
+fn clean_known_orphan(disk: &mut HostDiskState) -> std::io::Result<()> {
     let Some(record) = disk.orphan.as_ref() else {
-        return;
+        return Ok(());
     };
-    if let Some(observed) = observe_process(record.pid) {
-        if can_clean_orphan(record, &observed) {
-            let mut system = System::new();
-            let pid = Pid::from_u32(record.pid);
-            system.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
-            if let Some(process) = system.process(pid) {
-                let _ = process.kill_with(Signal::Term);
-            }
-            let deadline = std::time::Instant::now() + EXIT_GRACE;
-            while process_exists(record.pid) && std::time::Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            if process_exists(record.pid) {
-                unsafe {
-                    libc::kill(record.pid as i32, libc::SIGKILL);
-                }
-            }
-        }
-    }
+    terminate_runtime(record)?;
     disk.orphan = None;
+    Ok(())
 }
 
 fn load_disk_state(path: &Path) -> HostDiskState {
@@ -570,27 +671,97 @@ fn load_disk_state(path: &Path) -> HostDiskState {
         .unwrap_or_default()
 }
 
-fn persist_disk_locked(inner: &HostInner) {
+fn persist_disk_locked(inner: &HostInner) -> std::io::Result<()> {
     let Some(path) = inner.disk_path.as_ref() else {
-        return;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "desktop state path unavailable",
+        ));
     };
-    let Ok(bytes) = serde_json::to_vec(&inner.disk) else {
-        return;
+    let bytes = serde_json::to_vec(&inner.disk).map_err(std::io::Error::other)?;
+    atomic_write_private(path, &bytes)
+}
+
+fn terminate_runtime(record: &OrphanRecord) -> std::io::Result<()> {
+    let pid = record.pid;
+    let grace_checks = (EXIT_GRACE.as_millis() / 50) as usize;
+    terminate_verified(
+        record,
+        || observe_process(pid),
+        |signal| {
+            let raw_signal = match signal {
+                ProcessSignal::Term => libc::SIGTERM,
+                ProcessSignal::Kill => libc::SIGKILL,
+            };
+            let result = unsafe { libc::kill(pid as i32, raw_signal) };
+            if result == 0 {
+                Ok(())
+            } else {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::ESRCH) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        },
+        || std::thread::sleep(Duration::from_millis(50)),
+        grace_checks,
+    )?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct DiagnosticRecord<'a> {
+    timestamp: u64,
+    event: &'a str,
+    state: &'a str,
+    reason_code: &'a str,
+}
+
+fn append_diagnostic(
+    shared: &SharedHostState,
+    event: &str,
+    state: &str,
+    reason_code: &str,
+) -> std::io::Result<()> {
+    let path = shared
+        .0
+        .lock()
+        .expect("host state poisoned")
+        .diagnostics_dir
+        .as_ref()
+        .map(|directory| directory.join("desktop-host.jsonl"));
+    let Some(path) = path else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "desktop diagnostics path unavailable",
+        ));
     };
-    let temporary = path.with_extension("tmp");
-    if fs::write(&temporary, bytes).is_ok() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600));
-        }
-        let _ = fs::rename(temporary, path);
+    let record = DiagnosticRecord {
+        timestamp: unix_seconds(),
+        event,
+        state,
+        reason_code,
+    };
+    let mut encoded = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+    encoded.push(b'\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
     }
+    file.write_all(&encoded)?;
+    file.sync_all()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::post_handshake_reject_reason;
+    use super::{
+        append_diagnostic, origin_for_profile, post_handshake_reject_reason, runtime_origin,
+        HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
+    };
     use tauri_plugin_shell::process::CommandEvent;
 
     #[test]
@@ -605,5 +776,58 @@ mod tests {
             post_handshake_reject_reason(&CommandEvent::Stderr(b"diagnostic".to_vec())),
             None
         );
+    }
+
+    #[test]
+    fn debug_host_and_sidecar_share_the_exact_vite_origin() {
+        assert_eq!(runtime_origin(), DEVELOPMENT_ORIGIN);
+        assert_eq!(origin_for_profile(true), DEVELOPMENT_ORIGIN);
+        assert_eq!(origin_for_profile(false), PRODUCTION_ORIGIN);
+    }
+
+    #[test]
+    fn persistence_failure_is_never_published_as_ready() {
+        let snapshot = HostSnapshot::persistence_failure();
+
+        assert_eq!(snapshot.state, "blocked");
+        assert_eq!(snapshot.reason_code, Some("desktop_state_persist_failed"));
+        assert_eq!(snapshot.action, Some("open_diagnostics"));
+        assert!(snapshot.session.is_none());
+    }
+
+    #[test]
+    fn diagnostic_log_contains_only_the_public_allowlist() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        shared.0.lock().unwrap().diagnostics_dir = Some(root.path().to_path_buf());
+
+        append_diagnostic(
+            &shared,
+            "sidecar_crash",
+            "degraded",
+            "desktop_sidecar_crashed",
+        )
+        .unwrap();
+
+        let payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join("desktop-host.jsonl")).unwrap(),
+        )
+        .unwrap();
+        let keys = payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            keys,
+            ["event", "reason_code", "state", "timestamp"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
+        assert!(!payload.to_string().contains("bearer"));
+        assert!(!payload.to_string().contains("nonce"));
+        assert!(!payload.to_string().contains("endpoint"));
     }
 }

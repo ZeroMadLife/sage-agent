@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 const WINDOW_SECONDS: u64 = 10 * 60;
@@ -33,7 +35,6 @@ impl CrashBudget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEvent {
     WindowHidden,
-    ConnectionLost,
     SidecarCrash,
     ExplicitExit,
 }
@@ -70,9 +71,7 @@ pub fn single_instance_action() -> SingleInstanceAction {
 
 pub fn lifecycle_action(event: LifecycleEvent) -> LifecycleAction {
     match event {
-        LifecycleEvent::WindowHidden | LifecycleEvent::ConnectionLost => {
-            LifecycleAction::KeepRunning
-        }
+        LifecycleEvent::WindowHidden => LifecycleAction::KeepRunning,
         LifecycleEvent::SidecarCrash => LifecycleAction::RestartWithBackoff,
         LifecycleEvent::ExplicitExit => LifecycleAction::GracefulStop,
     }
@@ -97,4 +96,100 @@ pub fn can_clean_orphan(record: &OrphanRecord, observed: &ObservedProcess) -> bo
         && record.start_time == observed.start_time
         && record.executable == observed.executable
         && record.executable.is_absolute()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessSignal {
+    Term,
+    Kill,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminationOutcome {
+    Stopped,
+    IdentityChanged,
+    KillSent,
+}
+
+pub fn terminate_verified<Observe, SendSignal, Wait>(
+    record: &OrphanRecord,
+    mut observe: Observe,
+    mut send_signal: SendSignal,
+    mut wait: Wait,
+    grace_checks: usize,
+) -> io::Result<TerminationOutcome>
+where
+    Observe: FnMut() -> Option<ObservedProcess>,
+    SendSignal: FnMut(ProcessSignal) -> io::Result<()>,
+    Wait: FnMut(),
+{
+    let Some(observed) = observe() else {
+        return Ok(TerminationOutcome::Stopped);
+    };
+    if !can_clean_orphan(record, &observed) {
+        return Ok(TerminationOutcome::IdentityChanged);
+    }
+    send_signal(ProcessSignal::Term)?;
+
+    for _ in 0..=grace_checks {
+        let Some(observed) = observe() else {
+            return Ok(TerminationOutcome::Stopped);
+        };
+        if !can_clean_orphan(record, &observed) {
+            return Ok(TerminationOutcome::IdentityChanged);
+        }
+        wait();
+    }
+
+    let Some(observed) = observe() else {
+        return Ok(TerminationOutcome::Stopped);
+    };
+    if !can_clean_orphan(record, &observed) {
+        return Ok(TerminationOutcome::IdentityChanged);
+    }
+    send_signal(ProcessSignal::Kill)?;
+    for _ in 0..=grace_checks {
+        let Some(observed) = observe() else {
+            return Ok(TerminationOutcome::KillSent);
+        };
+        if !can_clean_orphan(record, &observed) {
+            return Ok(TerminationOutcome::IdentityChanged);
+        }
+        wait();
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        "verified process remained after SIGKILL",
+    ))
+}
+
+pub fn atomic_write_private(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "state path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let temporary = path.with_extension("tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    fs::rename(&temporary, path)?;
+    FileSync::sync_directory(parent)?;
+    Ok(())
+}
+
+struct FileSync;
+
+impl FileSync {
+    fn sync_directory(path: &std::path::Path) -> io::Result<()> {
+        fs::File::open(path)?.sync_all()
+    }
 }

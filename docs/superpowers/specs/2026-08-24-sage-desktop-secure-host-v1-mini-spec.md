@@ -39,6 +39,8 @@ sidecar 绑定 `127.0.0.1:0` 后，通过 child stdout 匿名 pipe 返回且只�
 
 Rust 必须同时校验 child PID、动态非零端口、instance、nonce、API version 和 build SHA。任一字段错误、超时、重复行或子进程提前退出均 fail closed，Vue 在校验完成前拿不到 endpoint。D0 的非宿主启动合同继续可用。
 
+`origin` 由 Rust 运行 profile 决定：production 精确为 `tauri://localhost`，dev 精确为 `http://127.0.0.1:5173`。sidecar 只接受这两个值，当前进程只绑定其中一个；不得接受尾斜杠、`localhost` 别名、通配符或调用方自定义 Origin。
+
 ### 2.2 DesktopHostAdapter
 
 Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state}`。Adapter 不写 `localStorage`、URL、日志或持久 store；HTTP 和 fetch-based SSE 设置 `Authorization`，WebSocket 通过 `Sec-WebSocket-Protocol` 的 `sage-bearer.<token>` 项传递 bearer，禁止 query token。
@@ -52,7 +54,7 @@ Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state
 - `Origin` 精确等于 bootstrap 的桌面 Origin；
 - 生产不安装通用 CORS middleware，也不接受 `*`。
 
-失败只返回稳定 `reason_code`，不回显 bearer、nonce、路径或用户内容。
+WebView 的带 `Authorization` 跨 Origin 请求允许一次最小预检：OPTIONS 不要求 bearer，但 Host、Origin、requested method 和 requested headers 必须精确匹配；只返回当前 Origin、`GET`、`Authorization` 和 `Vary: Origin`，不返回 wildcard 或 credentials。实际响应继续校验 bearer/Host/Origin，并只向可信 Origin 返回精确 ACAO。失败只返回稳定 `reason_code`，不回显 bearer、nonce、路径或用户内容。
 
 ### 2.4 健康与能力
 
@@ -60,7 +62,7 @@ Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state
 - `/health/ready`：D0 七项最小检查继续有效；
 - `/capabilities`：返回总状态和 `api/storage/checkpoint/provider/knowledge/sandbox` 各项的 `ready/degraded/blocked + reason_code + action`。
 
-顶层状态页使用 `ready/degraded/blocked`。浏览器可见错误只使用 allowlist 的 `reason_code/action`；原始异常留在本地脱敏诊断日志。
+顶层状态页直接使用 capabilities 总状态的 `ready/degraded/blocked`。HTTP/SSE 的网络或 401/403 失败只允许重取一次 host session；WebSocket 异常关闭最多退避重连三次。瞬时失败进入 degraded 并继续轮询，不能永久持有旧 endpoint/bearer。浏览器可见错误只使用 allowlist 的 `reason_code/action`；本地 JSONL 诊断只写 timestamp/event/state/reason_code，固定命令打开 app-owned 诊断目录。
 
 ## 3. 生命周期状态机
 
@@ -73,11 +75,11 @@ Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state
 | 显式退出 | 停止接收新连接，SIGTERM grace 后强杀 | 退出应用 |
 | 机器重启 | 清理经身份校验的已知 orphan | 重新握手，不自动恢复副作用 |
 
-crash 时间戳和已知 sidecar 的 pid/start-time/executable identity 可以写入 Desktop Host 状态；bearer、nonce、endpoint 和用户正文不得写入。PID 重用或 executable identity 不匹配时禁止清理。
+crash 时间戳和已知 sidecar 的 pid/start-time/executable identity 可以写入 Desktop Host 状态；bearer、nonce、endpoint 和用户正文不得写入。PID 重用或 executable identity 不匹配时禁止清理。orphan 清理和显式退出在 TERM 前、grace 内、KILL 前和 KILL 后都重新观察 pid/start-time/executable；任何身份变化立即停止信号。状态使用 `0600` 临时文件、fsync 和 rename 原子落盘，写入或 rename 失败不得发布 ready，crash budget 持久化失败进入明确 blocked。
 
 ## 4. Tauri 最小权限
 
-- capability 只开放 `desktop_host_status` 和 `desktop_exit`；
+- capability 不展开 `core:default` 或任何 core/plugin 权限；只注册固定 custom commands `desktop_host_status`、`desktop_exit` 和 `desktop_open_diagnostics`；
 - `externalBin` 路径固定，参数固定，不开放 shell execute/spawn command；
 - CSP 默认 `default-src 'self'`，connect 仅允许 loopback；
 - 禁止任意远程导航、新窗口和生产 devtools；
@@ -87,3 +89,5 @@ crash 时间戳和已知 sidecar 的 pid/start-time/executable identity 可以�
 ## 5. 验收证据
 
 自动测试覆盖错误 nonce/PID/build/API version/端口、错误 bearer/Host/Origin、HTTP/SSE/WS 一致门禁、第二实例回调、已知 orphan 身份、窗口隐藏/连接断开/crash/显式退出、10 分钟 crash budget。最终在 clean commit 上构建 D0 one-dir sidecar，作为 Tauri external binary 构建 macOS arm64 local dev app，并以临时应用数据目录完成真实 handshake、live/ready/capabilities 和进程清理 smoke。
+
+唯一正式入口为 `python3.12 -m desktop.bundle --output-dir <仓库外新目录>`。入口要求 clean HEAD，从隔离 D0 构建开始，验证 source SHA/dirty/target/依赖 manifest/Harness hash/逐文件 hash/全部 smoke，原子 staging 新 sidecar，显式注入 `SAGE_BUILD_SHA`，构建 `.app` 后核对 bundle 内 receipt、ad-hoc 签名并执行真实 launch/crash/restart/explicit-exit/零残留 smoke。macOS CI 使用同一入口；Developer ID、公证、DMG 仍不在 D1。
