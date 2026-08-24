@@ -278,7 +278,7 @@ If-Match: <task_revision>
 5. 生成首轮 kickoff 引用和 `AllowedCapabilitySet`；
 6. 返回 `session_id`、`task_revision`、`thread_goal_revision` 和首轮 surface context。
 
-现有 Session JSON、Journal 和 Learning SQLite 不共享事务，因此 V1 明确采用 durable bootstrap state machine，而不伪称数据库原子性：`draft -> activating -> active | activation_failed`。客户端必须提交 idempotency key；服务端以 `owner_id + workspace_id` 隔离 Task、activation、列表和 key，先持久化 activation intent，再幂等创建 Session 和 Thread Goal，最后提交 active receipt。失败时 draft 对用户仍可编辑，孤立 Session 标记 archived，启动时 reconciliation 根据 receipt 完成或补偿。不得仅靠前端依次调用多个接口，也不得接受客户端自行声明 canonical workspace。
+现有 Session JSON、Journal 和 Learning SQLite 不共享事务，因此 V1 明确采用 durable bootstrap state machine，而不伪称数据库原子性：`draft -> activating -> active | activation_failed`。客户端必须提交 idempotency key；服务端以 `owner_id + workspace_id` 隔离 Task、activation、列表和 key，先持久化 activation intent，再幂等创建 Session 和 Thread Goal，最后提交 active receipt。失败时 draft 对用户仍可编辑，孤立 Session 标记 archived，启动时 reconciliation 根据 receipt 完成或补偿。Session 归档必须先在 Learning SQLite 写事务内校验 exact failed receipt fence；active commit 则在同一写事务内重新确认 Session 可见，使失败补偿与 active 提交不能交错留下 archived 的成功 Session。这是 SQLite activation 状态与文件副作用之间的 fencing，不是跨存储原子事务。不得仅靠前端依次调用多个接口，也不得接受客户端自行声明 canonical workspace。
 
 ### 9.2 查询与恢复
 
@@ -288,9 +288,9 @@ GET /api/v1/learning/tasks/{task_id}
 POST /api/v1/learning/tasks/{task_id}/resume
 ```
 
-目标态 `resume` 返回最后可信 Checkpoint、任务 revision、阻塞原因、下一动作和可恢复 session。L0 尚未生成 LearningPlan、Task DAG 或运行中 Checkpoint；当前接口只重新加载 canonical Session 与 TurnContextPlan，比较 owner、workspace、task revision、Plan identity/hash、catalog/capability revision 以及覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision。缺失、删除、篡改或漂移统一返回明确 `409`，不得静默重新规划；L0 receipt 出现非空 LearningPlan 或 DAG identity 时 fail closed。
+目标态 `resume` 返回最后可信 Checkpoint、任务 revision、阻塞原因、下一动作和可恢复 session。L0 尚未生成 LearningPlan、Task DAG 或运行中 Checkpoint；当前接口只重新加载 canonical Session 与 TurnContextPlan，比较 owner、workspace、task revision、Plan identity/hash、catalog/capability revision 以及覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision。新 receipt 标记 `canonical_l0_v3` 并严格比较全部字段；从真实 v2 active receipt 回填的数据标记 `legacy_l0_v2`，仅比较旧 Plan 当时实际保存的四维 retrieval、tools catalog/capability/allowlist 与 resume task/capability 等价字段，不能把后来新增的 source/catalog resume revision 伪装成历史冻结事实。缺失、删除、篡改或漂移统一返回明确 `409`，不得静默重新规划；LearningTask 或 receipt 任一侧出现非空 LearningPlan 或 DAG identity 时都 fail closed。
 
-旧无 `workspace_id` 数据按 expand-migrate-contract 处理：只允许 canonical Session 与 TurnContextPlan 能唯一证明 owner/workspace 的 active 行回填；legacy draft 或无法判定的行保持不可见并进入 `blocked`，不默认认领当前 workspace。
+旧无 `workspace_id` 数据按 expand-migrate-contract 处理：只允许 canonical Session 与 TurnContextPlan 能唯一证明 owner/workspace，且旧 receipt/Plan 中当时已有的 task、source、catalog、capability 和 allowlist 绑定全部等价的 active 行回填；回填 receipt 中的 source snapshot/revision 是带 `legacy_l0_v2` 标记的规范化迁移证据，不代表 v2 创建时已经保存过这些新字段。legacy draft 或无法判定的行保持不可见并进入 `blocked`，不默认认领当前 workspace。
 
 ### 9.3 公共事件
 

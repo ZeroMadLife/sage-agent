@@ -171,15 +171,29 @@ def test_second_instance_completes_while_first_is_paused_at_failure_checkpoint(
 
     assert first_receipt == second_receipt
     assert stale_records[0].stage == "session"
+    stale_failure = replace(
+        stale_records[0],
+        receipt_status="activation_failed",
+        failure_code="late-writer",
+    )
     stale_write = first_repository.save_activation(
-        replace(
-            stale_records[0],
-            receipt_status="activation_failed",
-            failure_code="late-writer",
-        ),
+        stale_failure,
         task_status="activation_failed",
     )
     assert stale_write.receipt_status == "active"
+    archive_called = False
+
+    def archive_stale_session() -> None:
+        nonlocal archive_called
+        archive_called = True
+
+    assert (
+        first_repository.archive_session_if_failed(
+            stale_failure, archive_session=archive_stale_session
+        )
+        is False
+    )
+    assert archive_called is False
     assert (
         second_repository.activation(
             owner_id="local", workspace_id=task.workspace_id, task_id=task.task_id
@@ -187,3 +201,49 @@ def test_second_instance_completes_while_first_is_paused_at_failure_checkpoint(
         == "active"
     )
     _assert_single_resources(tmp_path, second_receipt)
+
+
+def test_failed_compensation_finishes_before_paused_writer_commits_active(
+    tmp_path: Path,
+) -> None:
+    task = _task(tmp_path)
+    successful_writer_paused = Event()
+    release_successful_writer = Event()
+
+    def pause_success_after_session(point: str, _activation) -> None:  # type: ignore[no-untyped-def]
+        if point != "after_session":
+            return
+        successful_writer_paused.set()
+        assert release_successful_writer.wait(timeout=10)
+
+    def fail_after_session(point: str, _activation) -> None:  # type: ignore[no-untyped-def]
+        if point == "after_session":
+            raise RuntimeError("injected competing writer failure")
+
+    _, successful, _ = _services(tmp_path, failure_injector=pause_success_after_session)
+    _, failing, repository = _services(tmp_path, failure_injector=fail_after_session)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        successful_future = executor.submit(_activate, successful, task, "shared-stage-key")
+        assert successful_writer_paused.wait(timeout=10)
+        failing_future = executor.submit(_activate, failing, task, "shared-stage-key")
+        try:
+            failing_future.result(timeout=10)
+        except LearningActivationError as exc:
+            assert exc.code == "learning_activation_failed"
+        else:
+            raise AssertionError("the competing writer must exercise compensation")
+
+        release_successful_writer.set()
+        receipt = successful_future.result(timeout=10)
+
+    assert receipt.receipt_status == "active"
+    assert (
+        repository.activation(
+            owner_id="local", workspace_id=task.workspace_id, task_id=task.task_id
+        ).receipt_status
+        == "active"
+    )
+    session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(receipt.session_id)
+    assert session["archived"] is False
+    _assert_single_resources(tmp_path, receipt)

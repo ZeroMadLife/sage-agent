@@ -87,6 +87,7 @@ active -> completed
     "freshness": "all"
   },
   "source_policy_revision": "lsrc_...",
+  "resume_validation_version": "canonical_l0_v3",
   "receipt_status": "active",
   "created_at": "...",
   "completed_at": "..."
@@ -95,7 +96,7 @@ active -> completed
 
 同一 `owner_id + workspace_id + task_id + task_revision + idempotency_key` 的重复请求只能返回同一 receipt；同一 workspace 内同一任务 revision 使用不同 key 不得产生第二个激活，不同 workspace 可以安全复用客户端 key。receipt 不保存 prompt、网页正文、Skill 内容、秘密或绝对路径。
 
-expand-migrate-contract 期间，旧表新增 nullable `workspace_id` 只用于隔离迁移。旧 active 行只有在 canonical Session 和 TurnContextPlan 同时证明 owner、workspace、task revision、Plan identity 与四维 source policy 时才回填并升级为 v3；legacy draft、缺失资源或无法唯一判定的行保持不可见并标记 `blocked`，不能默认归入当前 workspace。
+expand-migrate-contract 期间，旧表新增 nullable `workspace_id` 只用于隔离迁移。旧 active 行只有在 canonical Session 和 TurnContextPlan 同时证明 owner、workspace、task revision、Plan identity、四维 source policy、catalog/capability revision 与 allowlist 时才回填并升级为 v3。新 receipt 标记 `canonical_l0_v3`；真实 v2 receipt 与旧 Plan 回填后标记 `legacy_l0_v2`，只按旧 Plan 当时存在的 retrieval/tools/resume 字段做等价 fail-closed 校验。迁移生成的 source snapshot/revision 是可审计的规范化证据，不声称 v2 曾冻结后来新增的字段。legacy draft、缺失资源或无法唯一判定的行保持不可见并标记 `blocked`，不能默认归入当前 workspace。
 
 ### 3.3 Capability Scope
 
@@ -116,10 +117,12 @@ L0 receipt 只冻结后续 L1 可使用的能力候选，不把候选接入模�
 
 - `task_id` 与 `task_revision`；
 - `session_id/thread_id/run_id` 的所有权；
-- 已生成时分别校验 `learning_plan_id/learning_plan_hash`、`turn_context_plan_id/turn_context_plan_hash` 和 `dag_hash`；L0 只有 TurnContextPlan 身份；
+- LearningTask 与 receipt 双侧分别校验 `learning_plan_id/learning_plan_hash`、`turn_context_plan_id/turn_context_plan_hash` 和 `dag_hash`；L0 两侧都只能有 TurnContextPlan 身份；
 - checkpoint scope 和 fencing token；
 - `capability_revision` 与 `AllowedCapabilitySet`；
 - catalog revision 与四维 `source_policy_snapshot/revision`（knowledge、web、domains、freshness）。
+
+失败补偿归档 Session 前必须持有与 exact failed receipt 匹配的 activation fence；active commit 在同一 SQLite 写事务内重验并恢复 Session 可见性。这个合同只覆盖共享 Learning SQLite 与同一 storage 上的 L0 bootstrap writer，不宣称 PostgreSQL 后端、分布式文件系统或任意 Session metadata writer 已具备同等 fencing。
 
 任一项漂移返回明确 `409`，不得静默重新意图识别、重新规划或扩大权限。断线不等于取消；取消必须产生终态事件并释放 lease。
 
@@ -560,6 +563,15 @@ L0 在 `docs/desktop-learning-product-design@5eb9020` 新基线上的验证：
 - private/public production build 均通过；
 - `git diff --check` 通过；
 - warning 为既有 GPT-2 fallback tokenizer 提示。L0 没有执行首轮 Turn，也没有生成 LearningPlan、Task DAG、Learning Artifact 或 Mastery Evidence。
+
+L0 在 `c10e700` 固定起点上的复审补强验证：
+
+- 先以指定 Python 3.12 与 `PYTHONPATH="$PWD/packages/sage_harness:$PWD"` 得到 5 个合同 Red：并发补偿后 Session 仍 archived、真实 v2 legacy 缺审计 marker、Task-side 三种未来 identity 被 Resume 接受；
+- Learning Task/Activation 专项扩展到 `50 passed`，包含双 service 同 stage 补偿、active 后旧归档 fence、真实 a6d v2 receipt/Plan GET+Resume、旧 catalog 绑定缺失 blocked，以及 Task/receipt 双侧 identity fail-closed；
+- Goal、Session Journal、TurnContextPlan、Resume、Task DAG 与 Thread State 相邻恢复回归 `125 passed`；
+- 全仓 Ruff lint 通过，8 个改动 Python 文件 format check 通过，Mypy `235 source files` 无问题；
+- private/public production build 与 `git diff --check` 通过；private build 只有既有大 chunk warning；
+- 本轮仍停在 L0：没有执行首轮 Turn，没有生成 LearningPlan、Task DAG、Learning Artifact、Mastery Evidence 或运行中 Checkpoint Resume。
 
 下一步只进入 L1：用 receipt 中冻结的 `allowed_capabilities`、`capability_revision` 和
 `turn_context_plan_hash` 同时约束模型可见工具目录与实际执行入口。L1 完成前，不集成真实 Knowledge、Web

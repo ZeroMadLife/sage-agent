@@ -1986,6 +1986,7 @@ class LearningTaskResponse(BaseModel):
     clarification: LearningClarificationResponse
     learning_plan_id: str | None = None
     learning_plan_hash: str | None = None
+    dag_hash: str | None = None
     learning_goal_ref: LearningGoalRefResponse | None = None
     status: Literal[
         "draft",
@@ -2028,6 +2029,7 @@ class LearningActivationResponse(BaseModel):
     allowed_capabilities: list[str]
     source_policy_snapshot: LearningSourcePolicyRequest
     source_policy_revision: str = Field(min_length=1, max_length=128)
+    resume_validation_version: Literal["canonical_l0_v3", "legacy_l0_v2"]
     receipt_status: Literal["activating", "activation_failed", "active"]
     failure_code: str | None = None
     created_at: str

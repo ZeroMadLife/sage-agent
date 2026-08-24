@@ -187,7 +187,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - L0 不生成 LearningPlan 或 Task DAG，`learning_plan_id/learning_plan_hash/dag_hash` 保持为空，分别留到 L3/L4 的真实合同生成；
 - Task、activation、receipt 与全部查询以 `owner_id + workspace_id` 为 canonical scope；workspace 由服务端派生；
 - receipt v3 固化 task revision、catalog/capability revision 和覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision；
-- `/resume` 在 L0 只重验证 canonical Session 与 TurnContextPlan，不宣称已实现运行中 Checkpoint Resume；legacy active 只在资源能唯一证明 workspace 时回填，其他旧行不可见并 blocked。
+- 新 receipt 使用 `resume_validation_version=canonical_l0_v3` 严格校验全部新字段；真实 v2 active receipt 迁移为 `legacy_l0_v2`，只校验旧 TurnContextPlan 当时实际保存的等价字段，不伪造其曾冻结后来新增的 resume/source revision；
+- `/resume` 在 L0 只重验证 canonical Session 与 TurnContextPlan，不宣称已实现运行中 Checkpoint Resume；legacy active 只在资源能唯一证明 workspace 时回填，其他旧行不可见并 blocked；
+- Session 失败补偿由 activation 状态 CAS/fencing 授权，active commit 在同一 SQLite 写事务内重新确认 Session 可见，防止并发失败 writer 留下 archived 的成功 Session。
 
 **公共 seam**
 
@@ -199,9 +201,10 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 **验收证据**
 
 - 两个独立 repository/service/resources 实例共享 SQLite/storage 时，同 key 只产生一个 intent/Session/Goal/Plan，不同 key 只有一个 winner，stage 不回退；四个故障注入点重启后完成或补偿；
-- 孤立 Session 被归档；
+- 孤立 Session 被归档；同 stage 竞争时，失败 writer 先补偿也不能让最终 active Session 保持 archived，active 后的旧归档快照不能执行回调；
 - `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用，旧 `plan_hash` 只映射到 TurnContextPlan；
-- Session/Plan 缺失、删除、篡改，以及 owner/workspace/task/catalog/capability/source policy 漂移均稳定 `409`；
+- Session/Plan 缺失、删除、篡改，以及 owner/workspace/task/catalog/capability/source policy 漂移均稳定 `409`；LearningTask 与 receipt 任一侧出现非空 `learning_plan_id/learning_plan_hash/dag_hash` 都 fail closed；
+- 真实 a6d v2 active receipt 加旧 TurnContextPlan fixture 能完成 GET 与 legacy 等价 Resume；缺失旧时代已有的 source/tool 字段仍 fail closed；
 - 定向测试、相邻恢复回归、Ruff、Mypy 和前端 private/public production build 通过后才可收口。
 
 **依赖与非目标**

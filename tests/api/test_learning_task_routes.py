@@ -40,6 +40,7 @@ def test_create_read_and_patch_learning_draft_without_starting_runtime(tmp_path:
         assert created["task_revision"] == 1
         assert created["learning_plan_id"] is None
         assert created["learning_plan_hash"] is None
+        assert created["dag_hash"] is None
         assert created["source_policy"] == {
             "knowledge": "preferred",
             "web": "forbidden",
@@ -131,6 +132,8 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
     assert set(paths["/api/v1/learning/tasks/{task_id}/resume"]) == {"post"}
     activation = openapi["components"]["schemas"]["LearningActivationResponse"]
     properties = activation["properties"]
+    task = openapi["components"]["schemas"]["LearningTaskResponse"]
+    assert task["properties"]["dag_hash"]["anyOf"][0]["type"] == "string"
     assert properties["workspace_id"]["type"] == "string"
     assert properties["learning_plan_id"]["anyOf"][0]["type"] == "string"
     assert properties["learning_plan_hash"]["anyOf"][0]["type"] == "string"
@@ -139,3 +142,7 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
     assert properties["dag_hash"]["anyOf"][0]["type"] == "string"
     assert properties["plan_id"]["deprecated"] is True
     assert properties["plan_hash"]["deprecated"] is True
+    assert properties["resume_validation_version"]["enum"] == [
+        "canonical_l0_v3",
+        "legacy_l0_v2",
+    ]

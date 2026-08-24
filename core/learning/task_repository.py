@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from collections.abc import Callable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -126,6 +127,7 @@ class LearningTaskRepository:
             clarification=clarification_for(normalized),
             learning_plan_id=None,
             learning_plan_hash=None,
+            dag_hash=None,
             learning_goal_ref=None,
             status="draft",
             created_at=now,
@@ -318,6 +320,11 @@ class LearningTaskRepository:
                         "learning task revision conflict",
                         current_revision=task.task_revision,
                     )
+                if _has_future_l0_identity(task):
+                    raise LearningActivationError(
+                        "L0 task contains a future plan identity",
+                        code="learning_activation_contract_conflict",
+                    )
                 existing = connection.execute(
                     "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                     "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
@@ -382,6 +389,7 @@ class LearningTaskRepository:
                     allowed_capabilities=(),
                     source_policy_snapshot=task.source_policy,
                     source_policy_revision=source_policy_revision(task.source_policy),
+                    resume_validation_version="canonical_l0_v3",
                     receipt_status="activating",
                     stage="intent",
                     failure_code=None,
@@ -446,8 +454,11 @@ class LearningTaskRepository:
         *,
         task_status: LearningActivationStatus,
         learning_goal_ref: LearningGoalRef | None = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> LearningActivationRecord:
         """Persist one bootstrap checkpoint and the matching task projection."""
+        if before_commit is not None and task_status != "active":
+            raise ValueError("before_commit is only valid for an active commit")
         self._ensure_ready()
         now = datetime.now(UTC).isoformat()
         completed_at = now if task_status == "active" else record.completed_at
@@ -519,6 +530,13 @@ class LearningTaskRepository:
                         "learning task revision conflict",
                         current_revision=task.task_revision,
                     )
+                if task_status == "active" and _has_future_l0_identity(task):
+                    raise LearningActivationError(
+                        "L0 task contains a future plan identity",
+                        code="learning_activation_contract_conflict",
+                    )
+                if before_commit is not None:
+                    before_commit()
                 ref = learning_goal_ref or (
                     LearningGoalRef(**task.learning_goal_ref) if task.learning_goal_ref else None
                 )
@@ -535,6 +553,49 @@ class LearningTaskRepository:
                 _write_task(connection, updated.owner_id, updated.workspace_id, projected)
                 connection.commit()
                 return updated
+            except Exception:
+                connection.rollback()
+                raise
+
+    def archive_session_if_failed(
+        self,
+        record: LearningActivationRecord,
+        *,
+        archive_session: Callable[[], None],
+    ) -> bool:
+        """Fence Session compensation against a newer or successful activation writer."""
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, "
+                    "session_id, kickoff_run_id, status, stage, receipt_json "
+                    "FROM learning_task_activations WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ? AND idempotency_key = ?",
+                    (
+                        record.owner_id,
+                        record.workspace_id,
+                        record.task_id,
+                        record.task_revision,
+                        record.idempotency_key,
+                    ),
+                ).fetchone()
+                if row is None:
+                    connection.commit()
+                    return False
+                current = _decode_activation_row(row)
+                if (
+                    current.receipt_status != "activation_failed"
+                    or current.stage != record.stage
+                    or current.failure_code != record.failure_code
+                    or current.updated_at != record.updated_at
+                ):
+                    connection.commit()
+                    return False
+                archive_session()
+                connection.commit()
+                return True
             except Exception:
                 connection.rollback()
                 raise
@@ -594,6 +655,27 @@ class LearningTaskRepository:
                     freshness=policy_data["freshness"],
                 )
                 source_policy_revision(policy)
+                if (
+                    task_data.get("learning_plan_id") is not None
+                    or task_data.get("learning_plan_hash") is not None
+                    or task_data.get("dag_hash") is not None
+                    or receipt_data.get("learning_plan_id") is not None
+                    or receipt_data.get("learning_plan_hash") is not None
+                    or receipt_data.get("dag_hash") is not None
+                ):
+                    raise ValueError("legacy L0 payload contains a future plan identity")
+                catalog_revision = receipt_data.get("catalog_revision")
+                capability_revision = receipt_data.get("capability_revision")
+                allowed_capabilities = receipt_data.get("allowed_capabilities")
+                if (
+                    not isinstance(catalog_revision, str)
+                    or not catalog_revision
+                    or not isinstance(capability_revision, str)
+                    or not capability_revision
+                    or not isinstance(allowed_capabilities, list)
+                    or any(not isinstance(item, str) or not item for item in allowed_capabilities)
+                ):
+                    raise ValueError("legacy capability binding is missing")
                 plan_id = _read_renamed_field(
                     receipt_data,
                     canonical="turn_context_plan_id",
@@ -619,6 +701,9 @@ class LearningTaskRepository:
                         turn_context_plan_id=plan_id,
                         turn_context_plan_hash=plan_hash,
                         source_policy=policy,
+                        catalog_revision=catalog_revision,
+                        capability_revision=capability_revision,
+                        allowed_capabilities=tuple(allowed_capabilities),
                         task_payload_json=str(row["task_payload_json"]),
                         receipt_json=str(row["receipt_json"]),
                     )
@@ -660,6 +745,7 @@ class LearningTaskRepository:
                 task_data = json.loads(candidate.task_payload_json)
                 receipt_data = json.loads(candidate.receipt_json)
                 task_data["workspace_id"] = workspace
+                task_data.setdefault("dag_hash", None)
                 receipt_data.update(
                     {
                         "version": 3,
@@ -671,6 +757,7 @@ class LearningTaskRepository:
                             "freshness": candidate.source_policy.freshness,
                         },
                         "source_policy_revision": source_policy_revision(candidate.source_policy),
+                        "resume_validation_version": "legacy_l0_v2",
                     }
                 )
                 receipt_data.setdefault("turn_context_plan_id", candidate.turn_context_plan_id)
@@ -862,6 +949,7 @@ def _decode(payload: str) -> LearningTask:
         learning_plan_hash=(
             str(data["learning_plan_hash"]) if data.get("learning_plan_hash") is not None else None
         ),
+        dag_hash=str(data["dag_hash"]) if data.get("dag_hash") is not None else None,
         learning_goal_ref=(
             dict(data["learning_goal_ref"]) if data.get("learning_goal_ref") else None
         ),
@@ -974,6 +1062,9 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
     stored_source_revision = str(data.get("source_policy_revision", ""))
     if stored_source_revision != expected_source_revision:
         raise ValueError("learning activation source policy revision mismatch")
+    validation_version = data.get("resume_validation_version", "canonical_l0_v3")
+    if validation_version not in {"canonical_l0_v3", "legacy_l0_v2"}:
+        raise ValueError("unsupported learning resume validation version")
     if stage == "active" and status != "active":
         raise ValueError("active learning activation stage requires an active status")
     if status == "active" and stage != "active":
@@ -1035,6 +1126,7 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
         allowed_capabilities=tuple(raw_capabilities),
         source_policy_snapshot=source_policy,
         source_policy_revision=stored_source_revision,
+        resume_validation_version=validation_version,
         receipt_status=status,
         stage=normalized_stage,
         failure_code=str(data["failure_code"]) if data.get("failure_code") else None,
@@ -1155,6 +1247,14 @@ def _activation_stage_rank(stage: str) -> int:
         "turn_context_plan": 3,
         "active": 4,
     }[stage]
+
+
+def _has_future_l0_identity(task: LearningTask) -> bool:
+    return (
+        task.learning_plan_id is not None
+        or task.learning_plan_hash is not None
+        or task.dag_hash is not None
+    )
 
 
 __all__ = [

@@ -77,6 +77,7 @@ class LearningTask:
     clarification: LearningClarification
     learning_plan_id: str | None
     learning_plan_hash: str | None
+    dag_hash: str | None
     learning_goal_ref: dict[str, str] | None
     status: LearningTaskStatus
     created_at: str

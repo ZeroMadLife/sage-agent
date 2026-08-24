@@ -13,6 +13,7 @@ from core.learning.tasks import LearningSourcePolicy, LearningTask, source_polic
 
 LearningActivationStatus = Literal["activating", "activation_failed", "active"]
 LearningActivationStage = Literal["intent", "session", "goal", "turn_context_plan", "active"]
+LearningResumeValidationVersion = Literal["canonical_l0_v3", "legacy_l0_v2"]
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class LearningActivationRecord:
     allowed_capabilities: tuple[str, ...]
     source_policy_snapshot: LearningSourcePolicy
     source_policy_revision: str
+    resume_validation_version: LearningResumeValidationVersion
     receipt_status: LearningActivationStatus
     stage: LearningActivationStage
     failure_code: str | None
@@ -86,6 +88,9 @@ class LearningLegacyActivationCandidate:
     turn_context_plan_id: str
     turn_context_plan_hash: str
     source_policy: LearningSourcePolicy
+    catalog_revision: str
+    capability_revision: str
+    allowed_capabilities: tuple[str, ...]
     task_payload_json: str
     receipt_json: str
 
@@ -119,7 +124,15 @@ class LearningActivationRepositoryPort(Protocol):
         *,
         task_status: LearningActivationStatus,
         learning_goal_ref: LearningGoalRef | None = None,
+        before_commit: Callable[[], None] | None = None,
     ) -> LearningActivationRecord: ...
+
+    def archive_session_if_failed(
+        self,
+        record: LearningActivationRecord,
+        *,
+        archive_session: Callable[[], None],
+    ) -> bool: ...
 
     def reconcilable_activations(self) -> tuple[LearningActivationRecord, ...]: ...
 
@@ -220,7 +233,10 @@ class LearningActivationService:
                 code="learning_activation_not_active",
             )
         if (
-            activation.learning_plan_id is not None
+            task.learning_plan_id is not None
+            or task.learning_plan_hash is not None
+            or task.dag_hash is not None
+            or activation.learning_plan_id is not None
             or activation.learning_plan_hash is not None
             or activation.dag_hash is not None
         ):
@@ -314,6 +330,7 @@ class LearningActivationService:
                 replace(current, stage="active", receipt_status="active", failure_code=None),
                 task_status="active",
                 learning_goal_ref=current.learning_goal_ref,
+                before_commit=lambda: self.resources.ensure_session(activation=current, task=task),
             )
         except LearningActivationError as exc:
             failed = self._save_failure(current, failure_code=exc.code)
@@ -350,7 +367,10 @@ class LearningActivationService:
         self, task: LearningTask, activation: LearningActivationRecord
     ) -> None:
         if (
-            activation.learning_plan_id is not None
+            task.learning_plan_id is not None
+            or task.learning_plan_hash is not None
+            or task.dag_hash is not None
+            or activation.learning_plan_id is not None
             or activation.learning_plan_hash is not None
             or activation.dag_hash is not None
         ):
@@ -372,7 +392,10 @@ class LearningActivationService:
         if activation.receipt_status != "activation_failed":
             return
         with suppress(Exception):
-            self.resources.archive_session(activation=activation)
+            self.repository.archive_session_if_failed(
+                activation,
+                archive_session=lambda: self.resources.archive_session(activation=activation),
+            )
 
     def _inject(self, point: str, activation: LearningActivationRecord) -> None:
         if self.failure_injector is not None:
@@ -390,4 +413,5 @@ __all__ = [
     "LearningActivationTurnContextBinding",
     "LearningGoalRef",
     "LearningLegacyActivationCandidate",
+    "LearningResumeValidationVersion",
 ]

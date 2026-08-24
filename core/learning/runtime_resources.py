@@ -285,7 +285,7 @@ class SageLearningActivationResources:
             retrieval = _mapping(payload, "retrieval")
             tools = _mapping(payload, "tools")
             resume = _mapping(payload, "resume")
-            if (
+            common_drift = (
                 plan.plan_id != activation.turn_context_plan_id
                 or plan.plan_hash != activation.turn_context_plan_hash
                 or plan.session_id != activation.session_id
@@ -306,7 +306,14 @@ class SageLearningActivationResources:
                     "goal_id": activation.learning_goal_ref.goal_id,
                     "goal_revision": activation.learning_goal_ref.goal_revision,
                 }
-                or retrieval
+                or tools.get("catalog_revision") != registry.revision
+                or tools.get("capability_revision") != capability_revision
+                or tools.get("allowed_capabilities") != list(allowed)
+                or resume.get("task_revision") != task.task_revision
+                or resume.get("capability_revision") != capability_revision
+            )
+            canonical_drift = (
+                retrieval
                 != {
                     "knowledge_policy": task.source_policy.knowledge,
                     "web_policy": task.source_policy.web,
@@ -314,14 +321,26 @@ class SageLearningActivationResources:
                     "freshness": task.source_policy.freshness,
                     "source_policy_revision": expected_source_revision,
                 }
-                or tools.get("catalog_revision") != registry.revision
-                or tools.get("capability_revision") != capability_revision
-                or tools.get("allowed_capabilities") != list(allowed)
-                or resume.get("task_revision") != task.task_revision
                 or resume.get("catalog_revision") != registry.revision
-                or resume.get("capability_revision") != capability_revision
                 or resume.get("source_policy_revision") != expected_source_revision
-            ):
+            )
+            legacy_drift = (
+                retrieval
+                != {
+                    "knowledge_policy": task.source_policy.knowledge,
+                    "web_policy": task.source_policy.web,
+                    "domains": list(task.source_policy.domains),
+                    "freshness": task.source_policy.freshness,
+                }
+                or "catalog_revision" in resume
+                or "source_policy_revision" in resume
+            )
+            validation_drift = (
+                canonical_drift
+                if activation.resume_validation_version == "canonical_l0_v3"
+                else legacy_drift
+            )
+            if common_drift or validation_drift:
                 raise ValueError("learning resume binding drift")
         except (
             FileNotFoundError,
@@ -371,6 +390,8 @@ class SageLearningActivationResources:
         payload = plan.to_payload()
         admission = _mapping(payload, "admission")
         retrieval = _mapping(payload, "retrieval")
+        tools = _mapping(payload, "tools")
+        resume = _mapping(payload, "resume")
         expected_retrieval = {
             "knowledge_policy": candidate.source_policy.knowledge,
             "web_policy": candidate.source_policy.web,
@@ -387,6 +408,14 @@ class SageLearningActivationResources:
             or admission.get("task_id") != candidate.task_id
             or admission.get("task_revision") != candidate.task_revision
             or any(retrieval.get(key) != value for key, value in expected_retrieval.items())
+            or set(retrieval) != set(expected_retrieval)
+            or tools.get("catalog_revision") != candidate.catalog_revision
+            or tools.get("capability_revision") != candidate.capability_revision
+            or tools.get("allowed_capabilities") != list(candidate.allowed_capabilities)
+            or resume.get("task_revision") != candidate.task_revision
+            or resume.get("capability_revision") != candidate.capability_revision
+            or "catalog_revision" in resume
+            or "source_policy_revision" in resume
         ):
             raise ValueError("legacy learning resource binding mismatch")
         if legacy_workspace is None:
