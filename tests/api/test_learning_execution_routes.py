@@ -143,6 +143,11 @@ def test_advance_resume_and_scoped_artifact_get(tmp_path: Path, monkeypatch) -> 
         assert artifact.status_code == 200
         assert artifact.headers["cache-control"] == "no-store"
         assert "Large evidence body" not in artifact.json()["content"]
+        assert artifact.json()["schema_version"] == 1
+        assert artifact.json()["goal_id"] == task["learning_goal_ref"]["goal_id"]
+        assert artifact.json()["plan_revision"] == 1
+        assert len(artifact.json()["unit_ids"]) == 1
+        assert artifact.json()["research_receipt_ref"] == ""
         assert artifact.json()["citations"][0]["evidence_ref"] == "kcite-api-1"
 
 

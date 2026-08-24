@@ -2078,10 +2078,15 @@ class LearningCitationResponse(BaseModel):
 class LearningArtifactResponse(BaseModel):
     artifact_id: str
     artifact_ref: str
+    schema_version: int = Field(ge=1)
     kind: str
     task_id: str
     task_revision: int = Field(ge=1)
+    goal_id: str
+    goal_revision: str
     plan_id: str
+    plan_revision: int = Field(ge=1)
+    unit_ids: list[str]
     content_hash: str
     media_type: str
     status: str
@@ -2089,6 +2094,7 @@ class LearningArtifactResponse(BaseModel):
     source_revisions: list[str]
     citations: list[LearningCitationResponse]
     retention: str
+    research_receipt_ref: str
     content: str
     created_at: str
     updated_at: str

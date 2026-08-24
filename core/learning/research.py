@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -233,6 +233,7 @@ class LearningResearchService:
             bundle,
             result.evidence_refs,
             domains=task.source_policy.domains,
+            freshness=task.source_policy.freshness,
         )
         if reason:
             return self._terminal(
@@ -403,6 +404,7 @@ def _validated_web_evidence(
     authorized_refs: tuple[str, ...],
     *,
     domains: tuple[str, ...],
+    freshness: str,
 ) -> tuple[tuple[EvidenceBundleItem, ...], str]:
     if bundle.status != "evidence_found" or not bundle.items:
         return (), "learning_research_no_evidence"
@@ -420,9 +422,18 @@ def _validated_web_evidence(
         if not item.canonical_url or not item.title or not item.content_hash or not fetched_at:
             return (), "learning_research_freshness_unverified"
         try:
-            datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
+            fetched_datetime = datetime.fromisoformat(fetched_at.replace("Z", "+00:00"))
         except ValueError:
             return (), "learning_research_freshness_unverified"
+        if fetched_datetime.tzinfo is None:
+            return (), "learning_research_freshness_unverified"
+        if freshness == "current":
+            now = datetime.now(UTC)
+            fetched_datetime = fetched_datetime.astimezone(UTC)
+            if fetched_datetime < now - timedelta(days=366) or fetched_datetime > now + timedelta(
+                days=1
+            ):
+                return (), "learning_research_freshness_unverified"
         parsed = urlsplit(item.canonical_url)
         if parsed.scheme != "https" or not parsed.hostname:
             return (), "learning_research_domain_forbidden"

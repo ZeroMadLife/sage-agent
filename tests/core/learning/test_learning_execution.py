@@ -12,7 +12,11 @@ from sage_harness import (
 from core.learning.artifact_store import LearningArtifactStore, LearningCheckpointConflictError
 from core.learning.execution import LearningExecutionContext, LearningExecutionService
 from core.learning.materials import LearningMapService
-from core.learning.research import LearningResearchOutcome
+from core.learning.research import (
+    LearningResearchEvidence,
+    LearningResearchOutcome,
+    LearningResearchReceipt,
+)
 from core.learning.tasks import (
     LearningClarification,
     LearningLearnerProfile,
@@ -187,8 +191,52 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
         token_count=30,
         metadata={"fetched_at": "2026-08-25T01:00:00Z"},
     )
+    plan = (
+        await LearningMapService(knowledge_port=None).build(
+            task=_task(),
+            parent_run_id="run-parent",
+            capability_revision="cap-r1",
+            catalog_revision="catalog-r1",
+        )
+    ).plan
+    receipt = LearningResearchReceipt(
+        schema_version=1,
+        receipt_id="lrsearch_execution_1",
+        task_id=_task().task_id,
+        task_revision=_task().task_revision,
+        plan_id=plan.plan_id,
+        plan_revision=plan.plan_revision,
+        unit_id=plan.units[0].unit_id,
+        parent_run_id="run-parent",
+        child_run_id="run-child",
+        capability_revision=plan.capability_revision,
+        source_policy_revision=plan.source_policy_revision,
+        query_receipt_hash="lquery_execution_1",
+        token_budget=2_000,
+        max_steps=4,
+        timeout_seconds=20,
+        actual_token_usage=600,
+        actual_tool_count=2,
+        allowed_domains=("example.com",),
+        freshness="current",
+        risk_decision="general_education",
+        terminal_status="succeeded",
+        reason_code="",
+        evidence=(
+            LearningResearchEvidence(
+                evidence_ref=evidence.evidence_ref,
+                url=evidence.canonical_url,
+                title=evidence.title,
+                content_hash=evidence.content_hash,
+                fetched_at=str(evidence.metadata["fetched_at"]),
+                kind=evidence.kind,
+            ),
+        ),
+    )
     research = FakeResearchService(
-        LearningResearchOutcome(status="succeeded", reason_code="", evidence=(evidence,))
+        LearningResearchOutcome(
+            status="succeeded", reason_code="", receipt=receipt, evidence=(evidence,)
+        )
     )
     store = LearningArtifactStore(tmp_path / "artifacts.sqlite3")
     service = LearningExecutionService(
@@ -228,3 +276,9 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
     assert artifact.citations[0].url == "https://docs.example.com/checkpoint"
     assert artifact.citations[0].fetched_at == "2026-08-25T01:00:00Z"
     assert "https://docs.example.com/checkpoint" in artifact.content
+    stored_receipt = store.read_research_receipt(
+        owner_id="local",
+        workspace_id="workspace-1",
+        receipt_ref="sage://learning/research-receipts/lrsearch_execution_1",
+    )
+    assert stored_receipt.receipt.parent_run_id == "run-parent"

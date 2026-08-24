@@ -283,6 +283,11 @@ async def test_research_gate_does_not_create_child(
         ),
         (_result(), _bundle(_item(fetched_at="")), "learning_research_freshness_unverified"),
         (
+            _result(),
+            _bundle(_item(fetched_at="2020-01-01T00:00:00Z")),
+            "learning_research_freshness_unverified",
+        ),
+        (
             _result(refs=("wcite-1", "wcite-2")),
             _bundle(
                 _item(ref="wcite-1", content_hash="hash-a"),

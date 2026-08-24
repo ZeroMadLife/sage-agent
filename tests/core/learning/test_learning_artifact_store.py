@@ -16,6 +16,7 @@ from core.learning.artifact_store import (
     LearningResumeNotFoundError,
 )
 from core.learning.materials import LearningCitation, LearningMapOutcome, LearningMapService
+from core.learning.research import LearningResearchEvidence, LearningResearchReceipt
 from core.learning.tasks import (
     LearningClarification,
     LearningLearnerProfile,
@@ -123,6 +124,11 @@ async def test_artifact_is_idempotent_and_survives_process_reopen(tmp_path: Path
 
     assert replay == first
     assert first.artifact_ref.startswith("sage://learning/artifacts/")
+    assert first.schema_version == 1
+    assert first.goal_id == "goal-1"
+    assert first.goal_revision == "goal-r1"
+    assert first.plan_revision == outcome.plan.plan_revision
+    assert first.unit_ids == tuple(unit.unit_id for unit in outcome.plan.units)
     assert checkpoint.stage == "knowledge_pending"
     reopened = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
     assert (
@@ -157,6 +163,93 @@ async def test_artifact_is_idempotent_and_survives_process_reopen(tmp_path: Path
             retention="task",
         )
     assert conflict.value.code == "learning_artifact_contract_conflict"
+
+    invalid_binding = replace(outcome.artifact, evidence_refs=("unknown-citation",))
+    with pytest.raises(ValueError, match="evidence refs"):
+        store.save_artifact(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            plan=outcome.plan,
+            artifact=invalid_binding,
+            citations=outcome.citations,
+            idempotency_key="invalid-citation-binding",
+            retention="task",
+        )
+
+
+@pytest.mark.asyncio
+async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> None:
+    outcome = await _outcome()
+    receipt = LearningResearchReceipt(
+        schema_version=1,
+        receipt_id="lrsearch_receipt_1",
+        task_id=_task().task_id,
+        task_revision=_task().task_revision,
+        plan_id=outcome.plan.plan_id,
+        plan_revision=outcome.plan.plan_revision,
+        unit_id=outcome.plan.units[0].unit_id,
+        parent_run_id="run-parent",
+        child_run_id="run-child",
+        capability_revision=outcome.plan.capability_revision,
+        source_policy_revision=outcome.plan.source_policy_revision,
+        query_receipt_hash="lquery_hash_1",
+        token_budget=2_000,
+        max_steps=4,
+        timeout_seconds=20,
+        actual_token_usage=600,
+        actual_tool_count=2,
+        allowed_domains=(),
+        freshness="all",
+        risk_decision="general_education",
+        terminal_status="succeeded",
+        reason_code="",
+        evidence=(
+            LearningResearchEvidence(
+                evidence_ref="wcite-1",
+                url="https://docs.example.com/checkpoint",
+                title="Checkpoint docs",
+                content_hash="sha256:web-r1",
+                fetched_at="2026-08-25T01:00:00Z",
+                kind="web_fetch",
+            ),
+        ),
+    )
+    path = tmp_path / "learning-artifacts.sqlite3"
+    store = LearningArtifactStore(path)
+
+    stored = store.save_research_receipt(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        receipt=receipt,
+    )
+    replay = LearningArtifactStore(path).save_research_receipt(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        receipt=receipt,
+    )
+
+    assert replay == stored
+    assert stored.receipt_ref == "sage://learning/research-receipts/lrsearch_receipt_1"
+    assert stored.receipt.query_receipt_hash == "lquery_hash_1"
+    assert (
+        LearningArtifactStore(path).read_research_receipt(
+            owner_id="local",
+            workspace_id="workspace-1",
+            receipt_ref=stored.receipt_ref,
+        )
+        == stored
+    )
+    with pytest.raises(LearningResumeNotFoundError):
+        store.read_research_receipt(
+            owner_id="other",
+            workspace_id="workspace-1",
+            receipt_ref=stored.receipt_ref,
+        )
 
 
 @pytest.mark.asyncio

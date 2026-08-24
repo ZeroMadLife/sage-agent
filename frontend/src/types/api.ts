@@ -183,10 +183,15 @@ export type LearningResumeResponse = {
 export type LearningArtifactResponse = {
   artifact_id: string
   artifact_ref: string
+  schema_version: number
   kind: string
   task_id: string
   task_revision: number
+  goal_id: string
+  goal_revision: string
   plan_id: string
+  plan_revision: number
+  unit_ids: string[]
   content_hash: string
   media_type: string
   status: string
@@ -202,6 +207,7 @@ export type LearningArtifactResponse = {
     source_revision: string
   }>
   retention: string
+  research_receipt_ref: string
   content: string
   created_at: string
   updated_at: string

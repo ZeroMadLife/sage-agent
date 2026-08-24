@@ -19,6 +19,7 @@ from core.learning.materials import (
     LearningPlan,
     LearningUnitStatus,
 )
+from core.learning.research import LearningResearchEvidence, LearningResearchReceipt
 from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
 
 LearningCheckpointStage = Literal[
@@ -61,7 +62,12 @@ CREATE TABLE IF NOT EXISTS learning_artifacts (
     artifact_ref TEXT NOT NULL,
     task_id TEXT NOT NULL,
     task_revision INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL,
+    goal_id TEXT NOT NULL,
+    goal_revision TEXT NOT NULL,
     plan_id TEXT NOT NULL,
+    plan_revision INTEGER NOT NULL,
+    unit_ids_json TEXT NOT NULL,
     kind TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     media_type TEXT NOT NULL,
@@ -71,12 +77,29 @@ CREATE TABLE IF NOT EXISTS learning_artifacts (
     citations_json TEXT NOT NULL,
     idempotency_key_hash TEXT NOT NULL,
     retention TEXT NOT NULL,
+    research_receipt_ref TEXT NOT NULL,
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (owner_id, workspace_id, artifact_id),
     UNIQUE (owner_id, workspace_id, task_id, task_revision, idempotency_key_hash),
     UNIQUE (artifact_ref)
+)
+"""
+
+_RESEARCH_RECEIPT_TABLE = """
+CREATE TABLE IF NOT EXISTS learning_research_receipts (
+    owner_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    receipt_id TEXT NOT NULL,
+    receipt_ref TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    task_revision INTEGER NOT NULL,
+    plan_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (owner_id, workspace_id, receipt_id),
+    UNIQUE (receipt_ref)
 )
 """
 
@@ -151,10 +174,15 @@ class StoredLearningCitation:
 class StoredLearningArtifact:
     artifact_id: str
     artifact_ref: str
+    schema_version: int
     kind: str
     task_id: str
     task_revision: int
+    goal_id: str
+    goal_revision: str
     plan_id: str
+    plan_revision: int
+    unit_ids: tuple[str, ...]
     content_hash: str
     media_type: str
     status: str
@@ -162,6 +190,7 @@ class StoredLearningArtifact:
     source_revisions: tuple[str, ...]
     citations: tuple[StoredLearningCitation, ...]
     retention: str
+    research_receipt_ref: str
     content: str
     created_at: str
     updated_at: str
@@ -177,6 +206,13 @@ class LearningArtifactSummary:
     citation_count: int
     source_revisions: tuple[str, ...]
     retention: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredLearningResearchReceipt:
+    receipt_ref: str
+    receipt: LearningResearchReceipt
+    created_at: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,6 +475,77 @@ class LearningArtifactStore:
             )
         return row is not None and str(row["last_advance_key_hash"]) == key_hash
 
+    def save_research_receipt(
+        self,
+        *,
+        owner_id: str,
+        workspace_id: str,
+        task: LearningTask,
+        plan: LearningPlan,
+        receipt: LearningResearchReceipt,
+    ) -> StoredLearningResearchReceipt:
+        _validate_scope(owner_id, workspace_id, task.task_id)
+        _validate_plan_binding(task, plan)
+        _validate_research_receipt(task, plan, receipt)
+        receipt_id = _bounded(receipt.receipt_id, "receipt_id", 160)
+        receipt_ref = f"sage://learning/research-receipts/{receipt_id}"
+        payload = _json(asdict(receipt))
+        with self._transaction() as connection:
+            existing = connection.execute(
+                """SELECT * FROM learning_research_receipts
+                   WHERE owner_id = ? AND workspace_id = ? AND receipt_id = ?""",
+                (owner_id, workspace_id, receipt_id),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["payload_json"]) != payload:
+                    raise LearningArtifactConflictError(
+                        "Learning Research receipt identity changed"
+                    )
+                return _stored_research_receipt(existing)
+            timestamp = _now()
+            connection.execute(
+                """INSERT INTO learning_research_receipts (
+                    owner_id, workspace_id, receipt_id, receipt_ref, task_id,
+                    task_revision, plan_id, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    owner_id,
+                    workspace_id,
+                    receipt_id,
+                    receipt_ref,
+                    task.task_id,
+                    task.task_revision,
+                    plan.plan_id,
+                    payload,
+                    timestamp,
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM learning_research_receipts WHERE receipt_ref = ?",
+                (receipt_ref,),
+            ).fetchone()
+            assert row is not None
+            return _stored_research_receipt(row)
+
+    def read_research_receipt(
+        self,
+        *,
+        owner_id: str,
+        workspace_id: str,
+        receipt_ref: str,
+    ) -> StoredLearningResearchReceipt:
+        _validate_scope(owner_id, workspace_id, "research_receipt")
+        _research_receipt_id(receipt_ref)
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM learning_research_receipts
+                   WHERE owner_id = ? AND workspace_id = ? AND receipt_ref = ?""",
+                (owner_id, workspace_id, receipt_ref),
+            ).fetchone()
+        if row is None:
+            raise LearningResumeNotFoundError("Learning Research receipt not found")
+        return _stored_research_receipt(row)
+
     def save_artifact(
         self,
         *,
@@ -450,13 +557,43 @@ class LearningArtifactStore:
         citations: Sequence[object],
         idempotency_key: str,
         retention: str,
+        research_receipt_ref: str = "",
     ) -> StoredLearningArtifact:
         _validate_scope(owner_id, workspace_id, task.task_id)
         _validate_plan_binding(task, plan)
         key = _bounded(idempotency_key, "idempotency_key", 300)
         retention = _bounded(retention, "retention", 80)
+        citation_payload = tuple(_citation_payload(item) for item in citations)
+        _validate_artifact_binding(plan, artifact, citation_payload)
+        if research_receipt_ref:
+            _research_receipt_id(research_receipt_ref)
         key_hash = _sha256(key)
         with self._transaction() as connection:
+            if research_receipt_ref:
+                receipt_row = connection.execute(
+                    """SELECT task_id, task_revision, plan_id, payload_json
+                       FROM learning_research_receipts
+                       WHERE owner_id = ? AND workspace_id = ? AND receipt_ref = ?""",
+                    (owner_id, workspace_id, research_receipt_ref),
+                ).fetchone()
+                if (
+                    receipt_row is None
+                    or str(receipt_row["task_id"]) != task.task_id
+                    or int(receipt_row["task_revision"]) != task.task_revision
+                    or str(receipt_row["plan_id"]) != plan.plan_id
+                ):
+                    raise LearningArtifactConflictError(
+                        "Learning Artifact Research receipt binding changed"
+                    )
+                receipt_payload = json.loads(str(receipt_row["payload_json"]))
+                receipt_evidence_refs = tuple(
+                    str(item.get("evidence_ref", ""))
+                    for item in receipt_payload.get("evidence", ())
+                )
+                if receipt_evidence_refs != artifact.evidence_refs:
+                    raise LearningArtifactConflictError(
+                        "Learning Artifact Research evidence binding changed"
+                    )
             existing = connection.execute(
                 """SELECT * FROM learning_artifacts WHERE owner_id = ? AND workspace_id = ?
                    AND task_id = ? AND task_revision = ? AND idempotency_key_hash = ?""",
@@ -469,6 +606,7 @@ class LearningArtifactStore:
                     or stored.content_hash != artifact.content_hash
                     or stored.content != artifact.content
                     or stored.status != artifact.status
+                    or stored.research_receipt_ref != research_receipt_ref
                 ):
                     raise LearningArtifactConflictError(
                         "Learning Artifact idempotency binding changed"
@@ -492,14 +630,14 @@ class LearningArtifactStore:
             artifact_id = f"lart_{identity[:24]}"
             artifact_ref = f"sage://learning/artifacts/{artifact_id}"
             timestamp = _now()
-            citation_payload = [_citation_payload(item) for item in citations]
             connection.execute(
                 """INSERT INTO learning_artifacts (
                     owner_id, workspace_id, artifact_id, artifact_ref, task_id, task_revision,
-                    plan_id, kind, content_hash, media_type, status, evidence_refs_json,
+                    schema_version, goal_id, goal_revision, plan_id, plan_revision, unit_ids_json,
+                    kind, content_hash, media_type, status, evidence_refs_json,
                     source_revisions_json, citations_json, idempotency_key_hash, retention,
-                    content, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    research_receipt_ref, content, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     owner_id,
                     workspace_id,
@@ -507,7 +645,12 @@ class LearningArtifactStore:
                     artifact_ref,
                     task.task_id,
                     task.task_revision,
+                    artifact.schema_version,
+                    plan.goal_id,
+                    plan.goal_revision,
                     plan.plan_id,
+                    plan.plan_revision,
+                    _json(artifact.unit_ids),
                     artifact.kind,
                     artifact.content_hash,
                     artifact.media_type,
@@ -517,6 +660,7 @@ class LearningArtifactStore:
                     _json(citation_payload),
                     key_hash,
                     retention,
+                    research_receipt_ref,
                     artifact.content,
                     timestamp,
                     timestamp,
@@ -639,7 +783,25 @@ class LearningArtifactStore:
         with self._connect() as connection:
             connection.execute(_PLAN_TABLE)
             connection.execute(_ARTIFACT_TABLE)
+            connection.execute(_RESEARCH_RECEIPT_TABLE)
             connection.execute(_CHECKPOINT_TABLE)
+            artifact_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(learning_artifacts)")
+            }
+            artifact_expansions = {
+                "schema_version": "INTEGER NOT NULL DEFAULT 1",
+                "goal_id": "TEXT NOT NULL DEFAULT ''",
+                "goal_revision": "TEXT NOT NULL DEFAULT ''",
+                "plan_revision": "INTEGER NOT NULL DEFAULT 1",
+                "unit_ids_json": "TEXT NOT NULL DEFAULT '[]'",
+                "research_receipt_ref": "TEXT NOT NULL DEFAULT ''",
+            }
+            for name, declaration in artifact_expansions.items():
+                if name not in artifact_columns:
+                    connection.execute(
+                        f"ALTER TABLE learning_artifacts ADD COLUMN {name} {declaration}"
+                    )
             columns = {
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(learning_checkpoints)")
@@ -732,10 +894,15 @@ def _artifact(row: sqlite3.Row) -> StoredLearningArtifact:
     return StoredLearningArtifact(
         artifact_id=str(row["artifact_id"]),
         artifact_ref=str(row["artifact_ref"]),
+        schema_version=int(row["schema_version"]),
         kind=str(row["kind"]),
         task_id=str(row["task_id"]),
         task_revision=int(row["task_revision"]),
+        goal_id=str(row["goal_id"]),
+        goal_revision=str(row["goal_revision"]),
         plan_id=str(row["plan_id"]),
+        plan_revision=int(row["plan_revision"]),
+        unit_ids=tuple(json.loads(str(row["unit_ids_json"]))),
         content_hash=str(row["content_hash"]),
         media_type=str(row["media_type"]),
         status=str(row["status"]),
@@ -745,9 +912,23 @@ def _artifact(row: sqlite3.Row) -> StoredLearningArtifact:
             StoredLearningCitation(**item) for item in json.loads(str(row["citations_json"]))
         ),
         retention=str(row["retention"]),
+        research_receipt_ref=str(row["research_receipt_ref"]),
         content=str(row["content"]),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
+    )
+
+
+def _stored_research_receipt(row: sqlite3.Row) -> StoredLearningResearchReceipt:
+    payload = json.loads(str(row["payload_json"]))
+    payload["allowed_domains"] = tuple(payload.get("allowed_domains", ()))
+    payload["evidence"] = tuple(
+        LearningResearchEvidence(**item) for item in payload.get("evidence", ())
+    )
+    return StoredLearningResearchReceipt(
+        receipt_ref=str(row["receipt_ref"]),
+        receipt=LearningResearchReceipt(**payload),
+        created_at=str(row["created_at"]),
     )
 
 
@@ -766,6 +947,63 @@ def _citation_payload(item: object) -> dict[str, str]:
         "page_revision": str(getattr(item, "page_revision", ""))[:160],
         "source_revision": str(getattr(item, "source_revision", ""))[:160],
     }
+
+
+def _validate_artifact_binding(
+    plan: LearningPlan,
+    artifact: LearningMapArtifact,
+    citations: tuple[dict[str, str], ...],
+) -> None:
+    evidence_refs = tuple(item["evidence_ref"] for item in citations)
+    source_revisions = tuple(sorted({item["source_revision"] for item in citations}))
+    if any(
+        not item["content_hash"] or not item["page_revision"] or not item["source_revision"]
+        for item in citations
+    ):
+        raise ValueError("Learning Artifact citations require revision and content hash")
+    if (
+        artifact.schema_version != 1
+        or artifact.plan_id != plan.plan_id
+        or artifact.unit_ids != tuple(unit.unit_id for unit in plan.units)
+        or artifact.kind != "learning_map"
+        or artifact.media_type != "text/markdown"
+    ):
+        raise ValueError("Learning Artifact identity binding is invalid")
+    if artifact.evidence_refs != evidence_refs:
+        raise ValueError("Learning Artifact evidence refs do not match citations")
+    if artifact.source_revisions != source_revisions:
+        raise ValueError("Learning Artifact source revisions do not match citations")
+    if artifact.citation_count != len(citations):
+        raise ValueError("Learning Artifact citation count does not match citations")
+    if not citations and artifact.status not in {"source_gap", "unverified", "blocked"}:
+        raise ValueError("Learning Artifact without citations cannot be ready")
+
+
+def _validate_research_receipt(
+    task: LearningTask,
+    plan: LearningPlan,
+    receipt: LearningResearchReceipt,
+) -> None:
+    if (
+        receipt.schema_version != 1
+        or receipt.task_id != task.task_id
+        or receipt.task_revision != task.task_revision
+        or receipt.plan_id != plan.plan_id
+        or receipt.plan_revision != plan.plan_revision
+        or receipt.unit_id not in {unit.unit_id for unit in plan.units}
+        or receipt.capability_revision != plan.capability_revision
+        or receipt.source_policy_revision != plan.source_policy_revision
+        or receipt.allowed_domains != task.source_policy.domains
+        or receipt.freshness != task.source_policy.freshness
+        or receipt.risk_decision != task.risk_class
+        or receipt.token_budget < 1
+        or receipt.max_steps < 1
+        or receipt.timeout_seconds <= 0
+        or receipt.actual_token_usage < 0
+        or receipt.actual_token_usage > receipt.token_budget
+        or receipt.actual_tool_count < 0
+    ):
+        raise LearningResumeConflictError("Learning Research receipt binding changed")
 
 
 def _plan(data: dict[str, object]) -> LearningPlan:
@@ -848,6 +1086,16 @@ def _artifact_id(artifact_ref: str) -> str:
     return parts[1]
 
 
+def _research_receipt_id(receipt_ref: str) -> str:
+    parsed = urlsplit(receipt_ref)
+    if parsed.scheme != "sage" or parsed.netloc != "learning":
+        raise ValueError("invalid Learning Research receipt ref")
+    parts = parsed.path.strip("/").split("/")
+    if len(parts) != 2 or parts[0] != "research-receipts" or not parts[1].startswith("lrsearch_"):
+        raise ValueError("invalid Learning Research receipt ref")
+    return parts[1]
+
+
 def _validate_scope(owner_id: str, workspace_id: str, resource_id: str) -> None:
     _bounded(owner_id, "owner_id", 256)
     _bounded(workspace_id, "workspace_id", 256)
@@ -888,4 +1136,5 @@ __all__ = [
     "LearningResumeSummary",
     "StoredLearningArtifact",
     "StoredLearningCitation",
+    "StoredLearningResearchReceipt",
 ]

@@ -12,6 +12,7 @@ from core.learning.artifact_store import (
     LearningCheckpoint,
     LearningResumeSummary,
     StoredLearningArtifact,
+    StoredLearningResearchReceipt,
 )
 from core.learning.execution import LearningExecutionContext, LearningExecutionService
 from core.learning.kickoff import (
@@ -120,5 +121,6 @@ __all__ = [
     "MasteryLedgerConflictError",
     "MasteryLedgerNotFoundError",
     "StoredLearningArtifact",
+    "StoredLearningResearchReceipt",
     "UnsetValue",
 ]

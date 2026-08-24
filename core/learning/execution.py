@@ -301,6 +301,16 @@ class LearningExecutionService:
             evidence_sufficient=False,
             remaining_token_budget=context.remaining_token_budget,
         )
+        research_receipt_ref = ""
+        if outcome.receipt is not None:
+            stored_receipt = self.store.save_research_receipt(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task=task,
+                plan=plan,
+                receipt=outcome.receipt,
+            )
+            research_receipt_ref = stored_receipt.receipt_ref
         if outcome.status == "succeeded":
             artifact_payload, citations = synthesize_research_map(task, plan, outcome.evidence)
             artifact = self.store.save_artifact(
@@ -312,6 +322,7 @@ class LearningExecutionService:
                 citations=citations,
                 idempotency_key=f"research-map-r{task.task_revision}",
                 retention="task",
+                research_receipt_ref=research_receipt_ref,
             )
             return {
                 "stage": "research_ready",

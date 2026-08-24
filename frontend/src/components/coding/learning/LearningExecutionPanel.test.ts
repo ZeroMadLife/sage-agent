@@ -33,9 +33,12 @@ function resume(stage: LearningResumeResponse['stage'] = 'artifact_ready'): Lear
 function artifact(): LearningArtifactResponse {
   return {
     artifact_id: 'lart-1', artifact_ref: 'sage://learning/artifacts/lart-1',
-    kind: 'learning_map', task_id: 'ltask-1', task_revision: 2, plan_id: 'lplan-1',
+    schema_version: 1, kind: 'learning_map', task_id: 'ltask-1', task_revision: 2,
+    goal_id: 'goal-1', goal_revision: 'goal-r1', plan_id: 'lplan-1', plan_revision: 1,
+    unit_ids: ['lunit-1'],
     content_hash: 'sha256:content', media_type: 'text/markdown', status: 'ready',
     evidence_refs: ['wcite-1'], source_revisions: ['source-r1'], retention: 'task',
+    research_receipt_ref: 'sage://learning/research-receipts/lrsearch-1',
     content: '# 学习地图\n\n来源状态：已支持。\n',
     citations: [{
       evidence_ref: 'wcite-1', title: 'Checkpoint docs',
