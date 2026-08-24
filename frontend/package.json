@@ -9,9 +9,12 @@
     "build:public": "vue-tsc -b && vite build --config vite.public.config.ts",
     "preview": "vite preview",
     "preview:public": "vite preview --config vite.public.config.ts",
-    "test": "vitest --environment jsdom"
+    "test": "vitest --environment jsdom",
+    "tauri": "tauri",
+    "desktop:launcher": "cc -arch arm64 -mmacosx-version-min=11.0 -Wall -Wextra -Werror src-tauri/launcher/sage-sidecar-launcher.c -o src-tauri/binaries/sage-api-aarch64-apple-darwin"
   },
   "dependencies": {
+    "@tauri-apps/api": "2.10.1",
     "graphology": "^0.26.0",
     "graphology-layout-forceatlas2": "^0.10.1",
     "highlight.js": "^11.11.1",
@@ -24,6 +27,7 @@
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "2.10.1",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^6.0.7",

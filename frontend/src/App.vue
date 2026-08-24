@@ -16,6 +16,8 @@ import { AssistantNavigation } from './components/assistant'
 import { CommandPalette } from './components/product-shell'
 import CloudAuthGate from './components/auth/CloudAuthGate.vue'
 import { useCloudAuth } from './composables/useCloudAuth'
+import DesktopHostGate from './components/desktop/DesktopHostGate.vue'
+import { isDesktopRuntime } from './desktop/hostAdapter'
 
 const { themeMode } = useWorkbenchPreferences()
 const osTheme = useOsTheme()
@@ -26,6 +28,7 @@ const cloudAuthRequired = import.meta.env.VITE_CLOUD_AUTH_REQUIRED === 'true'
 const cloudAuthenticated = ref(!cloudAuthRequired)
 const cloudAuthChecking = ref(cloudAuthRequired)
 const { check: checkCloudAuth } = useCloudAuth()
+const desktopRuntime = isDesktopRuntime()
 
 onMounted(async () => {
   if (!cloudAuthRequired) return
@@ -56,8 +59,9 @@ watch(
     <NLoadingBarProvider>
       <NMessageProvider>
         <NDialogProvider>
+          <DesktopHostGate v-if="desktopRuntime" />
           <CloudAuthGate
-            v-if="cloudAuthRequired && !cloudAuthenticated"
+            v-else-if="cloudAuthRequired && !cloudAuthenticated"
             :checking="cloudAuthChecking"
             @authenticated="cloudAuthenticated = true"
           />
