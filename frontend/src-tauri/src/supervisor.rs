@@ -89,6 +89,7 @@ struct HostInner {
     repository: Option<DesktopStateRepository>,
     diagnostic_log: Option<DiagnosticLog>,
     disk: HostDiskState,
+    unpublished_orphans: Vec<OrphanRecord>,
     launch_generation: u64,
     configuration_restart_in_progress: bool,
 }
@@ -103,6 +104,7 @@ impl Default for HostInner {
             repository: None,
             diagnostic_log: None,
             disk: HostDiskState::default(),
+            unpublished_orphans: Vec::new(),
             launch_generation: 0,
             configuration_restart_in_progress: false,
         }
@@ -240,6 +242,27 @@ pub fn start(app: AppHandle) {
         }
     };
     let mut disk = repository.load();
+    let mut unpublished_orphans = match repository.load_unpublished_orphans() {
+        Ok(records) => records,
+        Err(_) => {
+            {
+                let mut inner = shared.0.lock().expect("host state poisoned");
+                inner.repository = Some(repository);
+                inner.diagnostic_log = Some(diagnostic_log);
+                inner.disk = disk;
+                inner.snapshot = HostSnapshot::persistence_failure();
+            }
+            let _ = append_diagnostic(
+                &shared,
+                "state_persist_failed",
+                "blocked",
+                "desktop_state_persist_failed",
+            );
+            return;
+        }
+    };
+    let unpublished_cleanup_result = clean_unpublished_orphans(&mut unpublished_orphans);
+    let unpublished_persist_result = repository.replace_unpublished_orphans(&unpublished_orphans);
     let cleanup_result = clean_known_orphan(&mut disk);
     let startup = startup_action(&mut disk.crash_budget, unix_seconds());
     let persisted = {
@@ -247,9 +270,10 @@ pub fn start(app: AppHandle) {
         inner.repository = Some(repository);
         inner.diagnostic_log = Some(diagnostic_log);
         inner.disk = disk;
+        inner.unpublished_orphans = unpublished_orphans;
         persist_disk_locked(&inner)
     };
-    if persisted.is_err() {
+    if persisted.is_err() || unpublished_persist_result.is_err() {
         set_snapshot(&shared, HostSnapshot::persistence_failure());
         let _ = append_diagnostic(
             &shared,
@@ -259,7 +283,7 @@ pub fn start(app: AppHandle) {
         );
         return;
     }
-    if cleanup_result.is_err() {
+    if unpublished_cleanup_result.is_err() || cleanup_result.is_err() {
         set_snapshot(&shared, HostSnapshot::termination_failure());
         let _ = append_diagnostic(
             &shared,
@@ -331,10 +355,7 @@ async fn launch_once(
     data_dir: &Path,
     generation: u64,
 ) -> Result<tauri::async_runtime::Receiver<CommandEvent>, &'static str> {
-    if !is_current_generation(shared, generation) {
-        return Err("desktop_launch_superseded");
-    }
-    set_snapshot(shared, HostSnapshot::starting());
+    transition_launch_to_starting(shared, generation, || {})?;
     let instance_id = Uuid::new_v4().to_string();
     let nonce = random_secret();
     let bearer = random_secret();
@@ -411,14 +432,6 @@ async fn launch_once(
         let _ = child.kill();
         return Err("desktop_health_rejected");
     }
-    if shared.is_stopping() {
-        let _ = child.kill();
-        return Err("desktop_stopping");
-    }
-    if !is_current_generation(shared, generation) {
-        let _ = child.kill();
-        return Err("desktop_launch_superseded");
-    }
     let Some(observed) = observe_process(child_pid) else {
         let _ = child.kill();
         return Err("desktop_process_identity_unavailable");
@@ -441,11 +454,37 @@ async fn launch_once(
         |inner, child| inner.child = Some(child),
     ) {
         Ok(()) => Ok(receiver),
-        Err((reason, child)) => {
-            let _ = child.kill();
-            Err(reason)
+        Err((reason, record, child)) => {
+            let termination = terminate_runtime_async(record.clone());
+            Err(finalize_rejected_launch(shared, reason, record, child, termination).await)
         }
     }
+}
+
+fn transition_launch_to_starting<F>(
+    shared: &SharedHostState,
+    generation: u64,
+    after_precheck: F,
+) -> Result<(), &'static str>
+where
+    F: FnOnce(),
+{
+    if !is_current_generation(shared, generation) {
+        return Err("desktop_launch_superseded");
+    }
+    after_precheck();
+    let mut inner = shared.0.lock().expect("host state poisoned");
+    if inner.stopping {
+        return Err("desktop_stopping");
+    }
+    if inner.launch_generation != generation || inner.configuration_restart_in_progress {
+        return Err("desktop_launch_superseded");
+    }
+    if !inner.unpublished_orphans.is_empty() {
+        return Err("desktop_unpublished_sidecar_cleanup_failed");
+    }
+    inner.snapshot = HostSnapshot::starting();
+    Ok(())
 }
 
 fn commit_launch_success<T, F>(
@@ -455,13 +494,20 @@ fn commit_launch_success<T, F>(
     session: DesktopSession,
     resource: T,
     publish_resource: F,
-) -> Result<(), (&'static str, T)>
+) -> Result<(), (&'static str, OrphanRecord, T)>
 where
     F: FnOnce(&mut HostInner, T),
 {
     let mut inner = shared.0.lock().expect("host state poisoned");
     if inner.stopping {
-        return Err(("desktop_stopping", resource));
+        return Err(("desktop_stopping", record, resource));
+    }
+    if inner.launch_generation == generation && !inner.unpublished_orphans.is_empty() {
+        return Err((
+            "desktop_unpublished_sidecar_cleanup_failed",
+            record,
+            resource,
+        ));
     }
     if inner.launch_generation != generation
         || inner.configuration_restart_in_progress
@@ -469,7 +515,7 @@ where
         || inner.pid.is_some()
         || inner.child.is_some()
     {
-        return Err(("desktop_launch_superseded", resource));
+        return Err(("desktop_launch_superseded", record, resource));
     }
 
     inner.disk.orphan = Some(record.clone());
@@ -477,12 +523,78 @@ where
     // PID, child and ready become visible, so restart cannot split this commit.
     if persist_disk_locked(&inner).is_err() {
         inner.disk.orphan = None;
-        return Err(("desktop_state_persist_failed", resource));
+        return Err(("desktop_state_persist_failed", record, resource));
     }
     inner.pid = Some(record.pid);
     publish_resource(&mut inner, resource);
     inner.snapshot = HostSnapshot::ready(session);
     Ok(())
+}
+
+fn finish_unpublished_launch_cleanup(
+    shared: &SharedHostState,
+    record: &OrphanRecord,
+    result: std::io::Result<crate::lifecycle::TerminationOutcome>,
+) -> bool {
+    if matches!(
+        result,
+        Ok(crate::lifecycle::TerminationOutcome::Stopped)
+            | Ok(crate::lifecycle::TerminationOutcome::IdentityChanged)
+    ) {
+        return true;
+    }
+
+    let repository = {
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        if !inner.unpublished_orphans.contains(record) {
+            inner.unpublished_orphans.push(record.clone());
+        }
+        inner.snapshot = HostSnapshot::problem(
+            "blocked",
+            "desktop_unpublished_sidecar_cleanup_failed",
+            "open_diagnostics",
+        );
+        inner.repository.clone()
+    };
+    let persisted = repository
+        .ok_or_else(|| std::io::Error::other("desktop state path unavailable"))
+        .and_then(|repository| repository.add_unpublished_orphan(record));
+    if persisted.is_err() {
+        set_snapshot(shared, HostSnapshot::persistence_failure());
+        let _ = append_diagnostic(
+            shared,
+            "state_persist_failed",
+            "blocked",
+            "desktop_state_persist_failed",
+        );
+    } else {
+        let _ = append_diagnostic(
+            shared,
+            "unpublished_sidecar_cleanup_failed",
+            "blocked",
+            "desktop_unpublished_sidecar_cleanup_failed",
+        );
+    }
+    false
+}
+
+async fn finalize_rejected_launch<T, F>(
+    shared: &SharedHostState,
+    reason: &'static str,
+    record: OrphanRecord,
+    child: T,
+    termination: F,
+) -> &'static str
+where
+    F: std::future::Future<Output = std::io::Result<crate::lifecycle::TerminationOutcome>>,
+{
+    let _child = child;
+    let result = termination.await;
+    if finish_unpublished_launch_cleanup(shared, &record, result) {
+        reason
+    } else {
+        "desktop_unpublished_sidecar_cleanup_failed"
+    }
 }
 
 fn post_handshake_reject_reason(event: &CommandEvent) -> Option<&'static str> {
@@ -610,6 +722,7 @@ fn recoverable_configuration_action(reason: &str) -> Option<&'static str> {
         "keychain_unavailable" => Some("retry_keychain_operation"),
         "desktop_metadata_unavailable" => Some("restart_sage"),
         "provider_reconciliation_required" => Some("retry_provider_reconciliation"),
+        "desktop_unpublished_sidecar_cleanup_failed" => Some("open_diagnostics"),
         _ => None,
     }
 }
@@ -620,6 +733,15 @@ fn record_launch_failure(
     reason: &'static str,
     now: u64,
 ) -> LaunchFailureDisposition {
+    {
+        let inner = shared.0.lock().expect("host state poisoned");
+        if inner.launch_generation != generation {
+            return LaunchFailureDisposition::Superseded;
+        }
+        if !inner.unpublished_orphans.is_empty() {
+            return LaunchFailureDisposition::Blocked;
+        }
+    }
     if reason == "desktop_launch_superseded" {
         return LaunchFailureDisposition::Superseded;
     }
@@ -750,7 +872,7 @@ struct ConfigurationRestartRequest {
 
 fn begin_configuration_restart(shared: &SharedHostState) -> Option<ConfigurationRestartRequest> {
     let mut inner = shared.0.lock().expect("host state poisoned");
-    if inner.configuration_restart_in_progress {
+    if inner.configuration_restart_in_progress || !inner.unpublished_orphans.is_empty() {
         return None;
     }
     inner.snapshot = HostSnapshot::starting();
@@ -1067,6 +1189,37 @@ fn clean_known_orphan(disk: &mut HostDiskState) -> std::io::Result<()> {
     apply_startup_termination_outcome(disk, outcome)
 }
 
+fn clean_unpublished_orphans(records: &mut Vec<OrphanRecord>) -> std::io::Result<()> {
+    let mut first_error = None;
+    for record in records.clone() {
+        match terminate_runtime(&record).and_then(|outcome| {
+            apply_unpublished_startup_termination_outcome(records, &record, outcome)
+        }) {
+            Ok(()) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+fn apply_unpublished_startup_termination_outcome(
+    records: &mut Vec<OrphanRecord>,
+    record: &OrphanRecord,
+    outcome: crate::lifecycle::TerminationOutcome,
+) -> std::io::Result<()> {
+    match outcome {
+        crate::lifecycle::TerminationOutcome::Stopped
+        | crate::lifecycle::TerminationOutcome::IdentityChanged => {
+            records.retain(|candidate| candidate != record);
+            Ok(())
+        }
+        crate::lifecycle::TerminationOutcome::KillSent => Err(std::io::Error::other(
+            "unpublished desktop sidecar stop was not verified",
+        )),
+    }
+}
+
 fn apply_startup_termination_outcome(
     disk: &mut HostDiskState,
     outcome: crate::lifecycle::TerminationOutcome,
@@ -1123,6 +1276,14 @@ fn terminate_runtime(
     )
 }
 
+async fn terminate_runtime_async(
+    record: OrphanRecord,
+) -> std::io::Result<crate::lifecycle::TerminationOutcome> {
+    tauri::async_runtime::spawn_blocking(move || terminate_runtime(&record))
+        .await
+        .map_err(|_| std::io::Error::other("desktop sidecar cleanup task failed"))?
+}
+
 fn append_diagnostic(
     shared: &SharedHostState,
     event: &str,
@@ -1147,17 +1308,19 @@ fn append_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_diagnostic, apply_startup_termination_outcome, begin_configuration_restart,
-        commit_launch_success, finish_configuration_restart, finish_runtime_termination,
-        finish_runtime_termination_for_generation, mark_configuration_stop_failed,
-        origin_for_profile, post_handshake_reject_reason, record_launch_failure, runtime_origin,
-        ConfigurationRestartRequest, DesktopStateRepository, DiagnosticLog, HostSnapshot,
-        SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
+        append_diagnostic, apply_startup_termination_outcome,
+        apply_unpublished_startup_termination_outcome, begin_configuration_restart,
+        commit_launch_success, finalize_rejected_launch, finish_configuration_restart,
+        finish_runtime_termination, finish_runtime_termination_for_generation,
+        finish_unpublished_launch_cleanup, mark_configuration_stop_failed, origin_for_profile,
+        post_handshake_reject_reason, record_launch_failure, runtime_origin,
+        transition_launch_to_starting, ConfigurationRestartRequest, DesktopStateRepository,
+        DiagnosticLog, HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
     };
     use crate::lifecycle::{OrphanRecord, TerminationOutcome};
     use crate::protocol::DesktopSession;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Barrier};
     use tauri_plugin_shell::process::CommandEvent;
 
     #[test]
@@ -1329,13 +1492,7 @@ mod tests {
 
     #[test]
     fn launch_success_commit_rejects_restart_inserted_after_precheck_and_returns_child() {
-        struct PendingTestChild(Arc<AtomicBool>);
-
-        impl PendingTestChild {
-            fn kill(self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
+        struct PendingTestChild;
 
         let root = tempfile::tempdir().unwrap();
         let shared = SharedHostState::default();
@@ -1353,27 +1510,26 @@ mod tests {
             start_time: 100,
             executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
         };
-        let killed = Arc::new(AtomicBool::new(false));
         let published = Arc::new(AtomicBool::new(false));
         let publish_observer = published.clone();
         let result = commit_launch_success(
             &shared,
             old_generation,
-            record,
+            record.clone(),
             DesktopSession {
                 endpoint: "http://127.0.0.1:4242".into(),
                 bearer: "test-bearer".into(),
                 instance_id: "old-instance".into(),
             },
-            PendingTestChild(killed.clone()),
+            PendingTestChild,
             move |_, _| publish_observer.store(true, Ordering::SeqCst),
         );
 
-        let (reason, unpublished_child) = result.expect_err("old launch must be cancelled");
+        let (reason, rejected_record, _unpublished_child) =
+            result.expect_err("old launch must be cancelled");
         assert_eq!(reason, "desktop_launch_superseded");
+        assert_eq!(rejected_record, record);
         assert!(!published.load(Ordering::SeqCst));
-        unpublished_child.kill();
-        assert!(killed.load(Ordering::SeqCst));
         {
             let inner = shared.0.lock().unwrap();
             assert_eq!(inner.launch_generation, restart.generation);
@@ -1384,6 +1540,286 @@ mod tests {
             assert!(inner.snapshot.session.is_none());
         }
         assert!(finish_configuration_restart(&shared, restart.generation));
+    }
+
+    #[test]
+    fn unpublished_cleanup_failure_persists_identity_and_blocks() {
+        let cases = [
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+            Err(std::io::Error::from(std::io::ErrorKind::TimedOut)),
+            Ok(TerminationOutcome::KillSent),
+        ];
+        for result in cases {
+            let root = tempfile::tempdir().unwrap();
+            let shared = SharedHostState::default();
+            let repository = DesktopStateRepository::new(root.path().join("state.json"));
+            let unpublished_path = repository.unpublished_path().to_path_buf();
+            let record = OrphanRecord {
+                pid: 42,
+                start_time: 100,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            };
+            {
+                let mut inner = shared.0.lock().unwrap();
+                inner.repository = Some(repository);
+                inner.diagnostic_log =
+                    Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+                super::persist_disk_locked(&inner).unwrap();
+            }
+
+            assert!(!finish_unpublished_launch_cleanup(&shared, &record, result));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(unpublished_path).unwrap()).unwrap();
+            assert_eq!(
+                persisted.pointer("/unpublished_orphans/0/pid"),
+                Some(&serde_json::json!(42))
+            );
+            let inner = shared.0.lock().unwrap();
+            assert_eq!(inner.snapshot.state, "blocked");
+            assert_eq!(
+                inner.snapshot.reason_code,
+                Some("desktop_unpublished_sidecar_cleanup_failed")
+            );
+            assert_eq!(inner.snapshot.action, Some("open_diagnostics"));
+            assert_eq!(
+                inner.unpublished_orphans.as_slice(),
+                std::slice::from_ref(&record)
+            );
+            drop(inner);
+            let diagnostic =
+                std::fs::read_to_string(root.path().join("diagnostics/desktop-host.jsonl"))
+                    .unwrap();
+            assert!(diagnostic.contains("desktop_unpublished_sidecar_cleanup_failed"));
+        }
+    }
+
+    #[test]
+    fn rejected_launch_caller_keeps_child_until_verified_cleanup_and_blocks_on_failure() {
+        struct PendingTestChild(Arc<AtomicBool>);
+
+        impl Drop for PendingTestChild {
+            fn drop(&mut self) {
+                self.0.store(false, Ordering::SeqCst);
+            }
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+        }
+        let child_alive = Arc::new(AtomicBool::new(true));
+        let observed_alive = child_alive.clone();
+
+        let reason = tauri::async_runtime::block_on(finalize_rejected_launch(
+            &shared,
+            "desktop_launch_superseded",
+            record.clone(),
+            PendingTestChild(child_alive.clone()),
+            async move {
+                assert!(observed_alive.load(Ordering::SeqCst));
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            },
+        ));
+
+        assert_eq!(reason, "desktop_unpublished_sidecar_cleanup_failed");
+        assert!(!child_alive.load(Ordering::SeqCst));
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [record]);
+        let snapshot = &shared.0.lock().unwrap().snapshot;
+        assert_eq!(snapshot.state, "blocked");
+        assert_eq!(
+            snapshot.reason_code,
+            Some("desktop_unpublished_sidecar_cleanup_failed")
+        );
+    }
+
+    #[test]
+    fn pending_unpublished_ownership_is_not_overwritten_by_failure_accounting() {
+        let shared = SharedHostState::default();
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.launch_generation = 7;
+            inner.unpublished_orphans.push(OrphanRecord {
+                pid: 42,
+                start_time: 100,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            });
+            inner.snapshot = HostSnapshot::persistence_failure();
+        }
+
+        assert_eq!(
+            record_launch_failure(
+                &shared,
+                7,
+                "desktop_unpublished_sidecar_cleanup_failed",
+                100,
+            ),
+            super::LaunchFailureDisposition::Blocked
+        );
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.snapshot.state, "blocked");
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_state_persist_failed")
+        );
+        assert_eq!(inner.snapshot.action, Some("open_diagnostics"));
+        assert_eq!(inner.unpublished_orphans.len(), 1);
+    }
+
+    #[test]
+    fn unpublished_cleanup_accepts_stopped_or_reused_identity_as_safe() {
+        for result in [
+            Ok(TerminationOutcome::Stopped),
+            Ok(TerminationOutcome::IdentityChanged),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let shared = SharedHostState::default();
+            let record = OrphanRecord {
+                pid: 42,
+                start_time: 100,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            };
+            {
+                let mut inner = shared.0.lock().unwrap();
+                inner.repository =
+                    Some(DesktopStateRepository::new(root.path().join("state.json")));
+                super::persist_disk_locked(&inner).unwrap();
+            }
+
+            assert!(finish_unpublished_launch_cleanup(&shared, &record, result));
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.path().join("state.json")).unwrap())
+                    .unwrap();
+            assert!(persisted.get("unpublished_orphans").is_none());
+            assert!(shared.0.lock().unwrap().disk.orphan.is_none());
+        }
+    }
+
+    #[test]
+    fn restart_reconciliation_clears_only_safe_unpublished_identities() {
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        for outcome in [
+            TerminationOutcome::Stopped,
+            TerminationOutcome::IdentityChanged,
+        ] {
+            let mut unpublished_orphans = vec![record.clone()];
+            assert!(apply_unpublished_startup_termination_outcome(
+                &mut unpublished_orphans,
+                &record,
+                outcome
+            )
+            .is_ok());
+            assert!(unpublished_orphans.is_empty());
+        }
+
+        let mut unpublished_orphans = vec![record.clone()];
+        assert!(apply_unpublished_startup_termination_outcome(
+            &mut unpublished_orphans,
+            &record,
+            TerminationOutcome::KillSent,
+        )
+        .is_err());
+        assert_eq!(unpublished_orphans, [record]);
+    }
+
+    #[test]
+    fn stale_launch_starting_transition_cannot_overwrite_new_generation_ready() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(root.path().join("state.json")));
+            inner.launch_generation = 1;
+        }
+        let checked = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let old_shared = shared.clone();
+        let old_checked = checked.clone();
+        let old_resume = resume.clone();
+        let old = std::thread::spawn(move || {
+            transition_launch_to_starting(&old_shared, 1, || {
+                old_checked.wait();
+                old_resume.wait();
+            })
+        });
+
+        checked.wait();
+        let new_generation = super::next_launch_generation(&shared);
+        commit_launch_success(
+            &shared,
+            new_generation,
+            OrphanRecord {
+                pid: 99,
+                start_time: 200,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            },
+            DesktopSession {
+                endpoint: "http://127.0.0.1:4999".into(),
+                bearer: "new-bearer".into(),
+                instance_id: "new-instance".into(),
+            },
+            (),
+            |_, _| {},
+        )
+        .unwrap();
+        resume.wait();
+
+        assert_eq!(old.join().unwrap(), Err("desktop_launch_superseded"));
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.snapshot.state, "ready");
+        assert_eq!(
+            inner
+                .snapshot
+                .session
+                .as_ref()
+                .map(|session| session.instance_id.as_str()),
+            Some("new-instance")
+        );
+    }
+
+    #[test]
+    fn stale_launch_starting_transition_cannot_overwrite_stop_failed_blocked() {
+        let shared = SharedHostState::default();
+        shared.0.lock().unwrap().launch_generation = 1;
+        let checked = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let old_shared = shared.clone();
+        let old_checked = checked.clone();
+        let old_resume = resume.clone();
+        let old = std::thread::spawn(move || {
+            transition_launch_to_starting(&old_shared, 1, || {
+                old_checked.wait();
+                old_resume.wait();
+            })
+        });
+
+        checked.wait();
+        let restart = begin_configuration_restart(&shared).unwrap();
+        mark_configuration_stop_failed(&shared, &restart);
+        assert!(finish_configuration_restart(&shared, restart.generation));
+        resume.wait();
+
+        assert_eq!(old.join().unwrap(), Err("desktop_launch_superseded"));
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.snapshot.state, "blocked");
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_sidecar_stop_failed")
+        );
+        assert_eq!(inner.snapshot.action, Some("open_diagnostics"));
     }
 
     #[test]
