@@ -7,6 +7,12 @@ from core.learning.activation import (
     LearningActivationTurnContextBinding,
     LearningGoalRef,
 )
+from core.learning.artifact_store import (
+    LearningArtifactStore,
+    LearningCheckpoint,
+    LearningResumeSummary,
+    StoredLearningArtifact,
+)
 from core.learning.kickoff import (
     LearningKickoffDispatchRecord,
     LearningKickoffError,
@@ -70,6 +76,8 @@ __all__ = [
     "LearningActivationRecord",
     "LearningActivationService",
     "LearningActivationTurnContextBinding",
+    "LearningArtifactStore",
+    "LearningCheckpoint",
     "LearningCitation",
     "LearningClarification",
     "LearningClarificationQuestion",
@@ -87,6 +95,7 @@ __all__ = [
     "LearningResearchOutcome",
     "LearningResearchReceipt",
     "LearningResearchService",
+    "LearningResumeSummary",
     "LearningSourcePolicy",
     "LearningTask",
     "LearningTaskConflictError",
@@ -107,5 +116,6 @@ __all__ = [
     "MasteryLedger",
     "MasteryLedgerConflictError",
     "MasteryLedgerNotFoundError",
+    "StoredLearningArtifact",
     "UnsetValue",
 ]
