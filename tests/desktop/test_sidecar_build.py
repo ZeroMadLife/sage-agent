@@ -272,6 +272,12 @@ def test_pyinstaller_spec_bundles_the_versioned_coding_model_manifest() -> None:
     assert '(str(ROOT / "config" / "coding_models.toml"), "config")' in spec
 
 
+def test_pyinstaller_spec_bundles_dynamically_registered_coding_tools() -> None:
+    spec = (ROOT / "desktop" / "sidecar" / "sage_sidecar.spec").read_text(encoding="utf-8")
+
+    assert 'collect_submodules("core.coding.tools", filter=exclude_tests)' in spec
+
+
 @pytest.mark.parametrize(
     "requirement",
     [

@@ -14,6 +14,7 @@ def exclude_tests(module_name):
 hidden_imports = sorted(
     set(
         collect_submodules("aiosqlite", filter=exclude_tests)
+        + collect_submodules("core.coding.tools", filter=exclude_tests)
         + collect_submodules("cryptography")
         + collect_submodules("langgraph.checkpoint.sqlite")
         + collect_submodules("psycopg2")
