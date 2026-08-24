@@ -371,6 +371,57 @@ journal、active Provider、capability 派生和 artifact 行为合同保持不�
   Runtime/Standards/Product 三镜头复审；Cloud OAuth、updater、Developer ID、公证、stapled DMG
   仍未交付。
 
+### D2.3 Supervisor 最终短审修复 mini-spec（2026-08-25）
+
+本增量只关闭 D2.2 第三轮剩余的两条 supervisor 并发原子性问题；Provider journal、desktop
+adapter、capability 与已放行 artifact 合同保持不变。
+
+**Launch success commit 不变量**
+
+- readiness 通过后的 generation 检查、durable orphan ownership、`pid`/`child` 占有与 ready session
+  发布必须构成一个 generation + ownership CAS 成功提交；不得在一次可被 restart 插入的预检查后继续
+  分段登记 ownership 或 ready。
+- 只有当前 generation 且 host 未 stopping 时才能提交成功。CAS 失败是 superseded/cancelled：旧 launch
+  不得改变新 generation 的 orphan、PID、child 或 snapshot，并必须终止自己仍持有、尚未发布的 child。
+- process identity 观察在状态锁外完成；durable ownership 写入与内存发布在单一同步临界区完成，临界区内
+  不调用会重入 host mutex 的诊断或终止路径，失败后的 child cleanup 在锁外执行。
+
+**Configuration restart begin 不变量**
+
+- `configuration_restart_in_progress` 必须先于任何 snapshot 或 generation 写入被检查。重复 begin 是纯
+  no-op，不得改变 blocked/`reason_code`/`action`、generation、orphan identity 或当前 stop owner。
+- 确定性交错覆盖：第一个 restart 的 stop-failed 已发布 blocked、但尚未 finish 时第二 action 到达；
+  blocked 修复动作必须保持，随后原 stop owner 仍能按原 generation 完成收敛。
+
+**Red/Green 与门禁**
+
+- 先增加上述两个确定性 supervisor Red，再做最小 Green；focused 通过后运行 Rust full/fmt/clippy，
+  并按 Rust-only 影响运行相邻 Provider、desktop Python、Vue focused 与 source smoke。
+- 代码与文档使用独立中文 commit；因 Rust 产品源码变化，从新的 clean docs HEAD 重做正式 macOS
+  arm64 bundle，复核 receipt、strict codesign、secret scan、分类计数与 host/launcher/sidecar 零残留，
+  最后固定 code/docs/receipt SHA 并等待第四轮最终短审。
+
+### D2.3 实施收口（2026-08-25）
+
+- **代码候选**：`8788404ea6bd1e5a0408f0057a2278dbf4442290`。`launch_once` 在 readiness
+  与 process identity 检查后，以同一 host state 临界区执行 generation/stopping/empty ownership CAS、
+  durable orphan 写入及 PID/child/ready 发布。restart 不能插入该提交；CAS 失败时 child 仍由旧 launch
+  独占并在锁外终止，不登记 orphan、PID 或 ready，也不覆盖新 generation 状态。
+- **锁与 I/O 边界**：process identity 观察、失败后的 child kill 与 diagnostics 均在 host mutex 外；
+  repository 写入不回调 host state，并在 durable ownership 与内存发布之间同步完成，因此失败不会发布
+  ready，成功提交也不会留下可被 restart 分割的 ownership 窗口。
+- **重复 restart begin**：先检查 `configuration_restart_in_progress`，再修改 snapshot 或 generation。
+  stop-failed blocked 与 finish 之间到达的第二 action 为纯 no-op，保留原 `reason_code/action`、generation、
+  orphan identity 和 stop owner；原 owner 仍能按同一 generation 完成收敛。
+- **Red/Green 证据**：旧实现的精确重复 begin 交错得到 `left: "starting" / right: "blocked"`；旧
+  launch 路径不存在能在预检查后再次核对 generation 并归还未发布 child 的成功提交 seam。新增两条
+  deterministic supervisor 合同先失败，最小 Green 后 supervisor focused `18 passed`。
+- **源码门禁**：Rust full `58 passed`（保留上轮 56 条并新增 2 条）、fmt、clippy `-D warnings`
+  通过；其中 Provider `14 passed`，唯一临时 macOS Keychain service/account round-trip 与 cleanup 通过。
+  Rust-only 相邻门禁为 Vue host adapter/HostGate focused `39 passed`、Python desktop `61 passed`、source
+  product smoke `1 passed`；`git diff --check` 与 changed-diff private-key/API-key 扫描通过。正式 arm64
+  bundle 尚待从下一笔 clean docs HEAD 重建，不能沿用 `5a1d3db` 收据。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
