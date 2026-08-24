@@ -78,6 +78,27 @@ it('renders the rebuildable first-launch flow before the capability surface', as
   expect(wrapper.find('input[aria-label="Workspace 路径"]').exists()).toBe(true)
 })
 
+it('keeps polling the host while first-launch onboarding is blocked', async () => {
+  desktopHostStatus.mockResolvedValue({
+    state: 'ready', reasonCode: null, action: null,
+    session: { endpoint: 'http://127.0.0.1:49152', bearer: 'hidden', instanceId: 'i' },
+  })
+  desktopCapabilities.mockResolvedValue({
+    status: 'degraded', api_version: '1', build_sha: 'build',
+    capabilities: { api: { status: 'ready', reason_code: null, action: null } },
+  })
+  desktopOnboardingStatus.mockResolvedValue({
+    status: 'blocked', reason_code: 'onboarding_mode_required', action: 'choose_onboarding_mode',
+    stage: 'choose_mode', mode: null, workspace_name: null, providers: [], capabilities: {},
+  })
+
+  mount(DesktopHostGate)
+  await vi.advanceTimersByTimeAsync(0)
+  await vi.advanceTimersByTimeAsync(2000)
+
+  expect(desktopHostStatus).toHaveBeenCalledTimes(2)
+})
+
 it('shows a quiet capability surface with browser-safe diagnostics', async () => {
   desktopHostStatus.mockResolvedValue({
     state: 'ready', reasonCode: null, action: null,

@@ -129,8 +129,10 @@ async function runOnboardingAction(action: DesktopOnboardingAction): Promise<voi
 
 async function refresh(): Promise<void> {
   if (pollTimer) clearTimeout(pollTimer)
+  let hostBlocked = false
   try {
     snapshot.value = await desktopHostStatus()
+    hostBlocked = snapshot.value.state === 'blocked'
     if (snapshot.value.state === 'ready') {
       try {
         const [core, rebuilt] = await Promise.all([
@@ -164,7 +166,7 @@ async function refresh(): Promise<void> {
     }
   }
   const delay = snapshot.value.session ? 2000 : 500
-  if (snapshot.value.state !== 'blocked') pollTimer = setTimeout(refresh, delay)
+  if (!hostBlocked) pollTimer = setTimeout(refresh, delay)
 }
 
 onMounted(() => {
