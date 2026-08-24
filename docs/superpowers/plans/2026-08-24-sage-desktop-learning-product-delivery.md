@@ -214,8 +214,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 10. 切片 L1：首轮只读 Learning Scope
 
-> 候选状态（2026-08-24）：首个 immutable 候选 `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1`
-> 未通过中枢固定比较点复审；当前修复提交仍待中枢重新执行 Standards/Spec/Runtime 三镜头审查，
+> 候选状态（2026-08-24）：最终 code candidate
+> `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 已关闭第二轮中枢复审指出的公共 Timeline/WS
+> replay 旁路与测试所有权问题；当前仍待中枢最终短复审，
 > 尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
 > validation、Capability Registry、ToolBundle 和 Harness middleware：模型 catalog 与真实
 > ToolNode 调用均受 `AllowedCapabilitySet + capability_revision + turn_context_plan_hash`
@@ -247,15 +248,17 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - active Learning Session marker 被删除或降级时仍由 server-owned binding 识别，运行与 raw Run API 均 fail closed；
 - L0 REST activation/resume 漂移返回明确 `409`；L1 已启动 run 的 admission、model、retrieval 或 tool 漂移返回稳定 `learning_scope_*` 事件/error receipt，不触发 Provider 或真实工具；
 - 成功 Learning run 的 post-turn Goal evaluator 在额外 Provider call 前重新解析 active Task/receipt/Session/TurnContextPlan，任一 revision 漂移均不调用 evaluator；
-- Timeline 不公开 query、source path、Skill prompt 或网页正文。
+- HTTP Timeline、WS replay 与 Run API 对 active Learning Session 使用同一公开投影；`run_started.surface_context/thread_goal` 与 `thread_goal_evaluated.evaluation` 不公开 query、source path、Goal/criterion、模型正文、Skill prompt 或网页正文；scope 漂移时 fail closed。
 
 **当前验证边界**
 
-- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻组：`216 passed`；
+- Learning 公共路径与拆分后的定向组：`37 passed`；
+- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集：`283 passed`；
 - 完整普通 Coding Routes：`58 passed`；
-- Ruff、12 个改动 Python 文件 format check、Mypy（`248 source files`）和 `git diff --check`：通过；
-- 未触及 `frontend/**`，frontend test/build 为 N/A，不列为通过证据；
-- 中枢三镜头复审仍待重新执行，不能写成已关闭。
+- Ruff、7 个改动 Python 文件 format check、Mypy（`247 source files`）和 `git diff --check`：通过；
+- frontend private/public production build：通过；private build 仅有既有大 chunk warning；
+- 固定 Python 3.12 与完整复现命令见 `2026-08-13-sage-recoverable-learning-task-v1-delivery.md` 的 Slice A3；
+- 中枢最终短复审仍待执行，不能写成已关闭。
 
 **依赖与非目标**
 

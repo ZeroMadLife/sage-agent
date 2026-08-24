@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 首个候选 `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1` 中枢复审未通过，修复候选等待重新复审；后续切片未开始
+> 状态：A1、A2 已迁移到 L0；A3 最终修复候选 `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 等待中枢短复审；后续切片未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
-| A3 Learning allowlist | L1 修复候选，待中枢复审 | `2b8c6c1f08668244ba876b2e82a2204be5aa9cb1`（首个未通过候选） | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验与统一安全投影；修复提交尚待重新复审，未合入 `dev/sage-v7` |
+| A3 Learning allowlist | L1 最终修复候选，待中枢短复审 | `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；HTTP Timeline、WS replay 与 Run API 使用统一安全投影；尚未合入 `dev/sage-v7` |
 | A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -164,8 +164,8 @@ L0 receipt 只冻结后续 L1 可使用的能力候选，不把候选接入模�
 **验证**
 
 ```bash
-uv run pytest tests/api/test_learning_task_routes.py tests/core/learning/test_learning_tasks.py
-uv run ruff check api core tests
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_learning_task_routes.py tests/core/learning/test_learning_tasks.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api core tests
 git diff --check
 ```
 
@@ -202,15 +202,16 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/api/test_learning_task_activation.py tests/core/learning/test_learning_task_bootstrap.py
-uv run pytest tests/api/test_coding_routes.py tests/api/test_coding_thread_goal.py
-uv run ruff check api core tests
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_learning_task_activation.py tests/core/learning/test_learning_task_bootstrap.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_coding_routes.py tests/api/test_coding_thread_goal.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api core tests
 git diff --check
 ```
 
 ### Slice A3：首轮 Learning Turn 只读 allowlist
 
-> 2026-08-24 候选事实边界：当前职责分支实现了 `LearningReadonlyScopeResolver`
+> 2026-08-24 候选事实边界：代码候选固定为
+> `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc`。当前职责分支实现了 `LearningReadonlyScopeResolver`
 > 与 Harness middleware。Learning Session 在 model、host Memory retrieval、父 ToolNode 和
 > Research child 的每次 model/tool 边界重载 L0 Task、receipt、Session 和 kickoff
 > TurnContextPlan；模型 schema 与 deferred catalog 使用同一冻结 allowlist。Knowledge 读取与
@@ -252,6 +253,7 @@ git diff --check
 - Skill 仅可发现但未激活时不扩大权限；策略解析异常时保留最小框架安全工具。
 - Learning Timeline、Run List/Detail 和 workspace diff 公开投影不包含 query、source path、Skill prompt、网页全文或 token；原始 child trace 仍是 `.coding/` 内部恢复数据，不是浏览器合同。
 - Learning stream、Timeline、Run List/Detail 和 workspace diff 复用同一个公开 projector；AIMessage 正文不进入 Learning 公共审计事件。
+- HTTP Timeline 与 WS replay 会按 active Learning identity 投影真实 journal；`run_started.surface_context/thread_goal` 和 `thread_goal_evaluated.evaluation` 不再绕过 projector。scope 漂移时 HTTP 稳定 `409`，WS 在发送 payload 前以 `1008` fail closed。
 - Learning 完全跳过 MCP catalog port；不读取 server/transport/tool names，catalog 故障不能阻断 Learning。
 - frozen domains 非空时，仅显式实现 policy-aware Web port 才能获得 `web:fetch`。
 
@@ -264,15 +266,62 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/core/harness/test_learning_scope.py tests/harness/test_capability_selection.py tests/harness/test_skill_activation.py
-uv run pytest tests/api/test_coding_surface_context.py tests/api/test_coding_deerflow_context.py
-uv run ruff check api core packages tests
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_learning_timeline_projection.py \
+  tests/core/harness/test_learning_scope.py \
+  tests/core/harness/test_learning_public.py \
+  tests/core/harness/test_learning_runtime_scope.py \
+  tests/core/harness/test_learning_goal_evaluator.py \
+  tests/core/harness/test_learning_web_policy.py
+
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_harness_capabilities.py \
+  tests/api/test_learning_task_activation.py \
+  tests/api/test_learning_task_workspace_resume.py \
+  tests/api/test_learning_timeline_projection.py \
+  tests/api/test_coding_deerflow_context.py \
+  tests/api/test_coding_surface_context.py \
+  tests/api/test_coding_thread_goal.py \
+  tests/core/learning/test_learning_activation_concurrency.py \
+  tests/core/learning/test_learning_task_bootstrap.py \
+  tests/core/learning/test_learning_tasks.py \
+  tests/core/harness/test_capability_adapter.py \
+  tests/core/harness/test_harness_runtime_adapter.py \
+  tests/core/harness/test_learning_scope.py \
+  tests/core/harness/test_learning_public.py \
+  tests/core/harness/test_learning_runtime_scope.py \
+  tests/core/harness/test_learning_goal_evaluator.py \
+  tests/core/harness/test_learning_web_policy.py \
+  tests/core/harness/test_retrieval_gate.py \
+  tests/core/harness/test_subagent_adapter.py \
+  tests/core/harness/test_web_fetch.py \
+  tests/core/harness/test_web_search.py \
+  tests/harness/test_capability_selection.py \
+  tests/harness/test_skill_activation.py
+
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_routes.py
+
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api core packages tests
+
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m mypy core/ db/ api/ evals/ public_agent/
+
+npm --prefix frontend run build
+npm --prefix frontend run build:public
 git diff --check
 ```
 
-当前修复候选的已执行事实：L0/L1 与普通 Coding 相邻组 `216 passed`，完整普通 Coding
-Routes `58 passed`，Mypy `248 source files` 无问题；未触及 frontend，frontend test/build
-为 N/A。Standards/Spec/Runtime 三镜头仍待中枢重新复审。
+当前 code candidate `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 的已执行事实：
+Learning 公共路径与拆分后的定向组 `37 passed`；L0/L1、activation/resume/concurrency、
+DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集 `283 passed`；
+完整普通 Coding Routes `58 passed`。Ruff、7 个改动 Python 文件 format check、Mypy
+`247 source files`、frontend private/public production build 与 `git diff --check` 均通过。
+private build 仅有既有大 chunk warning。Standards/Spec/Runtime 最终短复审仍待中枢执行。
 
 ### Slice A4：Assistant 任务确认与进入会话
 
@@ -326,8 +375,8 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/core/learning/test_learning_map.py tests/evals/test_learning_map_contract.py
-uv run pytest tests/core/harness/test_evidence_bundle.py tests/core/harness/test_learning_intent.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/learning/test_learning_map.py tests/evals/test_learning_map_contract.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/harness/test_evidence_bundle.py tests/core/harness/test_learning_intent.py
 git diff --check
 ```
 
@@ -352,8 +401,8 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/core/harness/test_learning_research.py tests/core/harness/test_web_fetch.py tests/core/harness/test_evidence_bundle.py
-uv run ruff check core api tests
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/harness/test_learning_research.py tests/core/harness/test_web_fetch.py tests/core/harness/test_evidence_bundle.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check core api tests
 git diff --check
 ```
 
@@ -378,8 +427,8 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/core/harness/test_turn_context_resume.py tests/core/harness/test_learning_resume.py
-uv run pytest tests/api/test_learning_task_routes.py tests/api/test_learning_task_activation.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/harness/test_turn_context_resume.py tests/core/harness/test_learning_resume.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_learning_task_routes.py tests/api/test_learning_task_activation.py
 git diff --check
 ```
 
@@ -400,10 +449,10 @@ git diff --check
 **验证**
 
 ```bash
-uv run pytest tests/evals/test_recoverable_learning_task.py tests/api/test_learning_task_e2e.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/evals/test_recoverable_learning_task.py tests/api/test_learning_task_e2e.py
 npm --prefix frontend run test -- --run
 npm --prefix frontend run build
-uv run ruff check api core packages tests
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api core packages tests
 git diff --check
 ```
 
@@ -428,7 +477,7 @@ git diff --check
 验证：
 
 ```bash
-uv run pytest tests/evals/test_rag_eval_decision_review.py tests/evals/test_book_learning_claims.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/evals/test_rag_eval_decision_review.py tests/evals/test_book_learning_claims.py
 git diff --check
 ```
 
@@ -454,7 +503,7 @@ git diff --check
 验证：
 
 ```bash
-uv run pytest tests/evals/test_rag_eval_defense.py tests/core/harness/test_thread_goal_evaluator.py tests/core/harness/test_thread_goal_followup.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/evals/test_rag_eval_defense.py tests/core/harness/test_thread_goal_evaluator.py tests/core/harness/test_thread_goal_followup.py
 git diff --check
 ```
 
@@ -479,7 +528,7 @@ git diff --check
 验证：
 
 ```bash
-uv run pytest tests/core/learning/test_mastery.py tests/evals/test_rag_eval_mastery_gate.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/learning/test_mastery.py tests/evals/test_rag_eval_mastery_gate.py
 git diff --check
 ```
 
@@ -504,8 +553,8 @@ git diff --check
 验证：
 
 ```bash
-uv run pytest tests/core/coding/test_tool_executor.py tests/core/coding/test_permissions.py tests/core/coding/test_runtime_run_lifecycle.py
-uv run pytest tests/api/test_coding_routes.py tests/api/test_coding_thread_goal.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/core/coding/test_tool_executor.py tests/core/coding/test_permissions.py tests/core/coding/test_runtime_run_lifecycle.py
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest tests/api/test_coding_routes.py tests/api/test_coding_thread_goal.py
 npm --prefix frontend run build
 git diff --check
 ```
