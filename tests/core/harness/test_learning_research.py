@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -13,7 +14,7 @@ from sage_harness import (
     SubagentToolConfig,
 )
 
-from core.learning.materials import LearningMapService
+from core.learning.materials import LearningMapService, synthesize_research_map
 from core.learning.research import LearningResearchService
 from core.learning.tasks import (
     LearningClarification,
@@ -34,6 +35,20 @@ class FakeExecutor:
 
     async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
         return None
+
+
+class SlowExecutor(FakeExecutor):
+    def __init__(self) -> None:
+        super().__init__(_result())
+        self.cancelled: list[str] = []
+
+    async def execute(self, request: SubagentRequest, progress=None) -> SubagentResult:  # type: ignore[no-untyped-def]
+        self.requests.append(request)
+        await asyncio.sleep(5)
+        return replace(self.result, child_run_id=request.child_run_id)
+
+    async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
+        self.cancelled.append(child_run_id)
 
 
 class FakeEvidencePort:
@@ -117,6 +132,8 @@ def _result(
     *,
     refs: tuple[str, ...] = ("wcite-1",),
     error_code: str = "",
+    model_calls: int = 1,
+    tool_count: int = 2,
 ) -> SubagentResult:
     return SubagentResult(
         child_run_id="placeholder",
@@ -126,8 +143,8 @@ def _result(
         error_code=error_code,
         evidence_refs=refs,
         token_usage=600,
-        model_calls=1,
-        tool_count=2,
+        model_calls=model_calls,
+        tool_count=tool_count,
     )
 
 
@@ -137,6 +154,7 @@ def _item(
     url: str = "https://docs.example.com/checkpoint",
     content_hash: str = "web-content-1",
     fetched_at: str = "2026-08-25T00:01:00Z",
+    conflict_group: str = "",
 ) -> EvidenceBundleItem:
     return EvidenceBundleItem(
         evidence_ref=ref,
@@ -147,7 +165,7 @@ def _item(
         canonical_url=url,
         content_hash=content_hash,
         token_count=40,
-        metadata={"fetched_at": fetched_at},
+        metadata={"fetched_at": fetched_at, "conflict_group": conflict_group},
     )
 
 
@@ -262,7 +280,56 @@ async def test_research_gate_does_not_create_child(
     )
 
     assert outcome.reason_code == reason
+    assert outcome.receipt is not None
+    assert outcome.receipt.reason_code == reason
+    assert outcome.receipt.actual_token_usage == 0
+    assert outcome.receipt.actual_tool_count == 0
     assert executor.requests == []
+
+
+@pytest.mark.asyncio
+async def test_research_service_enforces_timeout_and_records_elapsed_usage() -> None:
+    task = _task()
+    executor = SlowExecutor()
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"research"}),
+        profiles=(
+            SubagentProfile(
+                name="research",
+                tool_scope=("search_web",),
+                token_budget=2_000,
+                timeout_seconds=0.1,
+                max_steps=2,
+            ),
+        ),
+    )
+    service = LearningResearchService(
+        subagent_executor=executor,
+        subagent_config=config,
+        evidence_bundle_port=FakeEvidencePort(_bundle()),
+    )
+    plan = await _plan(task)
+
+    outcome = await service.run(
+        task=task,
+        plan=plan,
+        unit_id=plan.units[0].unit_id,
+        thread_id="session-1",
+        parent_run_id="run-parent",
+        workspace_path="/workspace",
+        capability_revision="cap-rev-1",
+        allowed_capabilities=frozenset({"web:search"}),
+        evidence_sufficient=False,
+        remaining_token_budget=2_000,
+    )
+
+    assert outcome.status == "blocked"
+    assert outcome.reason_code == "learning_research_timeout"
+    assert outcome.receipt is not None
+    assert 0.09 <= outcome.receipt.actual_elapsed_seconds < 1
+    assert outcome.receipt.actual_token_usage == 0
+    assert outcome.receipt.actual_tool_count == 0
+    assert executor.cancelled == [outcome.receipt.child_run_id]
 
 
 @pytest.mark.asyncio
@@ -291,10 +358,25 @@ async def test_research_gate_does_not_create_child(
         (
             _result(refs=("wcite-1", "wcite-2")),
             _bundle(
-                _item(ref="wcite-1", content_hash="hash-a"),
-                _item(ref="wcite-2", content_hash="hash-b"),
+                _item(
+                    ref="wcite-1",
+                    url="https://docs.example.com/claim-a",
+                    content_hash="hash-a",
+                    conflict_group="checkpoint-claim",
+                ),
+                _item(
+                    ref="wcite-2",
+                    url="https://research.example.com/claim-b",
+                    content_hash="hash-b",
+                    conflict_group="checkpoint-claim",
+                ),
             ),
             "learning_research_conflict",
+        ),
+        (
+            _result(model_calls=5, tool_count=5),
+            _bundle(),
+            "learning_research_step_budget_exhausted",
         ),
     ],
 )
@@ -324,5 +406,12 @@ async def test_research_failures_are_deterministic(
         remaining_token_budget=2_000,
     )
 
-    assert outcome.status in {"blocked", "source_gap"}
+    if reason == "learning_research_conflict":
+        assert outcome.status == "succeeded"
+        assert len(outcome.evidence) == 2
+        artifact, citations = synthesize_research_map(task, plan, outcome.evidence)
+        assert artifact.status == "unverified"
+        assert tuple(item.citation_id for item in citations) == ("wcite-1", "wcite-2")
+    else:
+        assert outcome.status in {"blocked", "source_gap"}
     assert outcome.reason_code == reason

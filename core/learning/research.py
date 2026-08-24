@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from time import monotonic
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -40,6 +43,8 @@ class LearningResearchEvidence:
 class LearningResearchReceipt:
     schema_version: int
     receipt_id: str
+    owner_id: str
+    workspace_id: str
     task_id: str
     task_revision: int
     plan_id: str
@@ -55,6 +60,7 @@ class LearningResearchReceipt:
     timeout_seconds: float
     actual_token_usage: int
     actual_tool_count: int
+    actual_elapsed_seconds: float
     allowed_domains: tuple[str, ...]
     freshness: str
     risk_decision: str
@@ -104,15 +110,48 @@ class LearningResearchService:
         remaining_token_budget: int,
     ) -> LearningResearchOutcome:
         _validate_binding(task, plan, unit_id, thread_id, parent_run_id, workspace_path)
-        if evidence_sufficient:
-            return _gate_outcome("skipped", "evidence_sufficient")
-        if task.source_policy.web != "allowed_when_insufficient":
-            return _gate_outcome("blocked", "learning_research_policy_forbidden")
-        if capability_revision != plan.capability_revision:
-            return _gate_outcome("blocked", "learning_research_capability_revision_conflict")
         profile = self.subagent_config.resolve("research")
+        max_steps = profile.max_steps if profile is not None else 0
+        timeout_seconds = profile.timeout_seconds if profile is not None else 0.0
+        token_budget = (
+            max(0, min(profile.token_budget, remaining_token_budget)) if profile is not None else 0
+        )
+        query_hash = _query_receipt_hash(
+            task=task,
+            plan=plan,
+            unit_id=unit_id,
+            capability_revision=capability_revision,
+            token_budget=token_budget,
+            max_steps=max_steps,
+            timeout_seconds=timeout_seconds,
+        )
+
+        def gate(status: LearningResearchStatus, reason: str) -> LearningResearchOutcome:
+            return self._terminal(
+                task,
+                plan,
+                unit_id,
+                parent_run_id,
+                "",
+                query_hash,
+                max_steps,
+                timeout_seconds,
+                token_budget,
+                SubagentResult(child_run_id="gate_not_created", status="failed", error_code=reason),
+                status=status,
+                reason=reason,
+                actual_elapsed_seconds=0.0,
+                terminal_status="not_started",
+            )
+
+        if evidence_sufficient:
+            return gate("skipped", "evidence_sufficient")
+        if task.source_policy.web != "allowed_when_insufficient":
+            return gate("blocked", "learning_research_policy_forbidden")
+        if capability_revision != plan.capability_revision:
+            return gate("blocked", "learning_research_capability_revision_conflict")
         if profile is None or not self.evidence_bundle_port.available:
-            return _gate_outcome("blocked", "learning_research_capability_unavailable")
+            return gate("blocked", "learning_research_capability_unavailable")
         tool_scope = tuple(
             tool
             for tool in profile.tool_scope
@@ -120,20 +159,9 @@ class LearningResearchService:
             or (tool == "fetch_web" and "web:fetch" in allowed_capabilities)
         )
         if not tool_scope:
-            return _gate_outcome("blocked", "learning_research_capability_unavailable")
-        token_budget = min(profile.token_budget, remaining_token_budget)
+            return gate("blocked", "learning_research_capability_unavailable")
         if token_budget < 256:
-            return _gate_outcome("blocked", "learning_research_budget_exhausted")
-
-        query_hash = _query_receipt_hash(
-            task=task,
-            plan=plan,
-            unit_id=unit_id,
-            capability_revision=capability_revision,
-            token_budget=token_budget,
-            max_steps=profile.max_steps,
-            timeout_seconds=profile.timeout_seconds,
-        )
+            return gate("blocked", "learning_research_budget_exhausted")
         child_run_id = derive_child_run_id(thread_id, parent_run_id, query_hash)
         request = SubagentRequest(
             parent_thread_id=thread_id,
@@ -151,13 +179,46 @@ class LearningResearchService:
             query_fingerprints=(query_hash,),
             source_fingerprints=(plan.source_policy_revision, capability_revision),
         )
+        started_at = monotonic()
         try:
-            result = await self.subagent_executor.execute(request)
+            execution: asyncio.Future[SubagentResult] = asyncio.ensure_future(
+                self.subagent_executor.execute(request)
+            )
+            done, _ = await asyncio.wait((execution,), timeout=profile.timeout_seconds)
+            if done:
+                result = execution.result()
+            else:
+                await self.subagent_executor.cancel(child_run_id, "timeout")
+                execution.cancel()
+                with suppress(asyncio.CancelledError):
+                    await execution
+                result = SubagentResult(
+                    child_run_id=child_run_id,
+                    status="timed_out",
+                    error_code="timeout",
+                )
         except Exception:
             result = SubagentResult(
                 child_run_id=child_run_id,
                 status="failed",
                 error_code="provider_unavailable",
+            )
+        actual_elapsed_seconds = max(0.0, monotonic() - started_at)
+        if result.model_calls > profile.max_steps or result.tool_count > profile.max_steps:
+            return self._terminal(
+                task,
+                plan,
+                unit_id,
+                parent_run_id,
+                child_run_id,
+                query_hash,
+                profile.max_steps,
+                profile.timeout_seconds,
+                token_budget,
+                result,
+                status="blocked",
+                reason="learning_research_step_budget_exhausted",
+                actual_elapsed_seconds=actual_elapsed_seconds,
             )
         if result.token_usage > token_budget:
             return self._terminal(
@@ -173,6 +234,7 @@ class LearningResearchService:
                 result,
                 status="blocked",
                 reason="learning_research_budget_exhausted",
+                actual_elapsed_seconds=actual_elapsed_seconds,
             )
         if result.status == "timed_out":
             return self._terminal(
@@ -188,6 +250,7 @@ class LearningResearchService:
                 result,
                 status="blocked",
                 reason="learning_research_timeout",
+                actual_elapsed_seconds=actual_elapsed_seconds,
             )
         if result.status != "succeeded":
             return self._terminal(
@@ -203,6 +266,7 @@ class LearningResearchService:
                 result,
                 status="blocked",
                 reason="learning_research_provider_unavailable",
+                actual_elapsed_seconds=actual_elapsed_seconds,
             )
         if not result.evidence_refs:
             return self._terminal(
@@ -218,6 +282,7 @@ class LearningResearchService:
                 result,
                 status="source_gap",
                 reason="learning_research_no_evidence",
+                actual_elapsed_seconds=actual_elapsed_seconds,
             )
         try:
             bundle = await self.evidence_bundle_port.read(
@@ -247,8 +312,14 @@ class LearningResearchService:
                 profile.timeout_seconds,
                 token_budget,
                 result,
-                status="source_gap" if reason == "learning_research_no_evidence" else "blocked",
+                status=(
+                    "source_gap"
+                    if reason == "learning_research_no_evidence"
+                    else ("succeeded" if reason == "learning_research_conflict" else "blocked")
+                ),
                 reason=reason,
+                actual_elapsed_seconds=actual_elapsed_seconds,
+                evidence=evidence if reason == "learning_research_conflict" else (),
             )
         return self._terminal(
             task,
@@ -264,6 +335,7 @@ class LearningResearchService:
             status="succeeded",
             reason="",
             evidence=evidence,
+            actual_elapsed_seconds=actual_elapsed_seconds,
         )
 
     @staticmethod
@@ -282,6 +354,8 @@ class LearningResearchService:
         status: LearningResearchStatus,
         reason: str,
         evidence: tuple[EvidenceBundleItem, ...] = (),
+        actual_elapsed_seconds: float,
+        terminal_status: str | None = None,
     ) -> LearningResearchOutcome:
         provenance = tuple(
             LearningResearchEvidence(
@@ -294,21 +368,11 @@ class LearningResearchService:
             )
             for item in evidence
         )
-        receipt_hash = _canonical_hash(
-            {
-                "schema_version": 1,
-                "task_id": task.task_id,
-                "task_revision": task.task_revision,
-                "plan_id": plan.plan_id,
-                "unit_id": unit_id,
-                "parent_run_id": parent_run_id,
-                "child_run_id": child_run_id,
-                "query_receipt_hash": query_hash,
-            }
-        )
         receipt = LearningResearchReceipt(
             schema_version=1,
-            receipt_id=f"lrsearch_{receipt_hash[:24]}",
+            receipt_id="",
+            owner_id=plan.owner_id,
+            workspace_id=plan.workspace_id,
             task_id=task.task_id,
             task_revision=task.task_revision,
             plan_id=plan.plan_id,
@@ -324,12 +388,17 @@ class LearningResearchService:
             timeout_seconds=timeout_seconds,
             actual_token_usage=result.token_usage,
             actual_tool_count=result.tool_count,
+            actual_elapsed_seconds=round(actual_elapsed_seconds, 6),
             allowed_domains=task.source_policy.domains,
             freshness=task.source_policy.freshness,
             risk_decision=task.risk_class,
-            terminal_status=result.status,
+            terminal_status=terminal_status or result.status,
             reason_code=reason,
             evidence=provenance,
+        )
+        receipt = replace(
+            receipt,
+            receipt_id=canonical_learning_research_receipt_id(receipt),
         )
         return LearningResearchOutcome(
             status=status,
@@ -416,7 +485,8 @@ def _validated_web_evidence(
     )
     if not selected:
         return (), "learning_research_no_evidence"
-    seen_urls: dict[str, str] = {}
+    seen_urls: dict[str, set[str]] = {}
+    conflict_groups: dict[str, set[tuple[str, str]]] = {}
     for item in selected:
         fetched_at = str(item.metadata.get("fetched_at", "")).strip()
         if not item.canonical_url or not item.title or not item.content_hash or not fetched_at:
@@ -440,14 +510,17 @@ def _validated_web_evidence(
         host = parsed.hostname.casefold()
         if domains and not any(host == domain or host.endswith(f".{domain}") for domain in domains):
             return (), "learning_research_domain_forbidden"
-        previous = seen_urls.setdefault(item.canonical_url, item.content_hash)
-        if previous != item.content_hash:
-            return (), "learning_research_conflict"
+        seen_urls.setdefault(item.canonical_url, set()).add(item.content_hash)
+        conflict_group = str(item.metadata.get("conflict_group", "")).strip()[:160]
+        if conflict_group:
+            conflict_groups.setdefault(conflict_group, set()).add(
+                (item.canonical_url, item.content_hash)
+            )
+    if any(len(values) > 1 for values in seen_urls.values()) or any(
+        len(values) > 1 for values in conflict_groups.values()
+    ):
+        return selected, "learning_research_conflict"
     return selected, ""
-
-
-def _gate_outcome(status: LearningResearchStatus, reason: str) -> LearningResearchOutcome:
-    return LearningResearchOutcome(status=status, reason_code=reason)
 
 
 def _canonical_hash(payload: object) -> str:
@@ -460,10 +533,17 @@ def _canonical_hash(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def canonical_learning_research_receipt_id(receipt: LearningResearchReceipt) -> str:
+    payload = asdict(receipt)
+    payload.pop("receipt_id")
+    return f"lrsearch_{_canonical_hash(payload)[:24]}"
+
+
 __all__ = [
     "LearningResearchEvidence",
     "LearningResearchOutcome",
     "LearningResearchReceipt",
     "LearningResearchService",
     "LearningResearchStatus",
+    "canonical_learning_research_receipt_id",
 ]

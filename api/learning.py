@@ -549,11 +549,12 @@ async def _execution_service(
         base_config=SubagentToolConfig(),
     )
     research_profiles = tuple(profile for profile in config.profiles if profile.name == "research")
-    config = replace(
-        config,
-        allowed_types=frozenset({"research"}) if research_profiles else frozenset(),
-        profiles=research_profiles,
-    )
+    if research_profiles:
+        config = replace(
+            config,
+            allowed_types=frozenset({"research"}),
+            profiles=research_profiles,
+        )
     sandbox = create_coding_sandbox(
         runtime.workspace,
         thread_id=runtime.session_id,
@@ -575,6 +576,7 @@ async def _execution_service(
         web_policy_freshness="year" if scope.freshness == "current" else "all",
         learning_scope=scope,
         learning_scope_revalidator=lambda: _scope_resolver(request).revalidate(scope),
+        authorized_parent_run_id=kickoff.turn_run_id,
     )
     research = LearningResearchService(
         subagent_executor=executor,

@@ -127,7 +127,7 @@ def test_advance_resume_and_scoped_artifact_get(tmp_path: Path, monkeypatch) -> 
             json={"expected_checkpoint_revision": 0},
         )
 
-        assert first.status_code == 200
+        assert first.status_code == 200, first.text
         assert first.headers["cache-control"] == "no-store"
         assert replay.json() == first.json()
         assert stale.status_code == 409
@@ -163,3 +163,57 @@ def test_learning_l3_openapi_declares_browser_contracts(tmp_path: Path) -> None:
             "application/json"
         ]["schema"]
         assert response_schema["$ref"].endswith("/LearningErrorResponse")
+
+
+def test_first_advance_without_research_profile_returns_canonical_source_gap(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        draft = client.post(
+            "/api/v1/learning/tasks/draft",
+            json={
+                "topic": "学习离线恢复边界",
+                "desired_outcome": "识别当前来源缺口",
+                "starting_level": "beginner",
+                "time_budget_minutes_per_week": 120,
+                "source_policy": {
+                    "knowledge": "disabled",
+                    "web": "allowed_when_insufficient",
+                    "domains": [],
+                    "freshness": "all",
+                },
+            },
+        ).json()
+        activated = client.post(
+            f"/api/v1/learning/tasks/{draft['task_id']}/activate",
+            headers={"Idempotency-Key": "activate-no-provider"},
+            json={"expected_revision": 1},
+        )
+        assert activated.status_code == 200
+        kickoff = client.post(
+            f"/api/v1/learning/tasks/{draft['task_id']}/kickoff",
+            headers={"Idempotency-Key": "kickoff-no-provider"},
+            json={"expected_revision": 1},
+        )
+        assert kickoff.status_code == 200, kickoff.text
+        task = client.get(f"/api/v1/learning/tasks/{draft['task_id']}").json()
+        url = f"/api/v1/learning/tasks/{task['task_id']}/advance"
+
+        first = client.post(
+            url,
+            headers={"Idempotency-Key": "advance-no-provider-1"},
+            json={"expected_checkpoint_revision": 0},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["stage"] == "knowledge_pending"
+        assert first.json()["artifact"]["status"] == "source_gap"
+
+        second = client.post(
+            url,
+            headers={"Idempotency-Key": "advance-no-provider-2"},
+            json={"expected_checkpoint_revision": first.json()["checkpoint_revision"]},
+        )
+        assert second.status_code == 200
+        assert second.json()["stage"] == "source_gap"
+        assert second.json()["next_action"] == "research"

@@ -195,6 +195,7 @@ class CodingSubagentExecutor:
         web_policy_freshness: str | None = None,
         learning_scope: LearningReadonlyScope | None = None,
         learning_scope_revalidator: Callable[[], LearningReadonlyScope] | None = None,
+        authorized_parent_run_id: str | None = None,
     ) -> None:
         self.runtime = runtime
         self.knowledge_port = knowledge_port
@@ -207,6 +208,13 @@ class CodingSubagentExecutor:
         self.web_policy_freshness = web_policy_freshness
         self.learning_scope = learning_scope
         self.learning_scope_revalidator = learning_scope_revalidator
+        if authorized_parent_run_id is not None and not (
+            1 <= len(authorized_parent_run_id.strip()) <= 256
+        ):
+            raise ValueError("authorized parent run id must be non-empty and bounded")
+        self.authorized_parent_run_id = (
+            authorized_parent_run_id.strip() if authorized_parent_run_id else None
+        )
         if learning_scope is not None and learning_scope_revalidator is None:
             raise ValueError("Learning research requires a canonical scope revalidator")
         self._cancel_events: dict[str, asyncio.Event] = {}
@@ -504,7 +512,10 @@ class CodingSubagentExecutor:
     def _validate(self, request: SubagentRequest) -> None:
         if request.parent_thread_id != self.runtime.session_id:
             raise ValueError("subagent thread does not match runtime")
-        if request.parent_run_id != self.runtime.active_run_id:
+        if request.parent_run_id not in {
+            self.runtime.active_run_id,
+            self.authorized_parent_run_id,
+        }:
             raise ValueError("subagent parent run is not active")
         expected_workspace_id = workspace_id_from_path(self.runtime.workspace.root)
         if request.workspace_id != expected_workspace_id:

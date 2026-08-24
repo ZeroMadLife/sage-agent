@@ -336,6 +336,27 @@ def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path:
     }
 
 
+def test_rehydrated_learning_research_uses_frozen_parent_run(tmp_path: Path) -> None:
+    model = FakeModel(["<final>Rehydrated research completed.</final>"])
+    runtime = _runtime(tmp_path, model)
+    runtime.active_run_id = None
+    executor = CodingSubagentExecutor(
+        runtime,
+        web_search_port=FakeWebSearchPort(),
+        authorized_parent_run_id="run-parent",
+    )
+    request = replace(
+        _request(tmp_path, "child_rehydrated_research"),
+        subagent_type="research",
+        tool_scope=("search_web",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert model.calls == 1
+
+
 def test_practice_subagent_records_passing_test_as_candidate_and_replays_it(
     tmp_path: Path,
 ) -> None:

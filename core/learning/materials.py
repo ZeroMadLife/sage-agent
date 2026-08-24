@@ -15,6 +15,10 @@ from sage_harness import (
     TaskDAGPlan,
 )
 
+from core.harness.retrieval_sufficiency import (
+    RetrievalSufficiencyAssessment,
+    evaluate_retrieval_sufficiency,
+)
 from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
 
 LearningUnitStatus = Literal["grounded", "source_gap", "unverified"]
@@ -31,6 +35,7 @@ class LearningCitation:
     source_revision: str
     url: str = ""
     fetched_at: str = ""
+    conflict_group: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,13 +160,18 @@ class LearningMapService:
                         if not result.evidence
                         else "knowledge_revision_missing"
                     )
+        assessment = assess_learning_citations(task, citations)
         if citations:
             unit = replace(
                 unit,
-                status="grounded",
+                status="grounded" if assessment.sufficient else "unverified",
                 evidence_refs=tuple(item.citation_id for item in citations),
                 source_revisions=tuple(sorted({item.source_revision for item in citations})),
             )
+            if assessment.conflict_count:
+                gap_reason = "learning_evidence_conflict"
+            elif not assessment.sufficient:
+                gap_reason = assessment.route_reason
         plan = _plan_for_task(
             owner_id,
             task,
@@ -170,7 +180,15 @@ class LearningMapService:
             catalog_revision=catalog_revision,
             dag=dag,
         )
-        artifact = _artifact_for_plan(task, plan, citations, gap_reason=gap_reason)
+        artifact = _artifact_for_plan(
+            task,
+            plan,
+            citations,
+            gap_reason=gap_reason,
+            status=(
+                "ready" if assessment.sufficient else ("unverified" if citations else "source_gap")
+            ),
+        )
         return LearningMapOutcome(
             plan=plan,
             artifact=artifact,
@@ -425,6 +443,7 @@ def _valid_citations(evidence: tuple[KnowledgeEvidence, ...]) -> tuple[LearningC
                 content_hash=f"sha256:{hashlib.sha256(content.encode()).hexdigest()}",
                 page_revision=page_revision,
                 source_revision=source_revision,
+                conflict_group=str(item.metadata.get("conflict_group", ""))[:160],
             )
         )
     return tuple(selected)
@@ -436,6 +455,7 @@ def _artifact_for_plan(
     citations: tuple[LearningCitation, ...],
     *,
     gap_reason: str,
+    status: LearningArtifactStatus,
 ) -> LearningMapArtifact:
     unit = plan.units[0]
     lines = [
@@ -486,7 +506,7 @@ def _artifact_for_plan(
         kind="learning_map",
         plan_id=plan.plan_id,
         unit_ids=(unit.unit_id,),
-        status="ready" if citations else "source_gap",
+        status=status,
         media_type="text/markdown",
         content=content,
         content_hash=content_hash,
@@ -512,6 +532,7 @@ def synthesize_research_map(
             source_revision=item.content_hash,
             url=item.canonical_url,
             fetched_at=str(item.metadata.get("fetched_at", "")),
+            conflict_group=str(item.metadata.get("conflict_group", ""))[:160],
         )
         for item in evidence
         if item.evidence_ref
@@ -521,12 +542,43 @@ def synthesize_research_map(
         and item.canonical_url
         and str(item.metadata.get("fetched_at", ""))
     )
+    assessment = assess_learning_citations(task, citations)
     return _artifact_for_plan(
         task,
         plan,
         citations,
         gap_reason="" if citations else "learning_research_no_evidence",
+        status=(
+            "ready" if assessment.sufficient else ("unverified" if citations else "source_gap")
+        ),
     ), citations
+
+
+def assess_learning_citations(
+    task: LearningTask,
+    citations: tuple[LearningCitation, ...],
+) -> RetrievalSufficiencyAssessment:
+    conflict_groups: dict[str, set[tuple[str, str]]] = {}
+    for item in citations:
+        if item.conflict_group:
+            conflict_groups.setdefault(item.conflict_group, set()).add(
+                (item.source_revision, item.content_hash)
+            )
+    conflict_count = sum(1 for values in conflict_groups.values() if len(values) > 1)
+    query_fingerprint = f"learning_{_canonical_hash(_knowledge_query(task))[:32]}"
+    return evaluate_retrieval_sufficiency(
+        query_fingerprint=query_fingerprint,
+        round_index=1,
+        required_aspects=("learning_goal",),
+        covered_aspects=("learning_goal",) if citations else (),
+        citation_refs=(item.citation_id for item in citations),
+        source_refs=(item.url or item.source_revision for item in citations),
+        conflict_count=conflict_count,
+        actual_hit_count=len(citations),
+        minimum_source_count=1,
+        agentic_candidate=task.source_policy.web == "allowed_when_insufficient",
+        budget_available=True,
+    )
 
 
 def _knowledge_query(task: LearningTask) -> str:
@@ -552,6 +604,7 @@ __all__ = [
     "LearningMapService",
     "LearningPlan",
     "LearningUnitStatus",
+    "assess_learning_citations",
     "synthesize_research_map",
     "validate_learning_plan_identity",
 ]

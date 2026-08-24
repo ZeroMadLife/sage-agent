@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from sage_harness import (
+    EvidenceBundle,
     EvidenceBundleItem,
     KnowledgeEvidence,
     KnowledgeRetrievalResult,
+    SubagentRequest,
+    SubagentResult,
+    SubagentToolConfig,
 )
 
 from core.learning.artifact_store import (
@@ -22,6 +28,8 @@ from core.learning.research import (
     LearningResearchEvidence,
     LearningResearchOutcome,
     LearningResearchReceipt,
+    LearningResearchService,
+    canonical_learning_research_receipt_id,
 )
 from core.learning.tasks import (
     LearningClarification,
@@ -76,6 +84,41 @@ class BlockingKnowledgePort(FakeKnowledgePort):
         return await super().search(*args, **kwargs)  # type: ignore[arg-type]
 
 
+class ConflictingKnowledgePort(FakeKnowledgePort):
+    async def search(
+        self,
+        query: str,
+        *,
+        workspace_id: str,
+        token_budget: int,
+        top_k: int = 8,
+    ) -> KnowledgeRetrievalResult:
+        return KnowledgeRetrievalResult(
+            query=query,
+            workspace_id=workspace_id,
+            status="evidence_found",
+            token_budget=token_budget,
+            used_tokens=120,
+            omitted_count=0,
+            evidence=(
+                KnowledgeEvidence(
+                    citation_id="kcite-conflict-a",
+                    content="Checkpoint state includes the full generated body.",
+                    page_revision="page-a",
+                    source_revision="source-a",
+                    metadata={"title": "Source A", "conflict_group": "checkpoint-body"},
+                ),
+                KnowledgeEvidence(
+                    citation_id="kcite-conflict-b",
+                    content="Checkpoint state excludes the full generated body.",
+                    page_revision="page-b",
+                    source_revision="source-b",
+                    metadata={"title": "Source B", "conflict_group": "checkpoint-body"},
+                ),
+            ),
+        )
+
+
 def _task() -> LearningTask:
     return LearningTask(
         version=1,
@@ -112,6 +155,21 @@ class FakeResearchService:
     async def run(self, **kwargs: object) -> LearningResearchOutcome:
         self.calls += 1
         return self.outcome
+
+
+class NoopResearchExecutor:
+    async def execute(self, request: SubagentRequest, progress=None) -> SubagentResult:  # type: ignore[no-untyped-def]
+        raise AssertionError("gate failure must not create a child")
+
+    async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
+        return None
+
+
+class EmptyEvidencePort:
+    available = True
+
+    async def read(self, *args: object, **kwargs: object) -> EvidenceBundle:
+        return EvidenceBundle(status="no_evidence")
 
 
 def _context() -> LearningExecutionContext:
@@ -290,6 +348,84 @@ async def test_binding_conflict_does_not_mutate_checkpoint_or_fencing(tmp_path: 
 
 
 @pytest.mark.asyncio
+async def test_conflicting_knowledge_preserves_citations_and_never_becomes_ready(
+    tmp_path: Path,
+) -> None:
+    store = LearningArtifactStore(tmp_path / "artifacts.sqlite3")
+    service = LearningExecutionService(
+        store=store,
+        map_service=LearningMapService(knowledge_port=ConflictingKnowledgePort()),
+    )
+    first = await service.advance(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        context=_context(),
+        expected_checkpoint_revision=0,
+        idempotency_key="conflict-1",
+    )
+    second = await service.advance(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        context=_context(),
+        expected_checkpoint_revision=first.checkpoint_revision,
+        idempotency_key="conflict-2",
+    )
+    artifact = store.read_artifact(
+        owner_id="local",
+        workspace_id="workspace-1",
+        artifact_ref=second.artifact_ref,
+    )
+
+    assert second.stage == "source_gap"
+    assert artifact.status == "unverified"
+    assert tuple(item.evidence_ref for item in artifact.citations) == (
+        "kcite-conflict-a",
+        "kcite-conflict-b",
+    )
+
+
+@pytest.mark.asyncio
+async def test_research_gate_failure_is_persisted_without_creating_child(tmp_path: Path) -> None:
+    path = tmp_path / "artifacts.sqlite3"
+    store = LearningArtifactStore(path)
+    research = LearningResearchService(
+        subagent_executor=NoopResearchExecutor(),
+        subagent_config=SubagentToolConfig(),
+        evidence_bundle_port=EmptyEvidencePort(),
+    )
+    service = LearningExecutionService(
+        store=store,
+        map_service=LearningMapService(knowledge_port=None),
+        research_service=research,
+    )
+    current_revision = 0
+    current = None
+    for index in range(1, 5):
+        current = await service.advance(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            context=_context(),
+            expected_checkpoint_revision=current_revision,
+            idempotency_key=f"gate-receipt-{index}",
+        )
+        current_revision = current.checkpoint_revision
+
+    assert current is not None
+    assert current.stage == "blocked"
+    assert current.blocking_reason == "learning_research_capability_unavailable"
+    with sqlite3.connect(path) as connection:
+        rows = connection.execute("SELECT payload_json FROM learning_research_receipts").fetchall()
+    assert len(rows) == 1
+    payload = json.loads(rows[0][0])
+    assert payload["child_run_id"] == ""
+    assert payload["terminal_status"] == "not_started"
+    assert payload["reason_code"] == "learning_research_capability_unavailable"
+
+
+@pytest.mark.asyncio
 async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
     tmp_path: Path,
 ) -> None:
@@ -315,7 +451,9 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
     ).plan
     receipt = LearningResearchReceipt(
         schema_version=1,
-        receipt_id="lrsearch_execution_1",
+        receipt_id="",
+        owner_id="local",
+        workspace_id="workspace-1",
         task_id=_task().task_id,
         task_revision=_task().task_revision,
         plan_id=plan.plan_id,
@@ -331,6 +469,7 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
         timeout_seconds=20,
         actual_token_usage=600,
         actual_tool_count=2,
+        actual_elapsed_seconds=0.25,
         allowed_domains=("example.com",),
         freshness="current",
         risk_decision="general_education",
@@ -347,6 +486,7 @@ async def test_source_gap_conditionally_researches_and_synthesizes_web_citation(
             ),
         ),
     )
+    receipt = replace(receipt, receipt_id=canonical_learning_research_receipt_id(receipt))
     research = FakeResearchService(
         LearningResearchOutcome(
             status="succeeded", reason_code="", receipt=receipt, evidence=(evidence,)

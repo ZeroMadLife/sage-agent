@@ -239,7 +239,7 @@ class LearningExecutionService:
                 workspace_id=workspace_id,
                 artifact_ref=checkpoint.artifact_ref,
             )
-            grounded = bool(artifact.citations)
+            grounded = artifact.status == "ready"
             return {
                 "stage": "knowledge_ready" if grounded else "source_gap",
                 "next_action": "synthesize" if grounded else "research",
@@ -317,8 +317,8 @@ class LearningExecutionService:
                 "next_action": "synthesize",
                 "evidence_count": len(citations),
                 "citation_count": len(citations),
-                "gap_codes": (),
-                "blocking_reason": "",
+                "gap_codes": (outcome.reason_code,) if outcome.reason_code else (),
+                "blocking_reason": outcome.reason_code,
                 "artifact_ref": artifact.artifact_ref,
             }
         if outcome.status == "source_gap":

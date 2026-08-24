@@ -19,7 +19,11 @@ from core.learning.artifact_store import (
     LearningResumeNotFoundError,
 )
 from core.learning.materials import LearningCitation, LearningMapOutcome, LearningMapService
-from core.learning.research import LearningResearchEvidence, LearningResearchReceipt
+from core.learning.research import (
+    LearningResearchEvidence,
+    LearningResearchReceipt,
+    canonical_learning_research_receipt_id,
+)
 from core.learning.tasks import (
     LearningClarification,
     LearningLearnerProfile,
@@ -187,7 +191,9 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
     outcome = await _outcome()
     receipt = LearningResearchReceipt(
         schema_version=1,
-        receipt_id="lrsearch_receipt_1",
+        receipt_id="",
+        owner_id="local",
+        workspace_id="workspace-1",
         task_id=_task().task_id,
         task_revision=_task().task_revision,
         plan_id=outcome.plan.plan_id,
@@ -203,6 +209,7 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
         timeout_seconds=20,
         actual_token_usage=600,
         actual_tool_count=2,
+        actual_elapsed_seconds=0.25,
         allowed_domains=(),
         freshness="all",
         risk_decision="general_education",
@@ -219,6 +226,7 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
             ),
         ),
     )
+    receipt = replace(receipt, receipt_id=canonical_learning_research_receipt_id(receipt))
     path = tmp_path / "learning-artifacts.sqlite3"
     store = LearningArtifactStore(path)
 
@@ -262,9 +270,11 @@ async def test_research_receipt_identity_is_scoped_across_owners(tmp_path: Path)
     second_outcome = await _outcome(owner_id="owner-b")
 
     def receipt_for(outcome: LearningMapOutcome) -> LearningResearchReceipt:
-        return LearningResearchReceipt(
+        receipt = LearningResearchReceipt(
             schema_version=1,
-            receipt_id="lrsearch_same_material",
+            receipt_id="",
+            owner_id=outcome.plan.owner_id,
+            workspace_id=outcome.plan.workspace_id,
             task_id=_task().task_id,
             task_revision=_task().task_revision,
             plan_id=outcome.plan.plan_id,
@@ -280,12 +290,17 @@ async def test_research_receipt_identity_is_scoped_across_owners(tmp_path: Path)
             timeout_seconds=20,
             actual_token_usage=600,
             actual_tool_count=2,
+            actual_elapsed_seconds=0.25,
             allowed_domains=(),
             freshness="all",
             risk_decision="general_education",
             terminal_status="succeeded",
             reason_code="",
             evidence=(),
+        )
+        return replace(
+            receipt,
+            receipt_id=canonical_learning_research_receipt_id(receipt),
         )
 
     store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")

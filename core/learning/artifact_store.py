@@ -20,7 +20,11 @@ from core.learning.materials import (
     LearningUnitStatus,
     validate_learning_plan_identity,
 )
-from core.learning.research import LearningResearchEvidence, LearningResearchReceipt
+from core.learning.research import (
+    LearningResearchEvidence,
+    LearningResearchReceipt,
+    canonical_learning_research_receipt_id,
+)
 from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
 
 LearningCheckpointStage = Literal[
@@ -191,6 +195,7 @@ class StoredLearningCitation:
     fetched_at: str
     page_revision: str
     source_revision: str
+    conflict_group: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1262,6 +1267,7 @@ def _citation_payload(item: object) -> dict[str, str]:
         "fetched_at": str(getattr(item, "fetched_at", ""))[:80],
         "page_revision": str(getattr(item, "page_revision", ""))[:160],
         "source_revision": str(getattr(item, "source_revision", ""))[:160],
+        "conflict_group": str(getattr(item, "conflict_group", ""))[:160],
     }
 
 
@@ -1302,6 +1308,8 @@ def _validate_research_receipt(
 ) -> None:
     if (
         receipt.schema_version != 1
+        or receipt.owner_id != plan.owner_id
+        or receipt.workspace_id != plan.workspace_id
         or receipt.task_id != task.task_id
         or receipt.task_revision != task.task_revision
         or receipt.plan_id != plan.plan_id
@@ -1312,14 +1320,29 @@ def _validate_research_receipt(
         or receipt.allowed_domains != task.source_policy.domains
         or receipt.freshness != task.source_policy.freshness
         or receipt.risk_decision != task.risk_class
-        or receipt.token_budget < 1
-        or receipt.max_steps < 1
-        or receipt.timeout_seconds <= 0
         or receipt.actual_token_usage < 0
-        or receipt.actual_token_usage > receipt.token_budget
         or receipt.actual_tool_count < 0
+        or receipt.actual_elapsed_seconds < 0
+        or receipt.receipt_id != canonical_learning_research_receipt_id(receipt)
     ):
         raise LearningResumeConflictError("Learning Research receipt binding changed")
+    attempted = bool(receipt.child_run_id)
+    if attempted and (
+        receipt.token_budget < 1
+        or receipt.max_steps < 1
+        or receipt.timeout_seconds <= 0
+        or receipt.actual_token_usage > receipt.token_budget
+    ):
+        raise LearningResumeConflictError("Learning Research receipt budget binding changed")
+    if not attempted and (
+        receipt.token_budget < 0
+        or receipt.max_steps < 0
+        or receipt.timeout_seconds < 0
+        or receipt.actual_token_usage != 0
+        or receipt.actual_tool_count != 0
+        or receipt.terminal_status != "not_started"
+    ):
+        raise LearningResumeConflictError("Learning Research gate receipt is invalid")
 
 
 def _plan(data: dict[str, object]) -> LearningPlan:
@@ -1496,6 +1519,8 @@ def _validate_stored_research_receipt(
         or receipt.task_id != str(row["task_id"])
         or receipt.task_revision != int(row["task_revision"])
         or receipt.plan_id != plan_id
+        or receipt.owner_id != owner_id
+        or receipt.workspace_id != workspace_id
         or receipt.schema_version != 1
         or receipt.plan_revision < 1
         or not receipt.unit_id.strip()
@@ -1504,7 +1529,8 @@ def _validate_stored_research_receipt(
         or receipt.actual_token_usage < 0
         or receipt.actual_token_usage > receipt.token_budget
         or receipt.actual_tool_count < 0
-        or receipt.actual_tool_count > receipt.max_steps
+        or receipt.actual_elapsed_seconds < 0
+        or receipt.receipt_id != canonical_learning_research_receipt_id(receipt)
     ):
         raise ValueError("Learning Research receipt canonical binding is invalid")
 
