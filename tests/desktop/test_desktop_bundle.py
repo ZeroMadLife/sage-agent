@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from desktop.bundle import (
     BundleContractError,
+    _request_pid_quit,
     staged_sidecar,
     validate_sidecar_receipt,
 )
@@ -137,3 +139,28 @@ def test_atomic_staging_never_reuses_the_ignored_sidecar(tmp_path: Path) -> None
     assert (destination / "stale-marker").read_text(encoding="utf-8") == "must disappear"
     assert not list(destination.parent.glob(".sidecar-stage-*"))
     assert not list(destination.parent.glob(".sidecar-backup-*"))
+
+
+def test_explicit_quit_targets_the_verified_pid_and_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def successful_quit(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="0 0 0\n", stderr="")
+
+    monkeypatch.setattr("desktop.bundle.subprocess.run", successful_quit)
+    _request_pid_quit(4242)
+
+    assert commands[0][0] == "/usr/bin/swift"
+    assert commands[0][-1] == "4242"
+    assert "typeKernelProcessID" in commands[0][2]
+    assert "kAEQuitApplication" in commands[0][2]
+
+    def rejected_quit(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 0, stdout="0 0 -600\n", stderr="")
+
+    monkeypatch.setattr("desktop.bundle.subprocess.run", rejected_quit)
+    with pytest.raises(BundleContractError, match="explicit Sage quit"):
+        _request_pid_quit(4242)

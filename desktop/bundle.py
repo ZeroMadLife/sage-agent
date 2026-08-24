@@ -36,6 +36,29 @@ REQUIRED_D0_SMOKE = frozenset(
         "tls_client",
     }
 )
+PID_QUIT_SWIFT = """
+import Carbon
+import Darwin
+
+var pid = pid_t(CommandLine.arguments[1])!
+var target = AEAddressDesc()
+let targetStatus = withUnsafePointer(to: &pid) {
+    AECreateDesc(DescType(typeKernelProcessID), $0, MemoryLayout<pid_t>.size, &target)
+}
+var event = AppleEvent()
+let eventStatus = AECreateAppleEvent(
+    AEEventClass(kCoreEventClass),
+    AEEventID(kAEQuitApplication),
+    &target,
+    AEReturnID(kAutoGenerateReturnID),
+    AETransactionID(kAnyTransactionID),
+    &event
+)
+let sendStatus = AESendMessage(&event, nil, AESendMode(kAENoReply), kAEDefaultTimeout)
+print(targetStatus, eventStatus, sendStatus)
+AEDisposeDesc(&event)
+AEDisposeDesc(&target)
+""".strip()
 
 
 class BundleContractError(RuntimeError):
@@ -286,6 +309,21 @@ def _signal_verified(record: Mapping[str, Any], signal_number: signal.Signals) -
     os.kill(int(record["pid"]), signal_number)
 
 
+def _request_pid_quit(pid: int) -> None:
+    """Send the standard macOS quit AppleEvent to one verified host PID."""
+    try:
+        result = subprocess.run(
+            ["/usr/bin/swift", "-e", PID_QUIT_SWIFT, str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise BundleContractError("macOS did not accept the explicit Sage quit request") from error
+    if result.returncode != 0 or result.stdout.strip() != "0 0 0":
+        raise BundleContractError("macOS did not accept the explicit Sage quit request")
+
+
 def _wait_for_no_processes(pids: set[int], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     stable = 0
@@ -338,18 +376,7 @@ def smoke_bundled_app(app: Path, *, timeout: float = 30) -> dict[str, str]:
                 raise BundleContractError("restarted sidecar identity does not match runtime")
             sidecar_records[restarted_pid] = restarted_record
             _wait_for_webview_observations(state_path, 2, timeout)
-            quit_result = subprocess.run(
-                [
-                    "/usr/bin/osascript",
-                    "-e",
-                    'tell application id "com.sage.learning" to quit',
-                ],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if quit_result.returncode != 0:
-                raise BundleContractError("macOS did not accept the explicit Sage quit request")
+            _request_pid_quit(process.pid)
             process.wait(timeout=timeout)
             _wait_for_no_processes(set(sidecar_records) | {process.pid}, timeout)
             final_state = json.loads(state_path.read_text(encoding="utf-8"))

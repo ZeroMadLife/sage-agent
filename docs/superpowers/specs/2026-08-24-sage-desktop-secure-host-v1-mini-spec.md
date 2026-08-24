@@ -91,7 +91,7 @@ crash 时间戳和已知 sidecar 的 pid/start-time/executable identity 可以�
 
 ## 5. 验收证据
 
-自动测试覆盖错误 nonce/PID/build/API version/端口、错误 bearer/Host/Origin、HTTP/SSE/WS 一致门禁、第二实例回调、已知 orphan 身份、窗口隐藏/连接断开/crash/显式退出、10 分钟 crash budget。最终在 clean commit 上构建 D0 one-dir sidecar，作为 Tauri external binary 构建 macOS arm64 local dev app，并以临时应用数据目录完成真实 handshake、live/ready/capabilities 和进程清理 smoke。
+自动测试覆盖错误 nonce/PID/build/API version/端口、错误 bearer/Host/Origin、HTTP/SSE/WS 一致门禁、第二实例回调、已知 orphan 身份、窗口隐藏/连接断开/crash/显式退出、10 分钟 crash budget。最终在 clean commit 上构建 D0 one-dir sidecar，作为 Tauri external binary 构建 macOS arm64 local dev app，并以临时应用数据目录完成真实 handshake、live/ready/capabilities 和进程清理 smoke。显式退出 smoke 使用标准 `kAEQuitApplication` AppleEvent，并以已由 `Popen` 和进程身份合同确认的 host PID 作为 target；不得依赖可能命中其他同 bundle ID 临时副本的 LaunchServices 名称解析，也不得降级为 `SIGTERM`。
 
 唯一正式入口为 `python3.12 -m desktop.bundle --output-dir <仓库外新目录>`。入口要求 clean HEAD，从隔离 D0 构建开始，验证 source SHA/dirty/target/依赖 manifest/Harness hash/逐文件 hash/全部 smoke，原子 staging 新 sidecar，显式注入 `SAGE_BUILD_SHA`，构建 `.app` 后核对 bundle 内 receipt、ad-hoc 签名并执行真实 launch/crash/restart/WebView 新会话认证/explicit-exit/零残留 smoke。WebView 证据是每个 sidecar 进程只写一次的脱敏 capabilities 访问记录，只含 timestamp/event/state/reason_code。macOS CI 使用同一入口；Developer ID、公证、DMG 仍不在 D1。
 
