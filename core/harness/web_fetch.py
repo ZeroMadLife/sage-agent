@@ -105,9 +105,17 @@ class SafeWebFetchAdapter:
         return True
 
     async def fetch(self, url: str) -> WebFetchResult:
+        return await self.fetch_with_policy(url, domains=())
+
+    async def fetch_with_policy(
+        self,
+        url: str,
+        *,
+        domains: Sequence[str] = (),
+    ) -> WebFetchResult:
         try:
             async with asyncio.timeout(self._total_timeout_seconds):
-                return await self._fetch(url)
+                return await self._fetch(url, domains=domains)
         except TimeoutError:
             return WebFetchResult(status="unavailable", error_code="fetch_timeout")
         except _WebFetchRejected as exc:
@@ -117,9 +125,11 @@ class SafeWebFetchAdapter:
         except (httpx.HTTPError, OSError):
             return WebFetchResult(status="unavailable", error_code="fetch_unavailable")
 
-    async def _fetch(self, url: str) -> WebFetchResult:
+    async def _fetch(self, url: str, *, domains: Sequence[str]) -> WebFetchResult:
         current_url = _canonical_https_url(url)
         for redirect_count in range(self._max_redirects + 1):
+            if not _domain_allowed(current_url, domains):
+                raise _WebFetchRejected("source_policy_domain_forbidden")
             destination = await self._resolve_destination(current_url)
             async with (
                 self._client_factory(destination) as client,
@@ -239,9 +249,13 @@ def build_web_fetch_tool(
     artifact_store: ToolArtifactPort,
     *,
     max_calls: int | None = None,
+    policy_domains: Sequence[str] | None = None,
 ) -> BaseTool:
-    """Build a run-local fetch tool that checkpoints only bounded evidence."""
+    """Build a run-local fetch tool that checkpoints only policy-bounded evidence."""
     seen_urls: set[str] = set()
+    frozen_domains = tuple(
+        str(item).strip().casefold().rstrip(".") for item in policy_domains or ()
+    )
 
     async def fetch_web(
         tool_call_id: Annotated[str, InjectedToolCallId],
@@ -250,7 +264,12 @@ def build_web_fetch_tool(
     ) -> tuple[str, dict[str, object]]:
         normalized_url = _canonical_https_url(url)
         error_code = ""
-        if normalized_url in seen_urls:
+        hostname = str(urlsplit(normalized_url).hostname or "").casefold()
+        if frozen_domains and not any(
+            hostname == domain or hostname.endswith(f".{domain}") for domain in frozen_domains
+        ):
+            error_code = "source_policy_domain_forbidden"
+        elif normalized_url in seen_urls:
             error_code = "duplicate_url"
         elif max_calls is not None and len(seen_urls) >= max_calls:
             error_code = "fetch_call_limit"
@@ -281,6 +300,7 @@ def build_web_fetch_tool(
             tool_call_id=tool_call_id,
             url=normalized_url,
             token_budget=token_budget,
+            domains=frozen_domains,
         )
 
     fetch_web.__annotations__["tool_call_id"] = Annotated[str, InjectedToolCallId]
@@ -312,12 +332,33 @@ async def fetch_web_evidence(
     tool_call_id: str,
     url: str,
     token_budget: int = _DEFAULT_TOKEN_BUDGET,
+    domains: Sequence[str] = (),
 ) -> tuple[str, dict[str, object]]:
     """Fetch and archive one page for graph or server-owned child runtimes."""
     validated_url = _canonical_https_url(url)
     if not _MIN_TOKEN_BUDGET <= token_budget <= _MAX_TOKEN_BUDGET:
         raise ValueError("token_budget must be between 256 and 8000")
-    result = await port.fetch(validated_url)
+    if domains:
+        policy_fetch = getattr(port, "fetch_with_policy", None)
+        if not callable(policy_fetch):
+            return (
+                json.dumps(
+                    {
+                        "status": "unavailable",
+                        "url": validated_url,
+                        "token_budget": token_budget,
+                        "used_tokens": 0,
+                        "error_code": "source_policy_enforcement_unavailable",
+                        "remote_content": True,
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                {},
+            )
+        result = await policy_fetch(validated_url, domains=tuple(domains))
+    else:
+        result = await port.fetch(validated_url)
     if result.document is None:
         return (
             json.dumps(
@@ -417,6 +458,14 @@ def _canonical_https_url(value: object) -> str:
     host_for_url = f"[{hostname}]" if ":" in hostname else hostname
     netloc = host_for_url if port in {None, 443} else f"{host_for_url}:{port}"
     return urlunsplit(("https", netloc, parsed.path or "/", parsed.query, ""))
+
+
+def _domain_allowed(url: str, domains: Sequence[str]) -> bool:
+    if not domains:
+        return True
+    hostname = str(urlsplit(url).hostname or "").casefold().rstrip(".")
+    normalized = tuple(str(item).strip().casefold().rstrip(".") for item in domains)
+    return any(hostname == domain or hostname.endswith(f".{domain}") for domain in normalized)
 
 
 def _document_from_html(

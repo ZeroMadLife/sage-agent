@@ -214,16 +214,33 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 10. 切片 L1：首轮只读 Learning Scope
 
+> 候选状态（2026-08-24）：`feat/learning-readonly-scope-v1` 已实现本节后端最小纵向切片，
+> 当前已通过 Standards/Spec/Runtime 三镜头独立复审，仍待中枢复审，尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
+> validation、Capability Registry、ToolBundle 和 Harness middleware：模型 catalog 与真实
+> ToolNode 调用均受 `AllowedCapabilitySet + capability_revision + turn_context_plan_hash`
+> 约束；host Memory retrieval 与 Research child 的每次 model/tool 边界也会 canonical 重验。
+> `knowledge=disabled` 可按冻结策略直接开放只读 Web；`web=allowed_when_insufficient` 在 L1 尚无
+> durable sufficiency receipt，因此保持隐藏直到 L3 以 source-gap receipt 提升。Web
+> domains/freshness 由服务端冻结值覆盖模型参数；Learning Timeline 与 Run API 只投影安全 ID、
+> 状态、计数和 reason code。由于当前 MCP descriptor 不能证明工具只读，Learning Scope 暂不开放 MCP。
+> 本候选不包含 L2 UI、真实 Provider 首轮、LearningPlan、Artifact、Practice 或 Mastery。
+> Evidence/Memory read 是 receipt 内部 authority，不作为伪工具加入普通公共 Capability Registry。
+> active `session_id` 通过 Learning repository 的 owner/workspace binding 反查；可变 Session JSON
+> 只作为待校验投影，marker 缺失或降级会稳定拒绝，不能恢复普通 Coding 的写权限或 raw Run API。
+> Retrieval receipt 在进入 Timeline/TurnContextPlan 前收敛为实际可执行来源；model 前重验失败保留
+> `learning_scope_*` reason，不包装为 Provider error。
+
 **交付行为**
 
 - active task 冻结 `AllowedCapabilitySet`，模型可见工具和执行入口双重过滤；
-- 默认允许 Knowledge/Evidence/Memory read，按来源策略允许只读 Web/Research；
+- 默认允许 Knowledge/Evidence/Memory read；Research child 只继承当前可用的只读来源，直接 Web 仅在 Knowledge 被明确禁用时开放；
 - Shell、Patch、Git write、删除、write-MCP、Practice 和自动长期写入默认不可见且不可调用。
 
 **验收证据**
 
 - `不要联网`、旧 capability revision、伪造 tool call 和 Skill 未激活均 fail closed；
-- Context/Capability 漂移返回明确 409，不触发真实工具；
+- active Learning Session marker 被删除或降级时仍由 server-owned binding 识别，运行与 raw Run API 均 fail closed；
+- L0 REST activation/resume 漂移返回明确 `409`；L1 已启动 run 的 admission、model、retrieval 或 tool 漂移返回稳定 `learning_scope_*` 事件/error receipt，不触发 Provider 或真实工具；
 - Timeline 不公开 query、source path、Skill prompt 或网页正文。
 
 **依赖与非目标**

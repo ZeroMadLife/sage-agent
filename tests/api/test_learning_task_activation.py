@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from api.coding import _runtime_timeline_events
 from api.main import create_app
 from core.coding.persistence import CodingSessionStore, TurnPlanStore
+from core.coding.runtime import CodingRuntime
 from core.harness.thread_goal import ThreadGoalService
 
 
@@ -98,7 +101,11 @@ def test_activate_returns_one_revision_bound_kickoff_receipt(tmp_path: Path) -> 
         assert receipt["plan_id"] == receipt["turn_context_plan_id"]
         assert receipt["plan_hash"] == receipt["turn_context_plan_hash"]
         assert receipt["capability_revision"].startswith("lcap_")
-        assert receipt["allowed_capabilities"] == ["local:knowledge_search"]
+        assert receipt["allowed_capabilities"] == [
+            "local:evidence_read",
+            "local:knowledge_search",
+            "local:memory_read",
+        ]
         assert receipt["learning_goal_ref"]["goal_id"].startswith("learning-task-")
         assert receipt["completed_at"] is not None
 
@@ -154,7 +161,11 @@ def test_activate_returns_one_revision_bound_kickoff_receipt(tmp_path: Path) -> 
     assert plan.plan_hash == receipt["turn_context_plan_hash"]
     payload = plan.to_payload()
     assert payload["admission"]["task_kind"] == "learning"
-    assert payload["tools"]["allowed_capabilities"] == ["local:knowledge_search"]
+    assert payload["tools"]["allowed_capabilities"] == [
+        "local:evidence_read",
+        "local:knowledge_search",
+        "local:memory_read",
+    ]
     assert "local:run_shell" not in payload["tools"]["allowed_capabilities"]
     assert "subagent:practice" not in payload["tools"]["allowed_capabilities"]
 
@@ -175,6 +186,116 @@ def test_activation_requires_confirmation_revision_and_idempotency_key(tmp_path:
         )
         assert not_ready.status_code == 409
         assert not_ready.json()["detail"]["code"] == "learning_task_not_ready"
+
+
+def test_learning_run_http_projections_hide_trace_and_diff_content(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task = _ready_draft(client)
+        receipt = client.post(
+            f"/api/v1/learning/tasks/{task['task_id']}/activate",
+            headers={"Idempotency-Key": "learning-run-projection-v1"},
+            json={"expected_revision": 1},
+        ).json()
+        session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(receipt["session_id"])
+        runtime = CodingRuntime(
+            session_id=receipt["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+        app.state.coding_sessions[receipt["session_id"]] = runtime
+        runtime.run_store.start_run("child_scope")
+        runtime.run_store.append_trace(
+            "child_scope",
+            {
+                "type": "tool_call",
+                "run_id": "child_scope",
+                "tool_call_id": "call-scope",
+                "args": {"query": "PRIVATE_QUERY_SENTINEL"},
+            },
+        )
+        runtime.run_store.append_trace(
+            "child_scope",
+            {
+                "type": "tool_result",
+                "run_id": "child_scope",
+                "tool_call_id": "call-scope",
+                "content": "WEB_BODY_SENTINEL /private/source-secret",
+                "error_code": "learning_scope_plan_mismatch",
+                "is_error": True,
+            },
+        )
+
+        detail = client.get(f"/api/v1/coding/{receipt['session_id']}/runs/child_scope")
+        listing = client.get(f"/api/v1/coding/{receipt['session_id']}/runs")
+        diff = client.get(f"/api/v1/coding/{receipt['session_id']}/runs/child_scope/diff")
+
+        assert detail.status_code == 200
+        assert listing.status_code == 200
+        assert diff.status_code == 409
+        assert diff.json()["detail"]["code"] == "learning_scope_diff_unavailable"
+        serialized = json.dumps(
+            {"detail": detail.json(), "listing": listing.json()},
+            ensure_ascii=False,
+        )
+        assert detail.json()["events"][-1]["reason_code"] == ("learning_scope_plan_mismatch")
+        assert "PRIVATE_QUERY_SENTINEL" not in serialized
+        assert "WEB_BODY_SENTINEL" not in serialized
+        assert "/private/source-secret" not in serialized
+
+
+def test_active_learning_binding_rejects_downgraded_session_marker(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task = _ready_draft(client)
+        receipt = client.post(
+            f"/api/v1/learning/tasks/{task['task_id']}/activate",
+            headers={"Idempotency-Key": "learning-marker-downgrade-v1"},
+            json={"expected_revision": 1},
+        ).json()
+        store = CodingSessionStore(tmp_path / ".coding" / "sessions")
+        session = store.load(receipt["session_id"])
+        session["session_kind"] = "coding"
+        session.pop("learning_task_id")
+        store.save(session)
+        runtime = CodingRuntime(
+            session_id=receipt["session_id"],
+            workspace_root=tmp_path / "workspace",
+            model=object(),
+            storage_root=tmp_path / ".coding",
+            session_state=session,
+            runtime_profile=str(session["runtime_profile"]),
+        )
+        app.state.coding_sessions[receipt["session_id"]] = runtime
+
+        async def collect_rejection() -> list[dict[str, object]]:
+            return [
+                event.payload
+                async for event in _runtime_timeline_events(
+                    runtime,
+                    content="继续学习",
+                    skill_prompt=None,
+                    command="",
+                    arguments="",
+                    run_id="run_marker_downgrade",
+                    surface_context=None,
+                    learning_scope_resolver=app.state.learning_readonly_scope_resolver,
+                )
+            ]
+
+        stream_payloads = asyncio.run(collect_rejection())
+        listing = client.get(f"/api/v1/coding/{receipt['session_id']}/runs")
+        detail = client.get(f"/api/v1/coding/{receipt['session_id']}/runs/missing")
+        diff = client.get(f"/api/v1/coding/{receipt['session_id']}/runs/missing/diff")
+
+    assert stream_payloads[0]["reason_code"] == "learning_scope_session_mismatch"
+    assert stream_payloads[-1]["error_type"] == "learning_scope_conflict"
+    for response in (listing, detail, diff):
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "learning_scope_session_mismatch"
 
 
 def test_idempotency_key_cannot_be_reused_for_another_task(tmp_path: Path) -> None:

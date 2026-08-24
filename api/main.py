@@ -32,6 +32,7 @@ from core.harness.capability_health_store import CapabilityHealthStore
 from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_scope import LearningReadonlyScopeResolver
 from core.harness.mcp_adapter import ConfiguredMcpCatalog
 from core.harness.profile import normalize_runtime_profile
 from core.harness.sandbox_factory import (
@@ -510,24 +511,29 @@ def create_app(
         app.state.coding_storage_root / "learning-tasks.sqlite3"
     )
     app.state.learning_task_service = LearningTaskService(learning_task_repository)
+    learning_activation_resources = SageLearningActivationResources(
+        storage_root=app.state.coding_storage_root,
+        workspace_root=app.state.coding_workspace_root,
+        runtime_profile=app.state.coding_default_runtime_profile,
+        sandbox_provider=app.state.coding_sandbox_provider,
+        sandbox_image=app.state.coding_sandbox_image,
+        knowledge_available=app.state.knowledge_store is not None,
+        web_search_available=(
+            app.state.coding_web_search_port is not None
+            and getattr(app.state.coding_web_search_port, "available", True)
+        ),
+        web_fetch_available=(
+            app.state.coding_web_fetch_port is not None
+            and getattr(app.state.coding_web_fetch_port, "available", True)
+        ),
+    )
     app.state.learning_activation_service = LearningActivationService(
         learning_task_repository,
-        SageLearningActivationResources(
-            storage_root=app.state.coding_storage_root,
-            workspace_root=app.state.coding_workspace_root,
-            runtime_profile=app.state.coding_default_runtime_profile,
-            sandbox_provider=app.state.coding_sandbox_provider,
-            sandbox_image=app.state.coding_sandbox_image,
-            knowledge_available=app.state.knowledge_store is not None,
-            web_search_available=(
-                app.state.coding_web_search_port is not None
-                and getattr(app.state.coding_web_search_port, "available", True)
-            ),
-            web_fetch_available=(
-                app.state.coding_web_fetch_port is not None
-                and getattr(app.state.coding_web_fetch_port, "available", True)
-            ),
-        ),
+        learning_activation_resources,
+    )
+    app.state.learning_readonly_scope_resolver = LearningReadonlyScopeResolver(
+        learning_task_repository,
+        learning_activation_resources,
     )
     app.state.publication_candidate_service = (
         publication_candidate_service

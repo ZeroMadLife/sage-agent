@@ -7,6 +7,7 @@ import hashlib
 import html
 import json
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
@@ -30,6 +31,7 @@ from core.harness.context_adapter import (
 )
 from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.knowledge_adapter import CodingKnowledgePort
+from core.harness.learning_scope import LearningReadonlyScope, LearningScopeConflict
 from core.harness.local_sandbox import LocalWorkspaceSandbox
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.model_context_frame import ModelContextFrameFactory
@@ -1027,6 +1029,55 @@ def test_runtime_adapter_streams_a_real_langgraph_message(tmp_path: Path) -> Non
 
     payloads = asyncio.run(run())
     assert any(item.get("type") == "text_delta" for item in payloads)
+
+
+def test_runtime_adapter_preserves_learning_scope_conflict_before_provider_call(
+    tmp_path: Path,
+) -> None:
+    scope = LearningReadonlyScope(
+        task_id="ltask_scope",
+        task_revision=1,
+        session_id="s-scope",
+        owner_id="local",
+        workspace_id="w-scope",
+        turn_context_plan_id="tcp-scope",
+        turn_context_plan_hash="sha256:scope",
+        catalog_revision="catalog-scope",
+        capability_revision="capability-scope",
+        allowed_capabilities=("local:knowledge_search",),
+        source_policy_revision="source-scope",
+        knowledge_policy="preferred",
+        web_policy="forbidden",
+        domains=(),
+        freshness="all",
+    )
+
+    async def run() -> None:
+        async with open_sqlite_checkpointer(tmp_path / "scope-checkpoints.sqlite3") as saver:
+            adapter = SageHarnessRuntimeAdapter(
+                model=FakeMessagesListChatModel(responses=[AIMessage(content="must not run")]),
+                checkpointer=saver,
+                learning_scope=scope,
+                learning_scope_revalidator=lambda: replace(
+                    scope,
+                    capability_revision="capability-drifted",
+                ),
+            )
+            _ = [
+                event
+                async for event in adapter.stream_turn(
+                    session_id=scope.session_id,
+                    run_id="r-scope",
+                    workspace_id=scope.workspace_id,
+                    workspace_path=str(tmp_path),
+                    content="continue",
+                )
+            ]
+
+    with pytest.raises(LearningScopeConflict) as caught:
+        asyncio.run(run())
+
+    assert caught.value.code == "learning_scope_capability_revision_mismatch"
 
 
 def test_runtime_adapter_keeps_model_budget_for_the_same_run_id(

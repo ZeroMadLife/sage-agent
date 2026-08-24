@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 候选已迁移到 L0；L1 及后续切片未开始
+> 状态：A1、A2 已迁移到 L0；A3 已形成 L1 本地候选，三镜头独立复审通过并等待中枢复审；后续切片未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
-| A3 Learning allowlist | 未开始 | - | receipt 已冻结候选范围，但尚未接入模型可见工具过滤和执行前二次校验 |
+| A3 Learning allowlist | L1 本地候选，三镜头通过 | `feat/learning-readonly-scope-v1` | active receipt 已接入模型 catalog 过滤、ToolNode 执行前 canonical 重验与安全 denial receipt；尚待中枢复审，未合入 `dev/sage-v7` |
 | A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -79,7 +79,11 @@ active -> completed
   "turn_context_plan_hash": "sha256:...",
   "dag_hash": null,
   "capability_revision": "...",
-  "allowed_capabilities": ["knowledge:search", "evidence:bundle"],
+  "allowed_capabilities": [
+    "local:evidence_read",
+    "local:knowledge_search",
+    "local:memory_read"
+  ],
   "source_policy_snapshot": {
     "knowledge": "preferred",
     "web": "forbidden",
@@ -206,6 +210,26 @@ git diff --check
 
 ### Slice A3：首轮 Learning Turn 只读 allowlist
 
+> 2026-08-24 候选事实边界：当前职责分支实现了 `LearningReadonlyScopeResolver`
+> 与 Harness middleware。Learning Session 在 model、host Memory retrieval、父 ToolNode 和
+> Research child 的每次 model/tool 边界重载 L0 Task、receipt、Session 和 kickoff
+> TurnContextPlan；模型 schema 与 deferred catalog 使用同一冻结 allowlist。Knowledge 读取与
+> Memory recall 复用既有端口，Memory/Knowledge 长期写入、Shell/Patch/Practice/Task DAG 均不
+> 开放。`knowledge=disabled` 时可按冻结策略直接开放只读 Web；
+> `web=allowed_when_insufficient` 在 L1 尚无 durable sufficiency receipt，因此保持隐藏，等待 L3
+> 以 source-gap receipt 提升。Web domains/freshness 由服务端冻结值覆盖模型参数。现有 MCP
+> descriptor 没有可证明的只读副作用元数据，因此 L1
+> Learning Scope 暂不开放任何 MCP，而不是把未知 MCP 猜成只读。本候选未实现 L2 UI、
+> 首轮真实 Provider 生成、LearningPlan、Artifact 或 Mastery。
+> `local:evidence_read` 与 `local:memory_read` 只表示 Learning receipt 内部 read authority，
+> 不是可调用模型工具，也不写入普通 Session 的公共 Capability Registry 或改变其 revision。
+> active Learning binding 由 repository 按 `session_id` 反查并校验 owner/workspace；Session JSON
+> 中的 `session_kind` 与 `learning_*` 仅是待校验投影，缺失或降级不能回退到普通 Coding 权限。
+> Retrieval Gate 的 `selected_sources` 在写 Timeline 与 TurnContextPlan 前按同一 scope 收敛：
+> `allowed_when_insufficient` 在没有 durable sufficiency receipt 时只声明并路由 Knowledge，
+> 不再公开一个真实入口不可用的 Web source。model 前的 canonical 漂移保留稳定
+> `learning_scope_*` 冲突，不包装成 Provider 故障。
+
 **交付行为**
 
 - 首轮 Turn 使用冻结的 `task_kind=learning`、`turn_context_plan_hash` 和 `AllowedCapabilitySet`。
@@ -216,20 +240,21 @@ git diff --check
 
 - 扩展 `TurnContextPlan` / `TurnContextResume` 的 learning scope adapter，保留 `surface="coding"` 兼容字段，但不把它当 authority。
 - 复用 `CapabilityRegistry`、`CapabilitySelectionIndex`、`ToolBundle` 和现有 Permission/Policy/Approval/Sandbox 链。
-- 模型可见工具列表和执行前校验都携带 `capability_revision`、`turn_context_plan_hash` 和 `task_id`。
+- 模型可见工具列表和执行前校验都受 `capability_revision`、`turn_context_plan_hash` 和 `task_id` 约束。
 
 **验收证据**
 
 - `不要联网` 的任务首轮不存在 Web/Research capability；无本地来源返回 `source_gap`。
 - 伪造 tool call、改写 capability revision、重放旧 plan 均被拒绝，且不触发真实工具。
+- 降级或删除 Session 的 Learning marker 仍由 active repository binding 识别并拒绝，Run API 不恢复原始 trace/diff。
 - Skill 仅可发现但未激活时不扩大权限；策略解析异常时保留最小框架安全工具。
-- 公开事件不包含 query、source path、Skill prompt、网页全文或 token。
+- Learning Timeline、Run List/Detail 和 workspace diff 公开投影不包含 query、source path、Skill prompt、网页全文或 token；原始 child trace 仍是 `.coding/` 内部恢复数据，不是浏览器合同。
 
 **依赖与非目标**
 
 - 依赖 A2 的 active receipt 和现有 turn plan/resume 对比逻辑。
 - 不把通用能力目录改成学习业务目录，不复制 DeerFlow middleware；只增加产品层 scope adapter。
-- 本片不做 Web Research，不生成学习地图。
+- 本片只允许 source policy 下的有界只读 Research child；不做 L3 多轮 Research/Synthesize、Learning Artifact 或学习地图。
 
 **验证**
 

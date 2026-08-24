@@ -6,6 +6,7 @@ from core.coding.run_coordinator import RunEvent
 from core.harness.retrieval_gate import (
     decide_retrieval_gate,
     memory_retrieval_events,
+    project_retrieval_gate_sources,
     retrieval_source_event,
     retrieval_sources_from_events,
     retrieval_tool_scope_from_events,
@@ -42,6 +43,27 @@ def test_explicit_sources_select_mixed_and_degrade_truthfully() -> None:
     assert receipt.selected_sources == ("knowledge",)
     assert receipt.degraded is True
     assert receipt.token_budget_by_source == {"knowledge": 3_000}
+
+
+def test_policy_source_projection_keeps_receipt_fields_consistent() -> None:
+    original = decide_retrieval_gate(
+        "只搜索官网最新资料",
+        memory_available=False,
+        knowledge_available=True,
+        web_available=True,
+    )
+
+    projected = project_retrieval_gate_sources(
+        original,
+        selected_sources=("knowledge",),
+        reason_code="learning_scope_source_policy",
+    )
+
+    assert projected.decision == "knowledge"
+    assert projected.selected_sources == ("knowledge",)
+    assert set(projected.selected_sources).issubset(projected.candidate_sources)
+    assert projected.token_budget_by_source == {"knowledge": 3_000}
+    assert projected.degraded is True
 
 
 def test_memory_signal_selects_only_approved_memory_channel() -> None:

@@ -10,13 +10,18 @@ from pathlib import Path
 
 import httpx
 from langchain_core.messages import ToolMessage
+from sage_harness import WebFetchResult
 from sage_harness.runtime.events import HarnessStreamItem
 
 from core.coding.persistence.tool_result_store import ToolResultStore
 from core.coding.runtime import CodingRuntime
 from core.harness.event_adapter import HarnessEventAdapter
 from core.harness.tools_adapter import build_deerflow_coding_tool_bundle
-from core.harness.web_fetch import SafeWebFetchAdapter, build_web_fetch_tool
+from core.harness.web_fetch import (
+    SafeWebFetchAdapter,
+    build_web_fetch_tool,
+    fetch_web_evidence,
+)
 
 
 def _resolver_for(*addresses: str):  # type: ignore[no-untyped-def]
@@ -121,6 +126,64 @@ def test_fetch_follows_bounded_public_redirects() -> None:
     assert result.document is not None
     assert result.document.canonical_url == "https://example.com/docs"
     assert [url.rsplit("/", 1)[-1] for url in seen] == ["start", "docs"]
+
+
+def test_fetch_revalidates_frozen_domain_before_cross_domain_redirect() -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(302, headers={"location": "https://other.test/private"})
+
+    result = asyncio.run(
+        _adapter(handler).fetch_with_policy(
+            "https://example.com/start",
+            domains=("example.com",),
+        )
+    )
+
+    assert result.status == "unavailable"
+    assert result.error_code == "source_policy_domain_forbidden"
+    assert seen == ["https://example.com/start"]
+
+
+def test_fetch_evidence_preserves_legacy_port_contract_without_domain_policy(
+    tmp_path: Path,
+) -> None:
+    class LegacyFetchPort:
+        available = True
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def fetch(self, url: str) -> WebFetchResult:
+            self.calls += 1
+            return WebFetchResult(status="unavailable", error_code="legacy_not_used")
+
+    port = LegacyFetchPort()
+    store = ToolResultStore(tmp_path / ".coding", "session-legacy", "run-legacy")
+
+    content, _ = asyncio.run(
+        fetch_web_evidence(
+            port,
+            store,
+            tool_call_id="call-legacy",
+            url="https://example.com/docs",
+        )
+    )
+    denied, _ = asyncio.run(
+        fetch_web_evidence(
+            port,
+            store,
+            tool_call_id="call-domain-policy",
+            url="https://example.com/docs",
+            domains=("example.com",),
+        )
+    )
+
+    assert json.loads(content)["error_code"] == "legacy_not_used"
+    assert json.loads(denied)["error_code"] == "source_policy_enforcement_unavailable"
+    assert port.calls == 1
 
 
 def test_fetch_rejects_oversized_or_non_html_responses() -> None:
@@ -271,6 +334,41 @@ def test_fetch_web_run_guard_suppresses_duplicate_and_excess_urls(tmp_path: Path
     assert second["status"] == "evidence_found"
     assert capped["error_code"] == "fetch_call_limit"
     assert len(seen) == 2
+
+
+def test_fetch_web_rejects_url_outside_server_frozen_domains(tmp_path: Path) -> None:
+    seen: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<html><body>evidence</body></html>",
+        )
+
+    store = ToolResultStore(tmp_path / ".coding", "session-policy", "run-policy")
+    tool = build_web_fetch_tool(
+        _adapter(handler),
+        store,
+        policy_domains=("example.com",),
+    )
+
+    result = asyncio.run(
+        tool.ainvoke(
+            {
+                "name": "fetch_web",
+                "args": {"url": "https://other.test/private"},
+                "id": "call-policy",
+                "type": "tool_call",
+            }
+        )
+    )
+    payload = json.loads(result.content)
+
+    assert payload["status"] == "unavailable"
+    assert payload["error_code"] == "source_policy_domain_forbidden"
+    assert seen == []
 
 
 def test_fetch_web_is_discoverable_but_deferred(tmp_path: Path) -> None:

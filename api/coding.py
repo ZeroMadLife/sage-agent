@@ -170,6 +170,11 @@ from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalPort,
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_scope import (
+    LearningReadonlyScope,
+    LearningReadonlyScopeResolver,
+    LearningScopeConflict,
+)
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.model_context_frame import (
@@ -180,6 +185,7 @@ from core.harness.model_context_frame import (
 from core.harness.retrieval_gate import (
     decide_retrieval_gate,
     memory_retrieval_events,
+    project_retrieval_gate_sources,
     retrieval_source_event,
     retrieval_sources_from_events,
     retrieval_tool_scope_from_events,
@@ -289,6 +295,167 @@ def _turn_context_plan_failure_events(
             event_id=f"harness:{run_id}:terminal",
         ),
     )
+
+
+def _learning_scope_failure_events(run_id: str, reason_code: str) -> tuple[RunEvent, RunEvent]:
+    """Return one content-free scope denial and a stable terminal event."""
+    return (
+        RunEvent(
+            kind="harness",
+            status="error",
+            payload={
+                "type": "learning_scope_rejected",
+                "version": 1,
+                "run_id": run_id,
+                "status": "denied",
+                "reason_code": reason_code,
+            },
+            event_id=f"harness:{run_id}:learning-scope-denied",
+        ),
+        RunEvent(
+            kind="terminal",
+            status="error",
+            payload={
+                "event": "run_error",
+                "runtime_profile": "deerflow_v2",
+                "error_type": "learning_scope_conflict",
+            },
+            event_id=f"harness:{run_id}:terminal",
+        ),
+    )
+
+
+def _learning_workspace_diff_payload(
+    run_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a path-free Learning diff receipt for browser timelines."""
+    changed_files = payload.get("changed_files")
+    return {
+        "type": "workspace_diff_ready",
+        "run_id": run_id,
+        "status": "completed",
+        "changed_file_count": len(changed_files) if isinstance(changed_files, list) else 0,
+    }
+
+
+def _learning_run_detail_payload(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> dict[str, Any]:
+    """Project an internal Learning trace into browser-safe identity receipts."""
+    run_id = str(payload.get("run_id", ""))[:256]
+    raw_events = payload.get("events")
+    events = (
+        [
+            _learning_run_event(event, task_id=task_id)
+            for event in raw_events
+            if isinstance(event, Mapping)
+        ]
+        if isinstance(raw_events, list)
+        else []
+    )
+    raw_audit = payload.get("audit")
+    audit = raw_audit if isinstance(raw_audit, Mapping) else {}
+    status = str(audit.get("status", "running"))[:64] or "running"
+    tool_count = sum(event.get("type") == "tool_call" for event in events)
+    completed_tool_count = sum(
+        event.get("type") == "tool_result" and event.get("status") != "error" for event in events
+    )
+    failed_tool_count = sum(
+        event.get("type") == "tool_result" and event.get("status") == "error" for event in events
+    )
+    return {
+        "run_id": run_id,
+        "events": events,
+        "timeline": [],
+        "audit": {
+            "run_id": run_id,
+            "status": status,
+            "headline": f"Learning run: {status}",
+            "tool_count": tool_count,
+            "completed_tool_count": completed_tool_count,
+            "failed_tool_count": failed_tool_count,
+            "approval_count": 0,
+            "duration_ms": _non_negative_int(audit.get("duration_ms")),
+            "changed_files": [],
+            "steps": [],
+        },
+    }
+
+
+def _learning_run_summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove paths and previews from one Learning run-list item."""
+    run_id = str(payload.get("run_id", ""))[:256]
+    status = str(payload.get("status", "running"))[:64] or "running"
+    raw_audit = payload.get("audit")
+    audit = raw_audit if isinstance(raw_audit, Mapping) else {}
+    tool_count = _non_negative_int(payload.get("tool_count"))
+    error_count = _non_negative_int(payload.get("error_count"))
+    return {
+        "run_id": run_id,
+        "status": status,
+        "event_count": _non_negative_int(payload.get("event_count")),
+        "tool_count": tool_count,
+        "error_count": error_count,
+        "last_event_type": str(payload.get("last_event_type", ""))[:128],
+        "started_at": str(payload.get("started_at", ""))[:80],
+        "updated_at": str(payload.get("updated_at", ""))[:80],
+        "changed_files": [],
+        "audit": {
+            "run_id": run_id,
+            "status": status,
+            "headline": f"Learning run: {status}",
+            "tool_count": tool_count,
+            "completed_tool_count": max(0, tool_count - error_count),
+            "failed_tool_count": min(tool_count, error_count),
+            "approval_count": 0,
+            "duration_ms": _non_negative_int(audit.get("duration_ms")),
+            "changed_files": [],
+            "steps": [],
+        },
+    }
+
+
+def _learning_run_event(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> dict[str, Any]:
+    public: dict[str, Any] = {
+        "type": str(payload.get("type", "custom"))[:128],
+        "task_id": task_id[:256],
+    }
+    for key in (
+        "run_id",
+        "parent_run_id",
+        "child_run_id",
+        "agent_run_id",
+        "tool_call_id",
+        "capability_id",
+        "approval_id",
+        "interrupt_id",
+    ):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            public[key] = value.strip()[:256]
+    status = payload.get("status")
+    public["status"] = (
+        status.strip()[:64]
+        if isinstance(status, str) and status.strip()
+        else "error"
+        if payload.get("is_error") is True
+        else "completed"
+    )
+    reason = payload.get("reason_code") or payload.get("error_code")
+    if isinstance(reason, str) and reason.strip():
+        public["reason_code"] = reason.strip()[:128]
+    return public
+
+
+def _non_negative_int(value: object) -> int:
+    return value if type(value) is int and value >= 0 else 0
 
 
 def _graph_approval_resume_value(
@@ -407,6 +574,36 @@ def _valid_session_id(session_id: str) -> bool:
     return _SESSION_ID.fullmatch(session_id) is not None
 
 
+def _resolve_runtime_learning_scope(
+    runtime: CodingRuntime,
+    resolver: LearningReadonlyScopeResolver | None,
+) -> LearningReadonlyScope | None:
+    """Resolve server-owned Learning authority before trusting mutable Session fields."""
+    if resolver is None:
+        if runtime.session.get("session_kind") == "learning":
+            raise LearningScopeConflict("learning_scope_resolver_unavailable")
+        return None
+    return resolver.resolve_runtime_session(
+        runtime.session,
+        session_id=runtime.session_id,
+        owner_id=runtime.owner_user_id or "local",
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
+    )
+
+
+def _http_runtime_learning_scope(
+    request: Request,
+    runtime: CodingRuntime,
+) -> LearningReadonlyScope | None:
+    try:
+        return _resolve_runtime_learning_scope(
+            runtime,
+            getattr(request.app.state, "learning_readonly_scope_resolver", None),
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+
+
 def _require_valid_session_id(session_id: str) -> None:
     if not _valid_session_id(session_id):
         raise HTTPException(status_code=422, detail="invalid coding session id")
@@ -440,8 +637,45 @@ async def _runtime_timeline_events(
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
     context_assembly_mode: ContextAssemblyMode = "shadow",
+    learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
+    learning_scope: LearningReadonlyScope | None = None
+    try:
+        if (
+            runtime.session.get("session_kind") == "learning"
+            and runtime.runtime_profile != "deerflow_v2"
+        ):
+            raise LearningScopeConflict("learning_scope_runtime_profile_unsupported")
+        learning_scope = await asyncio.to_thread(
+            _resolve_runtime_learning_scope,
+            runtime,
+            learning_scope_resolver,
+        )
+        if learning_scope is not None and runtime.runtime_profile != "deerflow_v2":
+            raise LearningScopeConflict("learning_scope_runtime_profile_unsupported")
+    except LearningScopeConflict as exc:
+        yield RunEvent(
+            kind="system",
+            status="error",
+            payload={
+                "type": "learning_scope_rejected",
+                "status": "denied",
+                "reason_code": exc.code,
+            },
+            event_id=f"learning-scope:{run_id}:denied",
+        )
+        yield RunEvent(
+            kind="terminal",
+            status="error",
+            payload={
+                "event": "run_error",
+                "runtime_profile": runtime.runtime_profile,
+                "error_type": "learning_scope_conflict",
+            },
+            event_id=f"learning-scope:{run_id}:terminal",
+        )
+        return
     if runtime.runtime_profile == "deerflow_v2":
         if harness_checkpointer is None:
             raise RuntimeError("deerflow_v2 checkpointer is not configured")
@@ -468,6 +702,8 @@ async def _runtime_timeline_events(
                 resume_attempt=resume_attempt,
                 input_origin=input_origin,
                 context_assembly_mode=context_assembly_mode,
+                learning_scope=learning_scope,
+                learning_scope_resolver=learning_scope_resolver,
             ):
                 if graph_event.kind == "terminal":
                     diff_payload = await runtime.finish_harness_evidence(
@@ -476,10 +712,15 @@ async def _runtime_timeline_events(
                         duration_ms=int((time.monotonic() - evidence_start_time) * 1000),
                     )
                     evidence_finished = True
+                    public_diff_payload = (
+                        _learning_workspace_diff_payload(run_id, diff_payload)
+                        if learning_scope is not None
+                        else diff_payload
+                    )
                     yield RunEvent(
                         kind="tool",
                         status="completed",
-                        payload=diff_payload,
+                        payload=public_diff_payload,
                         event_id=f"harness:{run_id}:workspace-diff",
                     )
                 else:
@@ -587,6 +828,8 @@ async def _deerflow_timeline_events(
     resume_attempt: int = 0,
     input_origin: Literal["user", "goal_followup"] = "user",
     context_assembly_mode: ContextAssemblyMode = "shadow",
+    learning_scope: LearningReadonlyScope | None = None,
+    learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
     context_assembly_mode = normalize_context_assembly_mode(context_assembly_mode)
@@ -738,11 +981,40 @@ async def _deerflow_timeline_events(
                 web_available=_port_available(web_search_port),
                 intent_envelope=task_intent,
             )
+            if learning_scope is not None:
+                scoped_sources = learning_scope.constrain_retrieval_sources(
+                    retrieval_gate.selected_sources,
+                    available=retrieval_gate.available_sources,
+                )
+                if scoped_sources != retrieval_gate.selected_sources:
+                    retrieval_gate = project_retrieval_gate_sources(
+                        retrieval_gate,
+                        selected_sources=scoped_sources,
+                        reason_code="learning_scope_source_policy",
+                    )
             memory_source_budgets = {
                 source: budget
                 for source, budget in retrieval_gate.token_budget_by_source.items()
                 if source in {"semantic_memory", "episodic_memory"}
             }
+            if (
+                learning_scope is not None
+                and "local:memory_read" not in learning_scope.allowed_capabilities
+            ):
+                memory_source_budgets = {}
+            if learning_scope is not None:
+                try:
+                    if learning_scope_resolver is None:
+                        raise LearningScopeConflict("learning_scope_resolver_unavailable")
+                    current_learning_scope = await asyncio.to_thread(
+                        learning_scope_resolver.revalidate,
+                        learning_scope,
+                    )
+                    learning_scope.assert_current(current_learning_scope)
+                except LearningScopeConflict as exc:
+                    for event in _learning_scope_failure_events(run_id, exc.code):
+                        yield event
+                    return
             memory_result = (
                 await memory_port.query_context(
                     runtime.session_id,
@@ -829,12 +1101,27 @@ async def _deerflow_timeline_events(
             ):
                 yield event
             return
+        if learning_scope is not None:
+            skill_capability_id = (
+                skill_lifecycle.activation_ref.replace("skill://", "skill:").replace("/", ":")
+                if skill_lifecycle.activation_ref
+                else None
+            )
+            try:
+                learning_scope.skill_allowed_tool_names(
+                    skill_lifecycle,
+                    skill_capability_id=skill_capability_id,
+                )
+            except LearningScopeConflict as exc:
+                for event in _learning_scope_failure_events(run_id, exc.code):
+                    yield event
+                return
 
         mcp_tools: tuple[BaseTool, ...] = ()
         mcp_snapshot: McpToolSnapshot | None = None
         mcp_lifecycle = None
         mcp_servers = None
-        if isinstance(mcp_catalog, McpManager):
+        if isinstance(mcp_catalog, McpManager) and learning_scope is None:
             if prepared_resume is not None and prepared_resume.mcp_lifecycle is None:
                 for event in _turn_context_plan_failure_events(
                     run_id,
@@ -892,17 +1179,21 @@ async def _deerflow_timeline_events(
             thread_id=runtime.session_id,
             app_env=app_env,
             provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
-            allow_host_shell=True,
-            allow_writes=True,
+            allow_host_shell=learning_scope is None,
+            allow_writes=learning_scope is None,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
         )
         try:
             evidence_bundle_port = CodingEvidenceBundlePort(runtime)
             knowledge_routed = retrieval_sources is None or "knowledge" in retrieval_sources
             web_routed = retrieval_sources is None or "web" in retrieval_sources
+            learning_web_ready = learning_scope is None or (
+                learning_scope.web_policy != "forbidden"
+                and learning_scope.knowledge_policy == "disabled"
+            )
             routed_knowledge_port = knowledge_port if knowledge_routed else None
-            routed_web_search_port = web_search_port if web_routed else None
-            routed_web_fetch_port = web_fetch_port if web_routed else None
+            routed_web_search_port = web_search_port if web_routed and learning_web_ready else None
+            routed_web_fetch_port = web_fetch_port if web_routed and learning_web_ready else None
             subagent_config = build_coding_subagent_config(
                 routed_knowledge_port,
                 routed_web_search_port,
@@ -910,6 +1201,18 @@ async def _deerflow_timeline_events(
                 evidence_bundle_port=evidence_bundle_port,
                 base_config=SubagentToolConfig(),
             )
+            if (
+                learning_scope is not None
+                and "subagent:research" in learning_scope.allowed_capabilities
+            ):
+                research_profiles = tuple(
+                    profile for profile in subagent_config.profiles if profile.name == "research"
+                )
+                subagent_config = replace(
+                    subagent_config,
+                    allowed_types=frozenset({"research"}),
+                    profiles=research_profiles,
+                )
             subagent_executor = CodingSubagentExecutor(
                 runtime,
                 knowledge_port=routed_knowledge_port,
@@ -917,10 +1220,29 @@ async def _deerflow_timeline_events(
                 web_fetch_port=routed_web_fetch_port,
                 evidence_bundle_port=evidence_bundle_port,
                 sandbox=sandbox,
-                allow_shell_network=web_routed,
+                allow_shell_network=web_routed and learning_web_ready,
+                web_policy_domains=(learning_scope.domains if learning_scope is not None else None),
+                web_policy_freshness=(
+                    "year"
+                    if learning_scope is not None and learning_scope.freshness == "current"
+                    else "all"
+                    if learning_scope is not None
+                    else None
+                ),
+                learning_scope=learning_scope,
+                learning_scope_revalidator=(
+                    (lambda: learning_scope_resolver.revalidate(learning_scope))
+                    if learning_scope is not None and learning_scope_resolver is not None
+                    else None
+                ),
             )
             book_learning_outcome = None
-            if not is_resume and retrieval_gate is not None and knowledge_routed:
+            if (
+                learning_scope is None
+                and not is_resume
+                and retrieval_gate is not None
+                and knowledge_routed
+            ):
                 coordinator = BookLearningCoordinator(
                     knowledge_port=routed_knowledge_port,
                     evidence_bundle_port=evidence_bundle_port,
@@ -987,8 +1309,8 @@ async def _deerflow_timeline_events(
                 skill_lifecycle=skill_lifecycle,
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
-                web_fetch_port=web_fetch_port,
-                web_search_port=web_search_port,
+                web_fetch_port=routed_web_fetch_port,
+                web_search_port=routed_web_search_port,
                 artifact_store=artifact_store,
                 knowledge_source_proposal_port=CodingKnowledgeSourceProposalPort(
                     runtime,
@@ -999,6 +1321,7 @@ async def _deerflow_timeline_events(
                 retrieval_sources=retrieval_sources,
                 retrieval_tool_scope=retrieval_tool_scope,
                 intent_envelope=task_intent,
+                learning_scope=learning_scope,
             )
             prompt_components = build_deerflow_prompt_components(
                 runtime,
@@ -1263,6 +1586,12 @@ async def _deerflow_timeline_events(
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
                 capability_revision=tool_bundle.capability_revision,
                 finalize_after_tool_calls=(4 if retrieval_tool_scope == "retrieval_only" else None),
+                learning_scope=learning_scope,
+                learning_scope_revalidator=(
+                    (lambda: learning_scope_resolver.revalidate(learning_scope))
+                    if learning_scope is not None and learning_scope_resolver is not None
+                    else None
+                ),
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None
@@ -1661,6 +1990,7 @@ async def _start_pending_goal_followup(app: Any, session_id: str) -> None:
         app_env=str(getattr(app.state, "cloud_app_env", "development")),
         input_origin="goal_followup",
         context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
+        learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
     )
     try:
         task = await coordinator.start_run(
@@ -2549,6 +2879,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 context_assembly_mode=getattr(
                     websocket.app.state, "coding_context_assembly_mode", "shadow"
                 ),
+                learning_scope_resolver=getattr(
+                    websocket.app.state, "learning_readonly_scope_resolver", None
+                ),
             )
             try:
                 task = await coordinator.start_run(
@@ -2809,6 +3142,9 @@ async def coding_approval_respond(
             resume_attempt=resume_attempt,
             context_assembly_mode=getattr(
                 request.app.state, "coding_context_assembly_mode", "shadow"
+            ),
+            learning_scope_resolver=getattr(
+                request.app.state, "learning_readonly_scope_resolver", None
             ),
         )
         try:
@@ -3297,9 +3633,11 @@ async def reject_knowledge_source_proposal(
 async def list_coding_runs(session_id: str, request: Request) -> CodingRunsResponse:
     """Return persisted run summaries for a coding session."""
     runtime = _require_runtime(request, session_id)
-    return CodingRunsResponse(
-        runs=[CodingRunSummary(**item) for item in runtime.run_store.list_runs()]
-    )
+    learning_scope = _http_runtime_learning_scope(request, runtime)
+    runs = runtime.run_store.list_runs()
+    if learning_scope is not None:
+        runs = [_learning_run_summary_payload(item) for item in runs]
+    return CodingRunsResponse(runs=[CodingRunSummary(**item) for item in runs])
 
 
 @router.get(
@@ -3313,8 +3651,15 @@ async def get_coding_run(
 ) -> CodingRunDetailResponse:
     """Return one persisted run trace."""
     runtime = _require_runtime(request, session_id)
+    learning_scope = _http_runtime_learning_scope(request, runtime)
     try:
-        return CodingRunDetailResponse(**runtime.run_store.get_run(run_id))
+        run = runtime.run_store.get_run(run_id)
+        if learning_scope is not None:
+            run = _learning_run_detail_payload(
+                run,
+                task_id=learning_scope.task_id,
+            )
+        return CodingRunDetailResponse(**run)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}") from exc
 
@@ -3323,6 +3668,11 @@ async def get_coding_run(
 async def get_coding_run_diff(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
     """Return the workspace diff artifact for a completed run."""
     runtime = _require_runtime(request, session_id)
+    if _http_runtime_learning_scope(request, runtime) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "learning_scope_diff_unavailable"},
+        )
     diff_path = runtime.run_store.evidence_root / run_id / "diff.json"
     if not diff_path.is_file():
         raise HTTPException(status_code=404, detail="diff not found for this run")

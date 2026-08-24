@@ -49,7 +49,7 @@ class FakeWebSearchPort:
 class FakeWebFetchPort:
     available = True
 
-    async def fetch(self, url: str) -> WebFetchResult:
+    async def fetch(self, url: str, **_: object) -> WebFetchResult:
         del url
         return WebFetchResult(status="unavailable", error_code="not_used")
 

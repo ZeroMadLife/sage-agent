@@ -35,6 +35,8 @@ from core.learning.activation import (
 )
 from core.learning.tasks import LearningTask, source_policy_revision
 
+_INTERNAL_LEARNING_READ_CAPABILITIES = frozenset({"local:evidence_read", "local:memory_read"})
+
 
 class SageLearningActivationResources:
     """Create stable Session, Goal, and Plan resources without invoking a model."""
@@ -443,7 +445,7 @@ class SageLearningActivationResources:
         task: LearningTask,
         registry: CapabilityRegistry,
     ) -> tuple[str, ...]:
-        candidates: list[str] = []
+        candidates: list[str] = ["local:evidence_read", "local:memory_read"]
         if task.source_policy.knowledge != "disabled":
             candidates.append("local:knowledge_search")
         if task.source_policy.web != "forbidden":
@@ -455,7 +457,10 @@ class SageLearningActivationResources:
             if research is not None and research.availability == "available":
                 candidates.append("subagent:research")
         allowed = tuple(sorted(set(candidates)))
-        if any(registry.get(item) is None for item in allowed):
+        if any(
+            item not in _INTERNAL_LEARNING_READ_CAPABILITIES and registry.get(item) is None
+            for item in allowed
+        ):
             raise LearningActivationError(
                 "learning activation selected an unknown capability",
                 code="learning_activation_capability_conflict",

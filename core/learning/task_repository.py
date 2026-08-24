@@ -448,6 +448,38 @@ class LearningTaskRepository:
             )
         return _decode_activation_row(row)
 
+    def active_activation_for_session(
+        self, *, owner_id: str, workspace_id: str, session_id: str
+    ) -> LearningActivationRecord | None:
+        """Resolve a server-owned active binding without trusting Session JSON markers."""
+        owner = _bounded_owner(owner_id)
+        workspace = _bounded_workspace(workspace_id)
+        session_key = str(session_id).strip()
+        if not session_key:
+            raise ValueError("session_id must not be empty")
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
+                "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
+                "WHERE session_id = ? AND status = 'active' LIMIT 2",
+                (session_key,),
+            ).fetchall()
+        if not rows:
+            return None
+        if len(rows) != 1:
+            raise LearningActivationError(
+                "learning session has multiple active bindings",
+                code="learning_activation_session_conflict",
+            )
+        activation = _decode_activation_row(rows[0])
+        if activation.owner_id != owner or activation.workspace_id != workspace:
+            raise LearningActivationError(
+                "learning session scope mismatch",
+                code="learning_activation_scope_mismatch",
+            )
+        return activation
+
     def save_activation(
         self,
         record: LearningActivationRecord,
@@ -1236,6 +1268,10 @@ def _migrate_schema(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS learning_task_activations_status_idx "
         "ON learning_task_activations(status, updated_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS learning_task_activations_active_session_idx "
+        "ON learning_task_activations(session_id, status)"
     )
 
 
