@@ -60,7 +60,13 @@ from core.knowledge.jobs import (
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
 from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
-from core.learning import MasteryLedger
+from core.learning import (
+    LearningActivationService,
+    LearningTaskRepository,
+    LearningTaskService,
+    MasteryLedger,
+)
+from core.learning.runtime_resources import SageLearningActivationResources
 from core.llm import create_llm
 from core.publication import PublicationCandidateRepository, PublicationCandidateService
 from db.database import AsyncSessionFactory
@@ -159,6 +165,9 @@ def create_app(
                 except Exception as exc:
                     logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
                     raise
+            app.state.learning_activations_reconciled = await asyncio.to_thread(
+                app.state.learning_activation_service.reconcile
+            )
             if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
                 app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
                     open_sqlite_checkpointer(
@@ -497,6 +506,29 @@ def create_app(
     app.state.mastery_ledger = MasteryLedger(
         app.state.coding_storage_root / "mastery-ledger.sqlite3"
     )
+    learning_task_repository = LearningTaskRepository(
+        app.state.coding_storage_root / "learning-tasks.sqlite3"
+    )
+    app.state.learning_task_service = LearningTaskService(learning_task_repository)
+    app.state.learning_activation_service = LearningActivationService(
+        learning_task_repository,
+        SageLearningActivationResources(
+            storage_root=app.state.coding_storage_root,
+            workspace_root=app.state.coding_workspace_root,
+            runtime_profile=app.state.coding_default_runtime_profile,
+            sandbox_provider=app.state.coding_sandbox_provider,
+            sandbox_image=app.state.coding_sandbox_image,
+            knowledge_available=app.state.knowledge_store is not None,
+            web_search_available=(
+                app.state.coding_web_search_port is not None
+                and getattr(app.state.coding_web_search_port, "available", True)
+            ),
+            web_fetch_available=(
+                app.state.coding_web_fetch_port is not None
+                and getattr(app.state.coding_web_fetch_port, "available", True)
+            ),
+        ),
+    )
     app.state.publication_candidate_service = (
         publication_candidate_service
         or PublicationCandidateService(PublicationCandidateRepository(AsyncSessionFactory))
@@ -516,6 +548,7 @@ def create_app(
         cloud_workspaces,
         coding,
         knowledge,
+        learning,
         publication,
         routes,
     )
@@ -524,6 +557,7 @@ def create_app(
     app.include_router(routes.health_router)
     app.include_router(routes.router)
     app.include_router(coding.router)
+    app.include_router(learning.router)
     app.include_router(knowledge.router)
     app.include_router(publication.router)
     app.include_router(cloud_auth.router)

@@ -1909,6 +1909,128 @@ class UserMessage(BaseModel):
     thread_goal_revision: int | None = Field(default=None, ge=1)
 
 
+class LearningSourcePolicyRequest(BaseModel):
+    """Source constraints frozen into one learning-task draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge: Literal["preferred", "required", "disabled"] = "preferred"
+    web: Literal["allowed_when_insufficient", "forbidden"] = "allowed_when_insufficient"
+    domains: list[str] = Field(default_factory=list, max_length=20)
+    freshness: Literal["all", "current"] = "all"
+
+
+class LearningTaskDraftRequest(BaseModel):
+    """User-provided fields for starting a draft, without model completion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str = Field(min_length=1, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = Field(default=None, ge=15, le=10_080)
+    target_date: str | None = Field(default=None, max_length=10)
+    source_policy: LearningSourcePolicyRequest | None = None
+
+
+class LearningTaskPatchRequest(BaseModel):
+    """Partial CAS update for a draft learning task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    topic: str | None = Field(default=None, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = Field(default=None, ge=15, le=10_080)
+    target_date: str | None = Field(default=None, max_length=10)
+    source_policy: LearningSourcePolicyRequest | None = None
+
+
+class LearningLearnerProfileResponse(BaseModel):
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = None
+    target_date: str | None = None
+
+
+class LearningClarificationQuestionResponse(BaseModel):
+    field: str
+    prompt: str
+
+
+class LearningClarificationResponse(BaseModel):
+    required_fields: list[str]
+    questions: list[LearningClarificationQuestionResponse]
+    ready_to_activate: bool
+
+
+class LearningGoalRefResponse(BaseModel):
+    goal_id: str
+    goal_revision: str
+
+
+class LearningTaskResponse(BaseModel):
+    """Browser-safe projection of a versioned learning task."""
+
+    version: int
+    task_id: str
+    task_revision: int
+    template_id: str
+    topic: str
+    desired_outcome: str | None = None
+    learner_profile: LearningLearnerProfileResponse
+    source_policy: LearningSourcePolicyRequest
+    risk_class: Literal["general_education", "financial_education"]
+    risk_notice: str | None = None
+    clarification: LearningClarificationResponse
+    learning_plan_id: str | None = None
+    learning_plan_hash: str | None = None
+    learning_goal_ref: LearningGoalRefResponse | None = None
+    status: Literal[
+        "draft",
+        "activating",
+        "active",
+        "activation_failed",
+        "blocked",
+        "completed",
+        "archived",
+    ]
+    created_at: str
+    updated_at: str
+
+
+class LearningTaskActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class LearningActivationResponse(BaseModel):
+    """Browser-safe receipt for one cross-store learning bootstrap."""
+
+    version: int
+    task_id: str
+    task_revision: int
+    session_id: str
+    thread_goal_revision: int | None = Field(default=None, ge=1)
+    learning_goal_ref: LearningGoalRefResponse
+    learning_plan_id: str | None = None
+    learning_plan_hash: str | None = None
+    turn_context_plan_id: str
+    turn_context_plan_hash: str | None = None
+    dag_hash: str | None = None
+    plan_id: str = Field(deprecated=True)
+    plan_hash: str | None = Field(default=None, deprecated=True)
+    catalog_revision: str | None = None
+    capability_revision: str | None = None
+    allowed_capabilities: list[str]
+    receipt_status: Literal["activating", "activation_failed", "active"]
+    failure_code: str | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
+
+
 class CodingThreadGoalCriterionEvaluation(BaseModel):
     index: int = Field(ge=0, le=7)
     status: Literal["met", "unmet", "blocked"]

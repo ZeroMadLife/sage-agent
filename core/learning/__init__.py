@@ -1,5 +1,12 @@
 """Cross-session, evidence-backed learning projections."""
 
+from core.learning.activation import (
+    LearningActivationError,
+    LearningActivationRecord,
+    LearningActivationService,
+    LearningActivationTurnContextBinding,
+    LearningGoalRef,
+)
 from core.learning.mastery import (
     MASTERY_RUBRIC_REVISION,
     MasteryCapability,
@@ -14,9 +21,47 @@ from core.learning.mastery import (
     MasteryLedgerConflictError,
     MasteryLedgerNotFoundError,
 )
+from core.learning.task_repository import (
+    LearningTaskConflictError,
+    LearningTaskError,
+    LearningTaskNotFoundError,
+    LearningTaskRepository,
+    LearningTaskService,
+)
+from core.learning.tasks import (
+    FINANCIAL_EDUCATION_NOTICE,
+    UNSET,
+    LearningClarification,
+    LearningClarificationQuestion,
+    LearningLearnerProfile,
+    LearningSourcePolicy,
+    LearningTask,
+    LearningTaskCreate,
+    LearningTaskPatch,
+    UnsetValue,
+)
 
 __all__ = [
+    "FINANCIAL_EDUCATION_NOTICE",
     "MASTERY_RUBRIC_REVISION",
+    "UNSET",
+    "LearningActivationError",
+    "LearningActivationRecord",
+    "LearningActivationService",
+    "LearningActivationTurnContextBinding",
+    "LearningClarification",
+    "LearningClarificationQuestion",
+    "LearningGoalRef",
+    "LearningLearnerProfile",
+    "LearningSourcePolicy",
+    "LearningTask",
+    "LearningTaskConflictError",
+    "LearningTaskCreate",
+    "LearningTaskError",
+    "LearningTaskNotFoundError",
+    "LearningTaskPatch",
+    "LearningTaskRepository",
+    "LearningTaskService",
     "MasteryCapability",
     "MasteryCapabilityProjection",
     "MasteryEvidence",
@@ -28,4 +73,5 @@ __all__ = [
     "MasteryLedger",
     "MasteryLedgerConflictError",
     "MasteryLedgerNotFoundError",
+    "UnsetValue",
 ]

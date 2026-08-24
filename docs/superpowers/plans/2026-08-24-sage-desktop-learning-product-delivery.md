@@ -182,8 +182,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 **交付行为**
 
-- 审查并迁移现有 draft、CAS 修改、activation intent、幂等 Session/Goal/Plan bootstrap 和 reconciliation；
-- 使用 expand-migrate-contract：新增 `learning_plan_hash`，暂时兼容旧 `plan_hash`，后续调用者迁移完成再收缩；
+- 审查并迁移现有 draft、CAS 修改、activation intent、幂等 Session/Goal/TurnContextPlan bootstrap 和 reconciliation；
+- 使用 expand-migrate-contract：内部和新持久化以 `turn_context_plan_id/turn_context_plan_hash` 为权威；公共 API 在 expand 阶段保留 deprecated `plan_id/plan_hash` 投影，持久化 decoder 兼容读取同名旧字段；
+- L0 不生成 LearningPlan 或 Task DAG，`learning_plan_id/learning_plan_hash/dag_hash` 保持为空，分别留到 L3/L4 的真实合同生成；
 - 保留 activation receipt 的 owner、task revision、capability revision 和 source policy。
 
 **公共 seam**
@@ -197,7 +198,7 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 - 并发激活只有一个 winner；四个故障注入点重启后完成或补偿；
 - 孤立 Session 被归档；
-- `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用；
+- `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用，旧 `plan_hash` 只映射到 TurnContextPlan；
 - 原 27 个定向测试、集成回归、Ruff、Mypy 通过。
 
 **依赖与非目标**
@@ -350,4 +351,3 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - 需要不可逆数据库迁移、用户数据物理删除策略或公开发布；
 - sidecar 打包证明当前 Python 原生依赖无法可靠分发，需要切换 Electron/服务端路线；
 - 产品方向、收费、隐私承诺或公开 SLA 发生变化。
-
