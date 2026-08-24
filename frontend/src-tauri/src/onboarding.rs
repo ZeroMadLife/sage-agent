@@ -1,0 +1,945 @@
+use crate::secret_broker::{broker_error, SecretBroker, SecretBrokerError};
+use reqwest::blocking::Client;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+use uuid::Uuid;
+
+const SCHEMA_VERSION: i64 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CapabilityInputs {
+    pub docker_ready: bool,
+    pub postgres_ready: bool,
+    pub web_search_ready: bool,
+}
+
+pub trait HostCapabilityProbe: Send + Sync {
+    fn detect(&self) -> CapabilityInputs;
+}
+
+pub trait ProviderProbe: Send + Sync {
+    fn discover_models(
+        &self,
+        base_url: &str,
+        secret: &str,
+    ) -> Result<Vec<String>, ProviderProbeError>;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderProbeError {
+    Unavailable,
+    InvalidResponse,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnboardingMode {
+    Local,
+    Cloud,
+}
+
+impl OnboardingMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "local" => Some(Self::Local),
+            "cloud" => Some(Self::Cloud),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct LocalProviderInput {
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+    pub default_model: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LocalProviderView {
+    pub provider_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub key_ref: String,
+    pub key_hint: String,
+    pub key_configured: bool,
+    pub status: String,
+    pub reason_code: Option<String>,
+    pub models: Vec<String>,
+    pub default_model: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+pub struct DesktopCapability {
+    pub status: String,
+    pub reason_code: Option<String>,
+    pub action: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct OnboardingSnapshot {
+    pub status: String,
+    pub reason_code: Option<String>,
+    pub action: Option<String>,
+    pub stage: String,
+    pub mode: Option<OnboardingMode>,
+    pub workspace_name: Option<String>,
+    pub providers: Vec<LocalProviderView>,
+    pub capabilities: BTreeMap<String, DesktopCapability>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct DesktopActionError {
+    pub reason_code: &'static str,
+    pub action: &'static str,
+}
+
+impl DesktopActionError {
+    fn new(reason_code: &'static str, action: &'static str) -> Self {
+        Self {
+            reason_code,
+            action,
+        }
+    }
+
+    fn storage() -> Self {
+        Self::new("desktop_metadata_unavailable", "restart_sage")
+    }
+}
+
+impl From<SecretBrokerError> for DesktopActionError {
+    fn from(error: SecretBrokerError) -> Self {
+        let response = broker_error(error);
+        Self::new(response.reason_code, response.action)
+    }
+}
+
+struct ProviderRecord {
+    provider_id: String,
+    name: String,
+    base_url: String,
+    key_ref: String,
+    key_hint: String,
+    key_configured: bool,
+    status: String,
+    reason_code: Option<String>,
+}
+
+pub struct OnboardingService {
+    database_path: PathBuf,
+    connection: Connection,
+    secrets: Arc<dyn SecretBroker>,
+    provider_probe: Arc<dyn ProviderProbe>,
+    host_capabilities: Arc<dyn HostCapabilityProbe>,
+}
+
+impl OnboardingService {
+    pub fn open_with(
+        data_dir: PathBuf,
+        secrets: Arc<dyn SecretBroker>,
+        provider_probe: Arc<dyn ProviderProbe>,
+        host_capabilities: Arc<dyn HostCapabilityProbe>,
+    ) -> Result<Self, DesktopActionError> {
+        std::fs::create_dir_all(&data_dir).map_err(|_| DesktopActionError::storage())?;
+        let database_path = data_dir.join("desktop-onboarding.sqlite3");
+        let connection =
+            Connection::open(&database_path).map_err(|_| DesktopActionError::storage())?;
+        connection
+            .pragma_update(None, "foreign_keys", "ON")
+            .map_err(|_| DesktopActionError::storage())?;
+        migrate(&connection)?;
+        Ok(Self {
+            database_path,
+            connection,
+            secrets,
+            provider_probe,
+            host_capabilities,
+        })
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn open_production(data_dir: PathBuf) -> Result<Self, DesktopActionError> {
+        Self::open_with(
+            data_dir,
+            Arc::new(crate::secret_broker::MacOsKeychain::sage_local_provider()),
+            Arc::new(HttpProviderProbe),
+            Arc::new(SystemHostCapabilityProbe),
+        )
+    }
+
+    pub fn database_path(&self) -> &Path {
+        &self.database_path
+    }
+
+    pub fn choose_mode(&mut self, mode: OnboardingMode) -> Result<(), DesktopActionError> {
+        self.connection
+            .execute(
+                "INSERT INTO desktop_onboarding (singleton, mode) VALUES (1, ?1) \
+                 ON CONFLICT(singleton) DO UPDATE SET mode = excluded.mode",
+                [mode.as_str()],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        Ok(())
+    }
+
+    pub fn select_workspace(&mut self, workspace: &Path) -> Result<(), DesktopActionError> {
+        let canonical = workspace
+            .canonicalize()
+            .map_err(|_| DesktopActionError::new("workspace_unavailable", "select_workspace"))?;
+        if !canonical.is_dir() {
+            return Err(DesktopActionError::new(
+                "workspace_not_directory",
+                "select_workspace",
+            ));
+        }
+        self.connection
+            .execute(
+                "INSERT INTO desktop_onboarding (singleton, workspace_path) VALUES (1, ?1) \
+                 ON CONFLICT(singleton) DO UPDATE SET workspace_path = excluded.workspace_path",
+                [canonical.to_string_lossy().as_ref()],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        Ok(())
+    }
+
+    pub fn add_provider(
+        &mut self,
+        input: LocalProviderInput,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        let name = normalized_label(&input.name, "provider_name_invalid")?;
+        let base_url = normalized_base_url(&input.base_url)?;
+        let default_model = normalized_label(&input.default_model, "provider_model_invalid")?;
+        if input.api_key.trim().is_empty() {
+            return Err(DesktopActionError::new(
+                "provider_key_invalid",
+                "reenter_provider_key",
+            ));
+        }
+        let provider_id = Uuid::new_v4().to_string();
+        let key_ref = self.secrets.store(&provider_id, input.api_key.trim())?;
+        let key_hint = key_hint(input.api_key.trim());
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        let persisted = transaction
+            .execute(
+                "INSERT INTO local_providers \
+                 (provider_id, name, base_url, key_ref, key_hint, key_configured, status) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 'untested')",
+                params![provider_id, name, base_url, key_ref, key_hint],
+            )
+            .and_then(|_| {
+                transaction.execute(
+                    "INSERT INTO local_provider_models (provider_id, model_id, is_default) \
+                     VALUES (?1, ?2, 1)",
+                    params![provider_id, default_model],
+                )
+            })
+            .and_then(|_| transaction.commit());
+        if persisted.is_err() {
+            let _ = self.secrets.delete(&key_ref);
+            return Err(DesktopActionError::storage());
+        }
+        self.provider_view(&provider_id)
+    }
+
+    pub fn probe_provider(
+        &mut self,
+        provider_id: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        let provider = self.provider_record(provider_id)?;
+        if !provider.key_configured {
+            return Err(SecretBrokerError::Missing.into());
+        }
+        let secret = self.secrets.read(&provider.key_ref)?;
+        let models = match self
+            .provider_probe
+            .discover_models(&provider.base_url, &secret)
+        {
+            Ok(models) if !models.is_empty() => models,
+            Ok(_) | Err(ProviderProbeError::InvalidResponse) => {
+                self.record_probe_failure(provider_id, "provider_probe_invalid_response")?;
+                return Err(DesktopActionError::new(
+                    "provider_probe_invalid_response",
+                    "check_provider_settings",
+                ));
+            }
+            Err(ProviderProbeError::Unavailable) => {
+                self.record_probe_failure(provider_id, "provider_probe_failed")?;
+                return Err(DesktopActionError::new(
+                    "provider_probe_failed",
+                    "check_provider_settings",
+                ));
+            }
+        };
+        let models = normalize_models(models)?;
+        let current_default = self.default_model(provider_id)?;
+        let selected_default = current_default
+            .filter(|value| models.contains(value))
+            .unwrap_or_else(|| models[0].clone());
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        transaction
+            .execute(
+                "DELETE FROM local_provider_models WHERE provider_id = ?1",
+                [provider_id],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        for model in &models {
+            transaction
+                .execute(
+                    "INSERT INTO local_provider_models (provider_id, model_id, is_default) \
+                     VALUES (?1, ?2, ?3)",
+                    params![provider_id, model, i64::from(model == &selected_default)],
+                )
+                .map_err(|_| DesktopActionError::storage())?;
+        }
+        transaction
+            .execute(
+                "UPDATE local_providers SET status = 'connected', reason_code = NULL \
+                 WHERE provider_id = ?1",
+                [provider_id],
+            )
+            .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::storage())?;
+        self.provider_view(provider_id)
+    }
+
+    pub fn set_default_model(
+        &mut self,
+        provider_id: &str,
+        model_id: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        let model_id = normalized_label(model_id, "provider_model_invalid")?;
+        let exists: bool = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_provider_models \
+                 WHERE provider_id = ?1 AND model_id = ?2)",
+                params![provider_id, model_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        if !exists {
+            return Err(DesktopActionError::new(
+                "provider_model_unknown",
+                "select_provider_model",
+            ));
+        }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        transaction
+            .execute(
+                "UPDATE local_provider_models SET is_default = 0 WHERE provider_id = ?1",
+                [provider_id],
+            )
+            .and_then(|_| {
+                transaction.execute(
+                    "UPDATE local_provider_models SET is_default = 1 \
+                     WHERE provider_id = ?1 AND model_id = ?2",
+                    params![provider_id, model_id],
+                )
+            })
+            .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::storage())?;
+        self.provider_view(provider_id)
+    }
+
+    pub fn rotate_provider_key(
+        &mut self,
+        provider_id: &str,
+        new_secret: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        if new_secret.trim().is_empty() {
+            return Err(DesktopActionError::new(
+                "provider_key_invalid",
+                "reenter_provider_key",
+            ));
+        }
+        let provider = self.provider_record(provider_id)?;
+        let previous = if provider.key_configured {
+            match self.secrets.read(&provider.key_ref) {
+                Ok(secret) => Some(secret),
+                Err(SecretBrokerError::Missing) => None,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            None
+        };
+        let key_ref = self.secrets.store(provider_id, new_secret.trim())?;
+        let result = self.connection.execute(
+            "UPDATE local_providers SET key_ref = ?2, key_hint = ?3, key_configured = 1, \
+             status = 'untested', reason_code = NULL WHERE provider_id = ?1",
+            params![provider_id, key_ref, key_hint(new_secret.trim())],
+        );
+        if result.is_err() {
+            match previous {
+                Some(secret) => {
+                    let _ = self.secrets.store(provider_id, &secret);
+                }
+                None => {
+                    let _ = self.secrets.delete(&key_ref);
+                }
+            }
+            return Err(DesktopActionError::storage());
+        }
+        self.provider_view(provider_id)
+    }
+
+    pub fn disconnect_provider(
+        &mut self,
+        provider_id: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        let provider = self.provider_record(provider_id)?;
+        let previous = match self.secrets.read(&provider.key_ref) {
+            Ok(secret) => Some(secret),
+            Err(SecretBrokerError::Missing) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if previous.is_some() {
+            self.secrets.delete(&provider.key_ref)?;
+        }
+        let result = self.connection.execute(
+            "UPDATE local_providers SET key_hint = '', key_configured = 0, \
+             status = 'disconnected', reason_code = 'provider_key_disconnected' \
+             WHERE provider_id = ?1",
+            [provider_id],
+        );
+        if result.is_err() {
+            if let Some(secret) = previous {
+                let _ = self.secrets.store(provider_id, &secret);
+            }
+            return Err(DesktopActionError::storage());
+        }
+        self.provider_view(provider_id)
+    }
+
+    pub fn delete_provider(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
+        let provider = self.provider_record(provider_id)?;
+        let previous = match self.secrets.read(&provider.key_ref) {
+            Ok(secret) => Some(secret),
+            Err(SecretBrokerError::Missing) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if previous.is_some() {
+            self.secrets.delete(&provider.key_ref)?;
+        }
+        if self
+            .connection
+            .execute(
+                "DELETE FROM local_providers WHERE provider_id = ?1",
+                [provider_id],
+            )
+            .is_err()
+        {
+            if let Some(secret) = previous {
+                let _ = self.secrets.store(provider_id, &secret);
+            }
+            return Err(DesktopActionError::storage());
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> OnboardingSnapshot {
+        self.try_snapshot()
+            .unwrap_or_else(|error| OnboardingSnapshot {
+                status: "blocked".into(),
+                reason_code: Some(error.reason_code.into()),
+                action: Some(error.action.into()),
+                stage: "blocked".into(),
+                mode: None,
+                workspace_name: None,
+                providers: Vec::new(),
+                capabilities: BTreeMap::new(),
+            })
+    }
+
+    fn try_snapshot(&self) -> Result<OnboardingSnapshot, DesktopActionError> {
+        let (mode, workspace) = self.onboarding_selection()?;
+        let providers = self.provider_views()?;
+        let workspace_ready = workspace.as_ref().is_some_and(|path| path.is_dir());
+        let provider_ready = providers.iter().any(|provider| {
+            provider.key_configured && self.secrets.read(&provider.key_ref).is_ok()
+        });
+        let stage = match mode {
+            None => "choose_mode",
+            Some(OnboardingMode::Cloud) => "cloud_unavailable",
+            Some(OnboardingMode::Local) if !workspace_ready => "select_workspace",
+            Some(OnboardingMode::Local) if !provider_ready => "configure_provider",
+            Some(OnboardingMode::Local) => "complete",
+        };
+        let host = self.host_capabilities.detect();
+        let capabilities = capability_matrix(mode, workspace_ready, provider_ready, host);
+        let (status, reason_code, action) = if stage == "complete" {
+            let degraded = capabilities
+                .values()
+                .any(|capability| capability.status != "ready");
+            (
+                if degraded { "degraded" } else { "ready" },
+                degraded.then_some("optional_capabilities_unavailable".into()),
+                degraded.then_some("review_capabilities".into()),
+            )
+        } else {
+            let (reason, action) = match stage {
+                "choose_mode" => ("onboarding_mode_required", "choose_onboarding_mode"),
+                "cloud_unavailable" => ("cloud_oauth_not_available", "choose_local_mode"),
+                "select_workspace" => ("workspace_required", "select_workspace"),
+                _ => ("provider_not_configured", "configure_provider"),
+            };
+            ("blocked", Some(reason.into()), Some(action.into()))
+        };
+        let workspace_name = workspace.and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        Ok(OnboardingSnapshot {
+            status: status.into(),
+            reason_code,
+            action,
+            stage: stage.into(),
+            mode,
+            workspace_name,
+            providers,
+            capabilities,
+        })
+    }
+
+    fn onboarding_selection(
+        &self,
+    ) -> Result<(Option<OnboardingMode>, Option<PathBuf>), DesktopActionError> {
+        let row = self
+            .connection
+            .query_row(
+                "SELECT mode, workspace_path FROM desktop_onboarding WHERE singleton = 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|_| DesktopActionError::storage())?;
+        let (mode, workspace) = row.unwrap_or((None, None));
+        Ok((
+            mode.as_deref().and_then(OnboardingMode::parse),
+            workspace.map(PathBuf::from),
+        ))
+    }
+
+    fn provider_record(&self, provider_id: &str) -> Result<ProviderRecord, DesktopActionError> {
+        self.connection
+            .query_row(
+                "SELECT provider_id, name, base_url, key_ref, key_hint, key_configured, \
+                 status, reason_code FROM local_providers WHERE provider_id = ?1",
+                [provider_id],
+                |row| {
+                    Ok(ProviderRecord {
+                        provider_id: row.get(0)?,
+                        name: row.get(1)?,
+                        base_url: row.get(2)?,
+                        key_ref: row.get(3)?,
+                        key_hint: row.get(4)?,
+                        key_configured: row.get(5)?,
+                        status: row.get(6)?,
+                        reason_code: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|_| DesktopActionError::storage())?
+            .ok_or_else(|| DesktopActionError::new("provider_not_found", "refresh_provider_list"))
+    }
+
+    fn provider_views(&self) -> Result<Vec<LocalProviderView>, DesktopActionError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT provider_id FROM local_providers ORDER BY rowid")
+            .map_err(|_| DesktopActionError::storage())?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|_| DesktopActionError::storage())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DesktopActionError::storage())?;
+        ids.iter().map(|id| self.provider_view(id)).collect()
+    }
+
+    fn provider_view(&self, provider_id: &str) -> Result<LocalProviderView, DesktopActionError> {
+        let provider = self.provider_record(provider_id)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT model_id, is_default FROM local_provider_models \
+                 WHERE provider_id = ?1 ORDER BY rowid",
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        let rows = statement
+            .query_map([provider_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })
+            .map_err(|_| DesktopActionError::storage())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DesktopActionError::storage())?;
+        let default_model = rows
+            .iter()
+            .find_map(|(model, is_default)| is_default.then_some(model.clone()));
+        Ok(LocalProviderView {
+            provider_id: provider.provider_id,
+            name: provider.name,
+            base_url: provider.base_url,
+            key_ref: provider.key_ref,
+            key_hint: provider.key_hint,
+            key_configured: provider.key_configured,
+            status: provider.status,
+            reason_code: provider.reason_code,
+            models: rows.into_iter().map(|(model, _)| model).collect(),
+            default_model,
+        })
+    }
+
+    fn default_model(&self, provider_id: &str) -> Result<Option<String>, DesktopActionError> {
+        self.connection
+            .query_row(
+                "SELECT model_id FROM local_provider_models \
+                 WHERE provider_id = ?1 AND is_default = 1",
+                [provider_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| DesktopActionError::storage())
+    }
+
+    fn record_probe_failure(
+        &self,
+        provider_id: &str,
+        reason_code: &'static str,
+    ) -> Result<(), DesktopActionError> {
+        self.connection
+            .execute(
+                "UPDATE local_providers SET status = 'error', reason_code = ?2 \
+                 WHERE provider_id = ?1",
+                params![provider_id, reason_code],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        Ok(())
+    }
+}
+
+fn migrate(connection: &Connection) -> Result<(), DesktopActionError> {
+    let version: i64 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| DesktopActionError::storage())?;
+    if version > SCHEMA_VERSION {
+        return Err(DesktopActionError::new(
+            "desktop_migration_incompatible",
+            "upgrade_sage",
+        ));
+    }
+    connection
+        .execute_batch(
+            "BEGIN IMMEDIATE;
+             CREATE TABLE IF NOT EXISTS desktop_onboarding (
+                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                 mode TEXT,
+                 workspace_path TEXT
+             );
+             CREATE TABLE IF NOT EXISTS local_providers (
+                 provider_id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 base_url TEXT NOT NULL,
+                 key_ref TEXT NOT NULL,
+                 key_hint TEXT NOT NULL,
+                 key_configured INTEGER NOT NULL,
+                 status TEXT NOT NULL,
+                 reason_code TEXT
+             );
+             CREATE TABLE IF NOT EXISTS local_provider_models (
+                 provider_id TEXT NOT NULL REFERENCES local_providers(provider_id) ON DELETE CASCADE,
+                 model_id TEXT NOT NULL,
+                 is_default INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (provider_id, model_id)
+             );
+             PRAGMA user_version = 1;
+             COMMIT;",
+        )
+        .map_err(|_| DesktopActionError::storage())
+}
+
+fn capability(status: &str, reason_code: Option<&str>, action: Option<&str>) -> DesktopCapability {
+    DesktopCapability {
+        status: status.into(),
+        reason_code: reason_code.map(str::to_string),
+        action: action.map(str::to_string),
+    }
+}
+
+pub fn capability_matrix(
+    mode: Option<OnboardingMode>,
+    workspace_ready: bool,
+    provider_ready: bool,
+    inputs: CapabilityInputs,
+) -> BTreeMap<String, DesktopCapability> {
+    let mut values = BTreeMap::new();
+    values.insert("data_directory".into(), capability("ready", None, None));
+    values.insert("migrations".into(), capability("ready", None, None));
+    values.insert(
+        "workspace".into(),
+        if workspace_ready {
+            capability("ready", None, None)
+        } else {
+            capability(
+                "blocked",
+                Some("workspace_required"),
+                Some("select_workspace"),
+            )
+        },
+    );
+    values.insert(
+        "provider".into(),
+        if provider_ready {
+            capability("ready", None, None)
+        } else if mode == Some(OnboardingMode::Cloud) {
+            capability(
+                "blocked",
+                Some("cloud_oauth_not_available"),
+                Some("choose_local_mode"),
+            )
+        } else {
+            capability(
+                "blocked",
+                Some("provider_not_configured"),
+                Some("configure_provider"),
+            )
+        },
+    );
+    for name in ["conversation", "rag"] {
+        values.insert(
+            name.into(),
+            if provider_ready && workspace_ready {
+                capability("ready", None, None)
+            } else {
+                capability(
+                    "blocked",
+                    Some("provider_or_workspace_required"),
+                    Some("complete_onboarding"),
+                )
+            },
+        );
+    }
+    values.insert(
+        "side_effect_tools".into(),
+        if inputs.docker_ready {
+            capability("ready", None, None)
+        } else {
+            capability(
+                "blocked",
+                Some("docker_not_available"),
+                Some("continue_without_side_effect_tools"),
+            )
+        },
+    );
+    values.insert(
+        "postgres".into(),
+        if inputs.postgres_ready {
+            capability("ready", None, None)
+        } else {
+            capability(
+                "degraded",
+                Some("postgres_not_configured"),
+                Some("use_sqlite_rag"),
+            )
+        },
+    );
+    values.insert(
+        "web_search".into(),
+        if inputs.web_search_ready {
+            capability("ready", None, None)
+        } else {
+            capability(
+                "degraded",
+                Some("web_search_not_configured"),
+                Some("continue_with_local_sources"),
+            )
+        },
+    );
+    values
+}
+
+fn normalized_label(value: &str, reason_code: &'static str) -> Result<String, DesktopActionError> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 200 {
+        return Err(DesktopActionError::new(
+            reason_code,
+            "review_provider_settings",
+        ));
+    }
+    Ok(value.into())
+}
+
+fn normalized_base_url(value: &str) -> Result<String, DesktopActionError> {
+    let mut url = reqwest::Url::parse(value.trim()).map_err(|_| {
+        DesktopActionError::new("provider_base_url_invalid", "review_provider_settings")
+    })?;
+    let loopback = matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+    if (url.scheme() != "https" && !(loopback && url.scheme() == "http"))
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(DesktopActionError::new(
+            "provider_base_url_invalid",
+            "review_provider_settings",
+        ));
+    }
+    let normalized_path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&normalized_path);
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
+fn normalize_models(models: Vec<String>) -> Result<Vec<String>, DesktopActionError> {
+    let mut normalized = models
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value.len() <= 200)
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Err(DesktopActionError::new(
+            "provider_probe_invalid_response",
+            "check_provider_settings",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn key_hint(secret: &str) -> String {
+    let suffix = secret
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    format!("****{suffix}")
+}
+
+#[derive(Default)]
+pub struct HttpProviderProbe;
+
+impl ProviderProbe for HttpProviderProbe {
+    fn discover_models(
+        &self,
+        base_url: &str,
+        secret: &str,
+    ) -> Result<Vec<String>, ProviderProbeError> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .map_err(|_| ProviderProbeError::Unavailable)?;
+        let response = client
+            .get(format!("{}/models", base_url.trim_end_matches('/')))
+            .bearer_auth(secret)
+            .send()
+            .map_err(|_| ProviderProbeError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(ProviderProbeError::Unavailable);
+        }
+        let payload: Value = response
+            .json()
+            .map_err(|_| ProviderProbeError::InvalidResponse)?;
+        let models = payload
+            .get("data")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .or_else(|| {
+                payload
+                    .get("models")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .ok_or(ProviderProbeError::InvalidResponse)?;
+        if models.is_empty() {
+            return Err(ProviderProbeError::InvalidResponse);
+        }
+        Ok(models)
+    }
+}
+
+pub struct SystemHostCapabilityProbe;
+
+impl HostCapabilityProbe for SystemHostCapabilityProbe {
+    fn detect(&self) -> CapabilityInputs {
+        CapabilityInputs {
+            docker_ready: docker_socket_ready(),
+            postgres_ready: false,
+            web_search_ready: false,
+        }
+    }
+}
+
+#[cfg(unix)]
+fn docker_socket_ready() -> bool {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+
+    let mut candidates = vec![PathBuf::from("/var/run/docker.sock")];
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".docker/run/docker.sock"));
+    }
+    candidates.into_iter().any(|path| {
+        let Ok(mut stream) = UnixStream::connect(path) else {
+            return false;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(300)));
+        let _ = stream.set_write_timeout(Some(Duration::from_millis(300)));
+        if stream
+            .write_all(b"GET /_ping HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .is_err()
+        {
+            return false;
+        }
+        let mut response = [0_u8; 64];
+        stream
+            .read(&mut response)
+            .is_ok_and(|read| response[..read].starts_with(b"HTTP/1.1 200"))
+    })
+}
+
+#[cfg(not(unix))]
+fn docker_socket_ready() -> bool {
+    false
+}

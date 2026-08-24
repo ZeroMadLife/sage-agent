@@ -1,6 +1,8 @@
 pub mod diagnostics;
 pub mod lifecycle;
+pub mod onboarding;
 pub mod protocol;
+pub mod secret_broker;
 pub mod state_repository;
 mod supervisor;
 
