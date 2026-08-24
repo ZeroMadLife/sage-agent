@@ -75,6 +75,25 @@ impl DesktopStateRepository {
         self.save_unpublished_orphans_unlocked(records)
     }
 
+    pub fn remove_unpublished_orphan(&self, record: &OrphanRecord) -> std::io::Result<()> {
+        let _guard = self
+            .unpublished_lock
+            .lock()
+            .expect("unpublished orphan state poisoned");
+        let mut state = self.load_unpublished_orphans_unlocked()?;
+        let previous_len = state.unpublished_orphans.len();
+        state
+            .unpublished_orphans
+            .retain(|candidate| candidate != record);
+        if state.unpublished_orphans.len() == previous_len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "unpublished orphan identity is not journaled",
+            ));
+        }
+        self.save_unpublished_orphans_unlocked(&state.unpublished_orphans)
+    }
+
     fn load_unpublished_orphans_unlocked(&self) -> std::io::Result<UnpublishedOrphanState> {
         match std::fs::read(&self.unpublished_path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(std::io::Error::other),

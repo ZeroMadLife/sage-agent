@@ -55,6 +55,23 @@ fn unpublished_orphan_journal_round_trips_deduplicates_and_replaces() {
 }
 
 #[test]
+fn unpublished_orphan_remove_is_exact_and_durable() {
+    let root = tempfile::tempdir().unwrap();
+    let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));
+    let record = OrphanRecord {
+        pid: 42,
+        start_time: 100,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+    repository.add_unpublished_orphan(&record).unwrap();
+
+    repository.remove_unpublished_orphan(&record).unwrap();
+
+    assert_eq!(repository.load_unpublished_orphans().unwrap(), []);
+    assert!(repository.remove_unpublished_orphan(&record).is_err());
+}
+
+#[test]
 fn corrupt_unpublished_orphan_journal_fails_closed() {
     let root = tempfile::tempdir().unwrap();
     let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));

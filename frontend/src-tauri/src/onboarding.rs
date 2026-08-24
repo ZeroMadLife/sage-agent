@@ -348,6 +348,11 @@ pub fn desktop_onboarding_action(
     state: State<'_, SharedOnboardingState>,
     host: State<'_, crate::supervisor::SharedHostState>,
 ) -> Result<OnboardingSnapshot, DesktopActionError> {
+    if let Some((reason_code, action)) =
+        crate::supervisor::configuration_action_failure(host.inner())
+    {
+        return Err(DesktopActionError::new(reason_code, action));
+    }
     let mut runtime = state.0.lock().map_err(|_| DesktopActionError::storage())?;
     let OnboardingRuntime::Ready(service) = &mut *runtime else {
         return match &*runtime {

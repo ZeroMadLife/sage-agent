@@ -79,6 +79,22 @@ impl HostSnapshot {
     fn termination_failure() -> Self {
         Self::problem("blocked", "desktop_sidecar_stop_failed", "open_diagnostics")
     }
+
+    fn unpublished_termination_failure() -> Self {
+        Self::problem(
+            "blocked",
+            "desktop_unpublished_sidecar_cleanup_failed",
+            "open_diagnostics",
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OwnershipRecoveryState {
+    Healthy,
+    Recovering,
+    Untrusted,
+    PersistFailed,
 }
 
 struct HostInner {
@@ -90,6 +106,8 @@ struct HostInner {
     diagnostic_log: Option<DiagnosticLog>,
     disk: HostDiskState,
     unpublished_orphans: Vec<OrphanRecord>,
+    ownership_recovery: OwnershipRecoveryState,
+    snapshot_before_ownership_recovery: Option<HostSnapshot>,
     launch_generation: u64,
     configuration_restart_in_progress: bool,
 }
@@ -105,6 +123,8 @@ impl Default for HostInner {
             diagnostic_log: None,
             disk: HostDiskState::default(),
             unpublished_orphans: Vec::new(),
+            ownership_recovery: OwnershipRecoveryState::Healthy,
+            snapshot_before_ownership_recovery: None,
             launch_generation: 0,
             configuration_restart_in_progress: false,
         }
@@ -118,6 +138,13 @@ impl SharedHostState {
     pub fn is_stopping(&self) -> bool {
         self.0.lock().expect("host state poisoned").stopping
     }
+}
+
+pub fn configuration_action_failure(
+    shared: &SharedHostState,
+) -> Option<(&'static str, &'static str)> {
+    let inner = shared.0.lock().expect("host state poisoned");
+    ownership_admission_failure(&inner).map(|reason| (reason, "open_diagnostics"))
 }
 
 #[derive(Serialize)]
@@ -242,27 +269,7 @@ pub fn start(app: AppHandle) {
         }
     };
     let mut disk = repository.load();
-    let mut unpublished_orphans = match repository.load_unpublished_orphans() {
-        Ok(records) => records,
-        Err(_) => {
-            {
-                let mut inner = shared.0.lock().expect("host state poisoned");
-                inner.repository = Some(repository);
-                inner.diagnostic_log = Some(diagnostic_log);
-                inner.disk = disk;
-                inner.snapshot = HostSnapshot::persistence_failure();
-            }
-            let _ = append_diagnostic(
-                &shared,
-                "state_persist_failed",
-                "blocked",
-                "desktop_state_persist_failed",
-            );
-            return;
-        }
-    };
-    let unpublished_cleanup_result = clean_unpublished_orphans(&mut unpublished_orphans);
-    let unpublished_persist_result = repository.replace_unpublished_orphans(&unpublished_orphans);
+    let unpublished = reconcile_unpublished_startup(&repository, terminate_runtime);
     let cleanup_result = clean_known_orphan(&mut disk);
     let startup = startup_action(&mut disk.crash_budget, unix_seconds());
     let persisted = {
@@ -270,10 +277,16 @@ pub fn start(app: AppHandle) {
         inner.repository = Some(repository);
         inner.diagnostic_log = Some(diagnostic_log);
         inner.disk = disk;
-        inner.unpublished_orphans = unpublished_orphans;
+        inner.unpublished_orphans = unpublished.records;
+        inner.ownership_recovery = unpublished.health;
         persist_disk_locked(&inner)
     };
-    if persisted.is_err() || unpublished_persist_result.is_err() {
+    if persisted.is_err()
+        || matches!(
+            unpublished.health,
+            OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed
+        )
+    {
         set_snapshot(&shared, HostSnapshot::persistence_failure());
         let _ = append_diagnostic(
             &shared,
@@ -283,7 +296,17 @@ pub fn start(app: AppHandle) {
         );
         return;
     }
-    if unpublished_cleanup_result.is_err() || cleanup_result.is_err() {
+    if unpublished.cleanup_failed {
+        set_snapshot(&shared, HostSnapshot::unpublished_termination_failure());
+        let _ = append_diagnostic(
+            &shared,
+            "unpublished_sidecar_cleanup_failed",
+            "blocked",
+            "desktop_unpublished_sidecar_cleanup_failed",
+        );
+        return;
+    }
+    if cleanup_result.is_err() {
         set_snapshot(&shared, HostSnapshot::termination_failure());
         let _ = append_diagnostic(
             &shared,
@@ -308,7 +331,9 @@ pub fn start(app: AppHandle) {
         );
         return;
     }
-    let generation = next_launch_generation(&shared);
+    let Some(generation) = next_launch_generation(&shared) else {
+        return;
+    };
     schedule_launch(app, shared, data_dir, Duration::ZERO, generation);
 }
 
@@ -323,7 +348,7 @@ fn schedule_launch(
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
         }
-        if shared.is_stopping() {
+        if launch_admission_failure(&shared, generation).is_some() {
             return;
         }
         match launch_once(&app, &shared, &data_dir, generation).await {
@@ -480,8 +505,8 @@ where
     if inner.launch_generation != generation || inner.configuration_restart_in_progress {
         return Err("desktop_launch_superseded");
     }
-    if !inner.unpublished_orphans.is_empty() {
-        return Err("desktop_unpublished_sidecar_cleanup_failed");
+    if let Some(reason) = ownership_admission_failure(&inner) {
+        return Err(reason);
     }
     inner.snapshot = HostSnapshot::starting();
     Ok(())
@@ -502,12 +527,10 @@ where
     if inner.stopping {
         return Err(("desktop_stopping", record, resource));
     }
-    if inner.launch_generation == generation && !inner.unpublished_orphans.is_empty() {
-        return Err((
-            "desktop_unpublished_sidecar_cleanup_failed",
-            record,
-            resource,
-        ));
+    if inner.launch_generation == generation {
+        if let Some(reason) = ownership_admission_failure(&inner) {
+            return Err((reason, record, resource));
+        }
     }
     if inner.launch_generation != generation
         || inner.configuration_restart_in_progress
@@ -531,50 +554,133 @@ where
     Ok(())
 }
 
-fn finish_unpublished_launch_cleanup(
-    shared: &SharedHostState,
-    record: &OrphanRecord,
-    result: std::io::Result<crate::lifecycle::TerminationOutcome>,
-) -> bool {
-    if matches!(
-        result,
-        Ok(crate::lifecycle::TerminationOutcome::Stopped)
-            | Ok(crate::lifecycle::TerminationOutcome::IdentityChanged)
-    ) {
-        return true;
-    }
-
-    let repository = {
+fn reserve_unpublished_launch_cleanup(shared: &SharedHostState, record: &OrphanRecord) -> bool {
+    let (persisted, prior_health) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
+        let prior_health = inner.ownership_recovery;
         if !inner.unpublished_orphans.contains(record) {
+            if inner.unpublished_orphans.is_empty()
+                && inner.ownership_recovery == OwnershipRecoveryState::Healthy
+            {
+                inner.snapshot_before_ownership_recovery = Some(inner.snapshot.clone());
+            }
             inner.unpublished_orphans.push(record.clone());
         }
-        inner.snapshot = HostSnapshot::problem(
-            "blocked",
-            "desktop_unpublished_sidecar_cleanup_failed",
-            "open_diagnostics",
-        );
-        inner.repository.clone()
+        let persisted = inner
+            .repository
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("desktop state path unavailable"))
+            .and_then(|repository| repository.add_unpublished_orphan(record))
+            .is_ok();
+        if persisted
+            && !matches!(
+                prior_health,
+                OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed
+            )
+        {
+            inner.ownership_recovery = OwnershipRecoveryState::Recovering;
+        }
+        inner.snapshot = if matches!(
+            prior_health,
+            OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed
+        ) {
+            HostSnapshot::persistence_failure()
+        } else {
+            HostSnapshot::unpublished_termination_failure()
+        };
+        (persisted, prior_health)
     };
-    let persisted = repository
-        .ok_or_else(|| std::io::Error::other("desktop state path unavailable"))
-        .and_then(|repository| repository.add_unpublished_orphan(record));
-    if persisted.is_err() {
-        set_snapshot(shared, HostSnapshot::persistence_failure());
+    if persisted && prior_health != OwnershipRecoveryState::Untrusted {
+        true
+    } else {
+        {
+            let mut inner = shared.0.lock().expect("host state poisoned");
+            inner.ownership_recovery = OwnershipRecoveryState::PersistFailed;
+            inner.snapshot = HostSnapshot::persistence_failure();
+        }
         let _ = append_diagnostic(
             shared,
             "state_persist_failed",
             "blocked",
             "desktop_state_persist_failed",
         );
-    } else {
+        false
+    }
+}
+
+fn finish_unpublished_launch_cleanup(
+    shared: &SharedHostState,
+    record: &OrphanRecord,
+    result: std::io::Result<crate::lifecycle::TerminationOutcome>,
+) -> bool {
+    let safely_terminated = matches!(
+        result,
+        Ok(crate::lifecycle::TerminationOutcome::Stopped)
+            | Ok(crate::lifecycle::TerminationOutcome::IdentityChanged)
+    );
+    if safely_terminated {
+        let removed = {
+            let mut inner = shared.0.lock().expect("host state poisoned");
+            let removed = inner
+                .repository
+                .as_ref()
+                .ok_or_else(|| std::io::Error::other("desktop state path unavailable"))
+                .and_then(|repository| repository.remove_unpublished_orphan(record))
+                .is_ok();
+            if removed {
+                inner
+                    .unpublished_orphans
+                    .retain(|candidate| candidate != record);
+                if inner.unpublished_orphans.is_empty() {
+                    inner.ownership_recovery = OwnershipRecoveryState::Healthy;
+                    if let Some(snapshot) = inner.snapshot_before_ownership_recovery.take() {
+                        inner.snapshot = snapshot;
+                    }
+                } else if !matches!(
+                    inner.ownership_recovery,
+                    OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed
+                ) {
+                    inner.ownership_recovery = OwnershipRecoveryState::Recovering;
+                }
+            } else {
+                inner.ownership_recovery = OwnershipRecoveryState::PersistFailed;
+                inner.snapshot = HostSnapshot::persistence_failure();
+            }
+            removed
+        };
+        if removed {
+            return true;
+        }
         let _ = append_diagnostic(
             shared,
-            "unpublished_sidecar_cleanup_failed",
+            "state_persist_failed",
             "blocked",
-            "desktop_unpublished_sidecar_cleanup_failed",
+            "desktop_state_persist_failed",
         );
+        return false;
     }
+
+    {
+        let mut inner = shared.0.lock().expect("host state poisoned");
+        let unhealthy = matches!(
+            inner.ownership_recovery,
+            OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed
+        );
+        if !unhealthy {
+            inner.ownership_recovery = OwnershipRecoveryState::Recovering;
+        }
+        inner.snapshot = if unhealthy {
+            HostSnapshot::persistence_failure()
+        } else {
+            HostSnapshot::unpublished_termination_failure()
+        };
+    }
+    let _ = append_diagnostic(
+        shared,
+        "unpublished_sidecar_cleanup_failed",
+        "blocked",
+        "desktop_unpublished_sidecar_cleanup_failed",
+    );
     false
 }
 
@@ -589,6 +695,9 @@ where
     F: std::future::Future<Output = std::io::Result<crate::lifecycle::TerminationOutcome>>,
 {
     let _child = child;
+    if !reserve_unpublished_launch_cleanup(shared, &record) {
+        return "desktop_unpublished_sidecar_cleanup_failed";
+    }
     let result = termination.await;
     if finish_unpublished_launch_cleanup(shared, &record, result) {
         reason
@@ -733,15 +842,29 @@ fn record_launch_failure(
     reason: &'static str,
     now: u64,
 ) -> LaunchFailureDisposition {
+    record_launch_failure_with_hook(shared, generation, reason, now, || {})
+}
+
+fn record_launch_failure_with_hook<F>(
+    shared: &SharedHostState,
+    generation: u64,
+    reason: &'static str,
+    now: u64,
+    after_admission_check: F,
+) -> LaunchFailureDisposition
+where
+    F: FnOnce(),
+{
     {
         let inner = shared.0.lock().expect("host state poisoned");
         if inner.launch_generation != generation {
             return LaunchFailureDisposition::Superseded;
         }
-        if !inner.unpublished_orphans.is_empty() {
+        if ownership_admission_failure(&inner).is_some() {
             return LaunchFailureDisposition::Blocked;
         }
     }
+    after_admission_check();
     if reason == "desktop_launch_superseded" {
         return LaunchFailureDisposition::Superseded;
     }
@@ -750,6 +873,9 @@ fn record_launch_failure(
             let mut inner = shared.0.lock().expect("host state poisoned");
             if inner.launch_generation != generation {
                 return LaunchFailureDisposition::Superseded;
+            }
+            if ownership_admission_failure(&inner).is_some() {
+                return LaunchFailureDisposition::Blocked;
             }
             inner.pid = None;
             inner.child = None;
@@ -773,6 +899,9 @@ fn record_launch_failure(
         let mut inner = shared.0.lock().expect("host state poisoned");
         if inner.launch_generation != generation {
             return LaunchFailureDisposition::Superseded;
+        }
+        if ownership_admission_failure(&inner).is_some() {
+            return LaunchFailureDisposition::Blocked;
         }
         inner.pid = None;
         inner.child = None;
@@ -820,10 +949,36 @@ fn record_launch_failure(
     }
 }
 
-fn next_launch_generation(shared: &SharedHostState) -> u64 {
+fn ownership_admission_failure(inner: &HostInner) -> Option<&'static str> {
+    match inner.ownership_recovery {
+        OwnershipRecoveryState::Healthy if inner.unpublished_orphans.is_empty() => None,
+        OwnershipRecoveryState::Recovering | OwnershipRecoveryState::Healthy => {
+            Some("desktop_unpublished_sidecar_cleanup_failed")
+        }
+        OwnershipRecoveryState::Untrusted | OwnershipRecoveryState::PersistFailed => {
+            Some("desktop_state_persist_failed")
+        }
+    }
+}
+
+fn launch_admission_failure(shared: &SharedHostState, generation: u64) -> Option<&'static str> {
+    let inner = shared.0.lock().expect("host state poisoned");
+    if inner.stopping {
+        return Some("desktop_stopping");
+    }
+    if inner.launch_generation != generation || inner.configuration_restart_in_progress {
+        return Some("desktop_launch_superseded");
+    }
+    ownership_admission_failure(&inner)
+}
+
+fn next_launch_generation(shared: &SharedHostState) -> Option<u64> {
     let mut inner = shared.0.lock().expect("host state poisoned");
+    if inner.stopping || ownership_admission_failure(&inner).is_some() {
+        return None;
+    }
     inner.launch_generation = inner.launch_generation.wrapping_add(1);
-    inner.launch_generation
+    Some(inner.launch_generation)
 }
 
 fn is_current_generation(shared: &SharedHostState, generation: u64) -> bool {
@@ -872,7 +1027,7 @@ struct ConfigurationRestartRequest {
 
 fn begin_configuration_restart(shared: &SharedHostState) -> Option<ConfigurationRestartRequest> {
     let mut inner = shared.0.lock().expect("host state poisoned");
-    if inner.configuration_restart_in_progress || !inner.unpublished_orphans.is_empty() {
+    if inner.configuration_restart_in_progress || ownership_admission_failure(&inner).is_some() {
         return None;
     }
     inner.snapshot = HostSnapshot::starting();
@@ -1189,34 +1344,57 @@ fn clean_known_orphan(disk: &mut HostDiskState) -> std::io::Result<()> {
     apply_startup_termination_outcome(disk, outcome)
 }
 
-fn clean_unpublished_orphans(records: &mut Vec<OrphanRecord>) -> std::io::Result<()> {
-    let mut first_error = None;
-    for record in records.clone() {
-        match terminate_runtime(&record).and_then(|outcome| {
-            apply_unpublished_startup_termination_outcome(records, &record, outcome)
-        }) {
-            Ok(()) => {}
-            Err(error) if first_error.is_none() => first_error = Some(error),
-            Err(_) => {}
-        }
-    }
-    first_error.map_or(Ok(()), Err)
+struct UnpublishedStartupReconciliation {
+    records: Vec<OrphanRecord>,
+    health: OwnershipRecoveryState,
+    cleanup_failed: bool,
 }
 
-fn apply_unpublished_startup_termination_outcome(
-    records: &mut Vec<OrphanRecord>,
-    record: &OrphanRecord,
-    outcome: crate::lifecycle::TerminationOutcome,
-) -> std::io::Result<()> {
-    match outcome {
-        crate::lifecycle::TerminationOutcome::Stopped
-        | crate::lifecycle::TerminationOutcome::IdentityChanged => {
-            records.retain(|candidate| candidate != record);
-            Ok(())
+fn reconcile_unpublished_startup<F>(
+    repository: &DesktopStateRepository,
+    mut terminate: F,
+) -> UnpublishedStartupReconciliation
+where
+    F: FnMut(&OrphanRecord) -> std::io::Result<crate::lifecycle::TerminationOutcome>,
+{
+    let original = match repository.load_unpublished_orphans() {
+        Ok(records) => records,
+        Err(_) => {
+            return UnpublishedStartupReconciliation {
+                records: Vec::new(),
+                health: OwnershipRecoveryState::Untrusted,
+                cleanup_failed: false,
+            }
         }
-        crate::lifecycle::TerminationOutcome::KillSent => Err(std::io::Error::other(
-            "unpublished desktop sidecar stop was not verified",
-        )),
+    };
+    let mut remaining = original.clone();
+    let mut cleanup_failed = false;
+    for record in &original {
+        match terminate(record) {
+            Ok(crate::lifecycle::TerminationOutcome::Stopped)
+            | Ok(crate::lifecycle::TerminationOutcome::IdentityChanged) => {
+                remaining.retain(|candidate| candidate != record);
+            }
+            Ok(crate::lifecycle::TerminationOutcome::KillSent) | Err(_) => {
+                cleanup_failed = true;
+            }
+        }
+    }
+    if repository.replace_unpublished_orphans(&remaining).is_err() {
+        return UnpublishedStartupReconciliation {
+            records: original,
+            health: OwnershipRecoveryState::PersistFailed,
+            cleanup_failed,
+        };
+    }
+    UnpublishedStartupReconciliation {
+        health: if remaining.is_empty() {
+            OwnershipRecoveryState::Healthy
+        } else {
+            OwnershipRecoveryState::Recovering
+        },
+        records: remaining,
+        cleanup_failed,
     }
 }
 
@@ -1308,14 +1486,15 @@ fn append_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_diagnostic, apply_startup_termination_outcome,
-        apply_unpublished_startup_termination_outcome, begin_configuration_restart,
+        append_diagnostic, apply_startup_termination_outcome, begin_configuration_restart,
         commit_launch_success, finalize_rejected_launch, finish_configuration_restart,
         finish_runtime_termination, finish_runtime_termination_for_generation,
         finish_unpublished_launch_cleanup, mark_configuration_stop_failed, origin_for_profile,
-        post_handshake_reject_reason, record_launch_failure, runtime_origin,
+        post_handshake_reject_reason, reconcile_unpublished_startup, record_launch_failure,
+        record_launch_failure_with_hook, reserve_unpublished_launch_cleanup, runtime_origin,
         transition_launch_to_starting, ConfigurationRestartRequest, DesktopStateRepository,
-        DiagnosticLog, HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
+        DiagnosticLog, HostSnapshot, OwnershipRecoveryState, SharedHostState, DEVELOPMENT_ORIGIN,
+        PRODUCTION_ORIGIN,
     };
     use crate::lifecycle::{OrphanRecord, TerminationOutcome};
     use crate::protocol::DesktopSession;
@@ -1567,6 +1746,7 @@ mod tests {
                 super::persist_disk_locked(&inner).unwrap();
             }
 
+            assert!(reserve_unpublished_launch_cleanup(&shared, &record));
             assert!(!finish_unpublished_launch_cleanup(&shared, &record, result));
             let persisted: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(unpublished_path).unwrap()).unwrap();
@@ -1643,6 +1823,180 @@ mod tests {
     }
 
     #[test]
+    fn rejected_launch_is_durably_reserved_before_cleanup_future_and_closes_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+            inner.launch_generation = 1;
+        }
+        let cleanup_started = Arc::new(Barrier::new(2));
+        let cleanup_resume = Arc::new(Barrier::new(2));
+        let worker_shared = shared.clone();
+        let worker_record = record.clone();
+        let worker_started = cleanup_started.clone();
+        let worker_resume = cleanup_resume.clone();
+        let worker = std::thread::spawn(move || {
+            tauri::async_runtime::block_on(finalize_rejected_launch(
+                &worker_shared,
+                "desktop_launch_superseded",
+                worker_record,
+                (),
+                async move {
+                    worker_started.wait();
+                    worker_resume.wait();
+                    Ok(TerminationOutcome::Stopped)
+                },
+            ))
+        });
+
+        cleanup_started.wait();
+        let persisted_during_cleanup = repository.load_unpublished_orphans().unwrap();
+        let restarted_repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let restarted_recovery = reconcile_unpublished_startup(&restarted_repository, |_| {
+            Ok(TerminationOutcome::KillSent)
+        });
+        let restart_during_cleanup = begin_configuration_restart(&shared);
+        let generation_during_cleanup = super::next_launch_generation(&shared);
+        let starting_during_cleanup = transition_launch_to_starting(&shared, 1, || {});
+        let commit_during_cleanup = commit_launch_success(
+            &shared,
+            1,
+            OrphanRecord {
+                pid: 99,
+                start_time: 200,
+                executable: record.executable.clone(),
+            },
+            DesktopSession {
+                endpoint: "http://127.0.0.1:4999".into(),
+                bearer: "new-bearer".into(),
+                instance_id: "new-instance".into(),
+            },
+            (),
+            |_, _| {},
+        );
+        cleanup_resume.wait();
+        let _ = worker.join().unwrap();
+
+        assert_eq!(persisted_during_cleanup, std::slice::from_ref(&record));
+        assert_eq!(restarted_recovery.records, std::slice::from_ref(&record));
+        assert_eq!(
+            restarted_recovery.health,
+            OwnershipRecoveryState::Recovering
+        );
+        assert!(restart_during_cleanup.is_none());
+        assert_eq!(generation_during_cleanup, None);
+        assert_eq!(
+            starting_during_cleanup,
+            Err("desktop_unpublished_sidecar_cleanup_failed")
+        );
+        assert!(matches!(
+            commit_during_cleanup,
+            Err(("desktop_unpublished_sidecar_cleanup_failed", _, _))
+        ));
+    }
+
+    #[test]
+    fn failed_write_ahead_append_does_not_poll_cleanup_and_remains_fail_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        std::fs::create_dir(repository.unpublished_path()).unwrap();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository);
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+            inner.launch_generation = 1;
+        }
+        let cleanup_polled = Arc::new(AtomicBool::new(false));
+        let observed_poll = cleanup_polled.clone();
+
+        let reason = tauri::async_runtime::block_on(finalize_rejected_launch(
+            &shared,
+            "desktop_launch_superseded",
+            record.clone(),
+            (),
+            async move {
+                observed_poll.store(true, Ordering::SeqCst);
+                Ok(TerminationOutcome::Stopped)
+            },
+        ));
+
+        assert_eq!(reason, "desktop_unpublished_sidecar_cleanup_failed");
+        assert!(!cleanup_polled.load(Ordering::SeqCst));
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.unpublished_orphans, [record]);
+        assert_eq!(
+            inner.ownership_recovery,
+            OwnershipRecoveryState::PersistFailed
+        );
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_state_persist_failed")
+        );
+        drop(inner);
+        assert!(begin_configuration_restart(&shared).is_none());
+        assert_eq!(super::next_launch_generation(&shared), None);
+    }
+
+    #[test]
+    fn later_reservation_cannot_downgrade_persist_failed_journal_health() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let lost = OrphanRecord {
+            pid: 41,
+            start_time: 99,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        let later = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: lost.executable.clone(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository);
+            inner.unpublished_orphans.push(lost.clone());
+            inner.ownership_recovery = OwnershipRecoveryState::PersistFailed;
+            inner.snapshot = HostSnapshot::persistence_failure();
+        }
+
+        assert!(reserve_unpublished_launch_cleanup(&shared, &later));
+        assert!(!finish_unpublished_launch_cleanup(
+            &shared,
+            &later,
+            Ok(TerminationOutcome::KillSent),
+        ));
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.unpublished_orphans, [lost, later]);
+        assert_eq!(
+            inner.ownership_recovery,
+            OwnershipRecoveryState::PersistFailed
+        );
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_state_persist_failed")
+        );
+    }
+
+    #[test]
     fn pending_unpublished_ownership_is_not_overwritten_by_failure_accounting() {
         let shared = SharedHostState::default();
         {
@@ -1676,6 +2030,127 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_unpublished_journal_keeps_launch_admission_closed_until_repaired() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        std::fs::write(repository.unpublished_path(), b"not-json").unwrap();
+        let recovery = reconcile_unpublished_startup(&repository, |_| {
+            panic!("a corrupt journal must not attempt process cleanup")
+        });
+        assert_eq!(recovery.health, OwnershipRecoveryState::Untrusted);
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.launch_generation = 1;
+            inner.unpublished_orphans = recovery.records;
+            inner.ownership_recovery = recovery.health;
+            inner.snapshot = HostSnapshot::persistence_failure();
+        }
+
+        assert_eq!(
+            transition_launch_to_starting(&shared, 1, || {}),
+            Err("desktop_state_persist_failed")
+        );
+        assert_eq!(
+            super::configuration_action_failure(&shared),
+            Some(("desktop_state_persist_failed", "open_diagnostics"))
+        );
+        assert!(begin_configuration_restart(&shared).is_none());
+        assert!(matches!(
+            commit_launch_success(
+                &shared,
+                1,
+                OrphanRecord {
+                    pid: 42,
+                    start_time: 100,
+                    executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+                },
+                DesktopSession {
+                    endpoint: "http://127.0.0.1:4242".into(),
+                    bearer: "test-bearer".into(),
+                    instance_id: "test-instance".into(),
+                },
+                (),
+                |_, _| {},
+            ),
+            Err(("desktop_state_persist_failed", _, _))
+        ));
+
+        repository.replace_unpublished_orphans(&[]).unwrap();
+        let repaired = reconcile_unpublished_startup(&repository, |_| {
+            panic!("an empty repaired journal has no process to clean")
+        });
+        assert_eq!(repaired.health, OwnershipRecoveryState::Healthy);
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.unpublished_orphans = repaired.records;
+            inner.ownership_recovery = repaired.health;
+        }
+        assert_eq!(transition_launch_to_starting(&shared, 1, || {}), Ok(()));
+        assert_eq!(super::configuration_action_failure(&shared), None);
+    }
+
+    #[test]
+    fn pending_inserted_after_failure_precheck_cannot_mutate_snapshot_ownership_or_budget() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let runtime = OrphanRecord {
+            pid: 99,
+            start_time: 200,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        let pending = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: runtime.executable.clone(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.launch_generation = 7;
+            inner.pid = Some(runtime.pid);
+            inner.disk.orphan = Some(runtime.clone());
+        }
+
+        let inserted_shared = shared.clone();
+        let inserted_pending = pending.clone();
+        let disposition = record_launch_failure_with_hook(
+            &shared,
+            7,
+            "desktop_sidecar_spawn_failed",
+            100,
+            move || {
+                repository
+                    .add_unpublished_orphan(&inserted_pending)
+                    .unwrap();
+                let mut inner = inserted_shared.0.lock().unwrap();
+                inner.unpublished_orphans.push(inserted_pending);
+                inner.snapshot = HostSnapshot::problem(
+                    "blocked",
+                    "desktop_unpublished_sidecar_cleanup_failed",
+                    "open_diagnostics",
+                );
+            },
+        );
+
+        assert_eq!(disposition, super::LaunchFailureDisposition::Blocked);
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.pid, Some(runtime.pid));
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&runtime));
+        assert_eq!(inner.unpublished_orphans, [pending]);
+        assert_eq!(
+            serde_json::to_value(&inner.disk.crash_budget).unwrap(),
+            serde_json::json!({ "crash_timestamps": [] })
+        );
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_unpublished_sidecar_cleanup_failed")
+        );
+    }
+
+    #[test]
     fn unpublished_cleanup_accepts_stopped_or_reused_identity_as_safe() {
         for result in [
             Ok(TerminationOutcome::Stopped),
@@ -1688,51 +2163,165 @@ mod tests {
                 start_time: 100,
                 executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
             };
+            let repository = DesktopStateRepository::new(root.path().join("state.json"));
             {
                 let mut inner = shared.0.lock().unwrap();
-                inner.repository =
-                    Some(DesktopStateRepository::new(root.path().join("state.json")));
+                inner.repository = Some(repository.clone());
                 super::persist_disk_locked(&inner).unwrap();
             }
 
+            assert!(reserve_unpublished_launch_cleanup(&shared, &record));
             assert!(finish_unpublished_launch_cleanup(&shared, &record, result));
-            let persisted: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(root.path().join("state.json")).unwrap())
-                    .unwrap();
-            assert!(persisted.get("unpublished_orphans").is_none());
+            assert_eq!(repository.load_unpublished_orphans().unwrap(), []);
             assert!(shared.0.lock().unwrap().disk.orphan.is_none());
         }
     }
 
     #[test]
-    fn restart_reconciliation_clears_only_safe_unpublished_identities() {
+    fn safe_cleanup_with_failed_exact_remove_retains_ownership_and_health_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
         let record = OrphanRecord {
             pid: 42,
             start_time: 100,
             executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
         };
-        for outcome in [
-            TerminationOutcome::Stopped,
-            TerminationOutcome::IdentityChanged,
-        ] {
-            let mut unpublished_orphans = vec![record.clone()];
-            assert!(apply_unpublished_startup_termination_outcome(
-                &mut unpublished_orphans,
-                &record,
-                outcome
-            )
-            .is_ok());
-            assert!(unpublished_orphans.is_empty());
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+            inner.launch_generation = 1;
+        }
+        assert!(reserve_unpublished_launch_cleanup(&shared, &record));
+        std::fs::remove_file(repository.unpublished_path()).unwrap();
+        std::fs::create_dir(repository.unpublished_path()).unwrap();
+
+        assert!(!finish_unpublished_launch_cleanup(
+            &shared,
+            &record,
+            Ok(TerminationOutcome::Stopped),
+        ));
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.unpublished_orphans, [record]);
+        assert_eq!(
+            inner.ownership_recovery,
+            OwnershipRecoveryState::PersistFailed
+        );
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_state_persist_failed")
+        );
+        drop(inner);
+        assert!(begin_configuration_restart(&shared).is_none());
+        assert_eq!(
+            transition_launch_to_starting(&shared, 1, || {}),
+            Err("desktop_state_persist_failed")
+        );
+    }
+
+    #[test]
+    fn startup_reconciliation_safely_removes_and_reloads_unpublished_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        repository.add_unpublished_orphan(&record).unwrap();
+
+        let recovery =
+            reconcile_unpublished_startup(&repository, |_| Ok(TerminationOutcome::IdentityChanged));
+
+        assert_eq!(recovery.health, OwnershipRecoveryState::Healthy);
+        assert!(!recovery.cleanup_failed);
+        assert!(recovery.records.is_empty());
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), []);
+    }
+
+    #[test]
+    fn startup_replace_failure_retains_original_ownership_and_closes_health_gate() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        repository.add_unpublished_orphan(&record).unwrap();
+        let journal_path = repository.unpublished_path().to_path_buf();
+
+        let recovery = reconcile_unpublished_startup(&repository, |_| {
+            std::fs::remove_file(&journal_path).unwrap();
+            std::fs::create_dir(&journal_path).unwrap();
+            Ok(TerminationOutcome::Stopped)
+        });
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository);
+            inner.launch_generation = 1;
+            inner.unpublished_orphans = recovery.records;
+            inner.ownership_recovery = recovery.health;
+            inner.snapshot = HostSnapshot::persistence_failure();
         }
 
-        let mut unpublished_orphans = vec![record.clone()];
-        assert!(apply_unpublished_startup_termination_outcome(
-            &mut unpublished_orphans,
-            &record,
-            TerminationOutcome::KillSent,
-        )
-        .is_err());
-        assert_eq!(unpublished_orphans, [record]);
+        assert_eq!(recovery.health, OwnershipRecoveryState::PersistFailed);
+        assert_eq!(shared.0.lock().unwrap().unpublished_orphans, [record]);
+        assert!(begin_configuration_restart(&shared).is_none());
+        assert_eq!(
+            transition_launch_to_starting(&shared, 1, || {}),
+            Err("desktop_state_persist_failed")
+        );
+    }
+
+    #[test]
+    fn startup_unsafe_unpublished_cleanup_uses_dedicated_snapshot_and_diagnostic() {
+        let root = tempfile::tempdir().unwrap();
+        let shared = SharedHostState::default();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        repository.add_unpublished_orphan(&record).unwrap();
+        let recovery =
+            reconcile_unpublished_startup(&repository, |_| Ok(TerminationOutcome::KillSent));
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(repository.clone());
+            inner.diagnostic_log =
+                Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+            inner.unpublished_orphans = recovery.records;
+            inner.ownership_recovery = recovery.health;
+        }
+        if recovery.cleanup_failed {
+            super::set_snapshot(&shared, HostSnapshot::unpublished_termination_failure());
+            append_diagnostic(
+                &shared,
+                "unpublished_sidecar_cleanup_failed",
+                "blocked",
+                "desktop_unpublished_sidecar_cleanup_failed",
+            )
+            .unwrap();
+        }
+
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_unpublished_sidecar_cleanup_failed")
+        );
+        assert_eq!(inner.snapshot.action, Some("open_diagnostics"));
+        assert_eq!(inner.unpublished_orphans, std::slice::from_ref(&record));
+        drop(inner);
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [record]);
+        let diagnostic =
+            std::fs::read_to_string(root.path().join("diagnostics/desktop-host.jsonl")).unwrap();
+        assert!(diagnostic.contains("unpublished_sidecar_cleanup_failed"));
     }
 
     #[test]
@@ -1757,7 +2346,7 @@ mod tests {
         });
 
         checked.wait();
-        let new_generation = super::next_launch_generation(&shared);
+        let new_generation = super::next_launch_generation(&shared).unwrap();
         commit_launch_success(
             &shared,
             new_generation,
