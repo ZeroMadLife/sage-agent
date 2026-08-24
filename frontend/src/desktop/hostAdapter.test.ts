@@ -3,6 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const invoke = vi.fn()
 vi.mock('@tauri-apps/api/core', () => ({ invoke }))
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
 describe('DesktopHostAdapter', () => {
   beforeEach(() => {
     vi.resetModules()
@@ -91,7 +97,6 @@ describe('DesktopHostAdapter', () => {
     const recovered = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(encoder.encode('event: new\n\n'))
-        controller.close()
       },
     })
     const fetch = vi.fn()
@@ -104,8 +109,11 @@ describe('DesktopHostAdapter', () => {
     onDesktopConnectionState((state) => states.push(state))
 
     const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
 
-    await expect(response.text()).resolves.toBe('event: old\n\nevent: new\n\n')
+    await expect(reader.read()).resolves.toEqual({ done: false, value: encoder.encode('event: old\n\n') })
+    await expect(reader.read()).resolves.toEqual({ done: false, value: encoder.encode('event: new\n\n') })
+    await reader.cancel()
     expect(fetch).toHaveBeenNthCalledWith(
       2,
       'http://127.0.0.1:49153/desktop/probe/sse',
@@ -114,6 +122,108 @@ describe('DesktopHostAdapter', () => {
     expect(invoke).toHaveBeenCalledTimes(2)
     expect(states).toContain('degraded')
     expect(states.at(-1)).toBe('ready')
+  })
+
+  it('treats a normal SSE EOF as one bounded session reconnect', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const encoder = new TextEncoder()
+    const recovered = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: recovered\n\n'))
+      },
+    })
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response('event: initial\n\n'))
+      .mockResolvedValueOnce(new Response(recovered))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('event: initial\n\n')
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe('event: recovered\n\n')
+    await reader.cancel()
+
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancel during host recovery prevents a new SSE fetch', async () => {
+    const recovery = deferred<unknown>()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockReturnValueOnce(recovery.promise)
+    const fetch = vi.fn().mockResolvedValue(new Response(new ReadableStream({
+      start(controller) { controller.close() },
+    })))
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+    const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
+    const pendingRead = reader.read()
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(2))
+
+    const cancellation = reader.cancel('consumer stopped')
+    recovery.resolve({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+    })
+    await cancellation
+    await pendingRead
+
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(states.at(-1)).toBe('degraded')
+  })
+
+  it('cancel during the new SSE fetch closes its late body without publishing ready', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const nextResponse = deferred<Response>()
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(new ReadableStream({
+        start(controller) { controller.close() },
+      })))
+      .mockReturnValueOnce(nextResponse.promise)
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse, onDesktopConnectionState } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const states: string[] = []
+    onDesktopConnectionState((state) => states.push(state))
+    const response = await desktopSse('/desktop/probe/sse')
+    const reader = response.body!.getReader()
+    const pendingRead = reader.read()
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2))
+
+    const lateBodyCancel = vi.fn()
+    const cancellation = reader.cancel('consumer stopped')
+    nextResponse.resolve(new Response(new ReadableStream<Uint8Array>({ cancel: lateBodyCancel })))
+    await cancellation
+    await pendingRead
+
+    expect(lateBodyCancel).toHaveBeenCalledWith('consumer stopped')
+    expect(states.at(-1)).toBe('degraded')
   })
 
   it('fails closed after the bounded SSE body reconnect is exhausted', async () => {
@@ -146,6 +256,32 @@ describe('DesktopHostAdapter', () => {
     expect(fetch).toHaveBeenCalledTimes(2)
     expect(invoke).toHaveBeenCalledTimes(2)
     expect(states.at(-1)).toBe('degraded')
+  })
+
+  it('fails closed when the recovered SSE body also reaches EOF', async () => {
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+      })
+    const endedResponse = () => new Response(new ReadableStream<Uint8Array>({
+      start(controller) { controller.close() },
+    }))
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(endedResponse())
+      .mockResolvedValueOnce(endedResponse())
+    vi.stubGlobal('fetch', fetch)
+    const { desktopHostStatus, desktopSse } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const response = await desktopSse('/desktop/probe/sse')
+
+    await expect(response.text()).rejects.toThrow('desktop_sse_stream_ended')
+    expect(fetch).toHaveBeenCalledTimes(2)
+    expect(invoke).toHaveBeenCalledTimes(2)
   })
 
   it('forwards SSE reader cancellation to the active transport', async () => {

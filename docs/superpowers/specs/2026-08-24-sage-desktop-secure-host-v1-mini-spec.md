@@ -56,7 +56,7 @@ Vue 只通过 Tauri invoke 获得内存态 `{endpoint, bearer, instanceId, state
 
 WebView 的带 `Authorization` 跨 Origin 请求允许一次最小预检：OPTIONS 不要求 bearer，但 Host、Origin、requested method 和 requested headers 必须精确匹配；只返回当前 Origin、`GET`、`Authorization` 和 `Vary: Origin`，不返回 wildcard 或 credentials。实际响应继续校验 bearer/Host/Origin，并只向可信 Origin 返回精确 ACAO。失败只返回稳定 `reason_code`，不回显 bearer、nonce、路径或用户内容。
 
-debug WebView navigation 只允许 `http://127.0.0.1:5173` 同源页面，拒绝 `localhost`、其他端口和 HTTPS；release 只允许 `tauri://localhost` 自有 Origin。SSE 由 `DesktopHostAdapter` 持有可取消 body reader；headers 成功后的 body 断流必须进入 degraded，仅刷新一次宿主 session 并用轮换后的 endpoint/bearer 有界重连，第二次失败 fail closed，不保留旧 ready/session。
+debug WebView navigation 只允许 `http://127.0.0.1:5173` 同源页面，拒绝 `localhost`、其他端口和 HTTPS；release 只允许 `tauri://localhost` 自有 Origin。SSE 由 `DesktopHostAdapter` 持有可取消 body reader；headers 成功后的 read error 或正常 EOF 都必须进入 degraded，仅刷新一次宿主 session 并用轮换后的 endpoint/bearer 有界重连，第二次 EOF/断流 fail closed，不保留旧 ready/session。消费者 cancel 会使当前 recovery generation 失效、abort 新 fetch 并取消当前或迟到 body，之后不得再创建 reader 或发布 ready。
 
 ### 2.4 健康与能力
 

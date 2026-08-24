@@ -128,43 +128,115 @@ export async function desktopSse(path: string, init: RequestInit = {}): Promise<
   let reader = initial.body.getReader()
   let reconnectAttempts = 0
   let cancelled = false
+  let generation = 0
+  let cancellationReason: unknown
+  let reconnectAbort: AbortController | null = null
+  let detachCallerAbort: (() => void) | null = null
+
+  function isCurrent(expectedGeneration: number): boolean {
+    return !cancelled && generation === expectedGeneration
+  }
+
+  function stopReconnectTransport(reason?: unknown): void {
+    const abort = reconnectAbort
+    reconnectAbort = null
+    detachCallerAbort?.()
+    detachCallerAbort = null
+    abort?.abort(reason)
+  }
+
+  async function reconnect(
+    controller: ReadableStreamDefaultController<Uint8Array>,
+    cause: unknown,
+  ): Promise<boolean> {
+    publishConnectionState('degraded')
+    stopReconnectTransport(cause)
+    if (reconnectAttempts >= 1) {
+      session = null
+      controller.error(cause)
+      return false
+    }
+    reconnectAttempts += 1
+    const expectedGeneration = generation
+    await reader.cancel().catch(() => undefined)
+    if (!isCurrent(expectedGeneration)) return false
+
+    try {
+      const refreshed = await recoverSession()
+      if (!isCurrent(expectedGeneration)) {
+        session = null
+        return false
+      }
+      const abort = new AbortController()
+      reconnectAbort = abort
+      const callerSignal = requestInit.signal
+      if (callerSignal) {
+        const forwardAbort = () => abort.abort(callerSignal.reason)
+        if (callerSignal.aborted) forwardAbort()
+        else {
+          callerSignal.addEventListener('abort', forwardAbort, { once: true })
+          detachCallerAbort = () => callerSignal.removeEventListener('abort', forwardAbort)
+        }
+      }
+      const response = await fetchWithSession(refreshed, path, {
+        ...requestInit,
+        signal: abort.signal,
+      })
+      if (!isCurrent(expectedGeneration)) {
+        session = null
+        await response.body?.cancel(cancellationReason).catch(() => undefined)
+        return false
+      }
+      if (!response.ok || !response.body) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new Error('desktop_sse_reconnect_failed')
+      }
+      const nextReader = response.body.getReader()
+      if (!isCurrent(expectedGeneration)) {
+        session = null
+        await nextReader.cancel(cancellationReason).catch(() => undefined)
+        return false
+      }
+      reader = nextReader
+      publishConnectionState('ready')
+      return true
+    } catch (reconnectError) {
+      if (!isCurrent(expectedGeneration)) {
+        session = null
+        return false
+      }
+      stopReconnectTransport(reconnectError)
+      session = null
+      publishConnectionState('degraded')
+      controller.error(reconnectError)
+      return false
+    }
+  }
+
   const body = new ReadableStream<Uint8Array>({
     async pull(controller) {
       while (!cancelled) {
+        let chunk: ReadableStreamReadResult<Uint8Array>
         try {
-          const chunk = await reader.read()
-          if (chunk.done) {
-            controller.close()
-          } else {
-            controller.enqueue(chunk.value)
-          }
-          return
+          chunk = await reader.read()
         } catch (error) {
-          publishConnectionState('degraded')
-          if (reconnectAttempts >= 1) {
-            session = null
-            controller.error(error)
-            return
-          }
-          reconnectAttempts += 1
-          await reader.cancel().catch(() => undefined)
-          try {
-            const refreshed = await recoverSession()
-            const response = await fetchWithSession(refreshed, path, requestInit)
-            if (!response.ok || !response.body) throw new Error('desktop_sse_reconnect_failed')
-            reader = response.body.getReader()
-            publishConnectionState('ready')
-          } catch (reconnectError) {
-            session = null
-            publishConnectionState('degraded')
-            controller.error(reconnectError)
-            return
-          }
+          if (cancelled || !(await reconnect(controller, error))) return
+          continue
         }
+        if (cancelled) return
+        if (chunk.done) {
+          if (!(await reconnect(controller, new Error('desktop_sse_stream_ended')))) return
+          continue
+        }
+        controller.enqueue(chunk.value)
+        return
       }
     },
     async cancel(reason) {
       cancelled = true
+      generation += 1
+      cancellationReason = reason
+      stopReconnectTransport(reason)
       await reader.cancel(reason).catch(() => undefined)
     },
   })
