@@ -352,9 +352,24 @@ journal、active Provider、capability 派生和 artifact 行为合同保持不�
   lint、466 files format、Mypy 231 source files 与 `2054 passed, 12 skipped`；source product smoke、
   changed-diff secret scan、精确进程检查和 `git diff --check` 通过。secret scan 仅命中三个明确的
   `test-secret-*` 测试夹具，不含真实凭据。
-- **待固定 artifact**：Rust/TS 产品源码已改变，当前不沿用 `8479a2c` 的正式 receipt。下一步只能从
-  本段所在的 clean docs HEAD 运行唯一 arm64 bundle 入口；完成 receipt SHA、manifest/`.app` 分类
-  计数、strict codesign、secret scan 与进程零残留后，再写最终收据并等待第三轮三镜头复审。
+- **正式 artifact**：不沿用 `8479a2c` receipt；从 clean docs HEAD
+  `6fe4bf17ddf17cf11c4adf3532cdb868a521f4d2` 运行唯一入口，receipt 位于
+  `/private/tmp/sage-desktop-6fe4bf17ddf17cf11c4adf3532cdb868a521f4d2/desktop-bundle-receipt.json`，
+  SHA-256 `54f081c1289691b1b8a2b1bd2622452bb9821c5ecfda471deaadf9be459b95b1`；
+  `source_dirty=false`、Python `3.12.13`、target `aarch64-apple-darwin`。sidecar 12 项真实 smoke
+  与 `.app` 6 项 lifecycle smoke 全部 `passed`，包含模型 turn、SQLite RAG、capability 与副作用工具
+  fail-closed 的冻结产物断言。
+- **计数与签名**：sidecar receipt SHA-256 为
+  `cd5e55e1a1c2ce59e9bbbd140077a7e3ac3ea4077802bc2a01b3d1ce9e89a6f0`；269 manifest entries
+  实测为 247 个 regular files、22 个 symlinks、0 missing，写入 receipt 后物理 sidecar 为 248 个
+  regular files、116 个 directories、22 个 symlinks；最终 `.app` 为 274 个 regular files、121 个
+  directories、0 symlink。host、launcher、sidecar 均为 arm64 Mach-O；app deep strict 与三个嵌套
+  executable strict codesign 均通过，签名为 ad-hoc。
+- **最终安全复核**：packaged product secret、测试 sentinel、private-key marker 与 `.env` 零命中；唯一
+  `.pem` 是 certifi 公共 CA trust bundle，内容不含 private key。`sage-desktop`、`sage-api`、
+  `sage-api-aarch64-apple-darwin` 经 `pgrep -x` 复查均无残留，仓库仍为 clean。当前候选等待第三轮
+  Runtime/Standards/Product 三镜头复审；Cloud OAuth、updater、Developer ID、公证、stapled DMG
+  仍未交付。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
