@@ -111,6 +111,7 @@ async def e2e_stats() -> dict[str, object]:
     if not tasks:
         return {
             "task_status": None,
+            "session_id": None,
             "kickoff_status": None,
             "acceptance_count": 0,
             "turn_started_count": 0,
@@ -128,6 +129,7 @@ async def e2e_stats() -> dict[str, object]:
             raise HTTPException(status_code=409, detail=exc.code) from exc
         return {
             "task_status": task.status,
+            "session_id": None,
             "kickoff_status": None,
             "acceptance_count": 0,
             "turn_started_count": 0,
@@ -138,6 +140,7 @@ async def e2e_stats() -> dict[str, object]:
     turn_events = journal.events_for_run(receipt.turn_run_id)
     return {
         "task_status": task.status,
+        "session_id": receipt.session_id,
         "kickoff_status": receipt.receipt_status,
         "kickoff_stage": receipt.stage,
         "acceptance_count": len(acceptance_events),

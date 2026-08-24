@@ -1,7 +1,9 @@
 import type {
   AssistantHomeSummary,
   LearningActivationResponse,
+  LearningArtifactResponse,
   LearningKickoffDispatchResponse,
+  LearningResumeResponse,
   LearningTaskDraftInput,
   LearningTaskPatchInput,
   LearningTaskResponse,
@@ -129,5 +131,31 @@ export function dispatchLearningKickoff(
     jsonRequest('POST', { expected_revision: expectedRevision }, {
       'Idempotency-Key': idempotencyKey,
     }),
+  )
+}
+
+export function fetchLearningResume(taskId: string): Promise<LearningResumeResponse> {
+  return learningRequest(`/api/v1/learning/tasks/${encodeURIComponent(taskId)}/resume`)
+}
+
+export function advanceLearningTask(
+  taskId: string,
+  expectedCheckpointRevision: number,
+  idempotencyKey: string,
+): Promise<LearningResumeResponse> {
+  return learningRequest(
+    `/api/v1/learning/tasks/${encodeURIComponent(taskId)}/advance`,
+    jsonRequest('POST', { expected_checkpoint_revision: expectedCheckpointRevision }, {
+      'Idempotency-Key': idempotencyKey,
+    }),
+  )
+}
+
+export function fetchLearningArtifact(
+  taskId: string,
+  artifactId: string,
+): Promise<LearningArtifactResponse> {
+  return learningRequest(
+    `/api/v1/learning/tasks/${encodeURIComponent(taskId)}/artifacts/${encodeURIComponent(artifactId)}`,
   )
 }

@@ -1,11 +1,14 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import {
   activateLearningTask,
+  advanceLearningTask,
   createLearningDraft,
   dispatchLearningKickoff,
   fetchAssistantHome,
   fetchLearningActivation,
+  fetchLearningArtifact,
   fetchLearningKickoff,
+  fetchLearningResume,
   fetchLearningTasks,
   updateLearningDraft,
 } from './assistant'
@@ -90,4 +93,27 @@ it('surfaces the server activation failure message', async () => {
 
   await expect(activateLearningTask('ltask_1', 1, 'learning-ltask_1-r1'))
     .rejects.toThrow('会话初始化失败')
+})
+
+it('uses revision-bound L3 resume advance and artifact paths', async () => {
+  const summary = { task_id: 'ltask_1', checkpoint_revision: 3 }
+  const artifact = { artifact_id: 'lart_1', task_id: 'ltask_1' }
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce({ ok: true, json: async () => summary })
+    .mockResolvedValueOnce({ ok: true, json: async () => summary })
+    .mockResolvedValueOnce({ ok: true, json: async () => artifact })
+  vi.stubGlobal('fetch', fetchMock)
+
+  await expect(fetchLearningResume('ltask_1')).resolves.toEqual(summary)
+  await expect(advanceLearningTask('ltask_1', 2, 'advance-r2')).resolves.toEqual(summary)
+  await expect(fetchLearningArtifact('ltask_1', 'lart_1')).resolves.toEqual(artifact)
+
+  expect(fetchMock).toHaveBeenNthCalledWith(2, expect.any(URL), expect.objectContaining({
+    method: 'POST', credentials: 'include',
+    headers: expect.objectContaining({ 'Idempotency-Key': 'advance-r2' }),
+    body: JSON.stringify({ expected_checkpoint_revision: 2 }),
+  }))
+  expect((fetchMock.mock.calls[2][0] as URL).pathname).toBe(
+    '/api/v1/learning/tasks/ltask_1/artifacts/lart_1',
+  )
 })

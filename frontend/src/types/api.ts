@@ -27,6 +27,7 @@ export type CodingSessionResponse = {
   runtime_profile: CodingRuntimeProfile
   sandbox_provider?: string
   sandbox_image?: string
+  learning_task_id?: string | null
 }
 
 export type CodingSessionSummary = {
@@ -40,6 +41,7 @@ export type CodingSessionSummary = {
   message_count: number
   pinned?: boolean
   archived?: boolean
+  learning_task_id?: string | null
 }
 
 export type CodingSessionsResponse = {
@@ -142,6 +144,65 @@ export type LearningTaskResponse = {
   dag_hash: string | null
   learning_goal_ref: { goal_id: string; goal_revision: string } | null
   status: LearningTaskStatus
+  created_at: string
+  updated_at: string
+}
+
+export type LearningArtifactSummary = {
+  artifact_id: string
+  kind: string
+  content_hash: string
+  media_type: string
+  status: string
+  citation_count: number
+  source_revisions: string[]
+  retention: string
+}
+
+export type LearningResumeResponse = {
+  task_id: string
+  task_revision: number
+  goal_summary: string
+  plan_id: string
+  plan_hash: string
+  dag_hash: string
+  stage: 'knowledge_pending' | 'knowledge_ready' | 'source_gap' | 'research_pending'
+    | 'research_ready' | 'user_input_pending' | 'approval_pending'
+    | 'synthesize_pending' | 'artifact_ready' | 'blocked'
+  evidence_count: number
+  citation_count: number
+  gap_codes: string[]
+  blocking_reason: string
+  next_action: string
+  artifact_ref: string
+  artifact: LearningArtifactSummary | null
+  checkpoint_revision: number
+  fencing_token: number
+}
+
+export type LearningArtifactResponse = {
+  artifact_id: string
+  artifact_ref: string
+  kind: string
+  task_id: string
+  task_revision: number
+  plan_id: string
+  content_hash: string
+  media_type: string
+  status: string
+  evidence_refs: string[]
+  source_revisions: string[]
+  citations: Array<{
+    evidence_ref: string
+    title: string
+    url: string
+    content_hash: string
+    fetched_at: string
+    page_revision: string
+    source_revision: string
+  }>
+  retention: string
+  content: string
   created_at: string
   updated_at: string
 }

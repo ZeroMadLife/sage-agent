@@ -16,6 +16,7 @@ import {
 } from '../components/coding'
 import { ChatConversation, ChatDock, ChatHarnessLayout } from '../components/harness'
 import { FactsRail, GoalHeader } from '../components/conversation'
+import LearningExecutionPanel from '../components/coding/learning/LearningExecutionPanel.vue'
 import { projectLatestCodingHarness } from '../harness/surfaces/coding'
 import { projectCodingReviewBundle } from '../harness/surfaces/codingReviewBundle'
 import { consumeHarnessChatDraft, stageHarnessChatDraft } from '../harness/chatDraftBridge'
@@ -63,6 +64,7 @@ const routeSessionId = computed(() => {
 })
 const currentSession = computed(() => store.codingSessions.find((session) => session.session_id === store.sessionId))
 const currentSessionTitle = computed(() => currentSession.value?.title || '未命名会话')
+const learningTaskId = computed(() => store.learningTaskId || currentSession.value?.learning_task_id || '')
 const harnessProjection = computed(() => projectLatestCodingHarness(
   store.visibleTimeline,
   selectedHarnessRunId.value || store.activeRun?.run_id || '',
@@ -456,7 +458,7 @@ onBeforeUnmount(() => {
           :max-dock-width="400"
         >
           <template #chat>
-            <section class="conversation-workspace">
+            <section class="conversation-workspace" :class="{ 'has-learning': learningTaskId }">
               <GoalHeader
                 :session-title="currentSessionTitle"
                 :thread-goal="store.threadGoal"
@@ -473,6 +475,7 @@ onBeforeUnmount(() => {
                   <button class="header-icon settings-toggle" type="button" title="打开设置" aria-label="打开设置" @click="openSettings"><Settings :size="16" /></button>
                 </template>
               </GoalHeader>
+              <LearningExecutionPanel v-if="learningTaskId" :task-id="learningTaskId" />
               <ChatDock
                 compact-status
                 :projection="harnessProjection"
@@ -620,6 +623,7 @@ onBeforeUnmount(() => {
 .chat-shell { grid-row:2; position:relative; min-height:0; height:100%; overflow:hidden; }.pane-left,.pane-center { min-height:0; }.pane-left { position:absolute; z-index:32; inset:0 auto 0 0; width:min(340px,100%); overflow:hidden; border-right:1px solid var(--sage-border); background:var(--sage-surface); box-shadow:var(--sage-shadow-drawer); animation:session-drawer-in .18s ease-out; }.pane-center { position:relative; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.coding-harness-layout { width:100%; height:100%; }.conversation-workspace { display:grid; grid-template-rows:auto minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.conversation-workspace > :deep(.chat-dock) { min-height:0; }.conversation-workspace :deep(.chat-dock-composer) { position:relative; z-index:4; background:var(--sage-surface); }.harness-workbench-pane { container:workbench-pane / inline-size; display:grid; grid-template-rows:48px minmax(0,1fr); width:100%; height:100%; min-width:0; min-height:0; }.coding-chat-pane { --chat-content-max:100%; display:grid; grid-template-rows:minmax(0,1fr) auto; width:100%; height:100%; min-width:0; min-height:0; background:var(--sage-surface); }.session-titlebar { display:flex; align-items:center; justify-content:space-between; gap:10px; min-width:0; padding:0 18px; border-bottom:1px solid #edf0f3; }.session-title-copy { display:flex; align-items:center; gap:9px; min-width:0; }.session-title-copy strong { min-width:0; overflow:hidden; color:#283342; font-size:var(--sage-font-md); text-overflow:ellipsis; white-space:nowrap; }.session-title-copy span { display:inline-flex; align-items:center; flex:none; color:#748091; font-size:var(--sage-font-xs); }.session-title-copy span::before { width:6px; height:6px; margin-right:5px; border-radius:50%; background:#a7afb9; content:''; }.session-title-copy span.running { color:#137333; }.session-title-copy span.running::before { background:#16a34a; }.titlebar-actions { display:flex; align-items:center; justify-content:flex-end; gap:4px; min-width:0; }.files-toggle { display:inline-grid; place-items:center; width:30px; height:30px; padding:0; border:1px solid transparent; border-radius:6px; color:#52606f; background:#fff; text-decoration:none; }.files-toggle:hover { border-color:#d8dee6; color:#1d4ed8; background:#f4f7fb; }.new-chat-link { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:30px; padding:0 9px; border:1px solid var(--sage-border); border-radius:6px; color:var(--sage-brand-strong); background:var(--sage-brand-bg); text-decoration:none; white-space:nowrap; font-size:var(--sage-font-xs); font-weight:650; }.new-chat-link:hover { border-color:var(--sage-border-strong); color:var(--sage-text); background:var(--sage-surface-muted); }.facts-toggle { display:none; }
 .coding-chat-pane .message-area { padding:14px 12px 16px; }
 .coding-chat-pane :deep(.composer) { padding-right:12px; padding-left:12px; }
+.conversation-workspace.has-learning { grid-template-rows:auto auto minmax(0,1fr); }
 .conversation-workspace :deep(.composer.compact .composer-input textarea) { min-height:96px; max-height:240px; padding-top:14px; }
 .coding-chat-pane :deep(.message-turn) { gap:9px; margin-bottom:18px; }
 .coding-chat-pane :deep(.message-avatar) { width:26px; height:26px; }

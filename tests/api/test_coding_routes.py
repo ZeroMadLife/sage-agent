@@ -908,6 +908,9 @@ def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
         websocket.send_json({"content": "读 README.md"})
         while _receive_runtime_event(websocket)["type"] != "final":
             pass
+    runtime = app.state.coding_sessions[session_id]
+    runtime.session["learning_task_id"] = "ltask-resume-1"
+    runtime.session_store.save(runtime.session)
     app.state.coding_sessions.clear()
 
     response = client.post(f"/api/v1/coding/session/{session_id}/resume")
@@ -915,6 +918,7 @@ def test_resume_coding_session_rehydrates_runtime(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.json()["session_id"] == session_id
     assert response.json()["permission_mode"] == "default"
+    assert response.json()["learning_task_id"] == "ltask-resume-1"
     assert session_id in app.state.coding_sessions
     assert app.state.coding_sessions[session_id].session["history"][0]["content"] == "读 README.md"
 

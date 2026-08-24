@@ -119,6 +119,7 @@ function clearStoredNewSessionRuntimeProfile() {
 export type CodingSessionUiState = {
   workspaceRoot: string
   workspaceId: string
+  learningTaskId: string
   permissionMode: PermissionMode
   runtimeProfile: CodingRuntimeProfile
   timeline: CodingTimelineEvent[]
@@ -184,6 +185,7 @@ function createSessionUiState(): CodingSessionUiState {
   return {
     workspaceRoot: '',
     workspaceId: '',
+    learningTaskId: '',
     permissionMode: 'default',
     runtimeProfile: 'legacy',
     timeline: [],
@@ -332,6 +334,7 @@ export const useCodingStore = defineStore('coding', () => {
   }
   const workspaceRoot = sessionField('workspaceRoot')
   const workspaceId = sessionField('workspaceId')
+  const learningTaskId = sessionField('learningTaskId')
   const messages = sessionField('messages')
   const optimisticMessage = sessionField('optimisticMessage')
   const legacyMessages = sessionField('legacyMessages')
@@ -845,6 +848,7 @@ export const useCodingStore = defineStore('coding', () => {
     workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
+    learningTaskId.value = session.learning_task_id || ''
     await Promise.all([
       loadSkills(),
       loadMcpServers(),
@@ -1718,6 +1722,7 @@ export const useCodingStore = defineStore('coding', () => {
     workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
+    learningTaskId.value = session.learning_task_id || ''
     runs.value = []
     selectedRun.value = null
     diffDrawerVisible.value = false
@@ -1757,6 +1762,7 @@ export const useCodingStore = defineStore('coding', () => {
     workspaceId.value = session.workspace_id
     permissionMode.value = session.permission_mode
     runtimeProfile.value = session.runtime_profile || 'legacy'
+    learningTaskId.value = session.learning_task_id || ''
     runs.value = []
     selectedRun.value = null
     diffDrawerVisible.value = false
@@ -2063,6 +2069,7 @@ export const useCodingStore = defineStore('coding', () => {
     runtimeMode,
     permissionMode,
     runtimeProfile,
+    learningTaskId,
     planTopic,
     planPath,
     planReview,

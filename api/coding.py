@@ -2210,7 +2210,13 @@ async def list_coding_sessions(
     storage_root = Path(request.app.state.coding_storage_root)
     store = CodingSessionStore(storage_root / "sessions")
     account = await load_account_model_context(request)
-    current_user_id = account.user_id if account is not None else None
+    current_user_id = (
+        account.user_id
+        if account is not None
+        else "local"
+        if str(getattr(request.app.state, "cloud_app_env", "development")).lower() != "production"
+        else None
+    )
     visible: list[CodingSessionSummary] = []
     for item in store.list_sessions(include_archived=include_archived):
         try:
@@ -2220,7 +2226,12 @@ async def list_coding_sessions(
         owner_user_id = str(state.get("owner_user_id", "")).strip() or None
         if owner_user_id is not None and owner_user_id != current_user_id:
             continue
-        visible.append(CodingSessionSummary(**item))
+        visible.append(
+            CodingSessionSummary(
+                **item,
+                learning_task_id=str(state.get("learning_task_id", "")).strip() or None,
+            )
+        )
     return CodingSessionsResponse(sessions=visible)
 
 
@@ -2447,6 +2458,7 @@ async def resume_coding_session(
         runtime_profile=runtime.runtime_profile,
         sandbox_provider=runtime.sandbox_provider,
         sandbox_image=runtime.sandbox_image,
+        learning_task_id=str(runtime.session.get("learning_task_id", "")).strip() or None,
     )
 
 

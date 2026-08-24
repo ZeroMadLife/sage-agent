@@ -27,6 +27,7 @@ class CodingSessionResponse(BaseModel):
     runtime_profile: Literal["legacy", "deerflow_v2"] = "legacy"
     sandbox_provider: str = "local_workspace"
     sandbox_image: str = "python:3.11-slim"
+    learning_task_id: str | None = None
 
 
 class CodingSessionSummary(BaseModel):
@@ -42,6 +43,7 @@ class CodingSessionSummary(BaseModel):
     message_count: int = 0
     pinned: bool = False
     archived: bool = False
+    learning_task_id: str | None = None
 
 
 class CodingSessionMetadataRequest(BaseModel):
