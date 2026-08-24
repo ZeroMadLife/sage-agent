@@ -2,11 +2,11 @@
 
 > 日期：2026-08-25
 >
-> 状态：已实现，等待中枢三镜头再审
+> 状态：第二候选复审修复已实现，等待第三轮复审
 >
 > 固定起点：`d545c9b9bf34038f7c5f63c3adfc3ea237d8a428`
 >
-> code candidate：`18af841ca05cbca7b31f78e1f9accad0656af9df`
+> code candidate：`21d3c07e9470462e92dce9eafc35252b2393b843`
 
 ## 1. 问题
 
@@ -54,7 +54,8 @@ Session Journal 的 user-accepted event 使用独立 `acceptance_run_id`，不�
 - Coding WebSocket 建连后查询与该 active Session 绑定的 accepted kickoff receipt。
 - 若 `turn_run_id` 尚无 Journal 事件，服务端用 canonical Task topic 启动一次共享 Harness run；该 run 不再追加第二条 user Timeline event。
 - 若 `turn_run_id` 已存在任何 Journal 事件，连接只 replay，不重复启动。
-- 并发连接继续由现有 `RunCoordinator` 内存锁与 Session Journal run lease 拒绝双启动。
+- 服务端重启后，WS 直接重连会从持久 Session JSON 幂等 lazy rehydrate runtime；不要求浏览器先整页刷新或显式调用 REST resume。owner、workspace containment、model catalog、runtime profile 与 pending approval 校验继续复用原恢复合同。
+- 并发 stale-check 后若另一个连接已完成同一固定 `turn_run_id`，后到连接在 `SessionEventJournalError`、`SessionThreadGoalConflictError` 或 active-run claim 失败后重新读取该 run；只有同一 run 已有 durable events 才收敛为 replay，其他真实冲突继续 fail closed。
 - 普通 Coding 仍只处理原有 `UserMessage`；不新增普通 Coding kickoff 分支，也不改变 `startSessionWithPrompt`。
 
 ## 3. 恢复状态
@@ -62,7 +63,8 @@ Session Journal 的 user-accepted event 使用独立 `acceptance_run_id`，不�
 - active Task 但 activation receipt GET 失败：前端进入显式 `receipt_recovery_failed`，展示错误和“重试恢复凭据”；不得显示无法工作的 active CTA。
 - canonical Task/receipt 为 `activating`：POST 异常后的 catch 保留 `activating`，展示可刷新/轮询动作；不得覆盖成 `activation_failed`。
 - activation active、kickoff receipt 缺失：确认动作 POST kickoff；响应丢失后先 GET canonical receipt，再用同 key 重复 POST。
-- kickoff `dispatching`：客户端保持恢复态并用同 key重放 POST；只有 `accepted` 后才进入 Session。
+- kickoff `dispatching`：客户端保持恢复态并用同 key 重放 POST；只有 `accepted` 后才进入 Session。
+- kickoff receipt 仍存在但 canonical Task 行缺失：GET 与 WS 均返回稳定 `learning_kickoff_binding_conflict`，不得泄漏为 500。
 
 ## 4. Failure Points
 
@@ -73,6 +75,9 @@ Session Journal 的 user-accepted event 使用独立 `acceptance_run_id`，不�
 3. `after_accepted`：accepted 已 durable、HTTP 响应可丢；canonical GET 与重复 POST 返回同一 receipt；
 4. 两个 repository/service 实例并发同 key：只形成一个 accepted receipt 与一个 Journal user event；
 5. 同 revision 不同 key、跨 revision/key 复用、非 active Task、activation/session binding 漂移：fail closed。
+6. 新 app 直接连接原 Session WS：持久 runtime 被 lazy rehydrate，accepted kickoff 形成一次 start/terminal；普通 Coding 也可直接重连并继续发消息；
+7. 两个 coordinator 同时通过空事件 stale-check：第一个完成固定 run 后，第二个只 replay；不同 active run 或真实 Thread Goal revision conflict 不得被吞掉；
+8. 删除 canonical Task、保留 accepted receipt：kickoff GET 与 Coding WS 都稳定返回 binding conflict。
 
 ## 5. 验收
 
@@ -83,11 +88,48 @@ Session Journal 的 user-accepted event 使用独立 `acceptance_run_id`，不�
 
 ### 5.1 已执行证据
 
-- Learning kickoff、Task/Activation 与 Coding 邻接后端：`69 passed`；
-- Assistant API/store/view、Coding store/CodingView 与 Context Budget 聚焦前端：`5 files / 138 passed`；
+- restart/reconnect、并发、GET/WS 与完整 Coding Routes 定向：`73 passed`；
+- 9 个 Learning API/core 邻接文件：`75 passed`；Cloud model、Coding surface、Thread Goal 与 Session Journal 邻接：`73 passed`；
+- Assistant API/store/view、Coding store/CodingView 与 Context Budget 聚焦前端：`6 files / 138 passed`；
 - 完整 Vue：`69 files / 521 tests passed`；
 - 仓库内 Playwright：`1 passed`，覆盖创建、三项澄清、activation 失败重试、kickoff dispatching、刷新恢复，以及 accepted 前 `turn_started=0`、accepted 后稳定 `turn_started=1`；
-- 全仓 Ruff、Mypy（`270 source files`）、private/public production build 与 `git diff --check` 均通过；private build 仅有既有大 chunk warning。
+- 全仓 Ruff/format（`482 files`）、pyproject 推荐 Mypy 范围（`249 source files`）、private/public production build 与 `git diff --check` 均通过；private build 仅有既有大 chunk warning。
+
+关键后端与静态检查可复现命令：
+
+```bash
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_learning_kickoff_dispatch.py \
+  tests/api/test_learning_task_activation.py tests/api/test_learning_task_routes.py \
+  tests/api/test_learning_task_workspace_resume.py \
+  tests/api/test_learning_timeline_projection.py \
+  tests/core/learning/test_learning_activation_concurrency.py \
+  tests/core/learning/test_learning_kickoff_dispatch.py \
+  tests/core/learning/test_learning_task_bootstrap.py \
+  tests/core/learning/test_learning_tasks.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_cloud_model_provider_routes.py \
+  tests/api/test_coding_surface_context.py tests/api/test_coding_thread_goal.py \
+  tests/core/coding/test_session_event_journal.py -q
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check \
+  api/ core/ db/ evals/ tests/
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff format --check \
+  api/ core/ db/ evals/ tests/
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m mypy \
+  core/ api/ packages/sage_harness/
+npm --prefix frontend run test -- --run \
+  src/api/assistant.test.ts src/stores/assistantHome.test.ts \
+  src/views/AssistantHomeView.test.ts src/stores/coding.test.ts \
+  src/views/CodingView.test.ts src/components/coding/chat/CodingContextBudget.test.ts
+npm --prefix frontend run test -- --run
+npm --prefix frontend run build
+npm --prefix frontend run build:public
+```
 
 Playwright 可复现命令：
 
@@ -103,6 +145,8 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - 不实现 L3 Research、Artifact、Practice 或 Mastery；
 - 不重写 `CodingView`，不为本修复抽取 Assistant 大表单；
 - `AssistantHomeView` 表单/确认区拆分登记为 L3 前技术债；
+- `input_origin + emit_user_event` 在 L3 前收敛为 `TurnInputKind/learning_kickoff` 类型合同，消除布尔组合表达输入来源的歧义；
+- `LearningKickoffErrorCode` 与结构化 OpenAPI error responses 在 L3 前补齐；本轮只局部映射 Task 缺失，不扩展全部错误 schema；
 - 不把 accepted receipt 描述成模型回答成功或完整运行恢复；运行中断继续遵守现有 Journal/Checkpoint 语义。
 
-当前停止在本地 code candidate，未 push、未建 PR；等待中枢按需求、Runtime/恢复和前端兼容三个镜头再审。
+当前停止在本地 code candidate，未 push、未建 PR；等待中枢第三轮复审。
