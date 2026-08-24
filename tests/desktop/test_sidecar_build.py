@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+import desktop.sidecar.build as sidecar_build
 from desktop.sidecar.build import (
     ArtifactHygieneError,
     BuildEnvironmentError,
@@ -35,6 +36,7 @@ def _fake_sidecar(
 ) -> Path:
     executable = tmp_path / "fake-sidecar"
     orphan_pid_file = tmp_path / "orphan.pid"
+    sidecar_pid_file = tmp_path / "sidecar.pid"
     child_code = textwrap.dedent(
         """\
         import os
@@ -73,6 +75,7 @@ def _fake_sidecar(
             BUILD_SHA = "fake-sha"
             SPAWN_ORPHAN = {spawn_orphan!r}
             ORPHAN_PID_FILE = {str(orphan_pid_file)!r}
+            SIDECAR_PID_FILE = {str(sidecar_pid_file)!r}
             CHILD_CODE = {child_code!r}
             parser = argparse.ArgumentParser()
             parser.add_argument("--bind")
@@ -80,6 +83,7 @@ def _fake_sidecar(
             parser.add_argument("--data-dir")
             args = parser.parse_args()
             os.makedirs(args.data_dir, exist_ok=True)
+            open(SIDECAR_PID_FILE, "w", encoding="utf-8").write(str(os.getpid()))
             open(os.path.join(args.data_dir, "sage.sqlite3"), "wb").close()
             open(os.path.join(args.data_dir, "checkpoints.sqlite3"), "wb").close()
             child = (
@@ -429,3 +433,27 @@ def test_packaged_smoke_detects_and_cleans_orphaned_grandchild(tmp_path: Path) -
     orphan_pid = int((tmp_path / "orphan.pid").read_text(encoding="utf-8"))
     with pytest.raises(ProcessLookupError):
         os.kill(orphan_pid, 0)
+
+
+def test_packaged_smoke_cleans_process_when_cleanup_snapshot_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode="ready")
+    real_snapshot = sidecar_build._process_snapshot
+    snapshot_calls = 0
+
+    def flaky_snapshot() -> dict[int, sidecar_build._ProcessState]:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 2:
+            raise subprocess.CalledProcessError(1, "/bin/ps")
+        return real_snapshot()
+
+    monkeypatch.setattr(sidecar_build, "_process_snapshot", flaky_snapshot)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(sidecar_pid, 0)

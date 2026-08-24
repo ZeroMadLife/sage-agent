@@ -619,41 +619,60 @@ def smoke_packaged_artifact(
             except Exception as exc:
                 failure = exc
             finally:
-                tracked_descendants.update(
-                    _descendant_process_ids(process.pid, _process_snapshot())
-                )
-                if process.poll() is None:
-                    _signal_process_tree(
-                        process_group_id,
-                        tracked_descendants,
-                        signal.SIGTERM,
+                try:
+                    tracked_descendants.update(
+                        _descendant_process_ids(process.pid, _process_snapshot())
                     )
+                except Exception as exc:
+                    failure = failure or exc
+                if process.poll() is None:
+                    try:
+                        _signal_process_tree(
+                            process_group_id,
+                            tracked_descendants,
+                            signal.SIGTERM,
+                        )
+                    except Exception as exc:
+                        failure = failure or exc
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     graceful_exit = False
-                    _signal_process_tree(
-                        process_group_id,
-                        tracked_descendants,
-                        signal.SIGKILL,
-                    )
+                    try:
+                        _signal_process_tree(
+                            process_group_id,
+                            tracked_descendants,
+                            signal.SIGKILL,
+                        )
+                    except Exception as exc:
+                        failure = failure or exc
                     process.wait(timeout=5)
-                orphaned = _wait_for_process_cleanup(
-                    process_group_id,
-                    tracked_descendants,
-                    timeout=0.5,
-                )
+                try:
+                    orphaned = _wait_for_process_cleanup(
+                        process_group_id,
+                        tracked_descendants,
+                        timeout=0.5,
+                    )
+                except Exception as exc:
+                    failure = failure or exc
                 if orphaned:
-                    _signal_process_tree(
-                        process_group_id,
-                        tracked_descendants,
-                        signal.SIGKILL,
-                    )
-                    remaining = _wait_for_process_cleanup(
-                        process_group_id,
-                        tracked_descendants,
-                        timeout=5,
-                    )
+                    try:
+                        _signal_process_tree(
+                            process_group_id,
+                            tracked_descendants,
+                            signal.SIGKILL,
+                        )
+                    except Exception as exc:
+                        failure = failure or exc
+                    try:
+                        remaining = _wait_for_process_cleanup(
+                            process_group_id,
+                            tracked_descendants,
+                            timeout=5,
+                        )
+                    except Exception as exc:
+                        failure = failure or exc
+                        remaining = orphaned
                     if remaining:
                         orphaned = remaining
                 stderr_stream.seek(0)
