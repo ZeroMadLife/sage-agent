@@ -503,6 +503,48 @@ def _http_runtime_learning_scope(
         raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
 
 
+def _resolve_persisted_learning_scope(
+    connection: HTTPConnection,
+    *,
+    session_id: str,
+    session: Mapping[str, object],
+) -> LearningReadonlyScope | None:
+    """Resolve browser projection authority without requiring an in-memory runtime."""
+    resolver: LearningReadonlyScopeResolver | None = getattr(
+        connection.app.state,
+        "learning_readonly_scope_resolver",
+        None,
+    )
+    if resolver is None:
+        if session.get("session_kind") == "learning":
+            raise LearningScopeConflict("learning_scope_resolver_unavailable")
+        return None
+    owner_id = str(session.get("owner_user_id") or "").strip() or "local"
+    workspace_root = Path(str(session.get("workspace_root", ""))).resolve()
+    return resolver.resolve_runtime_session(
+        session,
+        session_id=session_id,
+        owner_id=owner_id,
+        workspace_id=workspace_id_from_path(workspace_root),
+    )
+
+
+def _http_timeline_learning_scope(
+    request: Request,
+    *,
+    session_id: str,
+    session: Mapping[str, object],
+) -> LearningReadonlyScope | None:
+    try:
+        return _resolve_persisted_learning_scope(
+            request,
+            session_id=session_id,
+            session=session,
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+
+
 def _require_valid_session_id(session_id: str) -> None:
     if not _valid_session_id(session_id):
         raise HTTPException(status_code=422, detail="invalid coding session id")
@@ -1652,7 +1694,21 @@ def _timeline_status(event_type: str, event: dict[str, Any]) -> str:
     return "completed"
 
 
-def _timeline_event_dict(event: SessionEvent) -> dict[str, Any]:
+def _timeline_event_dict(
+    event: SessionEvent,
+    *,
+    learning_scope: LearningReadonlyScope | None = None,
+) -> dict[str, Any]:
+    payload = event.payload
+    if learning_scope is not None:
+        payload = LearningPublicProjector.event(
+            {
+                **event.payload,
+                "run_id": event.run_id,
+                "status": event.status,
+            },
+            task_id=learning_scope.task_id,
+        )
     return {
         "event_id": event.event_id,
         "session_id": event.session_id,
@@ -1661,7 +1717,7 @@ def _timeline_event_dict(event: SessionEvent) -> dict[str, Any]:
         "kind": event.kind,
         "status": event.status,
         "timestamp": event.timestamp,
-        "payload": event.payload,
+        "payload": payload,
     }
 
 
@@ -2668,14 +2724,23 @@ async def get_coding_session_timeline(
     if not 1 <= limit <= 500:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
-    if session_id not in sessions:
+    runtime = sessions.get(session_id)
+    if runtime is None:
         store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
         try:
-            store.load(session_id)
+            session = store.load(session_id)
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=404, detail=f"Unknown coding session: {session_id}"
             ) from exc
+    else:
+        session = runtime.session
+    learning_scope = await asyncio.to_thread(
+        _http_timeline_learning_scope,
+        request,
+        session_id=session_id,
+        session=session,
+    )
     coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
     if tail or before is not None:
         backward_page = coordinator.journal.replay_before(
@@ -2697,15 +2762,8 @@ async def get_coding_session_timeline(
     active_run_id = coordinator.journal.active_run_id()
     return CodingTimelineResponse(
         items=[
-            CodingTimelineEvent(
-                event_id=item.event_id,
-                session_id=item.session_id,
-                run_id=item.run_id,
-                sequence=item.sequence,
-                kind=item.kind,
-                status=item.status,
-                timestamp=item.timestamp,
-                payload=item.payload,
+            CodingTimelineEvent.model_validate(
+                _timeline_event_dict(item, learning_scope=learning_scope)
             )
             for item in items
         ],
@@ -2776,7 +2834,16 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
 
     async def sender() -> None:
         async for event in coordinator.subscribe(after=after):
-            await websocket.send_json(_timeline_event_dict(event))
+            try:
+                learning_scope = await asyncio.to_thread(
+                    _resolve_runtime_learning_scope,
+                    runtime,
+                    getattr(websocket.app.state, "learning_readonly_scope_resolver", None),
+                )
+            except LearningScopeConflict as exc:
+                await websocket.close(code=1008, reason=exc.code)
+                return
+            await websocket.send_json(_timeline_event_dict(event, learning_scope=learning_scope))
 
     async def receiver() -> None:
         while True:
