@@ -421,6 +421,23 @@ adapter、capability 与已放行 artifact 合同保持不变。
   Rust-only 相邻门禁为 Vue host adapter/HostGate focused `39 passed`、Python desktop `61 passed`、source
   product smoke `1 passed`；`git diff --check` 与 changed-diff private-key/API-key 扫描通过。正式 arm64
   bundle 尚待从下一笔 clean docs HEAD 重建，不能沿用 `5a1d3db` 收据。
+- **正式 artifact**：已从 clean docs HEAD `a01277d32cbb8d0a05ea15240ad0e0887e364dc9`
+  运行唯一入口；receipt 位于
+  `/private/tmp/sage-desktop-a01277d32cbb8d0a05ea15240ad0e0887e364dc9/desktop-bundle-receipt.json`，
+  SHA-256 `063b208780afc56a00bae91669961e66e3a6ccc5fa025ca202a55c55646959f5`。
+  `source_dirty=false`、Python `3.12.13`、target `aarch64-apple-darwin`；sidecar 12 项真实
+  product smoke 与 `.app` 6 项 lifecycle smoke 全部 `passed`，包含冻结产物模型 turn、SQLite RAG、
+  capability 与副作用工具 fail-closed 断言。
+- **计数与签名**：sidecar receipt SHA-256 为
+  `408e474751cd6c447f92ea63d991178a662369927ce2deb5653a3596f6faac6d`；269 manifest entries
+  逐项实测为 247 个 regular files、22 个 symlinks、0 missing。写入 `build-receipt.json` 后物理
+  sidecar 为 248 个 regular files、116 个 directories、22 个 symlinks；最终 `.app` 为 274 个
+  regular files、121 个 directories、0 symlink。host、launcher、sidecar 均为 arm64 Mach-O；app deep
+  strict 与三个嵌套 executable strict codesign 均通过，签名为 ad-hoc。
+- **最终安全复核**：packaged product secret、测试 sentinel、通用 `sk-*`、private-key marker 与
+  `.env` 均零命中；唯一 `.pem` 是 certifi 公共 CA trust bundle。`sage-desktop`、`sage-api`、
+  `sage-api-aarch64-apple-darwin` 经 `pgrep -x` 复查均无残留，仓库保持 clean。当前候选等待第四轮
+  Runtime/Standards 最终短审；Cloud OAuth、updater、Developer ID、公证、stapled DMG 仍未交付。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
