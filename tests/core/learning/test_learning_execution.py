@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -9,7 +11,11 @@ from sage_harness import (
     KnowledgeRetrievalResult,
 )
 
-from core.learning.artifact_store import LearningArtifactStore, LearningCheckpointConflictError
+from core.learning.artifact_store import (
+    LearningArtifactStore,
+    LearningCheckpointConflictError,
+    LearningResumeConflictError,
+)
 from core.learning.execution import LearningExecutionContext, LearningExecutionService
 from core.learning.materials import LearningMapService
 from core.learning.research import (
@@ -54,6 +60,20 @@ class FakeKnowledgePort:
                 ),
             ),
         )
+
+
+class BlockingKnowledgePort(FakeKnowledgePort):
+    def __init__(self) -> None:
+        self.calls = 0
+        self.first_started = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def search(self, *args: object, **kwargs: object) -> KnowledgeRetrievalResult:
+        self.calls += 1
+        if self.calls == 1:
+            self.first_started.set()
+            await self.release_first.wait()
+        return await super().search(*args, **kwargs)  # type: ignore[arg-type]
 
 
 def _task() -> LearningTask:
@@ -141,6 +161,16 @@ async def test_knowledge_execution_is_single_stage_and_request_idempotent(tmp_pa
             workspace_id="workspace-1",
             task=_task(),
             context=_context(),
+            expected_checkpoint_revision=1,
+            idempotency_key="advance-1",
+        )
+
+    with pytest.raises(LearningCheckpointConflictError):
+        await service.advance(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            context=_context(),
             expected_checkpoint_revision=0,
             idempotency_key="different-request",
         )
@@ -174,6 +204,89 @@ async def test_knowledge_execution_is_single_stage_and_request_idempotent(tmp_pa
         )
         == current
     )
+    historical_replay = await reopened.advance(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        context=_context(),
+        expected_checkpoint_revision=0,
+        idempotency_key="advance-1",
+    )
+    assert historical_replay == first
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_advance_has_one_external_side_effect_owner(tmp_path: Path) -> None:
+    path = tmp_path / "artifacts.sqlite3"
+    knowledge = BlockingKnowledgePort()
+    first_service = LearningExecutionService(
+        store=LearningArtifactStore(path),
+        map_service=LearningMapService(knowledge_port=knowledge),
+    )
+    second_service = LearningExecutionService(
+        store=LearningArtifactStore(path),
+        map_service=LearningMapService(knowledge_port=knowledge),
+    )
+    winner = asyncio.create_task(
+        first_service.advance(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            context=_context(),
+            expected_checkpoint_revision=0,
+            idempotency_key="concurrent-winner",
+        )
+    )
+    await knowledge.first_started.wait()
+    loser_error: Exception | None = None
+    try:
+        await second_service.advance(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            context=_context(),
+            expected_checkpoint_revision=0,
+            idempotency_key="concurrent-loser",
+        )
+    except Exception as exc:  # public loser outcome is asserted after releasing the winner
+        loser_error = exc
+    finally:
+        knowledge.release_first.set()
+    await winner
+
+    assert isinstance(loser_error, LearningCheckpointConflictError)
+    assert knowledge.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_binding_conflict_does_not_mutate_checkpoint_or_fencing(tmp_path: Path) -> None:
+    store = LearningArtifactStore(tmp_path / "artifacts.sqlite3")
+    service = LearningExecutionService(
+        store=store,
+        map_service=LearningMapService(knowledge_port=FakeKnowledgePort()),
+    )
+    first = await service.advance(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        context=_context(),
+        expected_checkpoint_revision=0,
+        idempotency_key="advance-initial",
+    )
+    before = store.checkpoint(owner_id="local", workspace_id="workspace-1", task_id=_task().task_id)
+
+    with pytest.raises(LearningResumeConflictError):
+        await service.advance(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            context=replace(_context(), capability_revision="cap-r2"),
+            expected_checkpoint_revision=first.checkpoint_revision,
+            idempotency_key="advance-drift",
+        )
+
+    after = store.checkpoint(owner_id="local", workspace_id="workspace-1", task_id=_task().task_id)
+    assert after == before
 
 
 @pytest.mark.asyncio

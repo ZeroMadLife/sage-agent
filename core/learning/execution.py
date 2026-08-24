@@ -8,7 +8,6 @@ from typing import Protocol, cast
 from core.learning.artifact_store import (
     LearningArtifactStore,
     LearningCheckpoint,
-    LearningCheckpointConflictError,
     LearningCheckpointStage,
     LearningResumeNotFoundError,
     LearningResumeSummary,
@@ -72,78 +71,66 @@ class LearningExecutionService:
     ) -> LearningResumeSummary:
         if expected_checkpoint_revision < 0:
             raise ValueError("expected checkpoint revision must be non-negative")
-        if self.store.is_advance_replay(
-            owner_id=owner_id,
-            workspace_id=workspace_id,
-            task_id=task.task_id,
-            idempotency_key=idempotency_key,
-        ):
-            return self.resume(
-                owner_id=owner_id,
-                workspace_id=workspace_id,
-                task=task,
-                capability_revision=context.capability_revision,
-            )
-        try:
-            checkpoint = self.store.checkpoint(
-                owner_id=owner_id, workspace_id=workspace_id, task_id=task.task_id
-            )
-        except LearningResumeNotFoundError:
-            if expected_checkpoint_revision != 0:
-                raise LearningCheckpointConflictError(
-                    "Learning checkpoint revision changed"
-                ) from None
-            await self._start(
-                owner_id=owner_id,
-                workspace_id=workspace_id,
-                task=task,
-                context=context,
-                idempotency_key=idempotency_key,
-            )
-            return self.resume(
-                owner_id=owner_id,
-                workspace_id=workspace_id,
-                task=task,
-                capability_revision=context.capability_revision,
-            )
-        if checkpoint.checkpoint_revision != expected_checkpoint_revision:
-            raise LearningCheckpointConflictError("Learning checkpoint revision changed")
-        if checkpoint.stage in {
-            "artifact_ready",
-            "blocked",
-            "user_input_pending",
-            "approval_pending",
-        }:
-            return self.resume(
-                owner_id=owner_id,
-                workspace_id=workspace_id,
-                task=task,
-                capability_revision=context.capability_revision,
-            )
-        lease = self.store.acquire_lease(
-            owner_id=owner_id,
-            workspace_id=workspace_id,
-            task_id=task.task_id,
-            lease_owner_id=f"advance:{idempotency_key[:180]}",
-        )
-        plan = self.store.load_plan(
-            owner_id=owner_id, workspace_id=workspace_id, task_id=task.task_id
-        )
-        await self._advance_stage(
-            owner_id=owner_id,
-            workspace_id=workspace_id,
-            task=task,
-            plan=plan,
-            context=context,
-            checkpoint=lease,
-            idempotency_key=idempotency_key,
-        )
-        return self.resume(
+        claim = self.store.claim_advance_request(
             owner_id=owner_id,
             workspace_id=workspace_id,
             task=task,
             capability_revision=context.capability_revision,
+            catalog_revision=context.catalog_revision,
+            expected_checkpoint_revision=expected_checkpoint_revision,
+            idempotency_key=idempotency_key,
         )
+        if claim.replay is not None:
+            return claim.replay
+        try:
+            if claim.checkpoint is None:
+                await self._start(
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task=task,
+                    context=context,
+                    idempotency_key=idempotency_key,
+                )
+            elif claim.checkpoint.stage not in {
+                "artifact_ready",
+                "blocked",
+                "user_input_pending",
+                "approval_pending",
+            }:
+                if claim.plan is None:
+                    raise LearningResumeNotFoundError("Learning plan not found")
+                await self._advance_stage(
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task=task,
+                    plan=claim.plan,
+                    context=context,
+                    checkpoint=claim.checkpoint,
+                    idempotency_key=idempotency_key,
+                )
+            response = self.resume(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task=task,
+                capability_revision=context.capability_revision,
+            )
+            self.store.complete_advance_request(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task_id=task.task_id,
+                claim=claim,
+                response=response,
+            )
+            return response
+        except Exception as exc:
+            self.store.fail_advance_request(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task_id=task.task_id,
+                claim=claim,
+                error_code=str(getattr(exc, "code", type(exc).__name__)),
+            )
+            raise
 
     def resume(
         self,
