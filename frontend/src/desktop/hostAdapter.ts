@@ -36,6 +36,7 @@ export interface DesktopCapabilities {
 
 let session: DesktopSession | null = null
 let sessionRevision = 0
+let hostStatusGeneration = 0
 type DesktopConnectionState = 'ready' | 'degraded'
 type DesktopConnectionListener = (state: DesktopConnectionState) => void
 const connectionListeners = new Set<DesktopConnectionListener>()
@@ -54,12 +55,30 @@ export function isDesktopRuntime(): boolean {
 }
 
 export async function desktopHostStatus(): Promise<DesktopHostSnapshot> {
+  const requestGeneration = ++hostStatusGeneration
+  const expectedRevision = sessionRevision
   const snapshot = await invoke<DesktopHostSnapshot>('desktop_host_status')
-  replaceSession(snapshot.state === 'ready' ? snapshot.session : null)
+  if (requestGeneration === hostStatusGeneration) {
+    replaceSessionIfRevision(
+      snapshot.state === 'ready' ? snapshot.session : null,
+      expectedRevision,
+    )
+  }
   return snapshot
 }
 
+function sessionsEqual(left: DesktopSession | null, right: DesktopSession | null): boolean {
+  if (left === null || right === null) return left === right
+  return left.endpoint === right.endpoint
+    && left.bearer === right.bearer
+    && left.instanceId === right.instanceId
+}
+
 function replaceSession(next: DesktopSession | null): void {
+  if (sessionsEqual(session, next)) {
+    session = next
+    return
+  }
   session = next
   sessionRevision += 1
 }
@@ -107,9 +126,9 @@ async function recoverSession(
   if (sessionRevision !== expectedRevision) {
     return isActive() ? currentSessionLease() : null
   }
-  publishConnectionState('degraded')
   const snapshot = await invoke<DesktopHostSnapshot>('desktop_host_status')
   if (!isActive()) return null
+  publishConnectionState('degraded')
   const next = snapshot.state === 'ready' ? snapshot.session : null
   if (!replaceSessionIfRevision(next, expectedRevision)) {
     return isActive() ? currentSessionLease() : null
@@ -132,8 +151,17 @@ async function desktopFetchWithSession(
     if (init.signal?.aborted) throw init.signal.reason ?? error
     // The bounded retry below refreshes the in-memory session after a transport failure.
   }
-  const refreshed = await recoverSession(active.revision)
-  if (!refreshed) throw new Error('desktop_session_unavailable')
+  const isActive = () => !init.signal?.aborted
+  let refreshed: DesktopSessionLease | null
+  try {
+    refreshed = await recoverSession(active.revision, isActive)
+  } catch (error) {
+    if (init.signal?.aborted) throw init.signal.reason ?? error
+    throw error
+  }
+  if (!refreshed || init.signal?.aborted) {
+    throw init.signal?.reason ?? new Error('desktop_session_unavailable')
+  }
   const response = await fetchWithSession(refreshed.session, path, init)
   if (response.status === 401 || response.status === 403) {
     replaceSessionIfRevision(null, refreshed.revision)
@@ -401,6 +429,7 @@ export async function desktopWebSocket(path: string): Promise<DesktopWebSocketCo
 }
 
 export async function desktopExit(): Promise<void> {
+  hostStatusGeneration += 1
   replaceSession(null)
   await invoke('desktop_exit')
 }
