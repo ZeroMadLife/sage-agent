@@ -2,7 +2,7 @@
 
 > 状态：已获 CTO 全权实施授权，按阶段本地开发与审查；公开 push、PR 合并、签名凭据和发布仍按外部变更门禁单独执行。
 >
-> L2 状态（2026-08-25）：Assistant 第二候选修复 `21d3c07e9470462e92dce9eafc35252b2393b843` 已完成，等待第三轮复审；仅本地 commit，未 push、未建 PR。
+> L2 状态（2026-08-25）：Assistant 最终复审追加修复 `e6c535604b95c713ed5431d43de5a5b13b2a3135` 已完成，等待第四轮最终复审；仅本地 commit，未 push、未建 PR。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -272,7 +272,7 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 11. 切片 L2：Assistant 任务确认与进入会话
 
-> code candidate：`21d3c07e9470462e92dce9eafc35252b2393b843`。当前只交付 Assistant 确认、durable kickoff accepted receipt 与共享会话入口，不包含 L3 Research/Artifact。初版候选复审的聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
+> code candidate：`e6c535604b95c713ed5431d43de5a5b13b2a3135`。当前只交付 Assistant 确认、durable kickoff accepted receipt 与共享会话入口，不包含 L3 Research/Artifact。初版候选复审的聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
 
 **交付行为**
 
@@ -294,11 +294,13 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - store 覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed/kickoff_dispatching/receipt_recovery_failed`，双击确认去重为一次 activate；同 revision 使用稳定 idempotency key，响应丢失后以 canonical Task/receipt 收敛。
 - active activation receipt 后调用 `POST /api/v1/learning/tasks/{task_id}/kickoff`；服务端以 Learning SQLite + Session Journal 持久化 revision/key/session/content-bound receipt。响应丢失后 canonical GET 或同 key POST 返回同一 accepted receipt，进程重启可查询、继续或重放。
 - kickoff accepted 后才选择并显示共享 Session；Coding WebSocket 以稳定 `turn_run_id` 启动一次。普通 Coding 的 `startSessionWithPrompt` 与 `UserMessage` 路径不变。
-- 新 app 上的 WS 直接重连会从持久 Session 幂等 lazy rehydrate runtime；不依赖整页刷新，普通 Coding 同样受保护。
+- 新 app 上的 WS 直接重连会从持久 Session 幂等 lazy rehydrate runtime；owner/auth、cursor 与恢复均在 `websocket.accept()` 前完成，浏览器握手成功即 runtime REST ready，不依赖整页刷新，普通 Coding 同样受保护。
+- Provider pin、credential 读取、DNS pin 或其他 runtime 构造失败在 REST/WS 统一收敛为 `coding_session_rehydrate_failed`，固定响应不包含 secret 或内部异常；失败可重试。
+- rehydrate 锁按 `session_id` 分片；同一 Session 并发只构造一次，不同 Session 可并行，成功/失败后清理 lock entry 且不保留半初始化 runtime。
 - 同一固定 run 的 stale-check 竞态只在该 run 已有 durable events 时收敛为 replay；其他 active run、Thread Goal 或 Journal 冲突不被吞掉。
 - receipt 存在但 canonical Task 缺失时，kickoff GET 与 WS 稳定返回 `learning_kickoff_binding_conflict`。
 - 激活失败保留原 draft 字段和重试入口；编辑 failed draft 会经 CAS 形成新 revision，再使用新 revision key 激活。
-- restart/reconnect、并发、GET/WS 与完整 Coding Routes 定向 `73 passed`；9 个 Learning API/core 邻接文件 `75 passed`；Cloud/Coding/Thread Goal/Journal 邻接 `73 passed`。
+- restart/reconnect、WS readiness、并发、GET/WS 与完整 Coding Routes 定向 `77 passed`；9 个 Learning API/core 邻接文件 `76 passed`；Cloud/Coding/Thread Goal/Journal 邻接 `75 passed`。
 - 聚焦前端 `6 files / 138 passed`；完整 Vue `69 files / 521 tests passed`。
 - 全仓 Ruff/format（`482 files`）、pyproject 推荐 Mypy 范围（`249 source files`）、private/public production build 与 `git diff --check` 通过，private build 只有既有大 chunk warning。
 - 仓库内 Playwright `1 passed`，隔离 FastAPI/Vite 与非敏感 fake provider 覆盖创建、三项澄清、activation 失败重试、kickoff dispatching 和 Assistant 刷新恢复；accepted 前 `turn_started=0`，accepted 后稳定 `turn_started=1`，Coding 刷新重连不重复。
@@ -323,7 +325,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - `AssistantHomeView` 大表单/确认区拆分登记为 L3 前技术债，本轮不做无关重构。
 - `input_origin + emit_user_event` 收敛为 `TurnInputKind/learning_kickoff` 类型合同，以及 `LearningKickoffErrorCode` + 结构化 OpenAPI error responses，均登记为 L3 前技术债。
 - 不修改 L1 只读授权合同；不生成 LearningPlan、Task DAG、Artifact、Practice 或 Mastery。
-- 当前结论是“code candidate 已本地提交，等待第三轮复审”，不是已合入 `dev/sage-v7` 或已发布。
+- 当前结论是“code candidate 已本地提交，等待第四轮最终复审”，不是已合入 `dev/sage-v7` 或已发布。
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
