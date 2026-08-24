@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request, Response
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import authenticated_connection_user
 from api.schemas import AssistantHomeSummary
 from core.assistant import (
     AssistantHomeSummaryService,
@@ -25,11 +25,10 @@ async def get_assistant_home(request: Request, response: Response) -> AssistantH
     """Return a bounded owner-visible summary without calling an LLM."""
     cloud = getattr(request.app.state, "cloud_repository", None)
     app_env = str(getattr(request.app.state, "cloud_app_env", "development"))
-    token = request.cookies.get(SESSION_COOKIE, "")
     user = None
-    if token and isinstance(cloud, CloudRepository):
-        user = await cloud.authenticated_user(token)
-        if user is None:
+    if isinstance(cloud, CloudRepository):
+        user = await authenticated_connection_user(request)
+        if user is None and app_env == "production":
             raise HTTPException(status_code=401, detail="cloud authentication is required")
     elif app_env == "production":
         raise HTTPException(status_code=401, detail="cloud authentication is required")

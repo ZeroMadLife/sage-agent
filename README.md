@@ -155,11 +155,19 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 git clone https://github.com/ZeroMadLife/sage-agent.git
 cd sage-agent
 
-bash scripts/bootstrap-dev-env.sh
-cd frontend && npm ci && cd ..
-cp .env.example .env
-bash scripts/dev.sh
+bash scripts/quickstart.sh
 ```
+
+首次运行会创建权限为 `0600` 的本地 `.env`、准备 Python/前端依赖并执行环境检查；
+检查通过后会启动现有 FastAPI、Vue 与 Docker Compose 链路。至少配置一个模型 Provider
+后，重新执行同一命令即可进入真实 Agent 会话。只做检查、不启动服务时使用：
+
+```bash
+bash scripts/quickstart.sh --check
+```
+
+需要分别调试已有启动链路时，仍可直接使用 `bash scripts/dev.sh`；完整手动安装步骤见
+[Getting Started](docs/GETTING-STARTED.md)。
 
 启动后访问：
 
@@ -169,7 +177,8 @@ bash scripts/dev.sh
 
 至少配置一个模型 Provider。`.env`、Provider key、OAuth secret 和运行凭据不得提交。
 
-完整环境变量和 worktree 联调说明见 [Getting Started](docs/GETTING-STARTED.md)。
+部署边界：`local` 使用 `scripts/quickstart.sh`；`private-canary` 继续由
+`scripts/deployctl.py` 和受控 Compose 管理；`public` 尚未开放，不复用本地 `.env` 或开发登录。
 
 ## 验证
 

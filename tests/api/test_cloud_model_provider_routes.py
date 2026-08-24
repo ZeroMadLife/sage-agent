@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from starlette.testclient import WebSocketDenialResponse
+from starlette.websockets import WebSocketDisconnect
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
@@ -290,11 +290,11 @@ async def test_account_model_sessions_are_hidden_from_other_users(
     assert not other.get("/api/v1/coding/models").json()["current"].startswith("account:")
     assert other.post(f"/api/v1/coding/session/{session_id}/resume").status_code == 404
     with (
-        pytest.raises(WebSocketDenialResponse) as denied,
+        pytest.raises(WebSocketDisconnect) as denied,
         other.websocket_connect(f"/api/v1/coding/{session_id}/stream"),
     ):
         pass
-    assert denied.value.status_code == 404
+    assert denied.value.code == 1008
 
 
 async def test_anonymous_coding_catalog_does_not_expose_account_models(

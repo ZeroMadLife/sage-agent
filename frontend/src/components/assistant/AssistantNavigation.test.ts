@@ -77,6 +77,21 @@ it('uses a three-item bottom navigation and command trigger on mobile', async ()
   wrapper.unmount()
 })
 
+it('offers cloud logout from the compact mobile navigation', async () => {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 })
+  const router = createTestRouter()
+  await router.push('/assistant')
+  const wrapper = mount(AssistantNavigation, {
+    props: { authRequired: true },
+    slots: { default: '<p>主页内容</p>' },
+    global: { plugins: [router] },
+  })
+
+  const navigation = wrapper.get('.mobile-bottom-navigation')
+  expect(navigation.get('button[aria-label="退出登录"]').text()).toContain('退出登录')
+  wrapper.unmount()
+})
+
 it('returns from knowledge to the most recent conversation', async () => {
   localStorage.setItem('sage.coding.recentSessionId', 'session-active')
   const router = createTestRouter()

@@ -8,10 +8,17 @@ import {
   Search,
   Settings,
   Sparkles,
+  LogOut,
 } from 'lucide-vue-next'
 import { openCommandPalette } from '../product-shell'
+import { useCloudAuth } from '../../composables/useCloudAuth'
 
 const route = useRoute()
+const props = defineProps<{ authRequired?: boolean }>()
+const cloudAuthRequired = computed(
+  () => props.authRequired ?? import.meta.env.VITE_CLOUD_AUTH_REQUIRED === 'true',
+)
+const { error: logoutError, logout } = useCloudAuth()
 const compact = ref(window.innerWidth < 900)
 const workspaceViewport = computed(() => route.path.startsWith('/coding'))
 
@@ -46,6 +53,10 @@ function showCommandPalette(event: MouseEvent) {
 
 function updateBreakpoint() {
   compact.value = window.innerWidth < 900
+}
+
+async function handleLogout() {
+  await logout()
 }
 
 onMounted(() => window.addEventListener('resize', updateBreakpoint))
@@ -88,6 +99,13 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
         <Settings :size="17" />
         <span>设置</span>
       </RouterLink>
+      <p v-if="cloudAuthRequired && logoutError" class="logout-error" role="alert">
+        {{ logoutError }}
+      </p>
+      <button v-if="cloudAuthRequired" class="logout-link" type="button" @click="handleLogout">
+        <LogOut :size="17" />
+        <span>退出登录</span>
+      </button>
     </aside>
 
     <button
@@ -116,7 +134,20 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
         <component :is="item.icon" :size="19" />
         <span>{{ item.label }}</span>
       </RouterLink>
+      <button
+        v-if="cloudAuthRequired"
+        class="mobile-logout-link"
+        type="button"
+        aria-label="退出登录"
+        @click="handleLogout"
+      >
+        <LogOut :size="19" />
+        <span>退出登录</span>
+      </button>
     </nav>
+    <p v-if="compact && cloudAuthRequired && logoutError" class="mobile-logout-error" role="alert">
+      {{ logoutError }}
+    </p>
   </div>
 </template>
 
@@ -231,6 +262,29 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
 .navigation-spacer { flex: 1; }
 .public-link { margin-bottom: 2px; }
 .settings-link { padding-top: 1px; border-top: 1px solid var(--sage-border); border-radius: 0; }
+.logout-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-top: 1px solid var(--sage-border);
+  color: var(--sage-text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: var(--sage-font-md);
+  text-align: left;
+  cursor: pointer;
+}
+.logout-link:hover { color: var(--sage-danger); background: var(--sage-surface-muted); }
+.logout-error {
+  margin: 0 8px 6px;
+  color: var(--sage-danger);
+  font-size: var(--sage-font-xs);
+  line-height: 1.4;
+}
 .assistant-main { min-width: 0; min-height: 100dvh; }
 .mobile-command-trigger,
 .mobile-bottom-navigation { display: none; }
@@ -272,7 +326,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
     background: color-mix(in srgb, var(--sage-surface) 96%, transparent);
     backdrop-filter: blur(14px);
   }
-  .mobile-bottom-navigation a {
+  .mobile-bottom-navigation:has(.mobile-logout-link) {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .mobile-bottom-navigation a,
+  .mobile-logout-link {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -286,7 +344,31 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateBreakpoint))
     font-size: 11px;
     line-height: 1;
   }
+  .mobile-logout-link {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    cursor: pointer;
+  }
+  .mobile-logout-link:hover { color: var(--sage-danger); }
   .mobile-bottom-navigation a.active { color: var(--sage-brand-strong); background: var(--sage-brand-bg); }
+  .mobile-logout-error {
+    position: fixed;
+    z-index: 20;
+    right: 12px;
+    bottom: calc(66px + env(safe-area-inset-bottom));
+    left: 12px;
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid color-mix(in srgb, var(--sage-danger) 35%, var(--sage-border));
+    border-radius: var(--sage-radius);
+    color: var(--sage-danger);
+    background: var(--sage-surface);
+    box-shadow: var(--sage-shadow-sm);
+    font-size: var(--sage-font-sm);
+    text-align: center;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

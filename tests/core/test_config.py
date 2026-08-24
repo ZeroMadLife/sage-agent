@@ -51,6 +51,16 @@ def test_harness_budget_defaults_allow_long_evidence_runs() -> None:
     assert settings.sage_harness_max_run_seconds == 1_800.0
 
 
+def test_blank_optional_embedding_cost_is_accepted_from_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_EMBEDDING_COST_PER_1K_TOKENS_USD", "")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.knowledge_embedding_cost_per_1k_tokens_usd is None
+
+
 def test_context_assembly_configuration_accepts_enforce(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

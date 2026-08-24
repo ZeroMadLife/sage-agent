@@ -39,6 +39,19 @@ def test_cloud_me_requires_a_server_session(cloud_repository: CloudRepository) -
     assert response.status_code == 401
 
 
+def test_cloud_me_rejects_malformed_bearer_without_server_error(
+    cloud_repository: CloudRepository,
+) -> None:
+    client = TestClient(create_app(cloud_repository=cloud_repository))
+
+    response = client.get(
+        "/api/v1/cloud/me",
+        headers={"Authorization": "Bearer not-a-jwt"},
+    )
+
+    assert response.status_code == 401
+
+
 async def test_development_login_sets_httponly_cookie_and_me_reads_server_session(
     cloud_repository: CloudRepository,
 ) -> None:
@@ -291,3 +304,97 @@ def test_cloud_payload_rejects_whitespace_values(cloud_repository: CloudReposito
     )
 
     assert login.status_code == 422
+
+
+async def test_device_tokens_authenticate_and_rotate_refresh_token(
+    cloud_repository: CloudRepository,
+) -> None:
+    """TUI credentials use Bearer access plus one-time refresh rotation."""
+    await cloud_repository.create_invite("device-invite", email="device@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+        )
+    )
+
+    login = client.post(
+        "/api/v1/cloud/auth/device/login",
+        json={"invite_code": "device-invite", "device_name": "Sage TUI"},
+    )
+    assert login.status_code == 200
+    assert login.headers["cache-control"] == "no-store"
+    assert login.headers["pragma"] == "no-cache"
+    token_payload = login.json()
+    assert token_payload["token_type"] == "Bearer"
+    assert token_payload["refresh_token"] not in token_payload["access_token"]
+
+    bearer = {"Authorization": f"Bearer {token_payload['access_token']}"}
+    current = client.get("/api/v1/cloud/me", headers=bearer)
+    assert current.status_code == 200
+    assert current.json()["email"] == "device@example.com"
+
+    rotated = client.post(
+        "/api/v1/cloud/auth/token/refresh",
+        json={"refresh_token": token_payload["refresh_token"]},
+    )
+    assert rotated.status_code == 200
+    assert rotated.headers["cache-control"] == "no-store"
+    assert rotated.headers["pragma"] == "no-cache"
+    rotated_payload = rotated.json()
+    assert rotated_payload["refresh_token"] != token_payload["refresh_token"]
+
+    replay = client.post(
+        "/api/v1/cloud/auth/token/refresh",
+        json={"refresh_token": token_payload["refresh_token"]},
+    )
+    assert replay.status_code == 401
+    assert client.get("/api/v1/cloud/me", headers=bearer).status_code == 401
+    assert (
+        client.get(
+            "/api/v1/cloud/me",
+            headers={"Authorization": f"Bearer {rotated_payload['access_token']}"},
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/cloud/auth/token/refresh",
+            json={"refresh_token": rotated_payload["refresh_token"]},
+        ).status_code
+        == 401
+    )
+
+
+async def test_device_token_logout_revokes_refresh_family(
+    cloud_repository: CloudRepository,
+) -> None:
+    await cloud_repository.create_invite("revoke-device-invite", email="revoke@example.com")
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud_repository,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+        )
+    )
+    login = client.post(
+        "/api/v1/cloud/auth/device/login",
+        json={"invite_code": "revoke-device-invite", "device_name": "Desktop"},
+    )
+    access = login.json()["access_token"]
+    refresh = login.json()["refresh_token"]
+
+    revoked = client.post(
+        "/api/v1/cloud/auth/token/revoke",
+        json={"refresh_token": refresh},
+    )
+    assert revoked.status_code == 204
+    assert (
+        client.get("/api/v1/cloud/me", headers={"Authorization": f"Bearer {access}"}).status_code
+        == 401
+    )
+    assert (
+        client.post("/api/v1/cloud/auth/token/refresh", json={"refresh_token": refresh}).status_code
+        == 401
+    )

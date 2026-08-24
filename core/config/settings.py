@@ -7,7 +7,7 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import quote, urlparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     # forced to Secure by the app factory regardless of this value.
     cloud_secure_cookies: bool = False
     cloud_frontend_url: str = "http://localhost:5173"
+    cloud_access_token_ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    cloud_refresh_token_ttl_days: int = Field(default=30, ge=1, le=180)
     # Local development may repair additive PostgreSQL schema changes on startup.
     # Production deployment keeps migrations explicit in the release runbook.
     sage_auto_migrate: bool = True
@@ -168,6 +170,15 @@ class Settings(BaseSettings):
         ge=0.0,
         le=100.0,
     )
+
+    @field_validator("knowledge_embedding_cost_per_1k_tokens_usd", mode="before")
+    @classmethod
+    def _empty_embedding_cost_is_unknown(cls, value: object) -> object:
+        """Treat a blank optional env value as an unknown price, not a float error."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     knowledge_dashscope_batch_size: int = Field(default=10, ge=1, le=10)
     knowledge_doubao_max_workers: int = Field(default=8, ge=1, le=32)
     knowledge_fastembed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"

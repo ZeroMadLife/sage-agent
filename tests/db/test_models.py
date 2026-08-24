@@ -4,6 +4,7 @@ from sqlalchemy import inspect, text
 
 from db.database import create_engine
 from db.migrations import init_db
+from db.models import Base
 
 
 async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
@@ -35,6 +36,9 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
                 for column in inspect(sync_connection).get_columns("knowledge_sync_plans")
             }
         )
+        refresh_indexes = await connection.run_sync(
+            lambda sync_connection: inspect(sync_connection).get_indexes("cloud_refresh_tokens")
+        )
 
     await engine.dispose()
 
@@ -49,6 +53,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "20260718_v7_canary_invite_device_login",
         "20260718_h2_5c_knowledge_source_proposals",
         "20260723_public_publication_candidates",
+        "20260823_v8_rotating_client_tokens",
     }
     assert {
         "cloud_model_providers",
@@ -63,6 +68,7 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "knowledge_source_proposal_events",
         "public_publication_candidates",
         "public_publication_candidate_events",
+        "cloud_refresh_tokens",
         "knowledge_ingest_idempotency",
         "knowledge_job_events",
         "knowledge_source_manifests",
@@ -86,6 +92,49 @@ async def test_init_db_records_the_v7_cloud_control_plane_revision() -> None:
         "base_checkpoint",
         "target_checkpoint",
     } <= plan_columns
+    refresh_index_names = {str(index["name"]) for index in refresh_indexes}
+    assert {
+        "ix_cloud_refresh_tokens_expires_at",
+        "ix_cloud_refresh_tokens_family_id",
+        "ix_cloud_refresh_tokens_token_hash",
+        "ix_cloud_refresh_tokens_user_id",
+    } <= refresh_index_names
+    token_hash_index = next(
+        index for index in refresh_indexes if index["name"] == "ix_cloud_refresh_tokens_token_hash"
+    )
+    assert bool(token_hash_index["unique"]) is True
+
+
+async def test_init_db_adds_refresh_tokens_to_a_pre_token_schema() -> None:
+    engine = create_engine("sqlite+aiosqlite:///:memory:")
+    legacy_tables = [
+        table for table in Base.metadata.sorted_tables if table.name != "cloud_refresh_tokens"
+    ]
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            lambda sync_connection: Base.metadata.create_all(
+                sync_connection,
+                tables=legacy_tables,
+            )
+        )
+
+    await init_db(engine)
+    await init_db(engine)
+
+    async with engine.connect() as connection:
+        tables = await connection.run_sync(
+            lambda sync_connection: set(inspect(sync_connection).get_table_names())
+        )
+        revisions = set(
+            (await connection.execute(text("SELECT revision FROM schema_migrations")))
+            .scalars()
+            .all()
+        )
+
+    await engine.dispose()
+
+    assert "cloud_refresh_tokens" in tables
+    assert "20260823_v8_rotating_client_tokens" in revisions
 
 
 async def test_init_db_upgrades_legacy_knowledge_job_tables_in_place() -> None:

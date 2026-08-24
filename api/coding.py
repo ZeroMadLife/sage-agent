@@ -23,6 +23,8 @@ from fastapi import (
     Request,
     Response,
     WebSocket,
+    WebSocketException,
+    status,
 )
 from langchain_core.tools import BaseTool
 from sage_harness import (
@@ -45,7 +47,7 @@ from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from api.cloud_dependencies import (
-    SESSION_COOKIE,
+    authenticated_connection_user,
     require_cloud_authentication_in_production,
 )
 from api.cloud_model_context import (
@@ -384,15 +386,26 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
             return
         owner_user_id = str(persisted.get("owner_user_id", "")).strip() or None
     if owner_user_id is None:
+        if str(getattr(connection.app.state, "cloud_app_env", "development")).lower() == (
+            "production"
+        ):
+            _raise_unknown_coding_session(connection, session_id)
         return
     cloud = getattr(connection.app.state, "cloud_repository", None)
     user = (
-        await cloud.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+        await authenticated_connection_user(connection)
         if isinstance(cloud, CloudRepository)
         else None
     )
     if user is None or user.user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
+        _raise_unknown_coding_session(connection, session_id)
+
+
+def _raise_unknown_coding_session(connection: HTTPConnection, session_id: str) -> None:
+    detail = f"Unknown coding session: {session_id}"
+    if connection.scope.get("type") == "websocket":
+        raise WebSocketException(code=status.WS_1008_POLICY_VIOLATION, reason=detail)
+    raise HTTPException(status_code=404, detail=detail)
 
 
 router = APIRouter(
@@ -1784,6 +1797,7 @@ async def list_coding_sessions(
     store = CodingSessionStore(storage_root / "sessions")
     account = await load_account_model_context(request)
     current_user_id = account.user_id if account is not None else None
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
     visible: list[CodingSessionSummary] = []
     for item in store.list_sessions(include_archived=include_archived):
         try:
@@ -1791,7 +1805,13 @@ async def list_coding_sessions(
         except FileNotFoundError:
             continue
         owner_user_id = str(state.get("owner_user_id", "")).strip() or None
-        if owner_user_id is not None and owner_user_id != current_user_id:
+        if app_env == "production" and owner_user_id != current_user_id:
+            continue
+        if (
+            app_env != "production"
+            and owner_user_id is not None
+            and owner_user_id != current_user_id
+        ):
             continue
         visible.append(CodingSessionSummary(**item))
     return CodingSessionsResponse(sessions=visible)

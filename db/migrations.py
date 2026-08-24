@@ -123,6 +123,16 @@ async def init_db(engine: AsyncEngine | None = None) -> None:
                 ")"
             )
         )
+        await connection.execute(
+            text(
+                "INSERT INTO schema_migrations (revision, applied_at) "
+                "SELECT '20260823_v8_rotating_client_tokens', CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS ("
+                "SELECT 1 FROM schema_migrations "
+                "WHERE revision = '20260823_v8_rotating_client_tokens'"
+                ")"
+            )
+        )
 
 
 async def _upgrade_canary_invite_device_columns(connection: AsyncConnection) -> None:

@@ -222,6 +222,9 @@ def create_app(
         else cloud_secure_cookies
     )
     app.state.cloud_frontend_url = cloud_frontend_url or settings.cloud_frontend_url
+    app.state.cloud_token_secret = settings.app_secret_key
+    app.state.cloud_access_token_ttl_seconds = settings.cloud_access_token_ttl_seconds
+    app.state.cloud_refresh_token_ttl_days = settings.cloud_refresh_token_ttl_days
     app.state.database_auto_migrate = (
         False
         if app_env == "production" or settings.app_env == "production"

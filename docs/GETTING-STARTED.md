@@ -19,6 +19,17 @@ docker compose version
 
 ## 2. 安装依赖
 
+推荐先使用产品入口完成首次初始化：
+
+```bash
+bash scripts/quickstart.sh --check
+```
+
+该命令会安全创建本地 `.env`（已有文件不会覆盖）、准备 Python 环境和前端依赖，并委托
+现有 `scripts/dev.sh` 做配置预检。它不会打印 Provider key，也不会启动服务。
+
+如果需要手动控制每一步，也可以执行：
+
 在仓库根目录执行：
 
 ```bash
@@ -99,13 +110,21 @@ Gate，不能继续复用旧 policy。云端失败会显式报错，不静默切
 最短路径：
 
 ```bash
-bash scripts/dev.sh
+bash scripts/quickstart.sh
 ```
 
-该脚本会检查开发环境、启动 Compose 基础设施，再启动 FastAPI 与 Vue。只做预检可运行：
+该入口会先完成本地依赖和配置预检，再调用现有 `scripts/dev.sh` 启动 Compose 基础设施、
+FastAPI 与 Vue。产品入口默认关闭后端热更新，保证长任务和会话创建期间进程稳定；直接运行
+`scripts/dev.sh` 时仍默认启用热更新。只做预检可运行：
 
 ```bash
-SAGE_DEV_CHECK_ONLY=1 bash scripts/dev.sh
+bash scripts/quickstart.sh --check
+```
+
+直接调试现有进程启动器时仍可使用：
+
+```bash
+bash scripts/dev.sh
 ```
 
 默认入口：
@@ -161,6 +180,12 @@ MCP Server 应通过运行配置注入，并在设置页或 `/api/v1/coding/mcp/
 状态。真实外部服务需要独立凭据和契约测试，单元测试不依赖这些凭据。
 
 ## 7. 常见问题
+
+### 一键入口的部署边界
+
+当前 `quickstart.sh` 只面向本地 `local` 工作区。受控服务器使用 immutable commit SHA、
+`scripts/deployctl.py` 和 `infra/compose/private-canary.yml`；公网注册、计费、备份
+与回滚属于后续产品化阶段，尚未由本地入口承担。
 
 ### 端口被占用
 

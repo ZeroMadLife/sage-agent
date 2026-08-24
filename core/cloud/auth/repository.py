@@ -19,6 +19,7 @@ from db.models import (
     CloudOAuthTransactionRecord,
     CloudProjectRecord,
     CloudProviderCredentialRecord,
+    CloudRefreshTokenRecord,
     CloudUserRecord,
     CloudWorkspaceRecord,
 )
@@ -26,6 +27,10 @@ from db.models import (
 
 class DeviceLimitReached(Exception):
     """The account already has the maximum number of active device sessions."""
+
+
+class RefreshTokenReuseDetected(Exception):
+    """A rotated refresh token was replayed; its complete family was revoked."""
 
 
 def _digest(value: str) -> str:
@@ -347,6 +352,185 @@ class CloudRepository:
             record.revoked_at = _utc_now()
             await session.commit()
             return True
+
+    async def revoke_session_by_id(self, session_id: str) -> bool:
+        """Revoke a server session identified by a validated access-token claim."""
+        if not session_id:
+            return False
+        async with self._session_factory() as session:
+            record = await session.get(CloudLoginSessionRecord, session_id)
+            if record is None or record.revoked_at is not None:
+                return False
+            record.revoked_at = _utc_now()
+            await session.commit()
+            return True
+
+    async def authenticated_user_by_session_id(self, session_id: str) -> CloudUser | None:
+        """Resolve a user only when the API session is still active."""
+        if not session_id:
+            return None
+        now = _utc_now()
+        async with self._session_factory() as session:
+            record = await session.get(CloudLoginSessionRecord, session_id)
+            if (
+                record is None
+                or record.revoked_at is not None
+                or _is_expired(record.expires_at, now)
+            ):
+                return None
+            user = await session.get(CloudUserRecord, record.user_id)
+            if user is None or user.disabled_at is not None:
+                return None
+            return _to_user(user)
+
+    async def create_refresh_token(
+        self,
+        *,
+        user_id: str,
+        family_id: str,
+        token: str,
+        expires_at: datetime,
+    ) -> None:
+        """Persist only a refresh-token digest bound to one device session."""
+        if not token or not family_id:
+            raise ValueError("refresh token and family are required")
+        async with self._session_factory() as session:
+            session.add(
+                CloudRefreshTokenRecord(
+                    id=str(uuid4()),
+                    user_id=user_id,
+                    family_id=family_id,
+                    token_hash=_digest(token),
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+
+    async def rotate_refresh_token(
+        self,
+        *,
+        token: str,
+        replacement: str,
+        expires_at: datetime,
+    ) -> tuple[str, str] | None:
+        """Atomically rotate a refresh token and return ``(user_id, family_id)``.
+
+        Replaying an already rotated token revokes the whole family, which makes
+        stolen refresh credentials observable and useless after the first use.
+        """
+        if not token or not replacement:
+            return None
+        now = _utc_now()
+        async with self._session_factory() as session:
+            record = await session.scalar(
+                select(CloudRefreshTokenRecord)
+                .where(CloudRefreshTokenRecord.token_hash == _digest(token))
+                .with_for_update()
+            )
+            if record is None:
+                return None
+            if record.revoked_at is not None or record.rotated_at is not None:
+                await session.execute(
+                    update(CloudRefreshTokenRecord)
+                    .where(
+                        CloudRefreshTokenRecord.family_id == record.family_id,
+                        CloudRefreshTokenRecord.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
+                )
+                await session.execute(
+                    update(CloudLoginSessionRecord)
+                    .where(
+                        CloudLoginSessionRecord.id == record.family_id,
+                        CloudLoginSessionRecord.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
+                )
+                await session.commit()
+                raise RefreshTokenReuseDetected
+            if _is_expired(record.expires_at, now):
+                return None
+            user = await session.get(CloudUserRecord, record.user_id)
+            session_record = await session.get(CloudLoginSessionRecord, record.family_id)
+            if (
+                user is None
+                or user.disabled_at is not None
+                or session_record is None
+                or session_record.revoked_at is not None
+                or _is_expired(session_record.expires_at, now)
+            ):
+                return None
+            rotated = await session.execute(
+                update(CloudRefreshTokenRecord)
+                .where(
+                    CloudRefreshTokenRecord.id == record.id,
+                    CloudRefreshTokenRecord.rotated_at.is_(None),
+                    CloudRefreshTokenRecord.revoked_at.is_(None),
+                )
+                .values(rotated_at=now)
+            )
+            if rotated.rowcount != 1:
+                await session.execute(
+                    update(CloudRefreshTokenRecord)
+                    .where(
+                        CloudRefreshTokenRecord.family_id == record.family_id,
+                        CloudRefreshTokenRecord.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
+                )
+                await session.execute(
+                    update(CloudLoginSessionRecord)
+                    .where(
+                        CloudLoginSessionRecord.id == record.family_id,
+                        CloudLoginSessionRecord.revoked_at.is_(None),
+                    )
+                    .values(revoked_at=now)
+                )
+                await session.commit()
+                raise RefreshTokenReuseDetected
+            session.add(
+                CloudRefreshTokenRecord(
+                    id=str(uuid4()),
+                    user_id=record.user_id,
+                    family_id=record.family_id,
+                    token_hash=_digest(replacement),
+                    expires_at=expires_at,
+                )
+            )
+            await session.commit()
+            return record.user_id, record.family_id
+
+    async def revoke_refresh_token(self, token: str) -> str | None:
+        """Revoke one refresh family and its server-side device session."""
+        if not token:
+            return None
+        now = _utc_now()
+        async with self._session_factory() as session:
+            record = await session.scalar(
+                select(CloudRefreshTokenRecord).where(
+                    CloudRefreshTokenRecord.token_hash == _digest(token)
+                )
+            )
+            if record is None:
+                return None
+            await session.execute(
+                update(CloudRefreshTokenRecord)
+                .where(
+                    CloudRefreshTokenRecord.family_id == record.family_id,
+                    CloudRefreshTokenRecord.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+            await session.execute(
+                update(CloudLoginSessionRecord)
+                .where(
+                    CloudLoginSessionRecord.id == record.family_id,
+                    CloudLoginSessionRecord.revoked_at.is_(None),
+                )
+                .values(revoked_at=now)
+            )
+            await session.commit()
+            return record.family_id
 
     async def raw_token_is_persisted(self, token: str) -> bool:
         """Test-only invariant probe: stored digest columns never equal the raw token."""

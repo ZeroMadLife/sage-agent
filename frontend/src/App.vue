@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NConfigProvider,
@@ -32,9 +32,16 @@ const desktopRuntime = isDesktopRuntime()
 
 onMounted(async () => {
   if (!cloudAuthRequired) return
+  window.addEventListener('sage-auth-logout', handleCloudLogout)
   cloudAuthenticated.value = await checkCloudAuth()
   cloudAuthChecking.value = false
 })
+
+function handleCloudLogout() {
+  if (cloudAuthRequired) cloudAuthenticated.value = false
+}
+
+onBeforeUnmount(() => window.removeEventListener('sage-auth-logout', handleCloudLogout))
 
 const naiveTheme = computed(() => {
   const mode = themeMode.value

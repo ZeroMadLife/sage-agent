@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from core.cloud.auth.models import CloudUser
-from core.cloud.auth.repository import CloudRepository
+from core.cloud.auth.repository import CloudRepository, RefreshTokenReuseDetected
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
 
@@ -89,6 +89,62 @@ async def test_login_session_stores_only_a_hash_and_honors_revoke_and_expiry(
         expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
     assert await repository.authenticated_user("expired-token") is None
+
+
+async def test_concurrent_refresh_rotation_revokes_the_winning_replacement(
+    repository: CloudRepository,
+) -> None:
+    await repository.create_invite("refresh-race", email="refresh@example.com")
+    user, login_session = await repository.create_canary_invite_session(
+        invite_code="refresh-race",
+        token="refresh-race-session",
+        device_name="Concurrent client",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    original = "refresh-race-original-token-value"
+    replacements = (
+        "refresh-race-replacement-a-value",
+        "refresh-race-replacement-b-value",
+    )
+    await repository.create_refresh_token(
+        user_id=user.user_id,
+        family_id=login_session.session_id,
+        token=original,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+
+    results = await asyncio.gather(
+        *(
+            repository.rotate_refresh_token(
+                token=original,
+                replacement=replacement,
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            for replacement in replacements
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert sum(isinstance(result, RefreshTokenReuseDetected) for result in results) == 1
+    assert await repository.authenticated_user_by_session_id(login_session.session_id) is None
+    winner_index = next(index for index, result in enumerate(results) if isinstance(result, tuple))
+    winner = replacements[winner_index]
+    loser = replacements[1 - winner_index]
+    with pytest.raises(RefreshTokenReuseDetected):
+        await repository.rotate_refresh_token(
+            token=winner,
+            replacement=f"{winner}-next",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+    assert (
+        await repository.rotate_refresh_token(
+            token=loser,
+            replacement=f"{loser}-next",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+        is None
+    )
 
 
 async def test_revoking_one_device_frees_a_slot_without_affecting_other_devices(

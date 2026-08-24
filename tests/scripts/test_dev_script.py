@@ -99,4 +99,12 @@ def test_dev_script_exports_repository_packages_to_reload_children() -> None:
 
     assert 'REPOSITORY_PYTHONPATH="${ROOT_DIR}/packages/sage_harness:${ROOT_DIR}"' in script
     assert 'export PYTHONPATH="${REPOSITORY_PYTHONPATH}:${PYTHONPATH}"' in script
-    assert "--reload-exclude '.venv/*'" in script
+    assert "--reload-exclude '.venv/**'" in script
+
+
+def test_dev_script_can_disable_reload_for_product_quickstart() -> None:
+    script = DEV_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'DEV_RELOAD="${SAGE_DEV_RELOAD:-1}"' in script
+    assert 'if [[ "${DEV_RELOAD}" == "1" ]]' in script
+    assert '"${PYTHON_BIN}" -m uvicorn "${uvicorn_args[@]}" &' in script
