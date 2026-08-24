@@ -214,9 +214,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 ## 10. 切片 L1：首轮只读 Learning Scope
 
-> 候选状态（2026-08-24）：最终 code candidate
-> `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 已关闭第二轮中枢复审指出的公共 Timeline/WS
-> replay 旁路与测试所有权问题；当前仍待中枢最终短复审，
+> 候选状态（2026-08-24）：Runtime fix code candidate
+> `9a454d24843dd27f2e2c00bb34366219c428675e` 已补上最终 Runtime 复审指出的 no-runtime
+> HTTP Timeline Session 缺失/损坏 P2，并完成测试 helper 所有权整理；当前仍待中枢最后 Runtime 短复审，
 > 尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
 > validation、Capability Registry、ToolBundle 和 Harness middleware：模型 catalog 与真实
 > ToolNode 调用均受 `AllowedCapabilitySet + capability_revision + turn_context_plan_hash`
@@ -231,6 +231,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 > Evidence/Memory read 是 receipt 内部 authority，不作为伪工具加入普通公共 Capability Registry。
 > active `session_id` 通过 Learning repository 的 owner/workspace binding 反查；可变 Session JSON
 > 只作为待校验投影，marker 缺失或降级会稳定拒绝，不能恢复普通 Coding 的写权限或 raw Run API。
+> 进程重启且内存 runtime 不存在时，HTTP Timeline 先用认证 owner + `session_id` 查询 canonical
+> active binding；active Learning 的 Session JSON 删除或损坏稳定映射为
+> `learning_scope_validation_failed` 409，普通 Coding 的缺失 404 与损坏 500 兼容语义不变。
 > Retrieval receipt 在进入 Timeline/TurnContextPlan 前收敛为实际可执行来源；model 前重验失败保留
 > `learning_scope_*` reason，不包装为 Provider error。`knowledge=required` 且 Knowledge 当前不可用时，
 > 在 Provider 前稳定返回 `learning_scope_source_gap`；Knowledge 已调用但 zero-hit 的完整 sufficiency
@@ -249,16 +252,17 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - L0 REST activation/resume 漂移返回明确 `409`；L1 已启动 run 的 admission、model、retrieval 或 tool 漂移返回稳定 `learning_scope_*` 事件/error receipt，不触发 Provider 或真实工具；
 - 成功 Learning run 的 post-turn Goal evaluator 在额外 Provider call 前重新解析 active Task/receipt/Session/TurnContextPlan，任一 revision 漂移均不调用 evaluator；
 - HTTP Timeline、WS replay 与 Run API 对 active Learning Session 使用同一公开投影；`run_started.surface_context/thread_goal` 与 `thread_goal_evaluated.evaluation` 不公开 query、source path、Goal/criterion、模型正文、Skill prompt 或网页正文；scope 漂移时 fail closed。
+- no-runtime HTTP Timeline 在 active Learning Session 文件缺失或损坏时返回稳定 `learning_scope_validation_failed` 409；正常持久化 Learning 与普通 Coding 兼容路径均有真实 API 回归。
 
 **当前验证边界**
 
-- Learning 公共路径与拆分后的定向组：`37 passed`；
-- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集：`283 passed`；
+- Learning 公共路径与拆分后的定向组：`42 passed`；
+- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集：`288 passed`；
 - 完整普通 Coding Routes：`58 passed`；
-- Ruff、7 个改动 Python 文件 format check、Mypy（`247 source files`）和 `git diff --check`：通过；
+- Ruff、9 个改动 Python 文件 format check、Mypy（`247 source files`）和 `git diff --check`：通过；
 - frontend private/public production build：通过；private build 仅有既有大 chunk warning；
 - 固定 Python 3.12 与完整复现命令见 `2026-08-13-sage-recoverable-learning-task-v1-delivery.md` 的 Slice A3；
-- 中枢最终短复审仍待执行，不能写成已关闭。
+- 中枢最后 Runtime 短复审仍待执行，不能写成已关闭。
 
 **依赖与非目标**
 

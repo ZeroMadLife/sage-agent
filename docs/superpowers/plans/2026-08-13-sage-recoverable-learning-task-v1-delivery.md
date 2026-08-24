@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 最终修复候选 `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 等待中枢短复审；后续切片未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 等待中枢最后短复审；后续切片未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -14,7 +14,7 @@
 |---|---|---|---|
 | A1 Draft 学习任务 | 已完成 | `c66abf9b94178bb744bf53d56501c12f77fd3071` | 可创建、读取和 CAS 修改草稿；确认前不启动 Runtime |
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
-| A3 Learning allowlist | L1 最终修复候选，待中枢短复审 | `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；HTTP Timeline、WS replay 与 Run API 使用统一安全投影；尚未合入 `dev/sage-v7` |
+| A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
 | A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -211,7 +211,7 @@ git diff --check
 ### Slice A3：首轮 Learning Turn 只读 allowlist
 
 > 2026-08-24 候选事实边界：代码候选固定为
-> `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc`。当前职责分支实现了 `LearningReadonlyScopeResolver`
+> `9a454d24843dd27f2e2c00bb34366219c428675e`。当前职责分支实现了 `LearningReadonlyScopeResolver`
 > 与 Harness middleware。Learning Session 在 model、host Memory retrieval、父 ToolNode 和
 > Research child 的每次 model/tool 边界重载 L0 Task、receipt、Session 和 kickoff
 > TurnContextPlan；模型 schema 与 deferred catalog 使用同一冻结 allowlist。Knowledge 读取与
@@ -226,6 +226,9 @@ git diff --check
 > 不是可调用模型工具，也不写入普通 Session 的公共 Capability Registry 或改变其 revision。
 > active Learning binding 由 repository 按 `session_id` 反查并校验 owner/workspace；Session JSON
 > 中的 `session_kind` 与 `learning_*` 仅是待校验投影，缺失或降级不能回退到普通 Coding 权限。
+> HTTP Timeline 在进程重启、内存 runtime 不存在时，会先用认证 owner + `session_id` 查询 canonical
+> active binding，再读取 Session JSON；active Learning 的 Session 文件删除或损坏统一返回
+> `learning_scope_validation_failed` 409，普通 Coding 缺失仍为 404，损坏仍保持既有 500 语义。
 > Retrieval Gate 的 `selected_sources` 在写 Timeline 与 TurnContextPlan 前按同一 scope 收敛：
 > `allowed_when_insufficient` 在没有 durable sufficiency receipt 时只声明并路由 Knowledge，
 > 不再公开一个真实入口不可用的 Web source。model 前的 canonical 漂移保留稳定
@@ -254,6 +257,7 @@ git diff --check
 - Learning Timeline、Run List/Detail 和 workspace diff 公开投影不包含 query、source path、Skill prompt、网页全文或 token；原始 child trace 仍是 `.coding/` 内部恢复数据，不是浏览器合同。
 - Learning stream、Timeline、Run List/Detail 和 workspace diff 复用同一个公开 projector；AIMessage 正文不进入 Learning 公共审计事件。
 - HTTP Timeline 与 WS replay 会按 active Learning identity 投影真实 journal；`run_started.surface_context/thread_goal` 和 `thread_goal_evaluated.evaluation` 不再绕过 projector。scope 漂移时 HTTP 稳定 `409`，WS 在发送 payload 前以 `1008` fail closed。
+- no-runtime HTTP Timeline 在 active Learning 的 Session JSON 被删除或损坏时稳定返回 `learning_scope_validation_failed` 409；正常持久化 Learning 仍可读取，普通 Coding 缺失/损坏保持原合同。
 - Learning 完全跳过 MCP catalog port；不读取 server/transport/tool names，catalog 故障不能阻断 Learning。
 - frozen domains 非空时，仅显式实现 policy-aware Web port 才能获得 `web:fetch`。
 
@@ -316,12 +320,13 @@ npm --prefix frontend run build:public
 git diff --check
 ```
 
-当前 code candidate `c1ffce2bbf1d59ad1e43c76922a617f6b1312ecc` 的已执行事实：
-Learning 公共路径与拆分后的定向组 `37 passed`；L0/L1、activation/resume/concurrency、
-DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集 `283 passed`；
-完整普通 Coding Routes `58 passed`。Ruff、7 个改动 Python 文件 format check、Mypy
+当前 code candidate `9a454d24843dd27f2e2c00bb34366219c428675e` 的已执行事实：
+Learning 公共路径与拆分后的定向组 `42 passed`；L0/L1、activation/resume/concurrency、
+DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集 `288 passed`；
+完整普通 Coding Routes `58 passed`。Ruff、9 个改动 Python 文件 format check、Mypy
 `247 source files`、frontend private/public production build 与 `git diff --check` 均通过。
-private build 仅有既有大 chunk warning。Standards/Spec/Runtime 最终短复审仍待中枢执行。
+private build 仅有既有大 chunk warning。最终 Runtime 复审指出的 no-runtime P2 已形成候选，
+中枢最后 Runtime 短复审仍待执行。
 
 ### Slice A4：Assistant 任务确认与进入会话
 
