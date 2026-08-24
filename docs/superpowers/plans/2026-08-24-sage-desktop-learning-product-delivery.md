@@ -160,6 +160,38 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - 依赖 P0、D1；
 - 不实现 Cloud OAuth 和 updater。
 
+### D2 实施收口（2026-08-25）
+
+- **候选代码 SHA**：`b55f0f25e6f435a87389c56407afabb11a2a2d20`，分支
+  `feat/desktop-provider-onboarding-v1`，仅本地 commit，未 push、未建 PR。
+- **基线职责**：先以 `7b1e655`、`71d340c`、`2a423de` 将 P0 三段认证提交整合到
+  D1 `e6c26af`；再以 `d31a5c7` 独立提取 diagnostics 与 state repository。上述提交不含
+  D2 Keychain/Provider 功能，既有 handshake、PID identity、crash budget 与正式 bundle
+  smoke 合同保持不变。
+- **D2 职责**：`bc58d5b` 建立 Rust Keychain/Provider 合同，`747b892` 完成首次启动与
+  Local Provider 产品闭环；`c05eb09`、`453561e` 分别补齐冻结 sidecar 的版本化模型清单
+  与动态工具模块，`b55f0f2` 保证首次启动 onboarding blocked 时仍持续轮询宿主并在
+  sidecar crash/restart 后取得轮换会话。
+- **已交付行为**：Local/Cloud 首次选择、数据目录/迁移/workspace/capability 检查；Rust
+  独占 macOS Keychain，SQLite 只保存 `key_ref/key_hint`；Local Provider 新增、探测、默认
+  模型、轮换、注销与删除；状态统一为 `ready/degraded/blocked + reason_code + action`，刷新
+  与重启可重建。无 Docker 时 Assistant、Coding session 与 SQLite RAG 仍可用，write、patch、
+  shell 副作用工具不进入能力目录；桌面端 Cloud OAuth 路由保持 404。
+- **secret 边界**：Provider secret 只经 Rust 到 sidecar stdin bootstrap 的继承 pipe 传递，
+  不进入环境变量、SQLite、Timeline、日志、诊断包或最终 `.app`。Keychain 测试使用唯一临时
+  service/account 并清理，覆盖锁定、拒绝、轮换、注销、删除与恢复。
+- **门禁证据**：Rust 35 tests、fmt、clippy 通过；D2 Python targeted 66 passed，完整后端
+  `2047 passed, 12 skipped`，最终 desktop suite `57 passed`，Ruff 与受影响 12 个源文件
+  mypy 通过；Vue `72 files / 546 tests` 与 production build 通过；`git diff --check` 通过。
+- **正式 bundle**：使用 Python `3.12.13` 从 clean HEAD 运行唯一入口，receipt 位于
+  `/private/tmp/sage-desktop-b55f0f2/desktop-bundle-receipt.json`。`source_dirty=false`，target
+  为 `aarch64-apple-darwin`，sidecar 12 项 smoke 与 `.app` 的 `app_launch/crash_restart/`
+  `handshake_health/explicit_exit/process_cleanup/webview_reconnect` 全部 `passed`；host 与
+  sidecar 均为 arm64 Mach-O，ad-hoc 签名经 `codesign --deep --strict` 验证，退出后无残留进程。
+- **遗留与下一步**：当前只可称 macOS arm64 本地开发 `.app`；大 chunk warning 仍在，且
+  Developer ID、notarization、staple、DMG、updater、Cloud OAuth、Intel macOS、Windows 与
+  Linux 均未交付。D2 等待中枢三镜头复审，不先行进入 D3 或发布。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
