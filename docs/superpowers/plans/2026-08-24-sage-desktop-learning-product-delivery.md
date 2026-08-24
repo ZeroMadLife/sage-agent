@@ -439,6 +439,73 @@ adapter、capability 与已放行 artifact 合同保持不变。
   `sage-api-aarch64-apple-darwin` 经 `pgrep -x` 复查均无残留，仓库保持 clean。当前候选等待第四轮
   Runtime/Standards 最终短审；Cloud OAuth、updater、Developer ID、公证、stapled DMG 仍未交付。
 
+### D2.4 Supervisor ownership recovery 修复 mini-spec（2026-08-25）
+
+本增量只关闭 D2.3 第四轮 Runtime/Standards 共同确认的两个 supervisor 反例；D2 已放行的
+Provider/Keychain/journal/capability 与 artifact 产品合同保持不变。
+
+**未发布 child cleanup 不变量**
+
+- launch success CAS 拒绝必须把已观察的 `OrphanRecord` 与仍由 caller 独占的 child 一并返回，不能只
+  调用会消耗句柄、却没有 wait/identity verification 保证的 `CommandChild::kill()`。
+- caller 在 host mutex 外使用既有 `terminate_runtime(record)` 完成 PID/start-time/executable identity
+  校验。明确 stopped/not-found 或 identity reused 是该未发布旧 identity 的安全终态；signal error、
+  仍存活、仅 `KillSent` 或无法确认均不安全。
+- 不安全结果必须 durable 保存为 pending unpublished orphan，发布
+  `blocked + desktop_unpublished_sidecar_cleanup_failed + open_diagnostics` 并写脱敏 diagnostic；任何 pending
+  orphan 均阻止后续 generation starting/ready。重启先 reconciliation，安全收敛后才允许 launch。
+- child termination、process observation、repository I/O 与 diagnostics 不得在会重入的 host mutex 路径
+  中交错；若 durable persist 自身失败，保留内存 ownership 并升级为 persistence blocked。
+
+**Starting transition 不变量**
+
+- `launch_once` 的 starting transition 必须在同一 host state 临界区检查 generation、stopping、
+  configuration restart 与 pending orphan，再决定是否发布 `starting`；预检查只允许优化，不是授权。
+- 确定性 barrier 交错覆盖 `old precheck -> new ready -> old resume` 与
+  `old precheck -> restart stop-failed blocked/finish -> old resume`。旧 caller 只能返回 superseded，不能
+  改变新 generation 的 snapshot/session/reason/action。
+
+**Red/Green 与门禁**
+
+- P1 覆盖 signal/kill error、同 identity 仍存活、identity reused 与 confirmed stopped；P2 必须经过
+  `launch_once` 实际使用的 production starting seam，不从 success commit helper 起步。每项先 Red 再最小
+  Green，并用 logic-lens 检查资源、持久化、generation 与锁顺序。
+- focused 后运行 supervisor/Rust full/fmt/clippy、Provider/Keychain、desktop Python、Vue host adapter/
+  HostGate、source product smoke 与 `git diff --check`。代码/docs 独立中文 commit；Rust 源码变化后从新
+  clean docs HEAD 重建正式 arm64 bundle，固定 receipt、12+6 smoke、manifest、strict codesign、secret
+  scan、零残留与 code/docs/receipt SHA，再等待第五轮短审。
+
+### D2.4 实施收口（2026-08-25）
+
+- **代码候选**：`e66f960307d5b2aadb3a84b6b7f91f6a70ce2e42`。launch success CAS 拒绝现在归还
+  完整 `OrphanRecord + child`，production caller 在 host mutex 外持有 child 并按 PID/start-time/
+  executable 执行 verified termination。只有 `Stopped/IdentityChanged` 对该未发布旧 identity 属于安全
+  收敛；signal error、仍存活、`KillSent` 或无法确认都会写入独立
+  `desktop-host-unpublished-orphans.json`，发布专用 blocked reason/action 与脱敏 diagnostic。
+- **恢复与 fail closed**：pending unpublished ownership 与当前 generation 的 main orphan 分开持久化，
+  journal 损坏、写入失败和并发追加均不静默覆盖。pending 会阻止 starting、success commit 与
+  configuration restart；重启逐个做 identity-verified reconciliation，只有安全终态才移除。journal
+  persistence failure 保留内存 ownership 与 `desktop_state_persist_failed`，后续 failure accounting 不再
+  覆盖该状态或消费 crash budget。
+- **production caller 修复**：logic-lens 发现健康检查后的 stopping/generation 裸 `child.kill()` 会绕开
+  verified cleanup，仍可能丢失已读取 Provider secret 的旧进程 identity；本轮移除这两个预返回，让健康
+  sidecar 统一经过 process observation、generation/ownership CAS 与 caller cleanup。测试同时证明 child
+  在异步 termination 完成前不会 Drop。
+- **starting 原子性**：`launch_once` 使用的 transition 在同一 host state 临界区完成 generation、
+  stopping、configuration restart、pending ownership 检查与 `starting` 发布。两个 barrier 交错分别让
+  新 generation 先发布 ready、以及 restart 先发布 stop-failed blocked；旧 launch 恢复后均只返回
+  `desktop_launch_superseded`，不覆盖 session/reason/action。
+- **Red/Green 证据**：P2 旧实现的两个精确交错均得到 `left: Ok(()) / right:
+  Err("desktop_launch_superseded")`；P1 旧实现的 kill error/timeout/`KillSent` 用例在 durable journal 中
+  得到 `pid=None` 而期望 `pid=42`。新增 production caller Red 先因缺少统一 cleanup caller 编译失败，
+  Green 后 supervisor focused `25 passed`，repository 文件合同 `5 passed`，覆盖 journal 往返/去重、
+  corruption fail closed 与并发唯一追加。
+- **源码门禁**：Rust full `68 passed`、fmt、clippy `-D warnings` 通过；Provider `14 passed`，唯一临时
+  macOS Keychain service/account round-trip 与 cleanup `1 passed`。Rust-only 相邻门禁为 Vue host
+  adapter/HostGate `39 passed`、Python desktop `61 passed`、source product smoke `1 passed`；changed-diff
+  secret scan 零命中，host/launcher/sidecar 精确进程检查均为零，`git diff --check` 通过。正式 arm64
+  bundle 尚待从下一笔 clean docs HEAD 重建，不能沿用 `c50d658` 收据。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
