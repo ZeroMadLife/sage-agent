@@ -505,6 +505,27 @@ Provider/Keychain/journal/capability 与 artifact 产品合同保持不变。
   adapter/HostGate `39 passed`、Python desktop `61 passed`、source product smoke `1 passed`；changed-diff
   secret scan 零命中，host/launcher/sidecar 精确进程检查均为零，`git diff --check` 通过。正式 arm64
   bundle 尚待从下一笔 clean docs HEAD 重建，不能沿用 `c50d658` 收据。
+- **正式 artifact**：已从 clean docs HEAD `9ba0985e89e3bf2ad0a671f406b3428569392de5` 运行
+  唯一 bundle 入口；有效 receipt 位于
+  `/private/tmp/sage-desktop-9ba0985-r2/desktop-bundle-receipt.json`，SHA-256
+  `975a57710db60a495a44330e3f8ce706c7279da7123c5e62627122fdaa2cd6a7`。`source_dirty=false`、
+  Python `3.12.13`、target `aarch64-apple-darwin`；sidecar 12 项真实 product smoke 与 `.app` 6 项
+  lifecycle smoke 全部 `passed`，包含模型 turn、SQLite RAG、capability/side-effect fail-closed、crash
+  restart、WebView 新 session 与 explicit exit。
+- **计数与完整性**：sidecar receipt SHA-256 为
+  `ca6dacb844ecf49063554b507e483ebfe1db0745312298d7ea38dc0d49ae9525`；269 manifest entries
+  逐项 SHA 复核 `269/269` 匹配，类型为 247 个 regular files、22 个 symlinks、0 missing。写入
+  `build-receipt.json` 后原始 sidecar 为 248 个 regular files、116 个 directories、22 个 symlinks；
+  最终 `.app` 为 274 个 regular files、121 个 directories、0 symlink。
+- **签名与安全**：host、launcher、sidecar 均为 arm64 Mach-O；app deep strict 与三个嵌套 executable
+  strict codesign 全部通过，签名为 ad-hoc。packaged product sentinel、`sk-*`、private-key marker 与
+  `.env` 零命中；唯一 `.pem` 为 certifi 公共 CA trust bundle。`sage-desktop`、`sage-api`、
+  `sage-api-aarch64-apple-darwin` 精确进程检查均为零，仓库保持 clean。
+- **构建恢复记录**：第一次全新输出在 sidecar 冻结后因调用方 `.venv` 缺少 WebSocket verifier
+  dependency 而退出，未生成正式 receipt，也未进入 `.app` build。随后使用仓库 `requirements.txt`
+  提供的 Python 3.12 verifier 环境和新的 `r2` 输出目录完整重跑，不复用失败产物；两次错误的手工计数
+  分别来自 zsh 特殊变量 `path` 覆盖 `$PATH`、以及错误假设 artifact/jq 路径，均未作为证据，最终计数
+  使用已确认的 dist 路径、`/usr/bin/jq` 与只读命令重做。当前候选等待第五轮 Runtime/Standards 短审。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
