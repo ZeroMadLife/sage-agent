@@ -4,7 +4,7 @@
 >
 > L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
 >
-> L3 状态（2026-08-25）：Research、Synthesize 与 Learning Artifact code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 已在固定 L2 docs 候选 `ca6e618d6df993dff40ed3a304ca942c239e7d84` 上本地完成，等待中枢三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
+> L3 状态（2026-08-25）：首轮候选未通过中枢三镜头复审；修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 已从 clean `655af6b` 在原职责分支完成，等待新一轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -340,7 +340,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
-> 本地 code candidate：`c15fa679ea15ad85ef0d8fd6cde690926d85f231`；mini-spec：`9a52a7a`。当前结论是“可提交并等待中枢三镜头复审”，不是已合入、已发布或已证明真实 Provider/Web 质量。
+> 修复 code candidate：`bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。首轮候选已被三镜头复审拒绝，当前结论仅为“修复候选已完成本地门禁，等待重新复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 
@@ -368,14 +368,14 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 **当前实现与收口证据（2026-08-25）**
 
-- `LearningPlan/KnowledgeUnit` 以 Goal、task/source/capability/catalog revision 和 canonical DAG hash 形成稳定 identity；Knowledge-first 零证据保持 `source_gap/unverified`，计划与 Artifact status 不写成 Mastery。
-- 条件 Research 复用现有 `SubagentExecutorPort` research profile、Web Search/Fetch 和 `EvidenceBundlePort`；只在 policy、sufficiency、capability、预算与风险均允许时创建只读 child。Research receipt 持久绑定 parent/child run、query hash、revision、预算/usage、域名/freshness 与 URL/title/content hash/fetched_at；失败保持确定性 reason code。
-- Artifact Store 持久保存 schema、Goal/Plan/Unit identity、content hash/media type、evidence/source revision、retention、幂等 digest 和可选 Research receipt ref；同 revision 重试/重启/Resume 返回同一 Artifact，不同内容冲突拒绝覆盖。Checkpoint 使用 CAS 与递增 fencing token，大正文只存在 Artifact。
-- `POST .../advance` 每次只推进一个 durable stage；`GET .../resume` 和 scoped Artifact GET 均为 browser-safe `no-store` 投影。共享 Coding 会话展示 DAG、checkpoint、Artifact 和来源，刷新从 canonical Resume 恢复。
-- 最终串行 B1/B2/B3、L0-L2 Learning 与完整 Coding routes 邻接：`214 passed, 1 warning`；warning 为既有 GPT-2 fallback tokenizer。
-- 完整 Vue：`71 files / 525 tests passed`；private/public production build 均通过，private build 只有既有大 chunk warning；仓库化 Playwright：`2 passed`。
-- 全仓 Ruff lint 通过；Mypy `254 source files` 通过；本切片 25 个 Python 文件 format check 与 `git diff --check` 通过。全仓 format check 仍只有 5 个未修改 Harness 文件的历史漂移（`telemetry.py`、`deferred_tools.py`、`message_compaction.py`、`subagents/tool.py`、`task_dag.py`），本片不扩大无关 diff。
-- Playwright 使用隔离 FastAPI/Vite、确定性 Knowledge/Web fixtures 与非敏感 fake provider，只证明合同、恢复和 UI 投影，不证明真实 Provider/Web 检索质量、学习效果、生产准确率或 SLA。
+- Slice 1（`7997044`）：`advance` 在一个 SQLite `BEGIN IMMEDIATE` 事务内完成 expected checkpoint、task/plan/source/capability frozen binding 校验、durable request claim 和 fencing 获取。每个 request key 以 owner/workspace/task、expected revision、请求/响应 digest 和终态持久化；同 revision loser 在 Knowledge/Research/Artifact 外部副作用前被拒绝，历史成功 key 在后续推进后仍可重放。
+- Slice 2（`bccb10d`）：Plan、Unit、Research receipt 与 Artifact identity 纳入 owner/workspace/plan scope；Plan hash 最终绑定 Unit IDs。SQLite reopen/read 重算 Plan、Unit、receipt、Artifact content hash/citation binding；篡改数据与旧空 identity fail closed，旧 Artifact 被 quarantine，不进入 API/UI。
+- Slice 3（`5705d33`）：Knowledge 首次推进不依赖 Research profile；无 provider 仍可形成 canonical `source_gap/degraded/blocked`。条件 Research 复用合法 Harness child seam，真实执行 timeout 与 max-steps/token/tool budget，所有 gate/失败也保存含实际 usage/elapsed 的 receipt。sufficiency 复用既有合同；冲突来源保留双方 citation，Artifact 为 `unverified` 且不得 ready。
+- Slice 4（`4848cf4`、`bbf7c19`）：Learning 失败码集中为可穷举枚举，L3 4xx/OpenAPI 使用统一结构；共享 UI 以 task + generation 拒绝迟到响应。Playwright 不再在浏览器用 `Map/page.route` 重写状态机，而是启动隔离真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web，并以服务进程 PID 变化验证重启恢复。
+- fixture-verified：B1/B2/B3、L0-L2 邻接与必要 Coding 定向 `67 passed`；L3 API `22 passed`；最终 focused 聚合复跑 `72 passed`；Vue 定向 `3 passed`，CodingView 单文件复跑 `25 passed`；仓库化纵向 Playwright `2 passed`；全仓 Ruff、Mypy（`286 source files`）、private/public production build、改动文件 format 与 `git diff --check` 均通过。
+- 完整 Vue 首轮为 `525 passed, 1 timeout`；超时文件在无并行负载下复跑为 `25 passed`，属于 5 秒负载超时，未伪装成完整首轮全绿。
+- 完整 Python 为 `2130 passed, 12 skipped, 3 failed`。3 个失败都位于未被 L3 修改且与 `655af6b` 相同的 `tests/api/test_coding_context_routes.py`：一个 helper 重复 `mkdir`，两个 resume 用例未移除内存 runtime，因而没有进入篡改后的持久化校验。本片不扩大为 Coding runtime 重构；该基线测试隔离债务仍未关闭。
+- 未证明：本地 fake Knowledge/Provider/Web 只证明协议、scope、幂等、冲突投影与重启恢复，不证明真实 Knowledge 检索质量、真实 Provider/Web 质量、学习效果、生产准确率或 SLA。
 - Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀、书本 RAG projection 修改和 B4 跨领域 Eval 均保持未交付。
 
 ## 13. 切片 L4：Practice、Mastery 与 Resume

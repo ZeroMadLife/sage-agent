@@ -2,7 +2,7 @@
 
 > 日期：2026-08-25
 >
-> 状态：L3 实施合同
+> 状态：L3 修复候选实施合同；code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 待中枢重新三镜头复审
 >
 > 固定起点：`ca6e618d6df993dff40ed3a304ca942c239e7d84`
 >
@@ -68,13 +68,16 @@ not_started
 
 canonical payload 使用 UTF-8、JSON key 排序、紧凑分隔符；不包含时间戳、随机 ID、
 模型正文或运行状态。`canonical_hash = sha256(canonical payload)`。同一 task revision 和冻结
-输入必须得到相同 plan id/hash。
+输入必须得到相同 plan id/hash。构造顺序固定为：先由 plan-scope payload 计算 scope digest，
+再生成 Unit IDs，最后把有序 Unit IDs 放回 Plan canonical payload 计算 `plan_id/plan_hash`；
+不得让 Unit identity 反向依赖最终 `plan_id` 形成循环。
 
 ### 4.2 KnowledgeUnit
 
 `KnowledgeUnit` V1 的 identity 由下列 canonical 字段计算：
 
-- plan id、稳定 ordinal；
+- plan-scope digest、稳定 ordinal；plan-scope digest 绑定 owner/workspace/task/task revision、
+  Goal ref/revision、source policy、capability/catalog revision 与 canonical DAG hash；
 - 规范化标题、学习目标、前置 unit id；
 - source policy revision；
 - risk class。
@@ -91,7 +94,7 @@ Web evidence 必须绑定 `citation_id/url/title/content_hash/fetched_at`。缺�
 
 Research receipt V1 固定：
 
-- task/plan/unit revision；parent run id、child run id；
+- owner/workspace/plan scope、task/plan/unit revision；parent run id、child run id；
 - capability revision、source policy revision；
 - canonical query receipt hash，不保存未裁剪的用户正文；
 - token/tool/child/time budget 与实际 usage；
@@ -99,7 +102,13 @@ Research receipt V1 固定：
 - terminal status、deterministic reason code、evidence refs。
 
 `不要联网`、域名不允许、freshness 无法证明、timeout、空结果、冲突、Provider 不可用和
-超预算都 fail closed。失败保留已有 Knowledge evidence，不伪造成 Research 成功。
+超预算都 fail closed。policy/capability/profile/budget gate 在 child 创建前失败时也必须生成并
+持久化 terminal receipt；实际执行 receipt 记录真实 token/tool usage、step budget 与 elapsed。
+失败保留已有 Knowledge evidence，不伪造成 Research 成功。
+
+Evidence sufficiency 必须调用既有 `evaluate_retrieval_sufficiency` 合同，不能退化为
+`bool(citations)`。同一 conflict group 内不同 source revision/content hash 视为冲突，即使 URL
+不同或相同也保留双方 evidence/citation；冲突 Artifact 固定为 `unverified`，不能进入 ready。
 
 ### 4.4 Learning Artifact
 
@@ -139,6 +148,16 @@ next action、evidence count、gap/reason codes、artifact ref、lease owner 和
 新 writer 取得递增 fencing token 后，旧 token 的任何写入稳定失败且不能覆盖新 checkpoint。
 task、plan、checkpoint、source 或 capability 任一漂移均返回 `409` 和结构化 reason code。
 
+`advance` 的 expected checkpoint revision、task/plan/source/capability frozen binding 校验、
+durable request claim 与 lease/fencing 获取必须在同一个 SQLite `BEGIN IMMEDIATE` 事务内完成。
+同一 revision 只能有一个 owner 进入 Knowledge/Research/receipt/Artifact 外部副作用；竞争 loser
+在副作用前收到冲突，或对已成功请求执行安全 replay。任何 `409` 都不能先改变 checkpoint。
+
+Advance 幂等使用 append-preserving durable request journal，而不是只依赖 checkpoint 的 last key。
+每条记录绑定 owner/workspace/task、request key hash、expected revision、请求 digest、响应 digest
+和 `running/succeeded/failed` 终态。历史成功 key 在后续 checkpoint 推进后仍返回原响应；相同 key
+绑定不同 expected revision 或请求 digest 时必须 `409`，不能借 replay 绕过 revision 校验。
+
 Resume Summary 只投影：
 
 - task id/revision、目标安全摘要、plan/dag identity；
@@ -160,6 +179,9 @@ Resume Summary 只投影：
 - Learning 共享会话展示真实 DAG 节点、checkpoint stage、Artifact 状态、来源标题/URL 或
   Knowledge citation identity。刷新与进程重启重新 GET canonical resume，不从本地状态猜目标。
 - Coding 普通消息、L2 kickoff receipt、已有 Timeline 与 Run API 合同保持兼容。
+- Learning 错误码由 `LearningFailureCode` 形成闭合集合；advance/resume/artifact 的实际
+  `404/409/422/503` body 与 OpenAPI `LearningErrorResponse` 一致。非法 task/artifact id 在访问
+  store/runtime 前返回结构化 `4xx`。
 
 ## 7. Synthesize 规则
 
@@ -187,6 +209,9 @@ Resume Summary 只投影：
 - `learning_resume_revision_conflict`
 - `learning_resume_fencing_conflict`
 - `learning_resume_not_found`
+- `learning_persistence_integrity_error`
+- `learning_task_invalid_id`
+- `learning_task_not_found`
 
 错误 detail 只包含 `code/message/current_revision` 等受控字段，不回显 Provider/SQLite/文件系统
 异常正文。
@@ -194,16 +219,33 @@ Resume Summary 只投影：
 ## 9. Public test seams
 
 - dataclass/schema canonical identity 与独立预期 hash fixture；
-- 临时 SQLite 的 plan/artifact/checkpoint repository，覆盖重复、重启、CAS 与 stale fencing；
+- 临时 SQLite 的 plan/artifact/checkpoint/request journal repository，覆盖并发 owner、历史 key
+  replay、错误 revision、重启、CAS、stale fencing、tamper 与 legacy 空 identity quarantine；
 - fake KnowledgePort + 真 EvidenceBundle 数据合同；
 - 只在 Web/Provider/Subagent 外部边界使用受限 fake，覆盖 policy/domain/freshness/timeout/
   empty/conflict/budget；
 - FastAPI TestClient 覆盖 owner/workspace、GET resume、409 drift 和 OpenAPI response；
 - Vue 组件/store 覆盖真实 DAG/checkpoint/artifact/source 投影；
-- 仓库化 Playwright 覆盖 Knowledge、source gap、条件 Research、失败、刷新/重启恢复、Artifact
-  去重和 citation 展示。
+- 仓库化 Playwright 启动隔离真实 FastAPI + SQLite + Vite，只在 Knowledge/Provider/Web 外部
+  边界使用本地 fake；覆盖真实 API、owner/task scope、Knowledge、source gap、条件 Research、
+  provider 失败、冲突 unverified Artifact、历史幂等 replay、去重、citation 展示和服务进程重启恢复。
+  浏览器不得用 `Map` 或 `page.route` 重写服务端状态机。
 
-## 10. Non-goals
+## 10. 当前实现证据与未证明边界
+
+- code candidate：`bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；仅本地 commit，未 push、
+  未建 PR、未合入，且尚未获中枢重新三镜头放行。
+- fixture-verified：Python 邻接 `67 passed`、L3 API `22 passed`、最终 focused 聚合复跑
+  `72 passed`、Vue 定向 `3 passed`、
+  CodingView 单文件 `25 passed`、真实服务纵向 Playwright `2 passed`；全仓 Ruff、Mypy
+  `286 source files`、private/public build、改动文件 format 与 `git diff --check` 通过。
+- 完整 Vue 首轮为 `525 passed, 1 timeout`，超时文件独立复跑 `25 passed`。完整 Python 为
+  `2130 passed, 12 skipped, 3 failed`；3 个失败位于未修改且与 `655af6b` 相同的 Coding context
+  测试隔离路径，仍属于 L3 之外的未关闭基线债务。
+- 本地 fake Knowledge/Provider/Web 只验证协议、持久化、并发、scope、恢复和 UI 投影，不证明
+  真实 Knowledge 检索质量、Provider/Web 质量、学习效果、生产准确率或 SLA。
+
+## 11. Non-goals
 
 - 不执行任意 HTML/JS，不开放写工具或扩大 L1 capability。
 - 不做 Practice、Mastery、`code_test`、自动 Mastery 晋级。

@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3/L3 本地 code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 等待中枢三镜头复审；B4-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3 首轮候选未获放行，修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 等待新一轮三镜头复审；B4-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -16,9 +16,9 @@
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
 | A4 Assistant 确认 | L2 docs candidate 已最终复审通过 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`、`ca6e618d6df993dff40ed3a304ca942c239e7d84` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
-| B1 Knowledge-only map | L3 本地候选，待三镜头复审 | `35af1ee` | 稳定 LearningPlan/KnowledgeUnit、Knowledge-first map、source gap 与 citation-bound Markdown；不代表 Mastery |
-| B2 条件 Research | L3 本地候选，待三镜头复审 | `1fec631`、`c15fa67` | 复用既有只读 Research/Web/Evidence runtime；receipt durable、revision-bound、预算/来源可追溯，失败 fail closed |
-| B3 Artifact + Resume | L3 本地候选，待三镜头复审 | `5402ec8`、`e7708f0`、`ee58e48`、`c15fa67` | scoped Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享 UI 已接线；未合入 `dev/sage-v7` |
+| B1 Knowledge-only map | L3 修复候选，待重新复审 | `bccb10d`、`5705d33` | owner/workspace scoped Plan/Unit identity 与 reopen integrity；Knowledge-first map 使用真实 sufficiency/conflict，source gap/unverified 不代表 Mastery |
+| B2 条件 Research | L3 修复候选，待重新复审 | `5705d33`、`bbf7c19` | 复用既有只读 Research/Web/Evidence runtime；gate 失败也有 durable receipt，timeout/max steps/usage/elapsed 与冲突证据可追溯 |
+| B3 Artifact + Resume | L3 修复候选，待重新复审 | `7997044`、`bccb10d`、`4848cf4`、`bbf7c19` | 原子 advance owner、durable request journal、reopen quarantine、结构化 API、迟到响应 guard 与真实服务重启 E2E；未合入 `dev/sage-v7` |
 | B4-E | 未开始 | - | 跨领域 Eval、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -28,7 +28,7 @@ canonical workspace path 派生，不接受客户端认领。
 
 ## 1. 交付目标
 
-本计划描述完整可恢复学习任务的历史路线。当前 L0/L1 提供可恢复 bootstrap 与首轮只读范围，A4/L2 code candidate 提供 Assistant 确认和进入共享会话；B1-B3/L3 code candidate 已实现 Knowledge/Research、LearningPlan、Artifact 和运行中 Resume，但仍是本地待复审候选。Mastery、Practice 与 B4 跨领域门禁仍属于后续切片，不能按本文目标态视为已实现。
+本计划描述完整可恢复学习任务的历史路线。当前 L0/L1 提供可恢复 bootstrap 与首轮只读范围，A4/L2 code candidate 提供 Assistant 确认和进入共享会话；B1-B3/L3 修复候选实现了 Knowledge/Research、LearningPlan、Artifact 和运行中 Resume 的本地合同，但首轮候选已被三镜头复审拒绝，当前仍等待重新复审。Mastery、Practice 与 B4 跨领域门禁仍属于后续切片，不能按本文目标态视为已实现。
 
 第一阶段交付两个入口，但只维护一套 Harness：
 
@@ -406,7 +406,7 @@ git diff --check
 
 ### Slice B1：Knowledge-only 学习地图与 source gap
 
-> 本地候选：`35af1ee`，最终 code candidate 祖先链收口于 `c15fa67`；未 push、未建 PR、未合入。
+> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；identity/integrity 主要修复提交为 `bccb10d`，sufficiency/conflict 主要修复提交为 `5705d33`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -436,7 +436,7 @@ git diff --check
 
 ### Slice B2：条件 Web Research 与 citation
 
-> 本地候选：`1fec631`，receipt/Artifact identity 持久化复核补强为 `c15fa67`；未 push、未建 PR、未合入。
+> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；有界 Research/sufficiency 为 `5705d33`，合法恢复 runtime 与真实服务 E2E 为 `bbf7c19`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -464,7 +464,7 @@ git diff --check
 
 ### Slice B3：LearningMap Artifact + Resume Summary
 
-> 本地候选：`5402ec8`（store）、`e7708f0`（execution/API）、`ee58e48`（UI），最终持久化补强收口于 `c15fa67`；未 push、未建 PR、未合入。
+> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；原子 owner/journal 为 `7997044`，scope/reopen integrity 为 `bccb10d`，API/UI guard 为 `4848cf4`，真实服务 E2E 为 `bbf7c19`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -716,6 +716,8 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 
 A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 已完成最终复审，作为本轮 L3 固定起点；它们仍未合入 `dev/sage-v7` 或发布。
 
-B1-B3/L3 code candidate `c15fa679ea15ad85ef0d8fd6cde690926d85f231` 已形成真实 Knowledge-first LearningPlan、条件只读 Research、durable Research receipt、citation-bound Learning Artifact、checkpoint CAS/fencing、advance/resume/artifact API 与共享会话 UI。最终串行邻接为 `214 passed, 1 warning`；完整 Vue `71 files / 525 tests passed`；private/public build、全仓 Ruff、Mypy `254 source files`、本切片 25 个 Python 文件 format check、Playwright `2 passed` 与 `git diff --check` 均通过。全仓 format check 仅剩 5 个未修改 Harness 文件的历史漂移。
+B1-B3 首轮候选未获三镜头放行。修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 以四个垂直 slice 补齐原子 advance owner 与 durable request journal、owner/workspace scoped identity 与 reopen quarantine、有界 Research 与真实 sufficiency/conflict、结构化 API 与 task-generation UI guard，并让 Playwright 走真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web 及进程重启。
 
-当前停止在 L3 本地候选，等待中枢三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；确定性 fixture 也不证明真实 Provider/Web 质量或学习效果。
+当前 fixture 验证为：Python 邻接 `67 passed`、L3 API `22 passed`、最终 focused 聚合复跑 `72 passed`、Vue 定向 `3 passed`、CodingView 单文件 `25 passed`、Playwright `2 passed`；全仓 Ruff、Mypy `286 source files`、private/public build、改动文件 format 与 `git diff --check` 通过。完整 Vue 首轮为 `525 passed, 1 timeout`，超时文件独立复跑 `25 passed`。完整 Python 为 `2130 passed, 12 skipped, 3 failed`，3 个失败均位于 L3 未修改且与 `655af6b` 相同的 Coding context 测试隔离路径，本片未把它们包装成全绿或扩成 Coding runtime 重构。
+
+当前停止在 L3 修复候选，等待中枢重新三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；本地 fake Knowledge/Provider/Web 只证明协议和恢复链路，不证明真实 Provider/Web 质量或学习效果。
