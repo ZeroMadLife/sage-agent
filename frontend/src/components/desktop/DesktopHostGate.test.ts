@@ -99,6 +99,35 @@ it('keeps polling the host while first-launch onboarding is blocked', async () =
   expect(desktopHostStatus).toHaveBeenCalledTimes(2)
 })
 
+it('shows recoverable Keychain onboarding while the sidecar has not become ready', async () => {
+  desktopHostStatus.mockResolvedValue({
+    state: 'blocked', reasonCode: 'keychain_locked', action: 'unlock_keychain_and_retry', session: null,
+  })
+  desktopOnboardingStatus.mockResolvedValue({
+    status: 'blocked', reason_code: 'keychain_locked', action: 'unlock_keychain_and_retry',
+    stage: 'configure_provider', mode: 'local', workspace_name: 'workspace',
+    active_provider_id: 'provider-1',
+    providers: [{
+      provider_id: 'provider-1', name: 'Local Provider', base_url: 'https://provider.example/v1',
+      key_ref: 'keychain://redacted', key_hint: '****test', key_configured: true,
+      status: 'connected', reason_code: null, models: ['model-small'], default_model: 'model-small',
+      is_active: true,
+    }],
+    capabilities: {
+      provider: { status: 'blocked', reason_code: 'keychain_locked', action: 'unlock_keychain_and_retry' },
+    },
+  })
+
+  const wrapper = mount(DesktopHostGate)
+  await vi.advanceTimersByTimeAsync(0)
+
+  expect(desktopOnboardingStatus).toHaveBeenCalledOnce()
+  expect(wrapper.text()).toContain('keychain_locked')
+  expect(wrapper.text()).toContain('unlock_keychain_and_retry')
+  await vi.advanceTimersByTimeAsync(500)
+  expect(desktopHostStatus).toHaveBeenCalledTimes(2)
+})
+
 it('shows a quiet capability surface with browser-safe diagnostics', async () => {
   desktopHostStatus.mockResolvedValue({
     state: 'ready', reasonCode: null, action: null,

@@ -13,16 +13,120 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import venv
 from collections.abc import Iterator, Mapping, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+
+
+@contextmanager
+def _local_stub_provider() -> Iterator[str]:
+    """Serve deterministic OpenAI-compatible responses on an isolated loopback port."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    model_calls = [0]
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if self.path != "/v1/models":
+                self.send_error(404)
+                return
+            self._json({"object": "list", "data": [{"id": "model-smoke"}]})
+
+        def do_POST(self) -> None:
+            if self.path != "/v1/chat/completions":
+                self.send_error(404)
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            model_calls[0] += 1
+            if model_calls[0] == 2:
+                content = (
+                    '<tool>{"name":"run_shell","args":{"command":"touch '
+                    'artifact-side-effect-must-not-exist"}}</tool>'
+                )
+            elif model_calls[0] > 2:
+                content = "<final>side effect remained blocked</final>"
+            else:
+                content = "<final>artifact model turn passed</final>"
+            if payload.get("stream"):
+                chunks = [
+                    {
+                        "id": "chatcmpl-sage-smoke",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "model-smoke",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": content},
+                                "finish_reason": None,
+                            }
+                        ],
+                    },
+                    {
+                        "id": "chatcmpl-sage-smoke",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "model-smoke",
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    },
+                ]
+                body = (
+                    b"".join(f"data: {json.dumps(chunk)}\n\n".encode() for chunk in chunks)
+                    + b"data: [DONE]\n\n"
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._json(
+                {
+                    "id": "chatcmpl-sage-smoke",
+                    "object": "chat.completion",
+                    "created": 1,
+                    "model": "model-smoke",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": content},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }
+            )
+
+        def _json(self, payload: dict[str, object]) -> None:
+            body = json.dumps(payload).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
 
 ARTIFACT_NAME = "sage-api-aarch64-apple-darwin"
 RECEIPT_NAME = "build-receipt.json"
@@ -750,7 +854,11 @@ def smoke_packaged_product(
     }
     secret = "test-secret-packaged-product-smoke"
     bearer = "test-bearer-packaged-product-smoke"
-    with tempfile.TemporaryDirectory(prefix="sage-sidecar-product-smoke-") as temporary:
+    executed_assertions: list[str] = []
+    with (
+        _local_stub_provider() as provider_base_url,
+        tempfile.TemporaryDirectory(prefix="sage-sidecar-product-smoke-") as temporary,
+    ):
         root = Path(temporary)
         data_dir = root / "data"
         workspace = root / "workspace"
@@ -781,7 +889,7 @@ def smoke_packaged_product(
                                 "workspace_path": str(workspace),
                                 "provider": {
                                     "provider_id": "packaged-product-provider",
-                                    "base_url": "https://provider.invalid/v1",
+                                    "base_url": provider_base_url,
                                     "default_model": "model-smoke",
                                     "api_mode": "openai_chat_completions",
                                     "api_key": secret,
@@ -818,6 +926,27 @@ def smoke_packaged_product(
                     raise RuntimeError("packaged product SQLite Knowledge is unavailable")
                 if not isinstance(session.get("session_id"), str):
                     raise RuntimeError("packaged product conversation session is unavailable")
+                session_id = str(session["session_id"])
+                _exercise_packaged_model_turn(
+                    port,
+                    bearer=bearer,
+                    origin="tauri://localhost",
+                    session_id=session_id,
+                    content="artifact-model-turn-probe",
+                    expected_final="artifact model turn passed",
+                )
+                executed_assertions.append("model_turn")
+                _exercise_packaged_sqlite_rag(port, headers=headers, workspace=workspace)
+                executed_assertions.append("sqlite_rag")
+                _assert_packaged_capability_boundaries(
+                    port,
+                    headers=headers,
+                    bearer=bearer,
+                    origin="tauri://localhost",
+                    session_id=session_id,
+                    workspace=workspace,
+                )
+                executed_assertions.append("capability_boundaries")
                 try:
                     _request_json(port, "/api/v1/cloud/auth/options", headers=headers)
                 except HTTPError as exc:
@@ -849,11 +978,181 @@ def smoke_packaged_product(
             if path.is_file() and _contains_bytes(path, (secret.encode(),)):
                 raise RuntimeError("packaged product secret leaked to local state")
     return {
-        "local_conversation": "passed",
-        "local_sqlite_rag": "passed",
+        **_product_smoke_receipt(executed_assertions),
         "product_secret_hygiene": "passed",
-        "side_effect_tools_blocked": "passed",
     }
+
+
+def _product_smoke_receipt(executed_assertions: Sequence[str]) -> dict[str, str]:
+    required = {
+        "model_turn": "local_conversation",
+        "sqlite_rag": "local_sqlite_rag",
+        "capability_boundaries": "side_effect_tools_blocked",
+    }
+    completed = set(executed_assertions)
+    missing = sorted(set(required) - completed)
+    if missing:
+        raise RuntimeError(f"missing executed assertion: {missing}")
+    return {
+        receipt_name: "passed"
+        for assertion, receipt_name in required.items()
+        if assertion in completed
+    }
+
+
+def _exercise_packaged_model_turn(
+    port: int,
+    *,
+    bearer: str,
+    origin: str,
+    session_id: str,
+    content: str,
+    expected_final: str,
+) -> list[dict[str, Any]]:
+    try:
+        from websockets.sync.client import connect
+        from websockets.typing import Origin, Subprotocol
+    except ImportError as exc:  # pragma: no cover - enforced by the frozen lock
+        raise RuntimeError("packaged product WebSocket verifier is unavailable") from exc
+
+    events: list[dict[str, Any]] = []
+    with connect(
+        f"ws://127.0.0.1:{port}/api/v1/coding/{session_id}/stream?after=0",
+        origin=Origin(origin),
+        subprotocols=[Subprotocol("sage.v1"), Subprotocol(f"sage-bearer.{bearer}")],
+        open_timeout=10,
+        close_timeout=5,
+    ) as websocket:
+        websocket.send(json.dumps({"content": content}))
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            payload = json.loads(websocket.recv(timeout=max(0.1, deadline - time.monotonic())))
+            if not isinstance(payload, dict):
+                raise RuntimeError("packaged model turn emitted a non-object event")
+            events.append(payload)
+            event_payload = payload.get("payload")
+            if isinstance(event_payload, dict) and event_payload.get("event") in {
+                "run_completed",
+                "run_failed",
+                "run_cancelled",
+                "run_interrupted",
+            }:
+                break
+        else:
+            raise RuntimeError("packaged model turn did not reach a terminal event")
+    finals = [
+        str(payload["content"])
+        for event in events
+        if isinstance((payload := event.get("payload")), dict)
+        and payload.get("type") == "final"
+        and isinstance(payload.get("content"), str)
+    ]
+    if expected_final not in "".join(finals):
+        event_types = [
+            payload.get("type")
+            for event in events
+            if isinstance((payload := event.get("payload")), dict)
+        ]
+        raise RuntimeError(
+            "packaged model turn did not return the stub Provider result; "
+            f"event_types={event_types!r}, finals={finals!r}"
+        )
+    return events
+
+
+def _exercise_packaged_sqlite_rag(
+    port: int,
+    *,
+    headers: Mapping[str, str],
+    workspace: Path,
+) -> None:
+    phrase = "artifact sqlite rag evidence 48271"
+    (workspace / "artifact-rag.txt").write_text(f"Sage {phrase}.\n", encoding="utf-8")
+    ingested = _request_json(
+        port,
+        "/api/v1/knowledge/ingest",
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+        body=json.dumps(
+            {"source_root_id": "desktop-workspace", "relative_path": "artifact-rag.txt"}
+        ).encode(),
+    )
+    if not isinstance(ingested.get("proposal_id"), str):
+        raise RuntimeError("packaged SQLite RAG ingest did not create a proposal")
+    found = _request_json(
+        port,
+        "/api/v1/knowledge/search",
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+        body=json.dumps({"query": phrase, "top_k": 4, "token_budget": 512}).encode(),
+    )
+    citations = found.get("citations")
+    if not isinstance(citations, list) or not any(
+        isinstance(item, dict) and item.get("source_relative_path") == "artifact-rag.txt"
+        for item in citations
+    ):
+        raise RuntimeError("packaged SQLite RAG search did not return the ingested source")
+
+
+def _assert_packaged_capability_boundaries(
+    port: int,
+    *,
+    headers: Mapping[str, str],
+    bearer: str,
+    origin: str,
+    session_id: str,
+    workspace: Path,
+) -> None:
+    capabilities = _request_json(port, "/capabilities", headers=headers)
+    children = capabilities.get("capabilities")
+    if capabilities.get("status") != "degraded" or not isinstance(children, dict):
+        raise RuntimeError("packaged capability status did not derive optional degradation")
+    if children.get("conversation", {}).get("status") != "ready":
+        raise RuntimeError("packaged conversation capability is not ready")
+    if children.get("rag", {}).get("status") != "ready":
+        raise RuntimeError("packaged RAG capability is not ready")
+    if children.get("side_effect_tools", {}).get("status") != "blocked":
+        raise RuntimeError("packaged side-effect capability did not fail closed")
+    catalog = _request_json(
+        port,
+        f"/api/v1/harness/capabilities?session_id={session_id}&surface=coding&origin=local",
+        headers=headers,
+    )
+    items = catalog.get("capabilities")
+    if not isinstance(items, list):
+        raise RuntimeError("packaged Harness capability catalog is unavailable")
+    capability_ids = {item.get("capability_id") for item in items if isinstance(item, dict)}
+    forbidden = {"local:write_file", "local:patch_file", "local:run_shell"}
+    if capability_ids & forbidden:
+        raise RuntimeError("packaged Harness catalog exposed side-effect tools")
+    side_effect_session = _request_json(
+        port,
+        "/api/v1/coding/session",
+        headers={**headers, "Content-Type": "application/json"},
+        method="POST",
+        body=b"{}",
+    )
+    side_effect_session_id = side_effect_session.get("session_id")
+    if not isinstance(side_effect_session_id, str):
+        raise RuntimeError("packaged side-effect probe session is unavailable")
+    events = _exercise_packaged_model_turn(
+        port,
+        bearer=bearer,
+        origin=origin,
+        session_id=side_effect_session_id,
+        content="artifact-side-effect-probe",
+        expected_final="side effect remained blocked",
+    )
+    tool_results = [
+        payload
+        for event in events
+        if isinstance((payload := event.get("payload")), dict)
+        and payload.get("type") == "tool_result"
+    ]
+    if not tool_results or not any(bool(item.get("is_error")) for item in tool_results):
+        raise RuntimeError("packaged direct side-effect execution did not fail closed")
+    if (workspace / "artifact-side-effect-must-not-exist").exists():
+        raise RuntimeError("packaged direct side-effect execution changed the workspace")
 
 
 def _request_json(

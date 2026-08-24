@@ -253,7 +253,7 @@ def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -
     assert live.headers["vary"] == "Origin"
     assert capabilities.status_code == 200
     assert repeated_capabilities.status_code == 200
-    assert capabilities.json()["status"] == "degraded"
+    assert capabilities.json()["status"] == "blocked"
     assert capabilities.json()["capabilities"]["provider"] == {
         "status": "blocked",
         "reason_code": "provider_not_configured",

@@ -20,9 +20,55 @@ from desktop.sidecar.build import (
     build_receipt,
     parse_lock_manifest,
     smoke_packaged_artifact,
+    smoke_packaged_product,
     verify_artifact_hygiene,
     verify_environment_manifest,
 )
+
+
+def test_product_smoke_receipt_is_composed_only_from_executed_assertions(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    del monkeypatch, tmp_path
+    executed = ["model_turn", "sqlite_rag", "capability_boundaries"]
+
+    receipt = sidecar_build._product_smoke_receipt(executed)
+
+    assert receipt == {
+        "local_conversation": "passed",
+        "local_sqlite_rag": "passed",
+        "side_effect_tools_blocked": "passed",
+    }
+
+    with pytest.raises(RuntimeError, match="missing executed assertion"):
+        sidecar_build._product_smoke_receipt(["model_turn", "sqlite_rag"])
+
+
+def test_source_product_smoke_executes_model_rag_and_side_effect_boundaries(
+    tmp_path: Path,
+) -> None:
+    executable = tmp_path / "source-sidecar"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        f"sys.path.insert(0, {str(ROOT / 'packages' / 'sage_harness')!r})\n"
+        "from desktop.sidecar.__main__ import main\n"
+        "raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+    receipt = smoke_packaged_product(executable, source_sha="dev", timeout=30)
+
+    assert receipt == {
+        "local_conversation": "passed",
+        "local_sqlite_rag": "passed",
+        "product_secret_hygiene": "passed",
+        "side_effect_tools_blocked": "passed",
+    }
+
 
 ROOT = Path(__file__).resolve().parents[2]
 

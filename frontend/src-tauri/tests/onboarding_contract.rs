@@ -10,8 +10,12 @@ use std::sync::{Arc, Mutex};
 struct MemorySecrets(Mutex<HashMap<String, String>>);
 
 impl SecretBroker for MemorySecrets {
+    fn key_ref(&self, account: &str) -> Result<String, SecretBrokerError> {
+        Ok(format!("memory://{account}"))
+    }
+
     fn store(&self, account: &str, secret: &str) -> Result<String, SecretBrokerError> {
-        let key_ref = format!("memory://{account}");
+        let key_ref = self.key_ref(account)?;
         self.0
             .lock()
             .unwrap()
@@ -63,14 +67,22 @@ impl ScriptedSecrets {
     fn fail_delete(&self, error: SecretBrokerError) {
         self.failures.lock().unwrap().delete = Some(error);
     }
+
+    fn contains(&self, key_ref: &str) -> bool {
+        self.values.lock().unwrap().contains_key(key_ref)
+    }
 }
 
 impl SecretBroker for ScriptedSecrets {
+    fn key_ref(&self, account: &str) -> Result<String, SecretBrokerError> {
+        Ok(format!("scripted://{account}"))
+    }
+
     fn store(&self, account: &str, secret: &str) -> Result<String, SecretBrokerError> {
         if let Some(error) = self.failures.lock().unwrap().store.take() {
             return Err(error);
         }
-        let key_ref = format!("scripted://{account}");
+        let key_ref = self.key_ref(account)?;
         self.values
             .lock()
             .unwrap()
@@ -349,12 +361,18 @@ fn keychain_failures_keep_provider_metadata_recoverable() {
     let disconnect_denied = service
         .disconnect_provider(&provider.provider_id)
         .unwrap_err();
-    assert_eq!(disconnect_denied.reason_code, "keychain_access_denied");
-    assert!(service.snapshot().providers[0].key_configured);
+    assert_eq!(
+        disconnect_denied.reason_code,
+        "provider_reconciliation_required"
+    );
+    assert!(!service.snapshot().providers[0].key_configured);
 
     secrets.fail_delete(SecretBrokerError::AccessDenied);
     let delete_denied = service.delete_provider(&provider.provider_id).unwrap_err();
-    assert_eq!(delete_denied.reason_code, "keychain_access_denied");
+    assert_eq!(
+        delete_denied.reason_code,
+        "provider_reconciliation_required"
+    );
     assert_eq!(service.snapshot().providers.len(), 1);
 }
 
@@ -382,26 +400,365 @@ fn provider_rotation_disconnect_and_delete_are_recoverable() {
         })
         .unwrap();
 
-    service
+    let rotated = service
         .rotate_provider_key(&provider.provider_id, "test-secret-new")
         .unwrap();
-    assert_eq!(secrets.read(&provider.key_ref).unwrap(), "test-secret-new");
+    assert_ne!(rotated.key_ref, provider.key_ref);
+    assert_eq!(secrets.read(&rotated.key_ref).unwrap(), "test-secret-new");
     assert_eq!(service.snapshot().providers[0].key_hint, "****-new");
 
     service.disconnect_provider(&provider.provider_id).unwrap();
     assert!(matches!(
-        secrets.read(&provider.key_ref),
+        secrets.read(&rotated.key_ref),
         Err(SecretBrokerError::Missing)
     ));
     assert_eq!(service.snapshot().stage, "configure_provider");
 
-    service
+    let restored = service
         .rotate_provider_key(&provider.provider_id, "test-secret-restored")
         .unwrap();
     service.delete_provider(&provider.provider_id).unwrap();
     assert!(service.snapshot().providers.is_empty());
     assert!(matches!(
-        secrets.read(&provider.key_ref),
+        secrets.read(&restored.key_ref),
         Err(SecretBrokerError::Missing)
     ));
+}
+
+#[test]
+fn active_provider_is_explicit_persisted_and_never_silently_reassigned() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let secrets = Arc::new(MemorySecrets::default());
+    let mut service = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    service.choose_mode(OnboardingMode::Local).unwrap();
+    service.select_workspace(&workspace).unwrap();
+    let first = service
+        .add_provider(LocalProviderInput {
+            name: "First".into(),
+            base_url: "https://first.example/v1".into(),
+            api_key: "test-secret-first".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&first.provider_id).unwrap();
+    let second = service
+        .add_provider(LocalProviderInput {
+            name: "Second".into(),
+            base_url: "https://second.example/v1".into(),
+            api_key: "test-secret-second".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&second.provider_id).unwrap();
+
+    let snapshot = service.snapshot();
+    assert_eq!(
+        snapshot.active_provider_id.as_deref(),
+        Some(first.provider_id.as_str())
+    );
+    assert!(
+        snapshot
+            .providers
+            .iter()
+            .find(|item| item.provider_id == first.provider_id)
+            .unwrap()
+            .is_active
+    );
+    assert!(
+        !snapshot
+            .providers
+            .iter()
+            .find(|item| item.provider_id == second.provider_id)
+            .unwrap()
+            .is_active
+    );
+    assert_eq!(
+        service
+            .runtime_configuration()
+            .unwrap()
+            .unwrap()
+            .provider_id(),
+        first.provider_id
+    );
+
+    service.set_active_provider(&second.provider_id).unwrap();
+    service
+        .set_default_model(&second.provider_id, "model-large")
+        .unwrap();
+    service
+        .rotate_provider_key(&first.provider_id, "test-secret-first-rotated")
+        .unwrap();
+    service.probe_provider(&first.provider_id).unwrap();
+    assert_eq!(
+        service
+            .runtime_configuration()
+            .unwrap()
+            .unwrap()
+            .provider_id(),
+        second.provider_id
+    );
+    assert_eq!(
+        service
+            .runtime_configuration()
+            .unwrap()
+            .unwrap()
+            .default_model(),
+        "model-large"
+    );
+
+    service.delete_provider(&second.provider_id).unwrap();
+    let blocked = service.snapshot();
+    assert_eq!(blocked.active_provider_id, None);
+    assert_eq!(blocked.status, "blocked");
+    assert_eq!(
+        blocked.reason_code.as_deref(),
+        Some("active_provider_required")
+    );
+    assert!(service.runtime_configuration().unwrap().is_none());
+
+    drop(service);
+    let mut rebuilt = OnboardingService::open_with(
+        root.path().join("data"),
+        secrets,
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt.snapshot().active_provider_id, None);
+    rebuilt.set_active_provider(&first.provider_id).unwrap();
+    assert_eq!(
+        rebuilt
+            .runtime_configuration()
+            .unwrap()
+            .unwrap()
+            .provider_id(),
+        first.provider_id
+    );
+}
+
+#[test]
+fn provider_action_union_has_an_explicit_set_active_command() {
+    let action: DesktopOnboardingAction = serde_json::from_value(serde_json::json!({
+        "kind": "set_active_provider",
+        "provider_id": "provider-2"
+    }))
+    .unwrap();
+    assert!(matches!(
+        action,
+        DesktopOnboardingAction::SetActiveProvider { provider_id } if provider_id == "provider-2"
+    ));
+}
+
+#[test]
+fn failed_storage_and_failed_compensation_reconcile_after_restart() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        data_dir.clone(),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    let blocker = rusqlite::Connection::open(service.database_path()).unwrap();
+    blocker
+        .execute_batch(
+            "CREATE TRIGGER fail_provider_insert BEFORE INSERT ON local_providers
+         BEGIN SELECT RAISE(FAIL, 'injected metadata failure'); END;",
+        )
+        .unwrap();
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+
+    let error = service
+        .add_provider(LocalProviderInput {
+            name: "Interrupted".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-reconcile".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap_err();
+    assert_eq!(error.reason_code, "provider_reconciliation_required");
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    let pending_ref = service.pending_operation_key_refs().unwrap().pop().unwrap();
+    assert!(secrets.contains(&pending_ref));
+
+    blocker
+        .execute_batch("DROP TRIGGER fail_provider_insert;")
+        .unwrap();
+    drop(blocker);
+    drop(service);
+    let rebuilt = OnboardingService::open_with(
+        data_dir,
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt.pending_operation_count().unwrap(), 0);
+    assert!(!secrets.contains(&pending_ref));
+    assert!(rebuilt.snapshot().providers.is_empty());
+}
+
+#[test]
+fn rotate_cleanup_failure_is_durable_and_restart_finishes_reconciliation() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        data_dir.clone(),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-old".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    let old_ref = provider.key_ref;
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+
+    let error = service
+        .rotate_provider_key(&provider.provider_id, "test-secret-new")
+        .unwrap_err();
+    assert_eq!(error.reason_code, "provider_reconciliation_required");
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    let new_ref = service.snapshot().providers[0].key_ref.clone();
+    assert_ne!(new_ref, old_ref);
+    assert!(secrets.contains(&old_ref));
+    assert!(secrets.contains(&new_ref));
+
+    drop(service);
+    let rebuilt = OnboardingService::open_with(
+        data_dir,
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt.pending_operation_count().unwrap(), 0);
+    assert!(!secrets.contains(&old_ref));
+    assert!(secrets.contains(&new_ref));
+}
+
+#[test]
+fn disconnect_metadata_failure_reconciles_without_deleting_the_live_secret() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        data_dir.clone(),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-live".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    service.probe_provider(&provider.provider_id).unwrap();
+    let blocker = rusqlite::Connection::open(service.database_path()).unwrap();
+    blocker
+        .execute_batch(
+            "CREATE TRIGGER fail_provider_disconnect BEFORE UPDATE ON local_providers
+         WHEN NEW.status = 'disconnected'
+         BEGIN SELECT RAISE(FAIL, 'injected disconnect failure'); END;",
+        )
+        .unwrap();
+
+    let error = service
+        .disconnect_provider(&provider.provider_id)
+        .unwrap_err();
+    assert_eq!(error.reason_code, "desktop_metadata_unavailable");
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    assert!(secrets.contains(&provider.key_ref));
+
+    blocker
+        .execute_batch("DROP TRIGGER fail_provider_disconnect;")
+        .unwrap();
+    drop(blocker);
+    drop(service);
+    let rebuilt = OnboardingService::open_with(
+        data_dir,
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt.pending_operation_count().unwrap(), 0);
+    assert!(secrets.contains(&provider.key_ref));
+    assert!(rebuilt.snapshot().providers[0].key_configured);
+}
+
+#[test]
+fn pending_reconciliation_blocks_followup_provider_mutations_that_could_orphan_secrets() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    let secrets = Arc::new(ScriptedSecrets::default());
+    let mut service = OnboardingService::open_with(
+        data_dir.clone(),
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    let provider = service
+        .add_provider(LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-live".into(),
+            default_model: "model-small".into(),
+        })
+        .unwrap();
+    secrets.fail_delete(SecretBrokerError::AccessDenied);
+    assert_eq!(
+        service
+            .delete_provider(&provider.provider_id)
+            .unwrap_err()
+            .reason_code,
+        "provider_reconciliation_required"
+    );
+
+    let error = service
+        .rotate_provider_key(&provider.provider_id, "test-secret-must-not-be-stored")
+        .unwrap_err();
+
+    assert_eq!(error.reason_code, "provider_reconciliation_required");
+    assert_eq!(service.pending_operation_count().unwrap(), 1);
+    assert!(secrets.contains(&provider.key_ref));
+
+    drop(service);
+    let rebuilt = OnboardingService::open_with(
+        data_dir,
+        secrets.clone(),
+        Arc::new(FixedProviderProbe),
+        no_optional_services(),
+    )
+    .unwrap();
+    assert_eq!(rebuilt.pending_operation_count().unwrap(), 0);
+    assert!(rebuilt.snapshot().providers.is_empty());
+    assert!(!secrets
+        .values
+        .lock()
+        .unwrap()
+        .values()
+        .any(|value| value == "test-secret-must-not-be-stored"));
 }

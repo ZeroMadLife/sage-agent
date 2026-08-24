@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 pub trait SecretBroker: Send + Sync {
+    fn key_ref(&self, account: &str) -> Result<String, SecretBrokerError>;
     fn store(&self, account: &str, secret: &str) -> Result<String, SecretBrokerError>;
     fn read(&self, key_ref: &str) -> Result<String, SecretBrokerError>;
     fn delete(&self, key_ref: &str) -> Result<(), SecretBrokerError>;
@@ -77,6 +78,13 @@ impl MacOsKeychain {
 
 #[cfg(target_os = "macos")]
 impl SecretBroker for MacOsKeychain {
+    fn key_ref(&self, account: &str) -> Result<String, SecretBrokerError> {
+        if account.is_empty() || account.contains('/') {
+            return Err(SecretBrokerError::Invalid);
+        }
+        Ok(format!("keychain://{}/{account}", self.service))
+    }
+
     fn store(&self, account: &str, secret: &str) -> Result<String, SecretBrokerError> {
         if account.is_empty() || account.contains('/') || secret.is_empty() {
             return Err(SecretBrokerError::Invalid);
@@ -84,7 +92,7 @@ impl SecretBroker for MacOsKeychain {
         self.entry(account)?
             .set_password(secret)
             .map_err(classify_keyring_error)?;
-        Ok(format!("keychain://{}/{account}", self.service))
+        self.key_ref(account)
     }
 
     fn read(&self, key_ref: &str) -> Result<String, SecretBrokerError> {

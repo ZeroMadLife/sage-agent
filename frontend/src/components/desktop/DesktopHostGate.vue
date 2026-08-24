@@ -47,8 +47,6 @@ const title = computed(() => {
 const applicationAvailable = computed(() => Boolean(
   snapshot.value.session
   && onboarding.value?.stage === 'complete'
-  && onboarding.value.capabilities.conversation?.status === 'ready'
-  && onboarding.value.capabilities.rag?.status === 'ready'
   && coreCapabilities.value?.capabilities.conversation?.status === 'ready'
   && coreCapabilities.value?.capabilities.rag?.status === 'ready'
 ))
@@ -75,22 +73,6 @@ const capabilityLabels: Record<string, string> = {
 
 function applyOnboarding(next: DesktopOnboardingSnapshot): void {
   onboarding.value = next
-  const retainedCore = Object.fromEntries(
-    Object.entries(coreCapabilities.value?.capabilities ?? {})
-      .filter(([name]) => ['api', 'storage', 'checkpoint'].includes(name)),
-  )
-  capabilities.value = {
-    status: next.status,
-    api_version: coreCapabilities.value?.api_version ?? '1',
-    build_sha: coreCapabilities.value?.build_sha ?? 'unknown',
-    capabilities: { ...retainedCore, ...next.capabilities },
-  }
-  snapshot.value = {
-    ...snapshot.value,
-    state: next.status,
-    reasonCode: next.reason_code,
-    action: next.action,
-  }
 }
 
 function normalizeOnboardingError(error: unknown): { reason_code: string, action: string } {
@@ -133,15 +115,22 @@ async function refresh(): Promise<void> {
   try {
     snapshot.value = await desktopHostStatus()
     hostBlocked = snapshot.value.state === 'blocked'
+    try {
+      const rebuilt = await desktopOnboardingStatus()
+      onboardingError.value = null
+      applyOnboarding(rebuilt)
+    } catch (error) {
+      onboardingError.value = normalizeOnboardingError(error)
+    }
     if (snapshot.value.state === 'ready') {
       try {
-        const [core, rebuilt] = await Promise.all([
-          desktopCapabilities(),
-          desktopOnboardingStatus(),
-        ])
+        const core = await desktopCapabilities()
         coreCapabilities.value = core
-        onboardingError.value = null
-        applyOnboarding(rebuilt)
+        capabilities.value = core
+        snapshot.value = {
+          ...snapshot.value,
+          state: core.status,
+        }
       } catch {
         capabilities.value = null
         coreCapabilities.value = null
@@ -166,7 +155,8 @@ async function refresh(): Promise<void> {
     }
   }
   const delay = snapshot.value.session ? 2000 : 500
-  if (!hostBlocked) pollTimer = setTimeout(refresh, delay)
+  const recoverableBlocked = hostBlocked && snapshot.value.action !== 'open_diagnostics'
+  if (!hostBlocked || recoverableBlocked) pollTimer = setTimeout(refresh, delay)
 }
 
 onMounted(() => {
@@ -266,6 +256,11 @@ onBeforeUnmount(() => {
           @action="runOnboardingAction"
         />
 
+        <section v-if="snapshot.reasonCode && snapshot.reasonCode !== onboarding?.reason_code" class="desktop-problem" aria-live="polite">
+          <code>{{ snapshot.reasonCode }}</code>
+          <span>{{ snapshot.action }}</span>
+        </section>
+
         <section v-if="capabilities && onboarding?.stage === 'complete'" class="desktop-capabilities" aria-label="本地能力状态">
           <div
             v-for="(capability, name) in capabilities.capabilities"
@@ -284,12 +279,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <section v-else-if="!onboarding && snapshot.reasonCode" class="desktop-problem" aria-live="polite">
-          <code>{{ snapshot.reasonCode }}</code>
-          <span>{{ snapshot.action }}</span>
-        </section>
-
-        <div v-else class="desktop-progress" role="status" aria-live="polite">
+        <div v-else-if="!onboarding && !snapshot.reasonCode" class="desktop-progress" role="status" aria-live="polite">
           <span class="desktop-progress__bar" />
         </div>
       </main>

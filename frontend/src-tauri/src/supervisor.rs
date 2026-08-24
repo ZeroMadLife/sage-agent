@@ -303,7 +303,19 @@ fn schedule_launch(
         match launch_once(&app, &shared, &data_dir, generation).await {
             Ok(receiver) => monitor(app, shared, data_dir, receiver, generation).await,
             Err(reason) if !shared.is_stopping() => {
-                handle_crash(app, shared, data_dir, reason, generation)
+                match record_launch_failure(&shared, reason, unix_seconds()) {
+                    LaunchFailureDisposition::RetryAfter(seconds) => schedule_launch(
+                        app,
+                        shared,
+                        data_dir,
+                        Duration::from_secs(seconds),
+                        generation,
+                    ),
+                    LaunchFailureDisposition::RecoverableConfiguration => {
+                        schedule_launch(app, shared, data_dir, Duration::from_secs(1), generation)
+                    }
+                    LaunchFailureDisposition::Blocked => {}
+                }
             }
             Err(_) => {}
         }
@@ -528,12 +540,78 @@ fn handle_crash(
     if lifecycle_action(LifecycleEvent::SidecarCrash) != LifecycleAction::RestartWithBackoff {
         return;
     }
+    if let LaunchFailureDisposition::RetryAfter(seconds) =
+        record_launch_failure(&shared, reason, unix_seconds())
+    {
+        schedule_launch(
+            app,
+            shared,
+            data_dir,
+            Duration::from_secs(seconds),
+            generation,
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaunchFailureDisposition {
+    RecoverableConfiguration,
+    RetryAfter(u64),
+    Blocked,
+}
+
+impl LaunchFailureDisposition {
+    #[cfg(test)]
+    fn is_recoverable_configuration(self) -> bool {
+        self == Self::RecoverableConfiguration
+    }
+}
+
+fn recoverable_configuration_action(reason: &str) -> Option<&'static str> {
+    match reason {
+        "keychain_locked" => Some("unlock_keychain_and_retry"),
+        "keychain_access_denied" => Some("allow_keychain_access_and_retry"),
+        "keychain_entry_missing" => Some("reenter_provider_key"),
+        "keychain_request_invalid" => Some("review_provider_settings"),
+        "keychain_unavailable" => Some("retry_keychain_operation"),
+        "desktop_metadata_unavailable" => Some("restart_sage"),
+        "provider_reconciliation_required" => Some("retry_provider_reconciliation"),
+        _ => None,
+    }
+}
+
+fn record_launch_failure(
+    shared: &SharedHostState,
+    reason: &'static str,
+    now: u64,
+) -> LaunchFailureDisposition {
+    if let Some(action) = recoverable_configuration_action(reason) {
+        let persistence_failed = {
+            let mut inner = shared.0.lock().expect("host state poisoned");
+            inner.pid = None;
+            inner.child = None;
+            inner.snapshot = HostSnapshot::problem("blocked", reason, action);
+            persist_disk_locked(&inner).is_err()
+        };
+        if persistence_failed {
+            set_snapshot(shared, HostSnapshot::persistence_failure());
+            let _ = append_diagnostic(
+                shared,
+                "state_persist_failed",
+                "blocked",
+                "desktop_state_persist_failed",
+            );
+            return LaunchFailureDisposition::Blocked;
+        }
+        let _ = append_diagnostic(shared, "configuration_blocked", "blocked", reason);
+        return LaunchFailureDisposition::RecoverableConfiguration;
+    }
     let (delay, persistence_failed) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         inner.pid = None;
         inner.child = None;
         inner.disk.orphan = None;
-        let result = inner.disk.crash_budget.record_crash(unix_seconds());
+        let result = inner.disk.crash_budget.record_crash(now);
         let persistence_failed = persist_disk_locked(&inner).is_err();
         if persistence_failed {
             inner.snapshot = HostSnapshot::persistence_failure();
@@ -551,7 +629,7 @@ fn handle_crash(
         }
     };
     let _ = append_diagnostic(
-        &shared,
+        shared,
         if persistence_failed {
             "state_persist_failed"
         } else {
@@ -570,14 +648,9 @@ fn handle_crash(
             reason
         },
     );
-    if let Some(seconds) = delay {
-        schedule_launch(
-            app,
-            shared,
-            data_dir,
-            Duration::from_secs(seconds),
-            generation,
-        );
+    match (delay, persistence_failed) {
+        (_, true) | (None, false) => LaunchFailureDisposition::Blocked,
+        (Some(seconds), false) => LaunchFailureDisposition::RetryAfter(seconds),
     }
 }
 
@@ -609,19 +682,21 @@ pub fn restart_for_configuration(app: AppHandle, shared: SharedHostState) {
     let generation = next_launch_generation(&shared);
     set_snapshot(&shared, HostSnapshot::starting());
     tauri::async_runtime::spawn(async move {
-        stop_sidecar(&shared).await;
-        if !shared.is_stopping() && is_current_generation(&shared, generation) {
+        let stopped = stop_sidecar(&shared).await;
+        if stopped && !shared.is_stopping() && is_current_generation(&shared, generation) {
             schedule_launch(app, shared, data_dir, Duration::ZERO, generation);
         }
     });
 }
 
-async fn stop_sidecar(shared: &SharedHostState) {
+async fn stop_sidecar(shared: &SharedHostState) -> bool {
     let owned = shared.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || stop_sidecar_blocking(&owned)).await;
+    tauri::async_runtime::spawn_blocking(move || stop_sidecar_blocking(&owned))
+        .await
+        .unwrap_or(false)
 }
 
-fn stop_sidecar_blocking(shared: &SharedHostState) {
+fn stop_sidecar_blocking(shared: &SharedHostState) -> bool {
     let (record, child) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         (inner.disk.orphan.clone(), inner.child.take())
@@ -629,10 +704,12 @@ fn stop_sidecar_blocking(shared: &SharedHostState) {
     if let Some(record) = record {
         let _child = child;
         let result = terminate_runtime(&record);
-        finish_runtime_termination(shared, &record, result);
+        finish_runtime_termination(shared, &record, result)
     } else {
+        let stopped = child.is_none();
         drop(child);
         shared.0.lock().expect("host state poisoned").pid = None;
+        stopped
     }
 }
 
@@ -655,6 +732,9 @@ fn finish_runtime_termination(
         }
         let persistence_failed = persist_disk_locked(&inner).is_err();
         if persistence_failed {
+            if stopped {
+                inner.disk.orphan = Some(record.clone());
+            }
             inner.snapshot = HostSnapshot::persistence_failure();
         }
         (stopped, persistence_failed)
@@ -893,10 +973,11 @@ fn append_diagnostic(
 mod tests {
     use super::{
         append_diagnostic, finish_runtime_termination, origin_for_profile,
-        post_handshake_reject_reason, runtime_origin, DesktopStateRepository, DiagnosticLog,
-        HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
+        post_handshake_reject_reason, record_launch_failure, runtime_origin,
+        DesktopStateRepository, DiagnosticLog, HostSnapshot, SharedHostState, DEVELOPMENT_ORIGIN,
+        PRODUCTION_ORIGIN,
     };
-    use crate::lifecycle::OrphanRecord;
+    use crate::lifecycle::{OrphanRecord, TerminationOutcome};
     use tauri_plugin_shell::process::CommandEvent;
 
     #[test]
@@ -974,6 +1055,103 @@ mod tests {
         let diagnostic =
             std::fs::read_to_string(root.path().join("diagnostics/desktop-host.jsonl")).unwrap();
         assert!(diagnostic.contains("desktop_sidecar_stop_failed"));
+    }
+
+    #[test]
+    fn recoverable_pre_spawn_configuration_errors_do_not_consume_crash_budget() {
+        for reason in [
+            "keychain_locked",
+            "keychain_access_denied",
+            "keychain_entry_missing",
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let shared = SharedHostState::default();
+            {
+                let mut inner = shared.0.lock().unwrap();
+                inner.repository =
+                    Some(DesktopStateRepository::new(root.path().join("state.json")));
+                inner.diagnostic_log =
+                    Some(DiagnosticLog::create(root.path().join("diagnostics")).unwrap());
+            }
+
+            let retry = record_launch_failure(&shared, reason, 100);
+
+            assert!(retry.is_recoverable_configuration());
+            let persisted: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(root.path().join("state.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                persisted["crash_budget"]["crash_timestamps"],
+                serde_json::json!([])
+            );
+            let inner = shared.0.lock().unwrap();
+            assert_eq!(inner.snapshot.state, "blocked");
+            assert_eq!(inner.snapshot.reason_code, Some(reason));
+        }
+    }
+
+    #[test]
+    fn successful_stop_with_failed_ownership_persist_keeps_orphan_and_blocks_relaunch() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("state.json");
+        std::fs::create_dir(&target).unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(target));
+            inner.disk.orphan = Some(record.clone());
+        }
+
+        assert!(!finish_runtime_termination(
+            &shared,
+            &record,
+            Ok(TerminationOutcome::Stopped),
+        ));
+        let inner = shared.0.lock().unwrap();
+        assert_eq!(inner.disk.orphan.as_ref(), Some(&record));
+        assert_eq!(
+            inner.snapshot.reason_code,
+            Some("desktop_state_persist_failed")
+        );
+    }
+
+    #[test]
+    fn ownership_persistence_can_converge_on_a_later_retry() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("state.json");
+        std::fs::create_dir(&target).unwrap();
+        let shared = SharedHostState::default();
+        let record = OrphanRecord {
+            pid: 42,
+            start_time: 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+        {
+            let mut inner = shared.0.lock().unwrap();
+            inner.repository = Some(DesktopStateRepository::new(target.clone()));
+            inner.disk.orphan = Some(record.clone());
+        }
+        assert!(!finish_runtime_termination(
+            &shared,
+            &record,
+            Ok(TerminationOutcome::Stopped),
+        ));
+        std::fs::remove_dir(&target).unwrap();
+
+        assert!(finish_runtime_termination(
+            &shared,
+            &record,
+            Ok(TerminationOutcome::Stopped),
+        ));
+        assert!(shared.0.lock().unwrap().disk.orphan.is_none());
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(target).unwrap()).unwrap();
+        assert!(persisted["orphan"].is_null());
     }
 
     #[test]

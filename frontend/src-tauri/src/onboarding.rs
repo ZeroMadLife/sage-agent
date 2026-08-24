@@ -11,7 +11,7 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CapabilityInputs {
@@ -120,6 +120,9 @@ pub enum DesktopOnboardingAction {
         provider_id: String,
         model_id: String,
     },
+    SetActiveProvider {
+        provider_id: String,
+    },
     RotateProviderKey {
         provider_id: String,
         api_key: WriteOnlySecret,
@@ -130,6 +133,7 @@ pub enum DesktopOnboardingAction {
     DeleteProvider {
         provider_id: String,
     },
+    RetryProviderReconciliation,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,6 +148,7 @@ pub struct LocalProviderView {
     pub reason_code: Option<String>,
     pub models: Vec<String>,
     pub default_model: Option<String>,
+    pub is_active: bool,
 }
 
 pub struct DesktopRuntimeConfiguration {
@@ -208,6 +213,7 @@ pub struct OnboardingSnapshot {
     pub stage: String,
     pub mode: Option<OnboardingMode>,
     pub workspace_name: Option<String>,
+    pub active_provider_id: Option<String>,
     pub providers: Vec<LocalProviderView>,
     pub capabilities: BTreeMap<String, DesktopCapability>,
 }
@@ -229,6 +235,13 @@ impl DesktopActionError {
     fn storage() -> Self {
         Self::new("desktop_metadata_unavailable", "restart_sage")
     }
+
+    fn reconciliation() -> Self {
+        Self::new(
+            "provider_reconciliation_required",
+            "retry_provider_reconciliation",
+        )
+    }
 }
 
 impl From<SecretBrokerError> for DesktopActionError {
@@ -247,6 +260,15 @@ struct ProviderRecord {
     key_configured: bool,
     status: String,
     reason_code: Option<String>,
+}
+
+struct ProviderOperation {
+    operation_id: String,
+    kind: String,
+    provider_id: String,
+    phase: String,
+    target_key_ref: String,
+    previous_key_ref: Option<String>,
 }
 
 pub struct OnboardingService {
@@ -370,13 +392,17 @@ fn apply_action(
         }
         DesktopOnboardingAction::ProbeProvider { provider_id } => {
             service.probe_provider(&provider_id)?;
-            Ok(true)
+            Ok(service.is_active_provider(&provider_id)?)
         }
         DesktopOnboardingAction::SetDefaultModel {
             provider_id,
             model_id,
         } => {
             service.set_default_model(&provider_id, &model_id)?;
+            Ok(service.is_active_provider(&provider_id)?)
+        }
+        DesktopOnboardingAction::SetActiveProvider { provider_id } => {
+            service.set_active_provider(&provider_id)?;
             Ok(true)
         }
         DesktopOnboardingAction::RotateProviderKey {
@@ -384,14 +410,20 @@ fn apply_action(
             api_key,
         } => {
             service.rotate_provider_key(&provider_id, api_key.expose())?;
-            Ok(true)
+            Ok(service.is_active_provider(&provider_id)?)
         }
         DesktopOnboardingAction::DisconnectProvider { provider_id } => {
+            let was_active = service.is_active_provider(&provider_id)?;
             service.disconnect_provider(&provider_id)?;
-            Ok(true)
+            Ok(was_active)
         }
         DesktopOnboardingAction::DeleteProvider { provider_id } => {
+            let was_active = service.is_active_provider(&provider_id)?;
             service.delete_provider(&provider_id)?;
+            Ok(was_active)
+        }
+        DesktopOnboardingAction::RetryProviderReconciliation => {
+            service.reconcile_pending_operations()?;
             Ok(true)
         }
     }
@@ -424,13 +456,15 @@ impl OnboardingService {
             .pragma_update(None, "foreign_keys", "ON")
             .map_err(|_| DesktopActionError::storage())?;
         migrate(&connection)?;
-        Ok(Self {
+        let mut service = Self {
             database_path,
             connection,
             secrets,
             provider_probe,
             host_capabilities,
-        })
+        };
+        let _ = service.reconcile_pending_operations();
+        Ok(service)
     }
 
     #[cfg(target_os = "macos")]
@@ -482,6 +516,7 @@ impl OnboardingService {
         &mut self,
         input: LocalProviderInput,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         let name = normalized_label(&input.name, "provider_name_invalid")?;
         let base_url = normalized_base_url(&input.base_url)?;
         let default_model = normalized_label(&input.default_model, "provider_model_invalid")?;
@@ -492,14 +527,53 @@ impl OnboardingService {
             ));
         }
         let provider_id = Uuid::new_v4().to_string();
-        let key_ref = self
-            .secrets
-            .store(&provider_id, input.api_key.expose().trim())?;
+        let operation_id = Uuid::new_v4().to_string();
+        let account = format!("{provider_id}-{operation_id}");
+        let key_ref = self.secrets.key_ref(&account)?;
         let key_hint = key_hint(input.api_key.expose().trim());
+        self.connection
+            .execute(
+                "INSERT INTO provider_operations
+                 (operation_id, kind, provider_id, phase, target_key_ref,
+                  provider_name, base_url, default_model, key_hint)
+                 VALUES (?1, 'add', ?2, 'planned', ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    operation_id,
+                    provider_id,
+                    key_ref,
+                    name,
+                    base_url,
+                    default_model,
+                    key_hint
+                ],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        let stored_ref = match self.secrets.store(&account, input.api_key.expose().trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = self.remove_operation(&operation_id);
+                return Err(error.into());
+            }
+        };
+        if stored_ref != key_ref {
+            let _ = self.secrets.delete(&stored_ref);
+            self.record_operation_error(&operation_id, "key_ref_mismatch");
+            return Err(DesktopActionError::reconciliation());
+        }
+        if self
+            .connection
+            .execute(
+                "UPDATE provider_operations SET phase = 'secret_applied' WHERE operation_id = ?1",
+                [&operation_id],
+            )
+            .is_err()
+        {
+            return self.compensate_new_secret(&operation_id, &key_ref);
+        }
         let transaction = self
             .connection
             .transaction()
-            .map_err(|_| DesktopActionError::storage())?;
+            .map_err(|_| DesktopActionError::reconciliation())?;
         let persisted = transaction
             .execute(
                 "INSERT INTO local_providers \
@@ -514,10 +588,15 @@ impl OnboardingService {
                     params![provider_id, default_model],
                 )
             })
+            .and_then(|_| {
+                transaction.execute(
+                    "DELETE FROM provider_operations WHERE operation_id = ?1",
+                    [&operation_id],
+                )
+            })
             .and_then(|_| transaction.commit());
         if persisted.is_err() {
-            let _ = self.secrets.delete(&key_ref);
-            return Err(DesktopActionError::storage());
+            return self.compensate_new_secret(&operation_id, &key_ref);
         }
         self.provider_view(&provider_id)
     }
@@ -526,6 +605,7 @@ impl OnboardingService {
         &mut self,
         provider_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         if !provider.key_configured {
             return Err(SecretBrokerError::Missing.into());
@@ -582,7 +662,39 @@ impl OnboardingService {
                  WHERE provider_id = ?1",
                 [provider_id],
             )
+            .and_then(|_| {
+                transaction.execute(
+                    "UPDATE desktop_onboarding SET active_provider_id = ?1
+                     WHERE singleton = 1 AND active_provider_id IS NULL",
+                    [provider_id],
+                )
+            })
             .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::storage())?;
+        self.provider_view(provider_id)
+    }
+
+    pub fn set_active_provider(
+        &mut self,
+        provider_id: &str,
+    ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
+        let provider = self.provider_record(provider_id)?;
+        if provider.status != "connected" || !provider.key_configured {
+            return Err(DesktopActionError::new(
+                "provider_not_connected",
+                "probe_provider",
+            ));
+        }
+        let mut secret = self.secrets.read(&provider.key_ref)?;
+        secret.zeroize();
+        self.connection
+            .execute(
+                "INSERT INTO desktop_onboarding (singleton, active_provider_id)
+                 VALUES (1, ?1) ON CONFLICT(singleton) DO UPDATE
+                 SET active_provider_id = excluded.active_provider_id",
+                [provider_id],
+            )
             .map_err(|_| DesktopActionError::storage())?;
         self.provider_view(provider_id)
     }
@@ -592,6 +704,7 @@ impl OnboardingService {
         provider_id: &str,
         model_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         let model_id = normalized_label(model_id, "provider_model_invalid")?;
         let exists: bool = self
             .connection
@@ -634,6 +747,7 @@ impl OnboardingService {
         provider_id: &str,
         new_secret: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         if new_secret.trim().is_empty() {
             return Err(DesktopActionError::new(
                 "provider_key_invalid",
@@ -641,32 +755,66 @@ impl OnboardingService {
             ));
         }
         let provider = self.provider_record(provider_id)?;
-        let previous = if provider.key_configured {
-            match self.secrets.read(&provider.key_ref) {
-                Ok(secret) => Some(WriteOnlySecret::from(secret)),
-                Err(SecretBrokerError::Missing) => None,
-                Err(error) => return Err(error.into()),
+        let operation_id = Uuid::new_v4().to_string();
+        let account = format!("{provider_id}-{operation_id}");
+        let key_ref = self.secrets.key_ref(&account)?;
+        self.insert_operation(
+            &operation_id,
+            "rotate",
+            provider_id,
+            &key_ref,
+            Some(&provider.key_ref),
+        )?;
+        let stored_ref = match self.secrets.store(&account, new_secret.trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = self.remove_operation(&operation_id);
+                return Err(error.into());
             }
-        } else {
-            None
         };
-        let key_ref = self.secrets.store(provider_id, new_secret.trim())?;
-        let result = self.connection.execute(
-            "UPDATE local_providers SET key_ref = ?2, key_hint = ?3, key_configured = 1, \
-             status = 'untested', reason_code = NULL WHERE provider_id = ?1",
-            params![provider_id, key_ref, key_hint(new_secret.trim())],
-        );
-        if result.is_err() {
-            match previous {
-                Some(secret) => {
-                    let _ = self.secrets.store(provider_id, secret.expose());
-                }
-                None => {
-                    let _ = self.secrets.delete(&key_ref);
-                }
-            }
-            return Err(DesktopActionError::storage());
+        if stored_ref != key_ref {
+            let _ = self.secrets.delete(&stored_ref);
+            self.record_operation_error(&operation_id, "key_ref_mismatch");
+            return Err(DesktopActionError::reconciliation());
         }
+        if self
+            .connection
+            .execute(
+                "UPDATE provider_operations SET phase = 'secret_applied' WHERE operation_id = ?1",
+                [&operation_id],
+            )
+            .is_err()
+        {
+            return self.compensate_new_secret(&operation_id, &key_ref);
+        }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::reconciliation())?;
+        let persisted = transaction
+            .execute(
+                "UPDATE local_providers SET key_ref = ?2, key_hint = ?3, key_configured = 1,
+                 status = 'untested', reason_code = NULL WHERE provider_id = ?1",
+                params![provider_id, key_ref, key_hint(new_secret.trim())],
+            )
+            .and_then(|_| {
+                transaction.execute(
+                    "UPDATE provider_operations SET phase = 'metadata_applied'
+                 WHERE operation_id = ?1",
+                    [&operation_id],
+                )
+            })
+            .and_then(|_| transaction.commit());
+        if persisted.is_err() {
+            return self.compensate_new_secret(&operation_id, &key_ref);
+        }
+        if provider.key_configured {
+            if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
+                self.record_operation_error(&operation_id, error.reason_code);
+                return Err(DesktopActionError::reconciliation());
+            }
+        }
+        self.remove_operation(&operation_id)?;
         self.provider_view(provider_id)
     }
 
@@ -674,54 +822,332 @@ impl OnboardingService {
         &mut self,
         provider_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
-        let previous = match self.secrets.read(&provider.key_ref) {
-            Ok(secret) => Some(WriteOnlySecret::from(secret)),
-            Err(SecretBrokerError::Missing) => None,
-            Err(error) => return Err(error.into()),
-        };
-        if previous.is_some() {
-            self.secrets.delete(&provider.key_ref)?;
-        }
-        let result = self.connection.execute(
-            "UPDATE local_providers SET key_hint = '', key_configured = 0, \
-             status = 'disconnected', reason_code = 'provider_key_disconnected' \
+        let operation_id = Uuid::new_v4().to_string();
+        self.insert_operation(
+            &operation_id,
+            "disconnect",
+            provider_id,
+            &provider.key_ref,
+            None,
+        )?;
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        transaction
+            .execute(
+                "UPDATE local_providers SET key_hint = '', key_configured = 0,
+             status = 'disconnected', reason_code = 'provider_key_disconnected'
              WHERE provider_id = ?1",
-            [provider_id],
-        );
-        if result.is_err() {
-            if let Some(secret) = previous {
-                let _ = self.secrets.store(provider_id, secret.expose());
-            }
-            return Err(DesktopActionError::storage());
+                [provider_id],
+            )
+            .and_then(|_| {
+                transaction.execute(
+                    "UPDATE desktop_onboarding SET active_provider_id = NULL
+             WHERE singleton = 1 AND active_provider_id = ?1",
+                    [provider_id],
+                )
+            })
+            .and_then(|_| {
+                transaction.execute(
+            "UPDATE provider_operations SET phase = 'metadata_applied' WHERE operation_id = ?1",
+            [&operation_id],
+        )
+            })
+            .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::storage())?;
+        if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
+            self.record_operation_error(&operation_id, error.reason_code);
+            return Err(DesktopActionError::reconciliation());
         }
+        self.remove_operation(&operation_id)?;
         self.provider_view(provider_id)
     }
 
     pub fn delete_provider(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
+        self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
-        let previous = match self.secrets.read(&provider.key_ref) {
-            Ok(secret) => Some(WriteOnlySecret::from(secret)),
-            Err(SecretBrokerError::Missing) => None,
-            Err(error) => return Err(error.into()),
-        };
-        if previous.is_some() {
-            self.secrets.delete(&provider.key_ref)?;
-        }
-        if self
+        let operation_id = Uuid::new_v4().to_string();
+        self.insert_operation(
+            &operation_id,
+            "delete",
+            provider_id,
+            &provider.key_ref,
+            None,
+        )?;
+        let transaction = self
             .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        transaction
+            .execute(
+                "UPDATE local_providers SET key_configured = 0, status = 'pending_delete',
+             reason_code = 'provider_delete_pending' WHERE provider_id = ?1",
+                [provider_id],
+            )
+            .and_then(|_| {
+                transaction.execute(
+                    "UPDATE desktop_onboarding SET active_provider_id = NULL
+             WHERE singleton = 1 AND active_provider_id = ?1",
+                    [provider_id],
+                )
+            })
+            .and_then(|_| {
+                transaction.execute(
+            "UPDATE provider_operations SET phase = 'metadata_applied' WHERE operation_id = ?1",
+            [&operation_id],
+        )
+            })
+            .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::storage())?;
+        if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
+            self.record_operation_error(&operation_id, error.reason_code);
+            return Err(DesktopActionError::reconciliation());
+        }
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|_| DesktopActionError::storage())?;
+        transaction
             .execute(
                 "DELETE FROM local_providers WHERE provider_id = ?1",
                 [provider_id],
             )
-            .is_err()
-        {
-            if let Some(secret) = previous {
-                let _ = self.secrets.store(provider_id, secret.expose());
+            .and_then(|_| {
+                transaction.execute(
+                    "DELETE FROM provider_operations WHERE operation_id = ?1",
+                    [&operation_id],
+                )
+            })
+            .and_then(|_| transaction.commit())
+            .map_err(|_| DesktopActionError::reconciliation())?;
+        Ok(())
+    }
+
+    fn insert_operation(
+        &self,
+        operation_id: &str,
+        kind: &str,
+        provider_id: &str,
+        target_key_ref: &str,
+        previous_key_ref: Option<&str>,
+    ) -> Result<(), DesktopActionError> {
+        self.connection
+            .execute(
+                "INSERT INTO provider_operations
+             (operation_id, kind, provider_id, phase, target_key_ref, previous_key_ref)
+             VALUES (?1, ?2, ?3, 'planned', ?4, ?5)",
+                params![
+                    operation_id,
+                    kind,
+                    provider_id,
+                    target_key_ref,
+                    previous_key_ref
+                ],
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        Ok(())
+    }
+
+    fn remove_operation(&self, operation_id: &str) -> Result<(), DesktopActionError> {
+        self.connection
+            .execute(
+                "DELETE FROM provider_operations WHERE operation_id = ?1",
+                [operation_id],
+            )
+            .map_err(|_| DesktopActionError::reconciliation())?;
+        Ok(())
+    }
+
+    fn record_operation_error(&self, operation_id: &str, reason_code: &str) {
+        let _ = self.connection.execute(
+            "UPDATE provider_operations SET last_error = ?2 WHERE operation_id = ?1",
+            params![operation_id, reason_code],
+        );
+    }
+
+    fn delete_secret_if_present(&self, key_ref: &str) -> Result<(), DesktopActionError> {
+        match self.secrets.delete(key_ref) {
+            Ok(()) | Err(SecretBrokerError::Missing) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn compensate_new_secret<T>(
+        &self,
+        operation_id: &str,
+        key_ref: &str,
+    ) -> Result<T, DesktopActionError> {
+        match self.delete_secret_if_present(key_ref) {
+            Ok(()) => {
+                let _ = self.remove_operation(operation_id);
+                Err(DesktopActionError::storage())
             }
-            return Err(DesktopActionError::storage());
+            Err(error) => {
+                self.record_operation_error(operation_id, error.reason_code);
+                Err(DesktopActionError::reconciliation())
+            }
+        }
+    }
+
+    fn pending_operations(&self) -> Result<Vec<ProviderOperation>, DesktopActionError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT operation_id, kind, provider_id, phase, target_key_ref, previous_key_ref
+             FROM provider_operations ORDER BY rowid",
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(ProviderOperation {
+                    operation_id: row.get(0)?,
+                    kind: row.get(1)?,
+                    provider_id: row.get(2)?,
+                    phase: row.get(3)?,
+                    target_key_ref: row.get(4)?,
+                    previous_key_ref: row.get(5)?,
+                })
+            })
+            .map_err(|_| DesktopActionError::storage())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|_| DesktopActionError::storage())?;
+        Ok(rows)
+    }
+
+    pub fn pending_operation_count(&self) -> Result<usize, DesktopActionError> {
+        Ok(self.pending_operations()?.len())
+    }
+
+    pub fn pending_operation_key_refs(&self) -> Result<Vec<String>, DesktopActionError> {
+        Ok(self
+            .pending_operations()?
+            .into_iter()
+            .map(|item| item.target_key_ref)
+            .collect())
+    }
+
+    fn ensure_provider_operations_settled(&self) -> Result<(), DesktopActionError> {
+        if self.pending_operation_count()? > 0 {
+            return Err(DesktopActionError::reconciliation());
         }
         Ok(())
+    }
+
+    pub fn reconcile_pending_operations(&mut self) -> Result<(), DesktopActionError> {
+        for operation in self.pending_operations()? {
+            let metadata_ref = self
+                .connection
+                .query_row(
+                    "SELECT key_ref FROM local_providers WHERE provider_id = ?1",
+                    [&operation.provider_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|_| DesktopActionError::storage())?;
+            match operation.kind.as_str() {
+                "add" => {
+                    if metadata_ref.as_deref() == Some(operation.target_key_ref.as_str()) {
+                        self.remove_operation(&operation.operation_id)?;
+                    } else {
+                        self.delete_secret_if_present(&operation.target_key_ref)
+                            .map_err(|error| {
+                                self.record_operation_error(
+                                    &operation.operation_id,
+                                    error.reason_code,
+                                );
+                                DesktopActionError::reconciliation()
+                            })?;
+                        self.remove_operation(&operation.operation_id)?;
+                    }
+                }
+                "rotate" => {
+                    if metadata_ref.as_deref() == Some(operation.target_key_ref.as_str())
+                        || operation.phase == "metadata_applied"
+                    {
+                        if let Some(previous) = operation.previous_key_ref.as_deref() {
+                            self.delete_secret_if_present(previous).map_err(|error| {
+                                self.record_operation_error(
+                                    &operation.operation_id,
+                                    error.reason_code,
+                                );
+                                DesktopActionError::reconciliation()
+                            })?;
+                        }
+                    } else {
+                        self.delete_secret_if_present(&operation.target_key_ref)
+                            .map_err(|error| {
+                                self.record_operation_error(
+                                    &operation.operation_id,
+                                    error.reason_code,
+                                );
+                                DesktopActionError::reconciliation()
+                            })?;
+                    }
+                    self.remove_operation(&operation.operation_id)?;
+                }
+                "disconnect" => {
+                    if operation.phase != "metadata_applied" {
+                        self.remove_operation(&operation.operation_id)?;
+                        continue;
+                    }
+                    self.delete_secret_if_present(&operation.target_key_ref)
+                        .map_err(|error| {
+                            self.record_operation_error(&operation.operation_id, error.reason_code);
+                            DesktopActionError::reconciliation()
+                        })?;
+                    self.remove_operation(&operation.operation_id)?;
+                }
+                "delete" => {
+                    if operation.phase != "metadata_applied" {
+                        self.remove_operation(&operation.operation_id)?;
+                        continue;
+                    }
+                    self.delete_secret_if_present(&operation.target_key_ref)
+                        .map_err(|error| {
+                            self.record_operation_error(&operation.operation_id, error.reason_code);
+                            DesktopActionError::reconciliation()
+                        })?;
+                    let transaction = self
+                        .connection
+                        .transaction()
+                        .map_err(|_| DesktopActionError::storage())?;
+                    transaction
+                        .execute(
+                            "DELETE FROM local_providers WHERE provider_id = ?1",
+                            [&operation.provider_id],
+                        )
+                        .and_then(|_| {
+                            transaction.execute(
+                                "DELETE FROM provider_operations WHERE operation_id = ?1",
+                                [&operation.operation_id],
+                            )
+                        })
+                        .and_then(|_| transaction.commit())
+                        .map_err(|_| DesktopActionError::reconciliation())?;
+                }
+                _ => return Err(DesktopActionError::reconciliation()),
+            }
+        }
+        Ok(())
+    }
+
+    fn active_provider_id(&self) -> Result<Option<String>, DesktopActionError> {
+        self.connection
+            .query_row(
+                "SELECT active_provider_id FROM desktop_onboarding WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map(|value| value.flatten())
+            .map_err(|_| DesktopActionError::storage())
+    }
+
+    fn is_active_provider(&self, provider_id: &str) -> Result<bool, DesktopActionError> {
+        Ok(self.active_provider_id()?.as_deref() == Some(provider_id))
     }
 
     pub fn snapshot(&self) -> OnboardingSnapshot {
@@ -733,6 +1159,7 @@ impl OnboardingService {
                 stage: "blocked".into(),
                 mode: None,
                 workspace_name: None,
+                active_provider_id: None,
                 providers: Vec::new(),
                 capabilities: BTreeMap::new(),
             })
@@ -748,13 +1175,16 @@ impl OnboardingService {
         let Some(workspace_path) = workspace.filter(|path| path.is_dir()) else {
             return Ok(None);
         };
-        let provider = self
-            .provider_views()?
-            .into_iter()
-            .find(|value| value.status == "connected" && value.key_configured);
-        let Some(provider) = provider else {
+        if self.pending_operation_count()? > 0 {
+            return Ok(None);
+        }
+        let Some(active_provider_id) = self.active_provider_id()? else {
             return Ok(None);
         };
+        let provider = self.provider_view(&active_provider_id)?;
+        if provider.status != "connected" || !provider.key_configured {
+            return Ok(None);
+        }
         let Some(default_model) = provider.default_model else {
             return Ok(None);
         };
@@ -773,9 +1203,13 @@ impl OnboardingService {
     fn try_snapshot(&self) -> Result<OnboardingSnapshot, DesktopActionError> {
         let (mode, workspace) = self.onboarding_selection()?;
         let providers = self.provider_views()?;
+        let active_provider_id = self.active_provider_id()?;
         let workspace_ready = workspace.as_ref().is_some_and(|path| path.is_dir());
         let mut provider_secret_error = None;
         let provider_ready = providers.iter().any(|provider| {
+            if active_provider_id.as_deref() != Some(provider.provider_id.as_str()) {
+                return false;
+            }
             if !provider.key_configured || provider.status != "connected" {
                 return false;
             }
@@ -799,6 +1233,7 @@ impl OnboardingService {
             Some(OnboardingMode::Local) if !provider_ready => "configure_provider",
             Some(OnboardingMode::Local) => "complete",
         };
+        let pending_operations = self.pending_operation_count()?;
         let host = self.host_capabilities.detect();
         let mut capabilities = capability_matrix(mode, workspace_ready, provider_ready, host);
         if let Some(error) = provider_secret_error.as_ref() {
@@ -807,7 +1242,13 @@ impl OnboardingService {
                 capability("blocked", Some(error.reason_code), Some(error.action)),
             );
         }
-        let (status, reason_code, action) = if stage == "complete" {
+        let (status, reason_code, action) = if pending_operations > 0 {
+            (
+                "blocked",
+                Some("provider_reconciliation_required".into()),
+                Some("retry_provider_reconciliation".into()),
+            )
+        } else if stage == "complete" {
             let degraded = capabilities
                 .values()
                 .any(|capability| capability.status != "ready");
@@ -822,6 +1263,9 @@ impl OnboardingService {
                 ("choose_mode", _) => ("onboarding_mode_required", "choose_onboarding_mode"),
                 ("cloud_unavailable", _) => ("cloud_oauth_not_available", "choose_local_mode"),
                 ("select_workspace", _) => ("workspace_required", "select_workspace"),
+                _ if active_provider_id.is_none() && !providers.is_empty() => {
+                    ("active_provider_required", "select_active_provider")
+                }
                 _ => ("provider_not_configured", "configure_provider"),
             };
             ("blocked", Some(reason.into()), Some(action.into()))
@@ -837,6 +1281,7 @@ impl OnboardingService {
             stage: stage.into(),
             mode,
             workspace_name,
+            active_provider_id,
             providers,
             capabilities,
         })
@@ -933,6 +1378,7 @@ impl OnboardingService {
             reason_code: provider.reason_code,
             models: rows.into_iter().map(|(model, _)| model).collect(),
             default_model,
+            is_active: self.is_active_provider(provider_id)?,
         })
     }
 
@@ -974,13 +1420,14 @@ fn migrate(connection: &Connection) -> Result<(), DesktopActionError> {
             "upgrade_sage",
         ));
     }
-    connection
-        .execute_batch(
+    if version == 0 {
+        connection.execute_batch(
             "BEGIN IMMEDIATE;
              CREATE TABLE IF NOT EXISTS desktop_onboarding (
                  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                  mode TEXT,
-                 workspace_path TEXT
+                 workspace_path TEXT,
+                 active_provider_id TEXT
              );
              CREATE TABLE IF NOT EXISTS local_providers (
                  provider_id TEXT PRIMARY KEY,
@@ -998,10 +1445,47 @@ fn migrate(connection: &Connection) -> Result<(), DesktopActionError> {
                  is_default INTEGER NOT NULL DEFAULT 0,
                  PRIMARY KEY (provider_id, model_id)
              );
-             PRAGMA user_version = 1;
+             CREATE TABLE IF NOT EXISTS provider_operations (
+                 operation_id TEXT PRIMARY KEY,
+                 kind TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 phase TEXT NOT NULL,
+                 target_key_ref TEXT NOT NULL,
+                 previous_key_ref TEXT,
+                 provider_name TEXT,
+                 base_url TEXT,
+                 default_model TEXT,
+                 key_hint TEXT,
+                 last_error TEXT
+             );
+             PRAGMA user_version = 2;
              COMMIT;",
         )
-        .map_err(|_| DesktopActionError::storage())
+        .map_err(|_| DesktopActionError::storage())?;
+    } else if version == 1 {
+        connection
+            .execute_batch(
+                "BEGIN IMMEDIATE;
+             ALTER TABLE desktop_onboarding ADD COLUMN active_provider_id TEXT;
+             CREATE TABLE provider_operations (
+                 operation_id TEXT PRIMARY KEY,
+                 kind TEXT NOT NULL,
+                 provider_id TEXT NOT NULL,
+                 phase TEXT NOT NULL,
+                 target_key_ref TEXT NOT NULL,
+                 previous_key_ref TEXT,
+                 provider_name TEXT,
+                 base_url TEXT,
+                 default_model TEXT,
+                 key_hint TEXT,
+                 last_error TEXT
+             );
+             PRAGMA user_version = 2;
+             COMMIT;",
+            )
+            .map_err(|_| DesktopActionError::storage())?;
+    }
+    Ok(())
 }
 
 fn capability(status: &str, reason_code: Option<&str>, action: Option<&str>) -> DesktopCapability {

@@ -821,4 +821,94 @@ describe('DesktopHostAdapter', () => {
     connection.close()
     vi.useRealTimers()
   })
+
+  it('emits one terminal close and clears the session after immediate-close retry exhaustion', async () => {
+    vi.useFakeTimers()
+    invoke.mockResolvedValue({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49152', bearer: 'token', instanceId: 'instance' },
+    })
+    const sockets: Array<{ emit: (type: string, event: Event) => void, close: ReturnType<typeof vi.fn> }> = []
+    const websocket = vi.fn(function WebSocketMock() {
+      const listeners = new Map<string, Array<(event: Event) => void>>()
+      const socket = {
+        readyState: 1,
+        addEventListener(type: string, listener: (event: Event) => void) {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener])
+        },
+        emit(type: string, event: Event) {
+          for (const listener of listeners.get(type) ?? []) listener(event)
+        },
+        close: vi.fn(),
+        send: vi.fn(),
+      }
+      sockets.push(socket)
+      return socket
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const { desktopHostStatus, desktopWebSocket, desktopFetch } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const connection = await desktopWebSocket('/desktop/probe/ws')
+    const terminal = vi.fn()
+    connection.addEventListener('close', terminal)
+
+    for (const delay of [100, 200, 400]) {
+      sockets.at(-1)!.emit('open', new Event('open'))
+      sockets.at(-1)!.emit('close', new CloseEvent('close', { wasClean: false, code: 1006 }))
+      await vi.advanceTimersByTimeAsync(delay)
+    }
+    sockets.at(-1)!.emit('open', new Event('open'))
+    sockets.at(-1)!.emit('close', new CloseEvent('close', { wasClean: false, code: 1006 }))
+
+    expect(websocket).toHaveBeenCalledTimes(4)
+    expect(terminal).toHaveBeenCalledOnce()
+    vi.stubGlobal('fetch', vi.fn())
+    await expect(desktopFetch('/capabilities')).rejects.toThrow('desktop_session_unavailable')
+    vi.useRealTimers()
+  })
+
+  it('close during awaited host recovery cancels the late socket generation', async () => {
+    vi.useFakeTimers()
+    const pending = deferred<object>()
+    invoke
+      .mockResolvedValueOnce({
+        state: 'ready', reasonCode: null, action: null,
+        session: { endpoint: 'http://127.0.0.1:49152', bearer: 'old', instanceId: 'old' },
+      })
+      .mockReturnValueOnce(pending.promise)
+    const sockets: Array<{ emit: (type: string, event: Event) => void, close: ReturnType<typeof vi.fn> }> = []
+    const websocket = vi.fn(function WebSocketMock() {
+      const listeners = new Map<string, Array<(event: Event) => void>>()
+      const socket = {
+        readyState: 1,
+        addEventListener(type: string, listener: (event: Event) => void) {
+          listeners.set(type, [...(listeners.get(type) ?? []), listener])
+        },
+        emit(type: string, event: Event) {
+          for (const listener of listeners.get(type) ?? []) listener(event)
+        },
+        close: vi.fn(), send: vi.fn(),
+      }
+      sockets.push(socket)
+      return socket
+    })
+    vi.stubGlobal('WebSocket', websocket)
+    const { desktopHostStatus, desktopWebSocket } = await import('./hostAdapter')
+    await desktopHostStatus()
+    const connection = await desktopWebSocket('/desktop/probe/ws')
+    sockets[0].emit('close', new CloseEvent('close', { wasClean: false, code: 1006 }))
+    await vi.advanceTimersByTimeAsync(100)
+
+    connection.close()
+    pending.resolve({
+      state: 'ready', reasonCode: null, action: null,
+      session: { endpoint: 'http://127.0.0.1:49153', bearer: 'new', instanceId: 'new' },
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(websocket).toHaveBeenCalledTimes(1)
+    expect(sockets[0].close).toHaveBeenCalledOnce()
+    vi.useRealTimers()
+  })
 })

@@ -9,6 +9,7 @@ import {
   Plus,
   RefreshCw,
   Trash2,
+  CircleDot,
   X,
 } from 'lucide-vue-next'
 import { computed, ref } from 'vue'
@@ -76,6 +77,14 @@ function setDefaultModel(providerId: string, event: Event) {
   emit('action', { kind: 'set_default_model', provider_id: providerId, model_id: modelId })
 }
 
+function setActiveProvider(providerId: string) {
+  emit('action', { kind: 'set_active_provider', provider_id: providerId })
+}
+
+function retryReconciliation() {
+  emit('action', { kind: 'retry_provider_reconciliation' })
+}
+
 function beginRotation(providerId: string) {
   rotatingProvider.value = providerId
   rotationKey.value = ''
@@ -104,6 +113,13 @@ function confirmDelete(providerId: string) {
 
 <template>
   <section class="onboarding" aria-label="首次启动设置">
+    <div v-if="snapshot.status === 'blocked' && snapshot.reason_code" class="onboarding-error" role="status">
+      <code>{{ snapshot.reason_code }}</code>
+      <span>{{ snapshot.action }}</span>
+      <button v-if="snapshot.action === 'retry_provider_reconciliation'" type="button" :disabled="busy" @click="retryReconciliation">
+        <RefreshCw :size="16" aria-hidden="true" /> 重试
+      </button>
+    </div>
     <div v-if="snapshot.stage === 'choose_mode'" class="onboarding-step">
       <h2>选择运行方式</h2>
       <div class="mode-control" role="group" aria-label="运行方式">
@@ -168,7 +184,7 @@ function confirmDelete(providerId: string) {
               <strong>{{ provider.name }}</strong>
               <small>{{ provider.key_configured ? provider.key_hint : '凭据已注销' }}</small>
             </div>
-            <code>{{ provider.status }}</code>
+            <code>{{ provider.is_active ? '当前' : provider.status }}</code>
           </div>
 
           <div class="provider-controls">
@@ -181,6 +197,9 @@ function confirmDelete(providerId: string) {
             >
               <option v-for="model in provider.models" :key="model" :value="model">{{ model }}</option>
             </select>
+            <button v-if="!provider.is_active" type="button" title="设为当前 Provider" aria-label="设为当前 Provider" :disabled="busy || provider.status !== 'connected'" @click="setActiveProvider(provider.provider_id)">
+              <CircleDot :size="16" aria-hidden="true" />
+            </button>
             <button type="button" title="探测 Provider" aria-label="探测 Provider" :disabled="busy || !provider.key_configured" @click="emit('action', { kind: 'probe_provider', provider_id: provider.provider_id })">
               <RefreshCw :size="16" aria-hidden="true" />
             </button>

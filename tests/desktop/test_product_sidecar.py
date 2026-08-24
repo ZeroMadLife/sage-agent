@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from desktop.sidecar.app import create_desktop_app
+from desktop.sidecar.app import create_desktop_app, derive_capability_status
 from desktop.sidecar.security import (
     DesktopProviderBootstrap,
     DesktopRuntimeBootstrap,
@@ -84,3 +84,58 @@ def test_local_product_profile_exposes_conversation_and_sqlite_rag_without_side_
     assert cloud_oauth.status_code == 404
     assert all(value != secret for value in os.environ.values())
     assert secret.encode() not in (tmp_path / "data" / "knowledge.sqlite3").read_bytes()
+
+
+def test_capability_status_derives_critical_and_optional_matrix() -> None:
+    ready = {
+        name: {"status": "ready"}
+        for name in (
+            "api",
+            "storage",
+            "checkpoint",
+            "provider",
+            "conversation",
+            "rag",
+            "side_effect_tools",
+        )
+    }
+    assert derive_capability_status(ready) == "ready"
+
+    optional_blocked = {**ready, "side_effect_tools": {"status": "blocked"}}
+    assert derive_capability_status(optional_blocked) == "degraded"
+
+    critical_degraded = {**ready, "rag": {"status": "degraded"}}
+    assert derive_capability_status(critical_degraded) == "degraded"
+
+    for critical in ("api", "storage", "checkpoint", "provider", "conversation", "rag"):
+        blocked = {**ready, critical: {"status": "blocked"}}
+        assert derive_capability_status(blocked) == "blocked"
+
+
+def test_product_capability_status_is_blocked_without_runtime_and_degraded_without_docker(
+    tmp_path: Path,
+) -> None:
+    minimal = create_desktop_app(data_dir=tmp_path / "minimal", build_sha="test-build")
+    with TestClient(minimal) as client:
+        assert client.get("/capabilities").json()["status"] == "blocked"
+
+    workspace = tmp_path / "workspace-status"
+    workspace.mkdir()
+    runtime = DesktopRuntimeBootstrap(
+        workspace_path=workspace,
+        provider=DesktopProviderBootstrap(
+            provider_id="provider-status",
+            base_url="https://provider.example/v1",
+            default_model="model-small",
+            api_mode="openai_chat_completions",
+            api_key="test-secret-status",
+        ),
+    )
+    product = create_desktop_app(
+        data_dir=tmp_path / "product",
+        build_sha="test-build",
+        runtime=runtime,
+        model_factory=lambda *_args, **_kwargs: FakeModel(),
+    )
+    with TestClient(product) as client:
+        assert client.get("/capabilities").json()["status"] == "degraded"

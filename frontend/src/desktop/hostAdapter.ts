@@ -47,6 +47,7 @@ export interface DesktopLocalProvider {
   reason_code: string | null
   models: string[]
   default_model: string | null
+  is_active: boolean
 }
 
 export interface DesktopOnboardingSnapshot {
@@ -56,6 +57,7 @@ export interface DesktopOnboardingSnapshot {
   stage: 'choose_mode' | 'cloud_unavailable' | 'select_workspace' | 'configure_provider' | 'complete' | 'blocked'
   mode: OnboardingMode | null
   workspace_name: string | null
+  active_provider_id: string | null
   providers: DesktopLocalProvider[]
   capabilities: Record<string, DesktopCapability>
 }
@@ -66,9 +68,11 @@ export type DesktopOnboardingAction =
   | { kind: 'add_provider', name: string, base_url: string, api_key: string, default_model: string }
   | { kind: 'probe_provider', provider_id: string }
   | { kind: 'set_default_model', provider_id: string, model_id: string }
+  | { kind: 'set_active_provider', provider_id: string }
   | { kind: 'rotate_provider_key', provider_id: string, api_key: string }
   | { kind: 'disconnect_provider', provider_id: string }
   | { kind: 'delete_provider', provider_id: string }
+  | { kind: 'retry_provider_reconciliation' }
 
 let session: DesktopSession | null = null
 let sessionRevision = 0
@@ -128,10 +132,6 @@ function replaceSessionIfRevision(next: DesktopSession | null, expectedRevision:
 function currentSessionLease(): DesktopSessionLease {
   if (!session) throw new Error('desktop_session_unavailable')
   return { session, revision: sessionRevision }
-}
-
-function currentSession(): DesktopSession {
-  return currentSessionLease().session
 }
 
 function endpointUrl(active: DesktopSession, path: string): string {
@@ -408,6 +408,11 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
   private stopped = false
   private reconnectAttempts = 0
   private socketGeneration = 0
+  private connectionEpoch = 0
+  private sessionLeaseRevision = 0
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null
+  private stableTimer: ReturnType<typeof setTimeout> | null = null
+  private terminalClosed = false
   private readonly path: string
 
   constructor(path: string) {
@@ -423,15 +428,26 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
     return this.socketGeneration
   }
 
-  async connect(): Promise<void> {
-    const active = currentSession()
+  async connect(expectedEpoch = this.connectionEpoch, lease = currentSessionLease()): Promise<void> {
+    if (this.stopped || expectedEpoch !== this.connectionEpoch) return
+    const active = lease.session
     const url = endpointUrl(active, this.path).replace(/^http:/, 'ws:')
     const socket = new WebSocket(url, ['sage.v1', `sage-bearer.${active.bearer}`])
+    if (this.stopped || expectedEpoch !== this.connectionEpoch) {
+      socket.close()
+      return
+    }
     this.socketGeneration += 1
+    this.sessionLeaseRevision = lease.revision
     this.socket = socket
     socket.addEventListener('open', (event) => {
       if (socket !== this.socket) return
-      this.reconnectAttempts = 0
+      this.clearStableTimer()
+      this.stableTimer = setTimeout(() => {
+        if (!this.stopped && socket === this.socket && expectedEpoch === this.connectionEpoch) {
+          this.reconnectAttempts = 0
+        }
+      }, 1000)
       publishConnectionState('ready')
       this.dispatchEvent(new Event(event.type))
     })
@@ -445,16 +461,13 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
     })
     socket.addEventListener('close', (event) => {
       if (socket !== this.socket) return
+      this.clearStableTimer()
       if (this.stopped || event.wasClean) {
-        this.dispatchEvent(new CloseEvent(event.type, {
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-        }))
+        this.dispatchTerminalClose(event.code, event.reason, event.wasClean, false)
         return
       }
       publishConnectionState('degraded')
-      this.scheduleReconnect()
+      this.scheduleReconnect(event)
     })
   }
 
@@ -464,26 +477,75 @@ class ReconnectingDesktopWebSocket extends EventTarget implements DesktopWebSock
   }
 
   close(code?: number, reason?: string): void {
+    if (this.stopped) return
     this.stopped = true
+    this.connectionEpoch += 1
+    this.clearReconnectTimer()
+    this.clearStableTimer()
     this.socket?.close(code, reason)
+    this.dispatchTerminalClose(code ?? 1000, reason ?? '', true, false)
   }
 
-  private scheduleReconnect(): void {
-    if (this.stopped || this.reconnectAttempts >= 3) return
+  private scheduleReconnect(cause?: CloseEvent): void {
+    if (this.stopped) return
+    if (this.reconnectAttempts >= 3) {
+      this.dispatchTerminalClose(
+        cause?.code || 1013,
+        cause?.reason || 'desktop_websocket_retry_exhausted',
+        false,
+        true,
+      )
+      return
+    }
     const delay = 100 * 2 ** this.reconnectAttempts
     this.reconnectAttempts += 1
-    setTimeout(() => void this.reconnect(), delay)
+    const expectedEpoch = this.connectionEpoch
+    this.clearReconnectTimer()
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null
+      void this.reconnect(expectedEpoch)
+    }, delay)
   }
 
-  private async reconnect(): Promise<void> {
-    if (this.stopped) return
+  private async reconnect(expectedEpoch: number): Promise<void> {
+    if (this.stopped || expectedEpoch !== this.connectionEpoch) return
     try {
-      await desktopHostStatus()
-      await this.connect()
+      const refreshed = await recoverSession(
+        this.sessionLeaseRevision,
+        () => !this.stopped && expectedEpoch === this.connectionEpoch,
+      )
+      if (!refreshed || this.stopped || expectedEpoch !== this.connectionEpoch) return
+      await this.connect(expectedEpoch, refreshed)
     } catch {
+      if (this.stopped || expectedEpoch !== this.connectionEpoch) return
       publishConnectionState('degraded')
       this.scheduleReconnect()
     }
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+  }
+
+  private clearStableTimer(): void {
+    if (this.stableTimer !== null) clearTimeout(this.stableTimer)
+    this.stableTimer = null
+  }
+
+  private dispatchTerminalClose(
+    code: number,
+    reason: string,
+    wasClean: boolean,
+    clearSession: boolean,
+  ): void {
+    if (this.terminalClosed) return
+    this.terminalClosed = true
+    this.clearReconnectTimer()
+    this.clearStableTimer()
+    if (clearSession) replaceSessionIfRevision(null, this.sessionLeaseRevision)
+    publishConnectionState('degraded')
+    this.dispatchEvent(new CloseEvent('close', { code, reason, wasClean }))
   }
 }
 

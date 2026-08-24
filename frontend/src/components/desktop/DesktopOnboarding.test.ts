@@ -11,6 +11,7 @@ function snapshot(overrides: Partial<DesktopOnboardingSnapshot> = {}): DesktopOn
     stage: 'choose_mode',
     mode: null,
     workspace_name: null,
+    active_provider_id: null,
     providers: [],
     capabilities: {},
     ...overrides,
@@ -67,7 +68,7 @@ it('exposes probe, default model, rotation, disconnect and delete for an existin
           provider_id: 'provider-1', name: 'Provider', base_url: 'https://api.openai.com/v1',
           key_ref: 'keychain://service/provider-1', key_hint: '****test', key_configured: true,
           status: 'connected', reason_code: null, models: ['model-small', 'model-large'],
-          default_model: 'model-small',
+          default_model: 'model-small', is_active: false,
         }],
       }),
       busy: false,
@@ -76,6 +77,7 @@ it('exposes probe, default model, rotation, disconnect and delete for an existin
   })
 
   await wrapper.get('button[aria-label="探测 Provider"]').trigger('click')
+  await wrapper.get('button[aria-label="设为当前 Provider"]').trigger('click')
   await wrapper.get('select[aria-label="默认模型"]').setValue('model-large')
   await wrapper.get('button[aria-label="轮换 API Key"]').trigger('click')
   await wrapper.get('input[aria-label="新 API Key"]').setValue('write-only-rotated')
@@ -86,6 +88,7 @@ it('exposes probe, default model, rotation, disconnect and delete for an existin
 
   expect(wrapper.emitted('action')).toEqual([
     [{ kind: 'probe_provider', provider_id: 'provider-1' }],
+    [{ kind: 'set_active_provider', provider_id: 'provider-1' }],
     [{ kind: 'set_default_model', provider_id: 'provider-1', model_id: 'model-large' }],
     [{ kind: 'rotate_provider_key', provider_id: 'provider-1', api_key: 'write-only-rotated' }],
     [{ kind: 'disconnect_provider', provider_id: 'provider-1' }],

@@ -26,6 +26,21 @@ DESKTOP_API_VERSION = "1"
 DESKTOP_HEALTH_SCHEMA_VERSION = "1"
 SmokeRunner = Callable[[Path], Awaitable[StartupSmoke]]
 ModelFactory = Callable[..., Any]
+_CRITICAL_DESKTOP_CAPABILITIES = frozenset(
+    {"api", "storage", "checkpoint", "provider", "conversation", "rag"}
+)
+
+
+def derive_capability_status(capabilities: dict[str, dict[str, object]]) -> str:
+    """Derive one public state without allowing optional services to block local use."""
+    if any(
+        capabilities.get(name, {}).get("status") == "blocked"
+        for name in _CRITICAL_DESKTOP_CAPABILITIES
+    ) or not _CRITICAL_DESKTOP_CAPABILITIES.issubset(capabilities):
+        return "blocked"
+    if any(value.get("status") != "ready" for value in capabilities.values()):
+        return "degraded"
+    return "ready"
 
 
 def create_desktop_app(
@@ -106,37 +121,38 @@ def create_desktop_app(
                     capability_observed = _record_capability_observation(data_dir)
         product_ready = product_app is not None
         side_effect_tools_ready = bool(runtime and runtime.side_effect_tools_enabled)
+        values: dict[str, dict[str, object]] = {
+            "api": {"status": "ready", "reason_code": None, "action": None},
+            "storage": {"status": "ready", "reason_code": None, "action": None},
+            "checkpoint": {"status": "ready", "reason_code": None, "action": None},
+            "provider": {
+                "status": "ready" if product_ready else "blocked",
+                "reason_code": None if product_ready else "provider_not_configured",
+                "action": None if product_ready else "configure_provider",
+            },
+            "conversation": {
+                "status": "ready" if product_ready else "blocked",
+                "reason_code": None if product_ready else "provider_not_configured",
+                "action": None if product_ready else "configure_provider",
+            },
+            "rag": {
+                "status": "ready" if product_ready else "blocked",
+                "reason_code": None if product_ready else "workspace_not_configured",
+                "action": None if product_ready else "select_workspace",
+            },
+            "side_effect_tools": {
+                "status": "ready" if side_effect_tools_ready else "blocked",
+                "reason_code": None if side_effect_tools_ready else "docker_not_available",
+                "action": (
+                    None if side_effect_tools_ready else "continue_without_side_effect_tools"
+                ),
+            },
+        }
         return {
-            "status": "degraded",
+            "status": derive_capability_status(values),
             "api_version": DESKTOP_API_VERSION,
             "build_sha": build_sha,
-            "capabilities": {
-                "api": {"status": "ready", "reason_code": None, "action": None},
-                "storage": {"status": "ready", "reason_code": None, "action": None},
-                "checkpoint": {"status": "ready", "reason_code": None, "action": None},
-                "provider": {
-                    "status": "ready" if product_ready else "blocked",
-                    "reason_code": None if product_ready else "provider_not_configured",
-                    "action": None if product_ready else "configure_provider",
-                },
-                "conversation": {
-                    "status": "ready" if product_ready else "blocked",
-                    "reason_code": None if product_ready else "provider_not_configured",
-                    "action": None if product_ready else "configure_provider",
-                },
-                "rag": {
-                    "status": "ready" if product_ready else "blocked",
-                    "reason_code": None if product_ready else "workspace_not_configured",
-                    "action": None if product_ready else "select_workspace",
-                },
-                "side_effect_tools": {
-                    "status": "ready" if side_effect_tools_ready else "blocked",
-                    "reason_code": None if side_effect_tools_ready else "docker_not_available",
-                    "action": (
-                        None if side_effect_tools_ready else "continue_without_side_effect_tools"
-                    ),
-                },
-            },
+            "capabilities": values,
         }
 
     @app.get("/desktop/probe/sse")
@@ -182,6 +198,7 @@ def _create_local_product_app(
 ) -> FastAPI:
     from api.main import create_app
     from core.knowledge.index import LocalKnowledgeIndex
+    from core.knowledge.store import KnowledgeSourceRoot
     from core.llm import create_llm
 
     provider = runtime.provider
@@ -227,6 +244,14 @@ def _create_local_product_app(
         cloud_routes_enabled=False,
         knowledge_workspace_root=runtime.workspace_path,
         knowledge_database_path=data_dir / "knowledge.sqlite3",
+        knowledge_source_roots={
+            "desktop-workspace": KnowledgeSourceRoot(
+                root_id="desktop-workspace",
+                kind="markdown",
+                label="Desktop Workspace",
+                path=runtime.workspace_path,
+            )
+        },
         knowledge_index=LocalKnowledgeIndex(workspace_id="desktop-local"),
         knowledge_jobs_enabled=False,
     )
@@ -259,4 +284,5 @@ __all__ = [
     "DESKTOP_HEALTH_SCHEMA_VERSION",
     "DESKTOP_PROFILE",
     "create_desktop_app",
+    "derive_capability_status",
 ]
