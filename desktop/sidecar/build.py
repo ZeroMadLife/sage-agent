@@ -624,6 +624,7 @@ def smoke_packaged_artifact(
                     cleanup_error = RuntimeError("packaged sidecar cleanup audit failed")
                     cleanup_error.__cause__ = exc
                     cleanup_failures.append(cleanup_error)
+                needs_kill = audit_unknown
                 if process.poll() is None:
                     try:
                         _signal_process_tree(
@@ -636,14 +637,11 @@ def smoke_packaged_artifact(
                         cleanup_error = RuntimeError("packaged sidecar SIGTERM failed")
                         cleanup_error.__cause__ = exc
                         cleanup_failures.append(cleanup_error)
-                needs_kill = audit_unknown
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired as exc:
                     needs_kill = True
-                    cleanup_error = RuntimeError(
-                        "packaged sidecar did not terminate gracefully"
-                    )
+                    cleanup_error = RuntimeError("packaged sidecar did not terminate gracefully")
                     cleanup_error.__cause__ = exc
                     cleanup_failures.append(cleanup_error)
                 if not needs_kill:
@@ -656,9 +654,7 @@ def smoke_packaged_artifact(
                     except Exception as exc:
                         audit_unknown = True
                         needs_kill = True
-                        cleanup_error = RuntimeError(
-                            "packaged sidecar cleanup audit failed"
-                        )
+                        cleanup_error = RuntimeError("packaged sidecar cleanup audit failed")
                         cleanup_error.__cause__ = exc
                         cleanup_failures.append(cleanup_error)
                     else:
@@ -695,9 +691,7 @@ def smoke_packaged_artifact(
                             process_group_id, tracked_descendants, timeout=5
                         )
                     except Exception as exc:
-                        cleanup_error = RuntimeError(
-                            "packaged sidecar final cleanup audit failed"
-                        )
+                        cleanup_error = RuntimeError("packaged sidecar final cleanup audit failed")
                         cleanup_error.__cause__ = exc
                         cleanup_failures.append(cleanup_error)
                     else:

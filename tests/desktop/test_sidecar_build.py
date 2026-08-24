@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -485,6 +486,42 @@ def test_packaged_smoke_finishes_cleanup_when_both_waits_time_out(
     with pytest.raises(ExceptionGroup, match="smoke and cleanup failed"):
         smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
 
+    sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(sidecar_pid, 0)
+
+
+def test_packaged_smoke_uses_sigkill_after_sigterm_helper_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable = _fake_sidecar(tmp_path, live_mode="ready")
+    real_signal_process_tree = sidecar_build._signal_process_tree
+    signals: list[signal.Signals] = []
+
+    def flaky_signal_process_tree(
+        process_group_id: int,
+        tracked_descendants: set[int],
+        signal_number: signal.Signals,
+    ) -> None:
+        signals.append(signal_number)
+        real_signal_process_tree(
+            process_group_id,
+            tracked_descendants,
+            signal_number,
+        )
+        if signal_number == signal.SIGTERM:
+            raise RuntimeError("TERM helper sentinel")
+
+    monkeypatch.setattr(
+        sidecar_build,
+        "_signal_process_tree",
+        flaky_signal_process_tree,
+    )
+
+    with pytest.raises(RuntimeError, match="packaged sidecar SIGTERM failed"):
+        smoke_packaged_artifact(executable, source_sha="fake-sha", timeout=3)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
     sidecar_pid = int((tmp_path / "sidecar.pid").read_text(encoding="utf-8"))
     with pytest.raises(ProcessLookupError):
         os.kill(sidecar_pid, 0)
