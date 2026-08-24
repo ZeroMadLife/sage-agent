@@ -1973,6 +1973,7 @@ class LearningTaskResponse(BaseModel):
     """Browser-safe projection of a versioned learning task."""
 
     version: int
+    workspace_id: str = Field(min_length=1, max_length=128)
     task_id: str
     task_revision: int
     template_id: str
@@ -2009,6 +2010,7 @@ class LearningActivationResponse(BaseModel):
     """Browser-safe receipt for one cross-store learning bootstrap."""
 
     version: int
+    workspace_id: str = Field(min_length=1, max_length=128)
     task_id: str
     task_revision: int
     session_id: str
@@ -2024,6 +2026,8 @@ class LearningActivationResponse(BaseModel):
     catalog_revision: str | None = None
     capability_revision: str | None = None
     allowed_capabilities: list[str]
+    source_policy_snapshot: LearningSourcePolicyRequest
+    source_policy_revision: str = Field(min_length=1, max_length=128)
     receipt_status: Literal["activating", "activation_failed", "active"]
     failure_code: str | None = None
     created_at: str

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import date
 from typing import Literal
@@ -62,6 +64,7 @@ class LearningClarification:
 @dataclass(frozen=True, slots=True)
 class LearningTask:
     version: int
+    workspace_id: str
     task_id: str
     task_revision: int
     template_id: str
@@ -225,6 +228,21 @@ def resolve_source_policy(
     )
 
 
+def source_policy_revision(policy: LearningSourcePolicy) -> str:
+    """Return the canonical revision for all four frozen source-policy dimensions."""
+    normalized = _source_policy(policy)
+    if normalized is None:
+        raise ValueError("source policy is required")
+    payload = {
+        "knowledge": normalized.knowledge,
+        "web": normalized.web,
+        "domains": list(normalized.domains),
+        "freshness": normalized.freshness,
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "lsrc_" + hashlib.sha256(canonical.encode()).hexdigest()[:32]
+
+
 def risk_for_topic(topic: str) -> tuple[LearningRiskClass, str | None]:
     """Classify only the conservative financial-education boundary needed by V1."""
     normalized = topic.lower()
@@ -368,4 +386,5 @@ __all__ = [
     "normalize_task_create",
     "resolve_source_policy",
     "risk_for_topic",
+    "source_policy_revision",
 ]

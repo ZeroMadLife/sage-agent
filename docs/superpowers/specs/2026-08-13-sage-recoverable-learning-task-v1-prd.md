@@ -278,7 +278,7 @@ If-Match: <task_revision>
 5. 生成首轮 kickoff 引用和 `AllowedCapabilitySet`；
 6. 返回 `session_id`、`task_revision`、`thread_goal_revision` 和首轮 surface context。
 
-现有 Session JSON、Journal 和 Learning SQLite 不共享事务，因此 V1 明确采用 durable bootstrap state machine，而不伪称数据库原子性：`draft -> activating -> active | activation_failed`。客户端必须提交 idempotency key；服务端先持久化 activation intent，再幂等创建 Session 和 Thread Goal，最后提交 active receipt。失败时 draft 对用户仍可编辑，孤立 Session 标记 archived，启动时 reconciliation 根据 receipt 完成或补偿。不得仅靠前端依次调用多个接口。
+现有 Session JSON、Journal 和 Learning SQLite 不共享事务，因此 V1 明确采用 durable bootstrap state machine，而不伪称数据库原子性：`draft -> activating -> active | activation_failed`。客户端必须提交 idempotency key；服务端以 `owner_id + workspace_id` 隔离 Task、activation、列表和 key，先持久化 activation intent，再幂等创建 Session 和 Thread Goal，最后提交 active receipt。失败时 draft 对用户仍可编辑，孤立 Session 标记 archived，启动时 reconciliation 根据 receipt 完成或补偿。不得仅靠前端依次调用多个接口，也不得接受客户端自行声明 canonical workspace。
 
 ### 9.2 查询与恢复
 
@@ -288,7 +288,9 @@ GET /api/v1/learning/tasks/{task_id}
 POST /api/v1/learning/tasks/{task_id}/resume
 ```
 
-`resume` 返回最后可信 Checkpoint、任务 revision、阻塞原因、下一动作和可恢复 session。若已生成的 LearningPlan、TurnContextPlan、Task DAG、Checkpoint、来源 revision 或 capability revision 任一不匹配，返回明确 `409`，不得静默重新规划。L0 尚未生成 LearningPlan、Task DAG 或运行中 Checkpoint。
+目标态 `resume` 返回最后可信 Checkpoint、任务 revision、阻塞原因、下一动作和可恢复 session。L0 尚未生成 LearningPlan、Task DAG 或运行中 Checkpoint；当前接口只重新加载 canonical Session 与 TurnContextPlan，比较 owner、workspace、task revision、Plan identity/hash、catalog/capability revision 以及覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision。缺失、删除、篡改或漂移统一返回明确 `409`，不得静默重新规划；L0 receipt 出现非空 LearningPlan 或 DAG identity 时 fail closed。
+
+旧无 `workspace_id` 数据按 expand-migrate-contract 处理：只允许 canonical Session 与 TurnContextPlan 能唯一证明 owner/workspace 的 active 行回填；legacy draft 或无法判定的行保持不可见并进入 `blocked`，不默认认领当前 workspace。
 
 ### 9.3 公共事件
 

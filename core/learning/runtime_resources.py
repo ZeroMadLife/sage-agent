@@ -15,9 +15,11 @@ from core.coding.persistence import (
     TurnPlanConflictError,
     TurnPlanCorruptionError,
     TurnPlanStore,
+    TurnPlanStoreError,
 )
 from core.coding.persistence.session_event_journal import (
     SessionEventJournal,
+    SessionEventJournalError,
     SessionThreadGoalConflictError,
 )
 from core.coding.skills import SkillRegistry
@@ -29,8 +31,9 @@ from core.learning.activation import (
     LearningActivationError,
     LearningActivationRecord,
     LearningActivationTurnContextBinding,
+    LearningLegacyActivationCandidate,
 )
-from core.learning.tasks import LearningTask
+from core.learning.tasks import LearningTask, source_policy_revision
 
 
 class SageLearningActivationResources:
@@ -59,6 +62,7 @@ class SageLearningActivationResources:
 
     def ensure_session(self, *, activation: LearningActivationRecord, task: LearningTask) -> None:
         """Create or validate one stable shared session, then make it visible again."""
+        self._validate_workspace(activation, task)
         session_store = self._session_store()
         try:
             session = session_store.load(activation.session_id)
@@ -79,6 +83,7 @@ class SageLearningActivationResources:
                 "archived": False,
                 "session_kind": "learning",
                 "learning_owner_id": activation.owner_id,
+                "learning_workspace_id": activation.workspace_id,
                 "learning_task_id": task.task_id,
                 "learning_task_revision": task.task_revision,
             }
@@ -95,13 +100,14 @@ class SageLearningActivationResources:
     def ensure_thread_goal(
         self, *, activation: LearningActivationRecord, task: LearningTask
     ) -> int:
+        self._validate_workspace(activation, task)
         journal = SessionEventJournal(self.storage_root, activation.session_id)
         service = ThreadGoalService(journal)
         current = service.get()
         if current is not None:
             return self._validate_goal(current, activation)
         binding = {
-            "workspace_id": workspace_id_from_path(self.workspace_root),
+            "workspace_id": activation.workspace_id,
             "goal_id": activation.learning_goal_ref.goal_id,
             "goal_revision": activation.learning_goal_ref.goal_revision,
             "capabilities": [
@@ -135,6 +141,7 @@ class SageLearningActivationResources:
         task: LearningTask,
         thread_goal_revision: int,
     ) -> LearningActivationTurnContextBinding:
+        self._validate_workspace(activation, task)
         registry = self._registry()
         allowed = self._allowed_capabilities(task, registry)
         capability_revision = _capability_revision(
@@ -146,9 +153,8 @@ class SageLearningActivationResources:
             plan_id=activation.turn_context_plan_id,
             session_id=activation.session_id,
             run_id=activation.kickoff_run_id,
-            owner_fingerprint="owner:"
-            + hashlib.sha256(activation.owner_id.encode()).hexdigest()[:32],
-            workspace_id=workspace_id_from_path(self.workspace_root),
+            owner_fingerprint=_owner_fingerprint(activation.owner_id),
+            workspace_id=activation.workspace_id,
             surface="coding",
             created_at=activation.created_at,
             admission={
@@ -187,6 +193,7 @@ class SageLearningActivationResources:
                 "web_policy": task.source_policy.web,
                 "domains": list(task.source_policy.domains),
                 "freshness": task.source_policy.freshness,
+                "source_policy_revision": activation.source_policy_revision,
             },
             tools={
                 "catalog_revision": registry.revision,
@@ -205,6 +212,8 @@ class SageLearningActivationResources:
                 "recovery_policy": "fail_closed",
                 "task_revision": task.task_revision,
                 "capability_revision": capability_revision,
+                "catalog_revision": registry.revision,
+                "source_policy_revision": activation.source_policy_revision,
             },
         )
         try:
@@ -234,6 +243,156 @@ class SageLearningActivationResources:
             return
         self._validate_session(session, activation)
         session_store.update_metadata(activation.session_id, archived=True)
+
+    def validate_resume(self, *, activation: LearningActivationRecord, task: LearningTask) -> None:
+        """Reload canonical runtime resources before a learning task may resume."""
+        try:
+            self._validate_workspace(activation, task)
+            session = self._session_store().load(activation.session_id)
+            self._validate_session(session, activation)
+            if session.get("archived") is True:
+                raise ValueError("learning resume session is archived")
+            plan = TurnPlanStore(self.storage_root, activation.session_id).load_for_run(
+                activation.kickoff_run_id
+            )
+            if plan is None:
+                raise ValueError("learning resume turn context plan is missing")
+            registry = self._registry()
+            allowed = self._allowed_capabilities(task, registry)
+            capability_revision = _capability_revision(
+                catalog_revision=registry.revision,
+                task=task,
+                allowed=allowed,
+            )
+            expected_source_revision = source_policy_revision(task.source_policy)
+            expected_source = {
+                "knowledge": task.source_policy.knowledge,
+                "web": task.source_policy.web,
+                "domains": list(task.source_policy.domains),
+                "freshness": task.source_policy.freshness,
+            }
+            frozen_source = {
+                "knowledge": activation.source_policy_snapshot.knowledge,
+                "web": activation.source_policy_snapshot.web,
+                "domains": list(activation.source_policy_snapshot.domains),
+                "freshness": activation.source_policy_snapshot.freshness,
+            }
+            payload = plan.to_payload()
+            admission = _mapping(payload, "admission")
+            refs = _mapping(payload, "context_refs")
+            task_ref = _mapping(refs, "learning_task_ref")
+            goal_ref = _mapping(refs, "learning_goal_ref")
+            retrieval = _mapping(payload, "retrieval")
+            tools = _mapping(payload, "tools")
+            resume = _mapping(payload, "resume")
+            if (
+                plan.plan_id != activation.turn_context_plan_id
+                or plan.plan_hash != activation.turn_context_plan_hash
+                or plan.session_id != activation.session_id
+                or plan.run_id != activation.kickoff_run_id
+                or plan.owner_fingerprint != _owner_fingerprint(activation.owner_id)
+                or plan.workspace_id != activation.workspace_id
+                or activation.catalog_revision != registry.revision
+                or activation.capability_revision != capability_revision
+                or activation.allowed_capabilities != allowed
+                or activation.source_policy_revision != expected_source_revision
+                or frozen_source != expected_source
+                or admission.get("task_id") != task.task_id
+                or admission.get("task_revision") != task.task_revision
+                or admission.get("thread_goal_revision") != activation.thread_goal_revision
+                or task_ref != {"task_id": task.task_id, "task_revision": task.task_revision}
+                or goal_ref
+                != {
+                    "goal_id": activation.learning_goal_ref.goal_id,
+                    "goal_revision": activation.learning_goal_ref.goal_revision,
+                }
+                or retrieval
+                != {
+                    "knowledge_policy": task.source_policy.knowledge,
+                    "web_policy": task.source_policy.web,
+                    "domains": list(task.source_policy.domains),
+                    "freshness": task.source_policy.freshness,
+                    "source_policy_revision": expected_source_revision,
+                }
+                or tools.get("catalog_revision") != registry.revision
+                or tools.get("capability_revision") != capability_revision
+                or tools.get("allowed_capabilities") != list(allowed)
+                or resume.get("task_revision") != task.task_revision
+                or resume.get("catalog_revision") != registry.revision
+                or resume.get("capability_revision") != capability_revision
+                or resume.get("source_policy_revision") != expected_source_revision
+            ):
+                raise ValueError("learning resume binding drift")
+        except (
+            FileNotFoundError,
+            OSError,
+            ValueError,
+            LearningActivationError,
+            SessionEventJournalError,
+            TurnPlanStoreError,
+        ) as exc:
+            raise LearningActivationError(
+                "learning resume canonical validation failed",
+                code="learning_resume_validation_failed",
+            ) from exc
+
+    def validate_legacy_workspace(self, *, candidate: LearningLegacyActivationCandidate) -> str:
+        """Recover a legacy workspace only when Session and frozen Plan agree."""
+        session_store = self._session_store()
+        session = session_store.load(candidate.session_id)
+        workspace_root = session.get("workspace_root")
+        if not isinstance(workspace_root, str) or not workspace_root.strip():
+            raise ValueError("legacy learning session workspace is missing")
+        workspace_path = Path(workspace_root)
+        if not workspace_path.is_absolute():
+            raise ValueError("legacy learning session workspace must be absolute")
+        workspace_id = workspace_id_from_path(workspace_path)
+        expected_session = {
+            "id": candidate.session_id,
+            "session_kind": "learning",
+            "learning_owner_id": candidate.owner_id,
+            "learning_task_id": candidate.task_id,
+            "learning_task_revision": candidate.task_revision,
+        }
+        persisted_owner = str(session.get("owner_user_id", "")).strip() or None
+        expected_owner = candidate.owner_id if candidate.owner_id != "local" else None
+        legacy_workspace = session.get("learning_workspace_id")
+        if (
+            any(session.get(key) != value for key, value in expected_session.items())
+            or persisted_owner != expected_owner
+            or legacy_workspace not in {None, workspace_id}
+        ):
+            raise ValueError("legacy learning session binding mismatch")
+        plan = TurnPlanStore(self.storage_root, candidate.session_id).load_for_run(
+            candidate.kickoff_run_id
+        )
+        if plan is None:
+            raise ValueError("legacy learning turn context plan is missing")
+        payload = plan.to_payload()
+        admission = _mapping(payload, "admission")
+        retrieval = _mapping(payload, "retrieval")
+        expected_retrieval = {
+            "knowledge_policy": candidate.source_policy.knowledge,
+            "web_policy": candidate.source_policy.web,
+            "domains": list(candidate.source_policy.domains),
+            "freshness": candidate.source_policy.freshness,
+        }
+        if (
+            plan.plan_id != candidate.turn_context_plan_id
+            or plan.plan_hash != candidate.turn_context_plan_hash
+            or plan.owner_fingerprint != _owner_fingerprint(candidate.owner_id)
+            or plan.workspace_id != workspace_id
+            or plan.session_id != candidate.session_id
+            or plan.run_id != candidate.kickoff_run_id
+            or admission.get("task_id") != candidate.task_id
+            or admission.get("task_revision") != candidate.task_revision
+            or any(retrieval.get(key) != value for key, value in expected_retrieval.items())
+        ):
+            raise ValueError("legacy learning resource binding mismatch")
+        if legacy_workspace is None:
+            session["learning_workspace_id"] = workspace_id
+            session_store.save(session)
+        return workspace_id
 
     def _session_store(self) -> CodingSessionStore:
         """Delay filesystem creation until an activation actually needs a session."""
@@ -282,6 +441,7 @@ class SageLearningActivationResources:
             "workspace_root": str(self.workspace_root),
             "session_kind": "learning",
             "learning_owner_id": activation.owner_id,
+            "learning_workspace_id": activation.workspace_id,
             "learning_task_id": activation.task_id,
             "learning_task_revision": activation.task_revision,
         }
@@ -296,12 +456,20 @@ class SageLearningActivationResources:
                 code="learning_activation_session_conflict",
             )
 
+    def _validate_workspace(self, activation: LearningActivationRecord, task: LearningTask) -> None:
+        canonical = workspace_id_from_path(self.workspace_root)
+        if activation.workspace_id != canonical or task.workspace_id != canonical:
+            raise LearningActivationError(
+                "learning activation workspace binding conflict",
+                code="learning_activation_workspace_conflict",
+            )
+
     def _validate_goal(self, goal: dict[str, object], activation: LearningActivationRecord) -> int:
         binding = goal.get("learning_goal")
         if not isinstance(binding, dict) or (
             binding.get("goal_id") != activation.learning_goal_ref.goal_id
             or binding.get("goal_revision") != activation.learning_goal_ref.goal_revision
-            or binding.get("workspace_id") != workspace_id_from_path(self.workspace_root)
+            or binding.get("workspace_id") != activation.workspace_id
         ):
             raise LearningActivationError(
                 "learning activation goal binding conflict",
@@ -336,6 +504,17 @@ def _capability_revision(
 
 def _digest(value: str) -> str:
     return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
+
+
+def _owner_fingerprint(owner_id: str) -> str:
+    return "owner:" + hashlib.sha256(owner_id.encode()).hexdigest()[:32]
+
+
+def _mapping(value: dict[str, object], key: str) -> dict[str, object]:
+    nested = value.get(key)
+    if not isinstance(nested, dict):
+        raise ValueError(f"learning resume plan {key} is invalid")
+    return nested
 
 
 def _canonical_json(value: object) -> str:

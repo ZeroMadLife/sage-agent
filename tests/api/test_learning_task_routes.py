@@ -35,6 +35,7 @@ def test_create_read_and_patch_learning_draft_without_starting_runtime(tmp_path:
         assert created_response.headers["cache-control"] == "no-store"
         created = created_response.json()
         assert created["version"] == 1
+        assert created["workspace_id"]
         assert created["task_id"].startswith("ltask_")
         assert created["task_revision"] == 1
         assert created["learning_plan_id"] is None
@@ -123,12 +124,14 @@ def test_learning_openapi_keeps_a1_draft_contract_and_adds_a2_activation(tmp_pat
         paths = openapi["paths"]
 
     assert set(paths["/api/v1/learning/tasks/draft"]) == {"post"}
+    assert set(paths["/api/v1/learning/tasks"]) == {"get"}
     assert set(paths["/api/v1/learning/tasks/{task_id}"]) == {"get", "patch"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/activate"]) == {"post"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/activation"]) == {"get"}
     assert set(paths["/api/v1/learning/tasks/{task_id}/resume"]) == {"post"}
     activation = openapi["components"]["schemas"]["LearningActivationResponse"]
     properties = activation["properties"]
+    assert properties["workspace_id"]["type"] == "string"
     assert properties["learning_plan_id"]["anyOf"][0]["type"] == "string"
     assert properties["learning_plan_hash"]["anyOf"][0]["type"] == "string"
     assert properties["turn_context_plan_id"]["type"] == "string"

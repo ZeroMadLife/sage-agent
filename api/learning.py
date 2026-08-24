@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
@@ -17,6 +18,7 @@ from api.schemas import (
     LearningTaskResponse,
 )
 from core.cloud.auth.repository import CloudRepository
+from core.coding.memory import workspace_id_from_path
 from core.learning import (
     UNSET,
     LearningActivationError,
@@ -52,6 +54,7 @@ async def create_learning_draft(
         task = await asyncio.to_thread(
             service.create_draft,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             request=LearningTaskCreate(
                 topic=payload.topic,
                 desired_outcome=payload.desired_outcome,
@@ -66,6 +69,20 @@ async def create_learning_draft(
     return _response(task)
 
 
+@router.get("/tasks", response_model=list[LearningTaskResponse])
+async def list_learning_tasks(
+    request: Request,
+    response: Response,
+) -> list[LearningTaskResponse]:
+    response.headers["Cache-Control"] = "no-store"
+    tasks = await asyncio.to_thread(
+        _service(request).list,
+        owner_id=await _owner_id(request),
+        workspace_id=_workspace_id(request),
+    )
+    return [_response(task) for task in tasks]
+
+
 @router.get("/tasks/{task_id}", response_model=LearningTaskResponse)
 async def get_learning_task(
     task_id: str,
@@ -77,6 +94,7 @@ async def get_learning_task(
         task = await asyncio.to_thread(
             _service(request).get,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             task_id=task_id,
         )
     except LearningTaskNotFoundError as exc:
@@ -104,6 +122,7 @@ async def update_learning_draft(
         task = await asyncio.to_thread(
             _service(request).update_draft,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             task_id=task_id,
             expected_revision=payload.expected_revision,
             patch=LearningTaskPatch(
@@ -152,6 +171,7 @@ async def activate_learning_task(
         receipt = await asyncio.to_thread(
             _activation_service(request).activate,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             task_id=task_id,
             expected_revision=payload.expected_revision,
             idempotency_key=idempotency_key,
@@ -191,6 +211,7 @@ async def get_learning_activation(
         receipt = await asyncio.to_thread(
             _activation_service(request).get,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             task_id=task_id,
         )
     except LearningActivationError as exc:
@@ -218,6 +239,7 @@ async def resume_learning_task(
         receipt = await asyncio.to_thread(
             _activation_service(request).resume,
             owner_id=await _owner_id(request),
+            workspace_id=_workspace_id(request),
             task_id=task_id,
             expected_revision=payload.expected_revision,
         )
@@ -256,6 +278,13 @@ async def _owner_id(request: Request) -> str:
     if str(getattr(request.app.state, "cloud_app_env", "development")).lower() != "production":
         return "local"
     raise HTTPException(status_code=401, detail="cloud authentication is required")
+
+
+def _workspace_id(request: Request) -> str:
+    root = getattr(request.app.state, "coding_workspace_root", None)
+    if not isinstance(root, Path):
+        raise HTTPException(status_code=503, detail="learning workspace is unavailable")
+    return workspace_id_from_path(root)
 
 
 def _source_policy(payload: LearningSourcePolicyRequest | None) -> LearningSourcePolicy | None:

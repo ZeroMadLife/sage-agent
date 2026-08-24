@@ -130,7 +130,9 @@ def test_activate_returns_one_revision_bound_kickoff_receipt(tmp_path: Path) -> 
         assert active_task["status"] == "active"
         assert active_task["learning_goal_ref"] == receipt["learning_goal_ref"]
 
-    record = app.state.learning_activation_service.get(owner_id="local", task_id=task["task_id"])
+    record = app.state.learning_activation_service.get(
+        owner_id="local", workspace_id=task["workspace_id"], task_id=task["task_id"]
+    )
     session = CodingSessionStore(tmp_path / ".coding" / "sessions").load(receipt["session_id"])
     assert session["session_kind"] == "learning"
     assert session["learning_task_id"] == task["task_id"]
@@ -351,7 +353,7 @@ def test_legacy_plan_identity_is_read_as_turn_context_identity_only(tmp_path: Pa
 
     assert migrated.status_code == 200, migrated.json()
     receipt = migrated.json()
-    assert receipt["version"] == 2
+    assert receipt["version"] == 3
     assert receipt["learning_plan_id"] is None
     assert receipt["learning_plan_hash"] is None
     assert receipt["turn_context_plan_id"] == current["turn_context_plan_id"]

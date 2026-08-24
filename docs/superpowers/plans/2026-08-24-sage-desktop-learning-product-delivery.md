@@ -185,7 +185,9 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 - 审查并迁移现有 draft、CAS 修改、activation intent、幂等 Session/Goal/TurnContextPlan bootstrap 和 reconciliation；
 - 使用 expand-migrate-contract：内部和新持久化以 `turn_context_plan_id/turn_context_plan_hash` 为权威；公共 API 在 expand 阶段保留 deprecated `plan_id/plan_hash` 投影，持久化 decoder 兼容读取同名旧字段；
 - L0 不生成 LearningPlan 或 Task DAG，`learning_plan_id/learning_plan_hash/dag_hash` 保持为空，分别留到 L3/L4 的真实合同生成；
-- 保留 activation receipt 的 owner、task revision、capability revision 和 source policy。
+- Task、activation、receipt 与全部查询以 `owner_id + workspace_id` 为 canonical scope；workspace 由服务端派生；
+- receipt v3 固化 task revision、catalog/capability revision 和覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision；
+- `/resume` 在 L0 只重验证 canonical Session 与 TurnContextPlan，不宣称已实现运行中 Checkpoint Resume；legacy active 只在资源能唯一证明 workspace 时回填，其他旧行不可见并 blocked。
 
 **公共 seam**
 
@@ -196,10 +198,11 @@ P0、D0、L0 可并行。M0/E0 后置，不阻塞用户先使用桌面学习闭�
 
 **验收证据**
 
-- 并发激活只有一个 winner；四个故障注入点重启后完成或补偿；
+- 两个独立 repository/service/resources 实例共享 SQLite/storage 时，同 key 只产生一个 intent/Session/Goal/Plan，不同 key 只有一个 winner，stage 不回退；四个故障注入点重启后完成或补偿；
 - 孤立 Session 被归档；
 - `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用，旧 `plan_hash` 只映射到 TurnContextPlan；
-- 原 27 个定向测试、集成回归、Ruff、Mypy 通过。
+- Session/Plan 缺失、删除、篡改，以及 owner/workspace/task/catalog/capability/source policy 漂移均稳定 `409`；
+- 定向测试、相邻恢复回归、Ruff、Mypy 和前端 private/public production build 通过后才可收口。
 
 **依赖与非目标**
 

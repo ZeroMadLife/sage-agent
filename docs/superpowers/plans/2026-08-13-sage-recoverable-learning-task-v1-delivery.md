@@ -18,7 +18,9 @@
 | A4 及 B-E | 未开始 | - | Assistant 确认、Learning Map、Research、Resume Summary、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
-Learning SQLite、Session JSON 与 Journal 之间的跨存储事务。
+Learning SQLite、Session JSON 与 Journal 之间的跨存储事务。Task、activation 和
+receipt 的 canonical scope 是 `owner_id + workspace_id`；`workspace_id` 由服务端从
+canonical workspace path 派生，不接受客户端认领。
 
 ## 1. 交付目标
 
@@ -63,6 +65,8 @@ active -> completed
 
 ```json
 {
+  "version": 3,
+  "workspace_id": "...",
   "task_id": "ltask_...",
   "task_revision": 1,
   "idempotency_key": "...",
@@ -76,13 +80,22 @@ active -> completed
   "dag_hash": null,
   "capability_revision": "...",
   "allowed_capabilities": ["knowledge:search", "evidence:bundle"],
-  "status": "active",
+  "source_policy_snapshot": {
+    "knowledge": "preferred",
+    "web": "forbidden",
+    "domains": [],
+    "freshness": "all"
+  },
+  "source_policy_revision": "lsrc_...",
+  "receipt_status": "active",
   "created_at": "...",
   "completed_at": "..."
 }
 ```
 
-同一 `task_id + task_revision + idempotency_key` 的重复请求只能返回同一 receipt；同一任务 revision 使用不同 key 不得产生第二个激活。receipt 不保存 prompt、网页正文、Skill 内容、秘密或绝对路径。
+同一 `owner_id + workspace_id + task_id + task_revision + idempotency_key` 的重复请求只能返回同一 receipt；同一 workspace 内同一任务 revision 使用不同 key 不得产生第二个激活，不同 workspace 可以安全复用客户端 key。receipt 不保存 prompt、网页正文、Skill 内容、秘密或绝对路径。
+
+expand-migrate-contract 期间，旧表新增 nullable `workspace_id` 只用于隔离迁移。旧 active 行只有在 canonical Session 和 TurnContextPlan 同时证明 owner、workspace、task revision、Plan identity 与四维 source policy 时才回填并升级为 v3；legacy draft、缺失资源或无法唯一判定的行保持不可见并标记 `blocked`，不能默认归入当前 workspace。
 
 ### 3.3 Capability Scope
 
@@ -99,14 +112,14 @@ L0 receipt 只冻结后续 L1 可使用的能力候选，不把候选接入模�
 
 ### 3.4 Resume Contract
 
-Resume 只接受服务端保存的 scoped checkpoint，并要求以下字段全部匹配：
+目标态 Resume 只接受服务端保存的 scoped checkpoint。当前 L0 尚未生成运行中 Checkpoint；`POST .../resume` 仅重新加载 canonical Session 与 TurnContextPlan，并要求以下已存在字段全部匹配：
 
 - `task_id` 与 `task_revision`；
 - `session_id/thread_id/run_id` 的所有权；
 - 已生成时分别校验 `learning_plan_id/learning_plan_hash`、`turn_context_plan_id/turn_context_plan_hash` 和 `dag_hash`；L0 只有 TurnContextPlan 身份；
 - checkpoint scope 和 fencing token；
 - `capability_revision` 与 `AllowedCapabilitySet`；
-- Knowledge/source revision（若当前阶段依赖来源）。
+- catalog revision 与四维 `source_policy_snapshot/revision`（knowledge、web、domains、freshness）。
 
 任一项漂移返回明确 `409`，不得静默重新意图识别、重新规划或扩大权限。断线不等于取消；取消必须产生终态事件并释放 lease。
 
@@ -123,6 +136,7 @@ Resume 只接受服务端保存的 scoped checkpoint，并要求以下字段全�
 **公共 seam**
 
 - `POST /api/v1/learning/tasks/draft`
+- `GET /api/v1/learning/tasks`
 - `GET /api/v1/learning/tasks/{task_id}`
 - `PATCH /api/v1/learning/tasks/{task_id}` + `expected_revision`
 - `LearningTaskContract` schema version 1；字段长度、枚举、时间预算和风险规则由服务端校验。
@@ -162,14 +176,15 @@ git diff --check
 - `GET /api/v1/learning/tasks/{task_id}/activation`
 - `POST /api/v1/learning/tasks/{task_id}/resume`
 - `Idempotency-Key` 必填；`If-Match` 或 `expected_revision` 绑定 task revision。
-- 响应返回 `task_id/session_id/thread_goal_revision/turn_context_plan_id/turn_context_plan_hash/capability_revision/receipt_status`；expand 阶段另带 deprecated `plan_id/plan_hash` 等值投影。
+- 响应返回 `workspace_id/task_id/session_id/thread_goal_revision/turn_context_plan_id/turn_context_plan_hash/catalog_revision/capability_revision/source_policy_snapshot/source_policy_revision/receipt_status`；expand 阶段另带 deprecated `plan_id/plan_hash` 等值投影。
 
 **验收证据**
 
-- 同一请求发送两次返回同一 receipt；并发激活只有一个 winner，另一个得到同一结果或明确冲突。
+- 两个独立 repository/service/resources 实例共享 SQLite/storage 时，同 key 只产生一个 intent/Session/Goal/Plan，不同 key 只有一个 winner；迟到 failure writer 不能让 stage 从 active 回退。
 - 在“intent 已写、Session 已建、Goal 已建、receipt 写入前”四个故障点注入异常，重启后 reconciliation 能完成或补偿。
 - Session 创建后失败时被 archived；普通 session list 默认不展示孤立会话。
 - Goal CAS、Learning Goal binding、TurnContextPlan hash 和 capability revision 彼此可追溯；`learning_plan_id/learning_plan_hash/dag_hash` 均为空。
+- `/resume` 对 Session/Plan 删除或篡改、owner/workspace/task/catalog/capability/source policy 漂移返回稳定 `409`；L0 对非空 LearningPlan/DAG identity fail closed。
 
 **依赖与非目标**
 

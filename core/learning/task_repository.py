@@ -19,6 +19,7 @@ from core.learning.activation import (
     LearningActivationStage,
     LearningActivationStatus,
     LearningGoalRef,
+    LearningLegacyActivationCandidate,
 )
 from core.learning.tasks import (
     LearningClarification,
@@ -33,25 +34,29 @@ from core.learning.tasks import (
     normalize_task_create,
     resolve_source_policy,
     risk_for_topic,
+    source_policy_revision,
 )
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA = """
+_TASK_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS learning_tasks (
     owner_id TEXT NOT NULL,
+    workspace_id TEXT,
     task_id TEXT NOT NULL,
     task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
     status TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (owner_id, task_id)
-);
-CREATE INDEX IF NOT EXISTS learning_tasks_owner_updated_idx
-ON learning_tasks(owner_id, updated_at DESC);
+    PRIMARY KEY (owner_id, workspace_id, task_id)
+)
+"""
+
+_ACTIVATION_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS learning_task_activations (
     owner_id TEXT NOT NULL,
+    workspace_id TEXT,
     task_id TEXT NOT NULL,
     task_revision INTEGER NOT NULL CHECK (task_revision >= 1),
     idempotency_key TEXT NOT NULL,
@@ -63,11 +68,9 @@ CREATE TABLE IF NOT EXISTS learning_task_activations (
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     completed_at TEXT,
-    PRIMARY KEY (owner_id, task_id, task_revision),
-    UNIQUE (owner_id, idempotency_key)
-);
-CREATE INDEX IF NOT EXISTS learning_task_activations_status_idx
-ON learning_task_activations(status, updated_at);
+    PRIMARY KEY (owner_id, workspace_id, task_id, task_revision),
+    UNIQUE (owner_id, workspace_id, idempotency_key)
+)
 """
 
 
@@ -97,13 +100,16 @@ class LearningTaskRepository:
         self._initialized = False
         self._validate_path()
 
-    def create(self, *, owner_id: str, request: LearningTaskCreate) -> LearningTask:
+    def create(
+        self, *, owner_id: str, workspace_id: str, request: LearningTaskCreate
+    ) -> LearningTask:
         normalized = normalize_task_create(request)
         now = datetime.now(UTC).isoformat()
         policy = resolve_source_policy(normalized.topic, normalized.source_policy)
         risk_class, risk_notice = risk_for_topic(normalized.topic)
         task = LearningTask(
             version=1,
+            workspace_id=_bounded_workspace(workspace_id),
             task_id=f"ltask_{uuid4().hex}",
             task_revision=1,
             template_id="freeform-learning-map-v1",
@@ -130,10 +136,12 @@ class LearningTaskRepository:
         with self._connect() as connection:
             connection.execute(
                 """INSERT INTO learning_tasks (
-                    owner_id, task_id, task_revision, status, payload_json, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    owner_id, workspace_id, task_id, task_revision, status, payload_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     owner,
+                    task.workspace_id,
                     task.task_id,
                     task.task_revision,
                     task.status,
@@ -145,21 +153,48 @@ class LearningTaskRepository:
             connection.commit()
         return task
 
-    def get(self, *, owner_id: str, task_id: str) -> LearningTask:
+    def get(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningTask:
         self._ensure_ready()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT payload_json FROM learning_tasks WHERE owner_id = ? AND task_id = ?",
-                (_bounded_owner(owner_id), _bounded_task_id(task_id)),
+                "SELECT payload_json FROM learning_tasks WHERE owner_id = ? "
+                "AND workspace_id = ? AND task_id = ?",
+                (
+                    _bounded_owner(owner_id),
+                    _bounded_workspace(workspace_id),
+                    _bounded_task_id(task_id),
+                ),
             ).fetchone()
         if row is None:
             raise LearningTaskNotFoundError(task_id)
-        return _decode(str(row["payload_json"]))
+        return _decode_scoped_task(
+            str(row["payload_json"]),
+            workspace_id=_bounded_workspace(workspace_id),
+            task_id=_bounded_task_id(task_id),
+        )
+
+    def list(self, *, owner_id: str, workspace_id: str) -> tuple[LearningTask, ...]:
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT task_id, payload_json FROM learning_tasks WHERE owner_id = ? "
+                "AND workspace_id = ? ORDER BY updated_at DESC",
+                (_bounded_owner(owner_id), _bounded_workspace(workspace_id)),
+            ).fetchall()
+        return tuple(
+            _decode_scoped_task(
+                str(row["payload_json"]),
+                workspace_id=_bounded_workspace(workspace_id),
+                task_id=str(row["task_id"]),
+            )
+            for row in rows
+        )
 
     def update_draft(
         self,
         *,
         owner_id: str,
+        workspace_id: str,
         task_id: str,
         expected_revision: int,
         patch: LearningTaskPatch,
@@ -167,18 +202,22 @@ class LearningTaskRepository:
         if isinstance(expected_revision, bool) or expected_revision < 1:
             raise ValueError("expected_revision must be positive")
         owner = _bounded_owner(owner_id)
+        workspace = _bounded_workspace(workspace_id)
         task_key = _bounded_task_id(task_id)
         self._ensure_ready()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT payload_json FROM learning_tasks WHERE owner_id = ? AND task_id = ?",
-                (owner, task_key),
+                "SELECT payload_json FROM learning_tasks WHERE owner_id = ? "
+                "AND workspace_id = ? AND task_id = ?",
+                (owner, workspace, task_key),
             ).fetchone()
             if row is None:
                 connection.rollback()
                 raise LearningTaskNotFoundError(task_key)
-            current = _decode(str(row["payload_json"]))
+            current = _decode_scoped_task(
+                str(row["payload_json"]), workspace_id=workspace, task_id=task_key
+            )
             if current.task_revision != expected_revision:
                 connection.rollback()
                 raise LearningTaskConflictError(
@@ -214,13 +253,15 @@ class LearningTaskRepository:
             cursor = connection.execute(
                 """UPDATE learning_tasks
                    SET task_revision = ?, status = ?, payload_json = ?, updated_at = ?
-                   WHERE owner_id = ? AND task_id = ? AND task_revision = ?""",
+                   WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+                   AND task_revision = ?""",
                 (
                     updated.task_revision,
                     updated.status,
                     _encode(updated),
                     updated.updated_at,
                     owner,
+                    workspace,
                     task_key,
                     expected_revision,
                 ),
@@ -234,9 +275,10 @@ class LearningTaskRepository:
             if current.status == "activation_failed":
                 connection.execute(
                     "UPDATE learning_task_activations SET status = 'superseded', updated_at = ? "
-                    "WHERE owner_id = ? AND task_id = ? AND task_revision = ? "
+                    "WHERE owner_id = ? AND workspace_id = ? AND task_id = ? "
+                    "AND task_revision = ? "
                     "AND status = 'activation_failed'",
-                    (updated.updated_at, owner, task_key, expected_revision),
+                    (updated.updated_at, owner, workspace, task_key, expected_revision),
                 )
             connection.commit()
         return updated
@@ -245,6 +287,7 @@ class LearningTaskRepository:
         self,
         *,
         owner_id: str,
+        workspace_id: str,
         task_id: str,
         expected_revision: int,
         idempotency_key: str,
@@ -253,6 +296,7 @@ class LearningTaskRepository:
         if isinstance(expected_revision, bool) or expected_revision < 1:
             raise ValueError("expected_revision must be positive")
         owner = _bounded_owner(owner_id)
+        workspace = _bounded_workspace(workspace_id)
         task_key = _bounded_task_id(task_id)
         key = _bounded_idempotency_key(idempotency_key)
         self._ensure_ready()
@@ -260,22 +304,26 @@ class LearningTaskRepository:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 row = connection.execute(
-                    "SELECT payload_json FROM learning_tasks WHERE owner_id = ? AND task_id = ?",
-                    (owner, task_key),
+                    "SELECT payload_json FROM learning_tasks WHERE owner_id = ? "
+                    "AND workspace_id = ? AND task_id = ?",
+                    (owner, workspace, task_key),
                 ).fetchone()
                 if row is None:
                     raise LearningTaskNotFoundError(task_key)
-                task = _decode(str(row["payload_json"]))
+                task = _decode_scoped_task(
+                    str(row["payload_json"]), workspace_id=workspace, task_id=task_key
+                )
                 if task.task_revision != expected_revision:
                     raise LearningTaskConflictError(
                         "learning task revision conflict",
                         current_revision=task.task_revision,
                     )
                 existing = connection.execute(
-                    "SELECT owner_id, task_id, task_revision, idempotency_key, session_id, "
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                     "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
-                    "WHERE owner_id = ? AND task_id = ? AND task_revision = ?",
-                    (owner, task_key, expected_revision),
+                    "WHERE owner_id = ? AND workspace_id = ? AND task_id = ? "
+                    "AND task_revision = ?",
+                    (owner, workspace, task_key, expected_revision),
                 ).fetchone()
                 if existing is not None:
                     activation = _decode_activation_row(existing)
@@ -298,8 +346,8 @@ class LearningTaskRepository:
                     )
                 reused_key = connection.execute(
                     "SELECT task_id, task_revision FROM learning_task_activations "
-                    "WHERE owner_id = ? AND idempotency_key = ?",
-                    (owner, key),
+                    "WHERE owner_id = ? AND workspace_id = ? AND idempotency_key = ?",
+                    (owner, workspace, key),
                 ).fetchone()
                 if reused_key is not None:
                     raise LearningActivationError(
@@ -308,11 +356,12 @@ class LearningTaskRepository:
                     )
                 now = datetime.now(UTC).isoformat()
                 digest = hashlib.sha256(
-                    f"{owner}\0{task_key}\0{expected_revision}\0{key}".encode()
+                    f"{owner}\0{workspace}\0{task_key}\0{expected_revision}\0{key}".encode()
                 ).hexdigest()
                 activation = LearningActivationRecord(
-                    version=2,
+                    version=3,
                     owner_id=owner,
+                    workspace_id=workspace,
                     task_id=task_key,
                     task_revision=expected_revision,
                     idempotency_key=key,
@@ -331,6 +380,8 @@ class LearningTaskRepository:
                     catalog_revision=None,
                     capability_revision=None,
                     allowed_capabilities=(),
+                    source_policy_snapshot=task.source_policy,
+                    source_policy_revision=source_policy_revision(task.source_policy),
                     receipt_status="activating",
                     stage="intent",
                     failure_code=None,
@@ -340,11 +391,12 @@ class LearningTaskRepository:
                 )
                 connection.execute(
                     "INSERT INTO learning_task_activations ("
-                    "owner_id, task_id, task_revision, idempotency_key, session_id, "
+                    "owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                     "kickoff_run_id, receipt_json, status, stage, created_at, updated_at, completed_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         owner,
+                        workspace,
                         task_key,
                         expected_revision,
                         key,
@@ -359,23 +411,27 @@ class LearningTaskRepository:
                     ),
                 )
                 activating_task = replace(task, status="activating", updated_at=now)
-                _write_task(connection, owner, activating_task)
+                _write_task(connection, owner, workspace, activating_task)
                 connection.commit()
                 return activating_task, activation
             except Exception:
                 connection.rollback()
                 raise
 
-    def activation(self, *, owner_id: str, task_id: str) -> LearningActivationRecord:
+    def activation(
+        self, *, owner_id: str, workspace_id: str, task_id: str
+    ) -> LearningActivationRecord:
         owner = _bounded_owner(owner_id)
+        workspace = _bounded_workspace(workspace_id)
         task_key = _bounded_task_id(task_id)
         self._ensure_ready()
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT owner_id, task_id, task_revision, idempotency_key, session_id, "
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                 "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
-                "WHERE owner_id = ? AND task_id = ? ORDER BY task_revision DESC LIMIT 1",
-                (owner, task_key),
+                "WHERE owner_id = ? AND workspace_id = ? AND task_id = ? "
+                "ORDER BY task_revision DESC LIMIT 1",
+                (owner, workspace, task_key),
             ).fetchone()
         if row is None:
             raise LearningActivationError(
@@ -400,12 +456,13 @@ class LearningTaskRepository:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 current_row = connection.execute(
-                    "SELECT owner_id, task_id, task_revision, idempotency_key, session_id, "
+                    "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                     "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
-                    "WHERE owner_id = ? "
+                    "WHERE owner_id = ? AND workspace_id = ? "
                     "AND task_id = ? AND task_revision = ? AND idempotency_key = ?",
                     (
                         updated.owner_id,
+                        updated.workspace_id,
                         updated.task_id,
                         updated.task_revision,
                         updated.idempotency_key,
@@ -425,8 +482,8 @@ class LearningTaskRepository:
                     return current
                 cursor = connection.execute(
                     "UPDATE learning_task_activations SET receipt_json = ?, status = ?, stage = ?, "
-                    "updated_at = ?, completed_at = ? WHERE owner_id = ? AND task_id = ? "
-                    "AND task_revision = ? AND idempotency_key = ?",
+                    "updated_at = ?, completed_at = ? WHERE owner_id = ? AND workspace_id = ? "
+                    "AND task_id = ? AND task_revision = ? AND idempotency_key = ?",
                     (
                         _encode_activation(updated),
                         updated.receipt_status,
@@ -434,6 +491,7 @@ class LearningTaskRepository:
                         now,
                         completed_at,
                         updated.owner_id,
+                        updated.workspace_id,
                         updated.task_id,
                         updated.task_revision,
                         updated.idempotency_key,
@@ -445,12 +503,17 @@ class LearningTaskRepository:
                         code="learning_activation_conflict",
                     )
                 row = connection.execute(
-                    "SELECT payload_json FROM learning_tasks WHERE owner_id = ? AND task_id = ?",
-                    (updated.owner_id, updated.task_id),
+                    "SELECT payload_json FROM learning_tasks WHERE owner_id = ? "
+                    "AND workspace_id = ? AND task_id = ?",
+                    (updated.owner_id, updated.workspace_id, updated.task_id),
                 ).fetchone()
                 if row is None:
                     raise LearningTaskNotFoundError(updated.task_id)
-                task = _decode(str(row["payload_json"]))
+                task = _decode_scoped_task(
+                    str(row["payload_json"]),
+                    workspace_id=updated.workspace_id,
+                    task_id=updated.task_id,
+                )
                 if task.task_revision != updated.task_revision:
                     raise LearningTaskConflictError(
                         "learning task revision conflict",
@@ -469,7 +532,7 @@ class LearningTaskRepository:
                     ),
                     updated_at=now,
                 )
-                _write_task(connection, updated.owner_id, projected)
+                _write_task(connection, updated.owner_id, updated.workspace_id, projected)
                 connection.commit()
                 return updated
             except Exception:
@@ -480,9 +543,10 @@ class LearningTaskRepository:
         self._ensure_ready()
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT owner_id, task_id, task_revision, idempotency_key, session_id, "
+                "SELECT owner_id, workspace_id, task_id, task_revision, idempotency_key, session_id, "
                 "kickoff_run_id, status, stage, receipt_json FROM learning_task_activations "
-                "WHERE status IN ('activating', 'activation_failed') ORDER BY created_at"
+                "WHERE workspace_id IS NOT NULL "
+                "AND status IN ('activating', 'activation_failed') ORDER BY created_at"
             ).fetchall()
         records: list[LearningActivationRecord] = []
         corrupt_count = 0
@@ -498,6 +562,192 @@ class LearningTaskRepository:
             )
         return tuple(records)
 
+    def legacy_active_activations(self) -> tuple[LearningLegacyActivationCandidate, ...]:
+        """Return only legacy active rows that still need evidence-based workspace recovery."""
+        self._ensure_ready()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT a.owner_id, a.task_id, a.task_revision, a.idempotency_key,
+                          a.session_id, a.kickoff_run_id, a.receipt_json,
+                          t.payload_json AS task_payload_json
+                   FROM learning_task_activations AS a
+                   JOIN learning_tasks AS t
+                     ON t.owner_id = a.owner_id AND t.task_id = a.task_id
+                   WHERE a.workspace_id IS NULL AND t.workspace_id IS NULL
+                     AND a.status = 'active' AND t.status = 'active'
+                   ORDER BY a.created_at"""
+            ).fetchall()
+        candidates: list[LearningLegacyActivationCandidate] = []
+        for row in rows:
+            try:
+                task_data = json.loads(str(row["task_payload_json"]))
+                receipt_data = json.loads(str(row["receipt_json"]))
+                if not isinstance(task_data, dict) or not isinstance(receipt_data, dict):
+                    raise TypeError("legacy learning payload must be an object")
+                policy_data = task_data["source_policy"]
+                if not isinstance(policy_data, dict):
+                    raise TypeError("legacy source policy must be an object")
+                policy = LearningSourcePolicy(
+                    knowledge=policy_data["knowledge"],
+                    web=policy_data["web"],
+                    domains=tuple(policy_data.get("domains", ())),
+                    freshness=policy_data["freshness"],
+                )
+                source_policy_revision(policy)
+                plan_id = _read_renamed_field(
+                    receipt_data,
+                    canonical="turn_context_plan_id",
+                    legacy="plan_id",
+                    required=True,
+                )
+                plan_hash = _read_renamed_field(
+                    receipt_data,
+                    canonical="turn_context_plan_hash",
+                    legacy="plan_hash",
+                    required=True,
+                )
+                if plan_id is None or plan_hash is None:
+                    raise ValueError("legacy turn context plan identity is missing")
+                candidates.append(
+                    LearningLegacyActivationCandidate(
+                        owner_id=str(row["owner_id"]),
+                        task_id=str(row["task_id"]),
+                        task_revision=int(row["task_revision"]),
+                        idempotency_key=str(row["idempotency_key"]),
+                        session_id=str(row["session_id"]),
+                        kickoff_run_id=str(row["kickoff_run_id"]),
+                        turn_context_plan_id=plan_id,
+                        turn_context_plan_hash=plan_hash,
+                        source_policy=policy,
+                        task_payload_json=str(row["task_payload_json"]),
+                        receipt_json=str(row["receipt_json"]),
+                    )
+                )
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                logger.error("Skipped corrupt legacy learning workspace candidate")
+        return tuple(candidates)
+
+    def backfill_legacy_workspace(
+        self, candidate: LearningLegacyActivationCandidate, *, workspace_id: str
+    ) -> bool:
+        """Atomically claim one validated legacy task and receipt for its proven workspace."""
+        workspace = _bounded_workspace(workspace_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                row = connection.execute(
+                    """SELECT t.payload_json AS task_payload_json,
+                              a.receipt_json AS receipt_json
+                       FROM learning_tasks AS t
+                       JOIN learning_task_activations AS a
+                         ON a.owner_id = t.owner_id AND a.task_id = t.task_id
+                       WHERE t.owner_id = ? AND t.task_id = ? AND t.task_revision = ?
+                         AND t.workspace_id IS NULL AND a.workspace_id IS NULL
+                         AND t.status = 'active' AND a.status = 'active'""",
+                    (candidate.owner_id, candidate.task_id, candidate.task_revision),
+                ).fetchone()
+                if row is None:
+                    connection.commit()
+                    return False
+                if (
+                    str(row["task_payload_json"]) != candidate.task_payload_json
+                    or str(row["receipt_json"]) != candidate.receipt_json
+                ):
+                    raise LearningActivationError(
+                        "legacy learning activation changed during migration",
+                        code="learning_activation_conflict",
+                    )
+                task_data = json.loads(candidate.task_payload_json)
+                receipt_data = json.loads(candidate.receipt_json)
+                task_data["workspace_id"] = workspace
+                receipt_data.update(
+                    {
+                        "version": 3,
+                        "workspace_id": workspace,
+                        "source_policy_snapshot": {
+                            "knowledge": candidate.source_policy.knowledge,
+                            "web": candidate.source_policy.web,
+                            "domains": list(candidate.source_policy.domains),
+                            "freshness": candidate.source_policy.freshness,
+                        },
+                        "source_policy_revision": source_policy_revision(candidate.source_policy),
+                    }
+                )
+                receipt_data.setdefault("turn_context_plan_id", candidate.turn_context_plan_id)
+                receipt_data.setdefault("turn_context_plan_hash", candidate.turn_context_plan_hash)
+                receipt_data.setdefault("learning_plan_id", None)
+                receipt_data.setdefault("learning_plan_hash", None)
+                receipt_data.setdefault("dag_hash", None)
+                receipt_data.pop("plan_id", None)
+                receipt_data.pop("plan_hash", None)
+                task_payload = json.dumps(
+                    task_data, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                )
+                receipt_payload = json.dumps(
+                    receipt_data, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                )
+                task = _decode(task_payload)
+                activation = _decode_activation(receipt_payload)
+                if (
+                    task.workspace_id != workspace
+                    or activation.workspace_id != workspace
+                    or activation.owner_id != candidate.owner_id
+                    or activation.task_id != candidate.task_id
+                ):
+                    raise ValueError("legacy workspace migration binding mismatch")
+                connection.execute(
+                    "UPDATE learning_tasks SET workspace_id = ?, payload_json = ? "
+                    "WHERE owner_id = ? AND task_id = ? AND workspace_id IS NULL",
+                    (workspace, task_payload, candidate.owner_id, candidate.task_id),
+                )
+                connection.execute(
+                    "UPDATE learning_task_activations SET workspace_id = ?, receipt_json = ? "
+                    "WHERE owner_id = ? AND task_id = ? AND task_revision = ? "
+                    "AND workspace_id IS NULL",
+                    (
+                        workspace,
+                        receipt_payload,
+                        candidate.owner_id,
+                        candidate.task_id,
+                        candidate.task_revision,
+                    ),
+                )
+                connection.commit()
+                return True
+            except Exception:
+                connection.rollback()
+                raise
+
+    def block_unclaimed_legacy(self) -> int:
+        """Block every legacy task that cannot be assigned without guessing a workspace."""
+        self._ensure_ready()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT owner_id, task_id, payload_json FROM learning_tasks "
+                "WHERE workspace_id IS NULL AND status != 'blocked'"
+            ).fetchall()
+            blocked = 0
+            for row in rows:
+                try:
+                    data = json.loads(str(row["payload_json"]))
+                    if not isinstance(data, dict):
+                        raise TypeError
+                    data["status"] = "blocked"
+                    payload = json.dumps(
+                        data, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+                    )
+                except (TypeError, json.JSONDecodeError):
+                    payload = str(row["payload_json"])
+                connection.execute(
+                    "UPDATE learning_tasks SET status = 'blocked', payload_json = ? "
+                    "WHERE owner_id = ? AND task_id = ? AND workspace_id IS NULL",
+                    (payload, row["owner_id"], row["task_id"]),
+                )
+                blocked += 1
+            connection.commit()
+        return blocked
+
     def _ensure_ready(self) -> None:
         with self._lock:
             if self._initialized:
@@ -506,8 +756,13 @@ class LearningTaskRepository:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._validate_path()
             with self._connect() as connection:
-                connection.executescript(_SCHEMA)
-                connection.commit()
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    _migrate_schema(connection)
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise
             self._initialized = True
 
     def _validate_path(self) -> None:
@@ -532,22 +787,29 @@ class LearningTaskService:
     def __init__(self, repository: LearningTaskRepository) -> None:
         self.repository = repository
 
-    def create_draft(self, *, owner_id: str, request: LearningTaskCreate) -> LearningTask:
-        return self.repository.create(owner_id=owner_id, request=request)
+    def create_draft(
+        self, *, owner_id: str, workspace_id: str, request: LearningTaskCreate
+    ) -> LearningTask:
+        return self.repository.create(owner_id=owner_id, workspace_id=workspace_id, request=request)
 
-    def get(self, *, owner_id: str, task_id: str) -> LearningTask:
-        return self.repository.get(owner_id=owner_id, task_id=task_id)
+    def get(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningTask:
+        return self.repository.get(owner_id=owner_id, workspace_id=workspace_id, task_id=task_id)
+
+    def list(self, *, owner_id: str, workspace_id: str) -> tuple[LearningTask, ...]:
+        return self.repository.list(owner_id=owner_id, workspace_id=workspace_id)
 
     def update_draft(
         self,
         *,
         owner_id: str,
+        workspace_id: str,
         task_id: str,
         expected_revision: int,
         patch: LearningTaskPatch,
     ) -> LearningTask:
         return self.repository.update_draft(
             owner_id=owner_id,
+            workspace_id=workspace_id,
             task_id=task_id,
             expected_revision=expected_revision,
             patch=patch,
@@ -565,6 +827,7 @@ def _decode(payload: str) -> LearningTask:
     clarification = data["clarification"]
     return LearningTask(
         version=int(data["version"]),
+        workspace_id=_bounded_workspace(str(data["workspace_id"])),
         task_id=str(data["task_id"]),
         task_revision=int(data["task_revision"]),
         template_id=str(data["template_id"]),
@@ -608,10 +871,24 @@ def _decode(payload: str) -> LearningTask:
     )
 
 
+def _decode_scoped_task(payload: str, *, workspace_id: str, task_id: str) -> LearningTask:
+    task = _decode(payload)
+    if task.workspace_id != workspace_id or task.task_id != task_id:
+        raise LearningTaskNotFoundError(task_id)
+    return task
+
+
 def _bounded_owner(value: str) -> str:
     normalized = value.strip()
     if not normalized or len(normalized) > 255:
         raise ValueError("owner_id must contain 1 to 255 characters")
+    return normalized
+
+
+def _bounded_workspace(value: str) -> str:
+    normalized = value.strip()
+    if not normalized or len(normalized) > 128:
+        raise ValueError("workspace_id must contain 1 to 128 characters")
     return normalized
 
 
@@ -631,11 +908,24 @@ def _bounded_idempotency_key(value: str) -> str:
     return normalized
 
 
-def _write_task(connection: sqlite3.Connection, owner_id: str, task: LearningTask) -> None:
+def _write_task(
+    connection: sqlite3.Connection,
+    owner_id: str,
+    workspace_id: str,
+    task: LearningTask,
+) -> None:
     cursor = connection.execute(
         "UPDATE learning_tasks SET status = ?, payload_json = ?, updated_at = ? "
-        "WHERE owner_id = ? AND task_id = ? AND task_revision = ?",
-        (task.status, _encode(task), task.updated_at, owner_id, task.task_id, task.task_revision),
+        "WHERE owner_id = ? AND workspace_id = ? AND task_id = ? AND task_revision = ?",
+        (
+            task.status,
+            _encode(task),
+            task.updated_at,
+            owner_id,
+            workspace_id,
+            task.task_id,
+            task.task_revision,
+        ),
     )
     if cursor.rowcount != 1:
         raise LearningTaskConflictError(
@@ -653,7 +943,7 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
     if not isinstance(data, dict):
         raise TypeError("learning activation receipt must be an object")
     stored_version = int(data["version"])
-    if stored_version not in {1, 2}:
+    if stored_version not in {1, 2, 3}:
         raise ValueError("unsupported learning activation receipt version")
     ref = data["learning_goal_ref"]
     if not isinstance(ref, dict):
@@ -671,10 +961,29 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
         not isinstance(item, str) or not item for item in raw_capabilities
     ):
         raise TypeError("invalid learning activation capabilities")
+    raw_source_policy = data.get("source_policy_snapshot")
+    if not isinstance(raw_source_policy, dict):
+        raise TypeError("missing learning activation source policy snapshot")
+    source_policy = LearningSourcePolicy(
+        knowledge=raw_source_policy.get("knowledge", ""),
+        web=raw_source_policy.get("web", ""),
+        domains=tuple(raw_source_policy.get("domains", ())),
+        freshness=raw_source_policy.get("freshness", ""),
+    )
+    expected_source_revision = source_policy_revision(source_policy)
+    stored_source_revision = str(data.get("source_policy_revision", ""))
+    if stored_source_revision != expected_source_revision:
+        raise ValueError("learning activation source policy revision mismatch")
     if stage == "active" and status != "active":
         raise ValueError("active learning activation stage requires an active status")
     if status == "active" and stage != "active":
         raise ValueError("active learning activation status requires an active stage")
+    if (
+        data.get("learning_plan_id") is not None
+        or data.get("learning_plan_hash") is not None
+        or data.get("dag_hash") is not None
+    ):
+        raise ValueError("L0 activation receipt contains a future plan identity")
     turn_context_plan_id = _read_renamed_field(
         data,
         canonical="turn_context_plan_id",
@@ -690,8 +999,9 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
         required=False,
     )
     return LearningActivationRecord(
-        version=2,
+        version=3,
         owner_id=str(data["owner_id"]),
+        workspace_id=_bounded_workspace(str(data["workspace_id"])),
         task_id=str(data["task_id"]),
         task_revision=int(data["task_revision"]),
         idempotency_key=str(data["idempotency_key"]),
@@ -723,6 +1033,8 @@ def _decode_activation(payload: str) -> LearningActivationRecord:
             else None
         ),
         allowed_capabilities=tuple(raw_capabilities),
+        source_policy_snapshot=source_policy,
+        source_policy_revision=stored_source_revision,
         receipt_status=status,
         stage=normalized_stage,
         failure_code=str(data["failure_code"]) if data.get("failure_code") else None,
@@ -760,6 +1072,7 @@ def _decode_activation_row(row: sqlite3.Row) -> LearningActivationRecord:
         activation = _decode_activation(str(row["receipt_json"]))
         expected = {
             "owner_id": activation.owner_id,
+            "workspace_id": activation.workspace_id,
             "task_id": activation.task_id,
             "task_revision": activation.task_revision,
             "idempotency_key": activation.idempotency_key,
@@ -784,6 +1097,54 @@ def _decode_activation_row(row: sqlite3.Row) -> LearningActivationRecord:
             code="learning_activation_corrupt",
         ) from exc
     return activation
+
+
+def _migrate_schema(connection: sqlite3.Connection) -> None:
+    """Expand workspace scope while leaving unverifiable legacy rows unclaimed."""
+    connection.execute(_TASK_TABLE_SQL)
+    task_columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(learning_tasks)").fetchall()
+    }
+    if "workspace_id" not in task_columns:
+        connection.execute("ALTER TABLE learning_tasks ADD COLUMN workspace_id TEXT")
+
+    activation_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' " "AND name = 'learning_task_activations'"
+    ).fetchone()
+    if activation_exists is None:
+        connection.execute(_ACTIVATION_TABLE_SQL)
+    else:
+        activation_columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(learning_task_activations)").fetchall()
+        }
+        if "workspace_id" not in activation_columns:
+            connection.execute(
+                "ALTER TABLE learning_task_activations RENAME TO learning_task_activations_legacy"
+            )
+            connection.execute(_ACTIVATION_TABLE_SQL)
+            connection.execute(
+                """INSERT INTO learning_task_activations (
+                    owner_id, workspace_id, task_id, task_revision, idempotency_key,
+                    session_id, kickoff_run_id, receipt_json, status, stage,
+                    created_at, updated_at, completed_at
+                ) SELECT owner_id, NULL, task_id, task_revision, idempotency_key,
+                    session_id, kickoff_run_id, receipt_json, status, stage,
+                    created_at, updated_at, completed_at
+                FROM learning_task_activations_legacy"""
+            )
+            connection.execute("DROP TABLE learning_task_activations_legacy")
+
+    connection.execute("DROP INDEX IF EXISTS learning_tasks_owner_updated_idx")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS learning_tasks_owner_workspace_updated_idx "
+        "ON learning_tasks(owner_id, workspace_id, updated_at DESC)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS learning_task_activations_status_idx "
+        "ON learning_task_activations(status, updated_at)"
+    )
 
 
 def _activation_stage_rank(stage: str) -> int:

@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 from threading import RLock
 from typing import Literal, Protocol
 
-from core.learning.tasks import LearningTask
+from core.learning.tasks import LearningSourcePolicy, LearningTask, source_policy_revision
 
 LearningActivationStatus = Literal["activating", "activation_failed", "active"]
 LearningActivationStage = Literal["intent", "session", "goal", "turn_context_plan", "active"]
@@ -43,6 +43,7 @@ class LearningActivationRecord:
 
     version: int
     owner_id: str
+    workspace_id: str
     task_id: str
     task_revision: int
     idempotency_key: str
@@ -58,6 +59,8 @@ class LearningActivationRecord:
     catalog_revision: str | None
     capability_revision: str | None
     allowed_capabilities: tuple[str, ...]
+    source_policy_snapshot: LearningSourcePolicy
+    source_policy_revision: str
     receipt_status: LearningActivationStatus
     stage: LearningActivationStage
     failure_code: str | None
@@ -68,6 +71,23 @@ class LearningActivationRecord:
     @property
     def session_created(self) -> bool:
         return self.stage in {"session", "goal", "turn_context_plan", "active"}
+
+
+@dataclass(frozen=True, slots=True)
+class LearningLegacyActivationCandidate:
+    """Unclaimed L0 row whose workspace may only be recovered from frozen resources."""
+
+    owner_id: str
+    task_id: str
+    task_revision: int
+    idempotency_key: str
+    session_id: str
+    kickoff_run_id: str
+    turn_context_plan_id: str
+    turn_context_plan_hash: str
+    source_policy: LearningSourcePolicy
+    task_payload_json: str
+    receipt_json: str
 
 
 class LearningActivationError(RuntimeError):
@@ -83,12 +103,15 @@ class LearningActivationRepositoryPort(Protocol):
         self,
         *,
         owner_id: str,
+        workspace_id: str,
         task_id: str,
         expected_revision: int,
         idempotency_key: str,
     ) -> tuple[LearningTask, LearningActivationRecord]: ...
 
-    def activation(self, *, owner_id: str, task_id: str) -> LearningActivationRecord: ...
+    def activation(
+        self, *, owner_id: str, workspace_id: str, task_id: str
+    ) -> LearningActivationRecord: ...
 
     def save_activation(
         self,
@@ -100,7 +123,15 @@ class LearningActivationRepositoryPort(Protocol):
 
     def reconcilable_activations(self) -> tuple[LearningActivationRecord, ...]: ...
 
-    def get(self, *, owner_id: str, task_id: str) -> LearningTask: ...
+    def legacy_active_activations(self) -> tuple[LearningLegacyActivationCandidate, ...]: ...
+
+    def backfill_legacy_workspace(
+        self, candidate: LearningLegacyActivationCandidate, *, workspace_id: str
+    ) -> bool: ...
+
+    def block_unclaimed_legacy(self) -> int: ...
+
+    def get(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningTask: ...
 
 
 class LearningActivationResources(Protocol):
@@ -121,6 +152,12 @@ class LearningActivationResources(Protocol):
     ) -> LearningActivationTurnContextBinding: ...
 
     def archive_session(self, *, activation: LearningActivationRecord) -> None: ...
+
+    def validate_resume(
+        self, *, activation: LearningActivationRecord, task: LearningTask
+    ) -> None: ...
+
+    def validate_legacy_workspace(self, *, candidate: LearningLegacyActivationCandidate) -> str: ...
 
 
 FailureInjector = Callable[[str, LearningActivationRecord], None]
@@ -145,6 +182,7 @@ class LearningActivationService:
         self,
         *,
         owner_id: str,
+        workspace_id: str,
         task_id: str,
         expected_revision: int,
         idempotency_key: str,
@@ -152,6 +190,7 @@ class LearningActivationService:
         with self._bootstrap_lock:
             task, activation = self.repository.begin_activation(
                 owner_id=owner_id,
+                workspace_id=workspace_id,
                 task_id=task_id,
                 expected_revision=expected_revision,
                 idempotency_key=idempotency_key,
@@ -160,33 +199,56 @@ class LearningActivationService:
                 return activation
             return self._bootstrap(task, activation)
 
-    def get(self, *, owner_id: str, task_id: str) -> LearningActivationRecord:
-        return self.repository.activation(owner_id=owner_id, task_id=task_id)
+    def get(self, *, owner_id: str, workspace_id: str, task_id: str) -> LearningActivationRecord:
+        return self.repository.activation(
+            owner_id=owner_id, workspace_id=workspace_id, task_id=task_id
+        )
 
     def resume(
-        self, *, owner_id: str, task_id: str, expected_revision: int
+        self, *, owner_id: str, workspace_id: str, task_id: str, expected_revision: int
     ) -> LearningActivationRecord:
-        task = self.repository.get(owner_id=owner_id, task_id=task_id)
+        task = self.repository.get(owner_id=owner_id, workspace_id=workspace_id, task_id=task_id)
         if task.task_revision != expected_revision:
             raise LearningActivationError(
                 "learning task revision conflict",
                 code="learning_task_revision_conflict",
             )
-        activation = self.get(owner_id=owner_id, task_id=task_id)
+        activation = self.get(owner_id=owner_id, workspace_id=workspace_id, task_id=task_id)
         if activation.receipt_status != "active":
             raise LearningActivationError(
                 "learning task activation is not active",
                 code="learning_activation_not_active",
             )
+        if (
+            activation.learning_plan_id is not None
+            or activation.learning_plan_hash is not None
+            or activation.dag_hash is not None
+        ):
+            raise LearningActivationError(
+                "L0 receipt contains a future plan identity",
+                code="learning_resume_validation_failed",
+            )
+        self.resources.validate_resume(activation=activation, task=task)
         return activation
 
     def reconcile(self) -> int:
         with self._bootstrap_lock:
+            for candidate in self.repository.legacy_active_activations():
+                try:
+                    workspace_id = self.resources.validate_legacy_workspace(candidate=candidate)
+                    self.repository.backfill_legacy_workspace(candidate, workspace_id=workspace_id)
+                except Exception as exc:
+                    logger.error(
+                        "Learning legacy workspace migration skipped one record: %s",
+                        type(exc).__name__,
+                    )
+            self.repository.block_unclaimed_legacy()
             repaired = 0
             for activation in self.repository.reconcilable_activations():
                 try:
                     task = self.repository.get(
                         owner_id=activation.owner_id,
+                        workspace_id=activation.workspace_id,
                         task_id=activation.task_id,
                     )
                     self._bootstrap(task, activation)
@@ -206,6 +268,7 @@ class LearningActivationService:
     ) -> LearningActivationRecord:
         current = activation
         try:
+            self._validate_l0_contract(task, current)
             self._inject("after_intent", current)
             self.resources.ensure_session(activation=current, task=task)
             current = self.repository.save_activation(
@@ -283,6 +346,28 @@ class LearningActivationService:
             task_status="activation_failed",
         )
 
+    def _validate_l0_contract(
+        self, task: LearningTask, activation: LearningActivationRecord
+    ) -> None:
+        if (
+            activation.learning_plan_id is not None
+            or activation.learning_plan_hash is not None
+            or activation.dag_hash is not None
+        ):
+            raise LearningActivationError(
+                "L0 receipt contains a future plan identity",
+                code="learning_activation_contract_conflict",
+            )
+        expected_revision = source_policy_revision(task.source_policy)
+        if (
+            activation.source_policy_snapshot != task.source_policy
+            or activation.source_policy_revision != expected_revision
+        ):
+            raise LearningActivationError(
+                "learning activation source policy drifted",
+                code="learning_activation_source_policy_conflict",
+            )
+
     def _archive_failed_session(self, activation: LearningActivationRecord) -> None:
         if activation.receipt_status != "activation_failed":
             return
@@ -304,4 +389,5 @@ __all__ = [
     "LearningActivationStatus",
     "LearningActivationTurnContextBinding",
     "LearningGoalRef",
+    "LearningLegacyActivationCandidate",
 ]

@@ -12,6 +12,8 @@ from core.learning import (
     LearningTaskService,
 )
 
+WORKSPACE_ID = "workspace-test"
+
 
 def _service(path: Path) -> LearningTaskService:
     return LearningTaskService(LearningTaskRepository(path))
@@ -21,6 +23,7 @@ def test_draft_persists_hard_source_constraints_across_restart(tmp_path: Path) -
     database = tmp_path / "learning-tasks.sqlite3"
     created = _service(database).create_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(topic="我想学习阳明心学，只用我的知识库，不要联网"),
     )
 
@@ -35,7 +38,9 @@ def test_draft_persists_hard_source_constraints_across_restart(tmp_path: Path) -
         "time_budget_minutes_per_week",
     )
 
-    restored = _service(database).get(owner_id="local", task_id=created.task_id)
+    restored = _service(database).get(
+        owner_id="local", workspace_id=WORKSPACE_ID, task_id=created.task_id
+    )
 
     assert restored == created
 
@@ -44,6 +49,7 @@ def test_patch_uses_cas_and_recomputes_financial_education_boundary(tmp_path: Pa
     service = _service(tmp_path / "learning-tasks.sqlite3")
     created = service.create_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(topic="我想学习投资"),
     )
 
@@ -52,6 +58,7 @@ def test_patch_uses_cas_and_recomputes_financial_education_boundary(tmp_path: Pa
 
     updated = service.update_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=created.task_id,
         expected_revision=1,
         patch=LearningTaskPatch(
@@ -69,6 +76,7 @@ def test_patch_uses_cas_and_recomputes_financial_education_boundary(tmp_path: Pa
     with pytest.raises(LearningTaskConflictError, match="current revision is 2"):
         service.update_draft(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=created.task_id,
             expected_revision=1,
             patch=LearningTaskPatch(desired_outcome="stale update"),
@@ -79,11 +87,12 @@ def test_learning_task_owner_scope_isolated(tmp_path: Path) -> None:
     service = _service(tmp_path / "learning-tasks.sqlite3")
     task = service.create_draft(
         owner_id="owner-a",
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(topic="学习 Java 并发"),
     )
 
     with pytest.raises(KeyError):
-        service.get(owner_id="owner-b", task_id=task.task_id)
+        service.get(owner_id="owner-b", workspace_id=WORKSPACE_ID, task_id=task.task_id)
 
 
 def test_patch_can_clear_optional_fields_without_weakening_hard_source_constraint(
@@ -92,6 +101,7 @@ def test_patch_can_clear_optional_fields_without_weakening_hard_source_constrain
     service = _service(tmp_path / "learning-tasks.sqlite3")
     created = service.create_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(
             topic="我想学金融基础，不要联网",
             desired_outcome="能够解释风险与收益的关系",
@@ -102,6 +112,7 @@ def test_patch_can_clear_optional_fields_without_weakening_hard_source_constrain
 
     updated = service.update_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=created.task_id,
         expected_revision=1,
         patch=LearningTaskPatch(
@@ -120,6 +131,7 @@ def test_concurrent_cas_updates_have_exactly_one_winner(tmp_path: Path) -> None:
     service = _service(database)
     created = service.create_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(topic="学习 Java 并发"),
     )
     barrier = Barrier(3)
@@ -132,6 +144,7 @@ def test_concurrent_cas_updates_have_exactly_one_winner(tmp_path: Path) -> None:
         try:
             task = worker.update_draft(
                 owner_id="local",
+                workspace_id=WORKSPACE_ID,
                 task_id=created.task_id,
                 expected_revision=1,
                 patch=LearningTaskPatch(desired_outcome=outcome),
@@ -149,7 +162,12 @@ def test_concurrent_cas_updates_have_exactly_one_winner(tmp_path: Path) -> None:
 
     assert revisions == [2]
     assert conflicts == [2]
-    assert service.get(owner_id="local", task_id=created.task_id).task_revision == 2
+    assert (
+        service.get(
+            owner_id="local", workspace_id=WORKSPACE_ID, task_id=created.task_id
+        ).task_revision
+        == 2
+    )
 
 
 def test_repository_rejects_symlink_database_path(tmp_path: Path) -> None:

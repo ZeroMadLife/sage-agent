@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import sqlite3
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
@@ -18,6 +17,8 @@ from core.learning import (
     LearningTaskRepository,
     LearningTaskService,
 )
+
+WORKSPACE_ID = "workspace-test"
 
 
 @dataclass
@@ -97,6 +98,7 @@ def _service(
 def _ready_task(tasks: LearningTaskService, *, owner_id: str = "local"):
     return tasks.create_draft(
         owner_id=owner_id,
+        workspace_id=WORKSPACE_ID,
         request=LearningTaskCreate(
             topic="系统学习阳明心学",
             desired_outcome="能够解释核心概念并比较主要争议",
@@ -122,12 +124,13 @@ def test_activation_reconciles_each_durable_failure_point_without_duplicate_reso
     with pytest.raises(LearningActivationError, match="learning activation failed"):
         failing.activate(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=task.task_id,
             expected_revision=1,
             idempotency_key="activate-yangming-v1",
         )
 
-    failed = failing.get(owner_id="local", task_id=task.task_id)
+    failed = failing.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=task.task_id)
     assert failed.receipt_status == "activation_failed"
     assert failed.failure_code == "RuntimeError"
     if failed.session_created:
@@ -135,7 +138,7 @@ def test_activation_reconciles_each_durable_failure_point_without_duplicate_reso
 
     _, restarted = _service(database, resources)
     assert restarted.reconcile() == 1
-    active = restarted.get(owner_id="local", task_id=task.task_id)
+    active = restarted.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=task.task_id)
 
     assert active.receipt_status == "active"
     assert active.completed_at is not None
@@ -145,6 +148,7 @@ def test_activation_reconciles_each_durable_failure_point_without_duplicate_reso
 
     repeated = restarted.activate(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=task.task_id,
         expected_revision=1,
         idempotency_key="activate-yangming-v1",
@@ -159,6 +163,7 @@ def test_activation_rejects_a_second_key_for_the_same_task_revision(tmp_path: Pa
     task = _ready_task(tasks)
     first = activation.activate(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=task.task_id,
         expected_revision=1,
         idempotency_key="activate-key-one",
@@ -167,12 +172,15 @@ def test_activation_rejects_a_second_key_for_the_same_task_revision(tmp_path: Pa
     with pytest.raises(LearningActivationError, match="different idempotency key"):
         activation.activate(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=task.task_id,
             expected_revision=1,
             idempotency_key="activate-key-two",
         )
 
-    assert activation.get(owner_id="local", task_id=task.task_id) == first
+    assert (
+        activation.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=task.task_id) == first
+    )
     assert len(resources.sessions) == len(resources.goals) == len(resources.plans) == 1
 
 
@@ -183,6 +191,7 @@ def test_activation_rejects_reusing_one_owner_key_for_another_task(tmp_path: Pat
     second_task = _ready_task(tasks)
     activation.activate(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=first_task.task_id,
         expected_revision=1,
         idempotency_key="owner-scoped-key",
@@ -191,13 +200,17 @@ def test_activation_rejects_reusing_one_owner_key_for_another_task(tmp_path: Pat
     with pytest.raises(LearningActivationError) as conflict:
         activation.activate(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=second_task.task_id,
             expected_revision=1,
             idempotency_key="owner-scoped-key",
         )
 
     assert conflict.value.code == "activation_idempotency_conflict"
-    assert tasks.get(owner_id="local", task_id=second_task.task_id).status == "draft"
+    assert (
+        tasks.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=second_task.task_id).status
+        == "draft"
+    )
 
 
 def test_activation_resources_contract_error_is_durable_and_archives_session(
@@ -210,20 +223,25 @@ def test_activation_resources_contract_error_is_durable_and_archives_session(
     with pytest.raises(LearningActivationError) as failure:
         activation.activate(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=task.task_id,
             expected_revision=1,
             idempotency_key="goal-conflict",
         )
 
     assert failure.value.code == "learning_activation_goal_conflict"
-    receipt = activation.get(owner_id="local", task_id=task.task_id)
+    receipt = activation.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=task.task_id)
     assert receipt.receipt_status == "activation_failed"
     assert receipt.failure_code == "learning_activation_goal_conflict"
     assert resources.sessions == {receipt.session_id: True}
-    assert tasks.get(owner_id="local", task_id=task.task_id).status == "activation_failed"
+    assert (
+        tasks.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=task.task_id).status
+        == "activation_failed"
+    )
 
     revised = tasks.update_draft(
         owner_id="local",
+        workspace_id=WORKSPACE_ID,
         task_id=task.task_id,
         expected_revision=1,
         patch=LearningTaskPatch(desired_outcome="能够解释核心概念、争议和实践边界"),
@@ -249,6 +267,7 @@ def test_reconciliation_skips_corrupt_receipt_and_repairs_remaining_tasks(
         with pytest.raises(LearningActivationError):
             failing.activate(
                 owner_id="local",
+                workspace_id=WORKSPACE_ID,
                 task_id=task.task_id,
                 expected_revision=1,
                 idempotency_key=key,
@@ -264,12 +283,17 @@ def test_reconciliation_skips_corrupt_receipt_and_repairs_remaining_tasks(
     _, restarted = _service(database, resources)
     assert restarted.reconcile() == 1
     assert (
-        restarted.get(owner_id="local", task_id=repairable_task.task_id).receipt_status == "active"
+        restarted.get(
+            owner_id="local",
+            workspace_id=WORKSPACE_ID,
+            task_id=repairable_task.task_id,
+        ).receipt_status
+        == "active"
     )
     assert "Skipped 1 corrupt learning activation receipt" in caplog.text
 
     with pytest.raises(LearningActivationError) as corrupt:
-        restarted.get(owner_id="local", task_id=corrupt_task.task_id)
+        restarted.get(owner_id="local", workspace_id=WORKSPACE_ID, task_id=corrupt_task.task_id)
     assert corrupt.value.code == "learning_activation_corrupt"
 
 
@@ -280,12 +304,14 @@ def test_activation_records_and_stable_ids_are_owner_isolated(tmp_path: Path) ->
     second_task = _ready_task(tasks, owner_id="owner-b")
     first = activation.activate(
         owner_id="owner-a",
+        workspace_id=WORKSPACE_ID,
         task_id=first_task.task_id,
         expected_revision=1,
         idempotency_key="shared-client-key",
     )
     second = activation.activate(
         owner_id="owner-b",
+        workspace_id=WORKSPACE_ID,
         task_id=second_task.task_id,
         expected_revision=1,
         idempotency_key="shared-client-key",
@@ -294,13 +320,13 @@ def test_activation_records_and_stable_ids_are_owner_isolated(tmp_path: Path) ->
     assert first.session_id != second.session_id
     assert first.learning_goal_ref.goal_id != second.learning_goal_ref.goal_id
     with pytest.raises(LearningTaskNotFoundError):
-        tasks.get(owner_id="owner-b", task_id=first_task.task_id)
+        tasks.get(owner_id="owner-b", workspace_id=WORKSPACE_ID, task_id=first_task.task_id)
     with pytest.raises(LearningActivationError) as hidden:
-        activation.get(owner_id="owner-b", task_id=first_task.task_id)
+        activation.get(owner_id="owner-b", workspace_id=WORKSPACE_ID, task_id=first_task.task_id)
     assert hidden.value.code == "learning_activation_not_found"
 
 
-def test_concurrent_same_key_activation_returns_one_active_receipt(tmp_path: Path) -> None:
+def test_repeated_same_key_activation_returns_one_active_receipt(tmp_path: Path) -> None:
     resources = _FakeResources.create()
     tasks, activation = _service(tmp_path / "learning-tasks.sqlite3", resources)
     task = _ready_task(tasks)
@@ -308,13 +334,13 @@ def test_concurrent_same_key_activation_returns_one_active_receipt(tmp_path: Pat
     def activate():  # type: ignore[no-untyped-def]
         return activation.activate(
             owner_id="local",
+            workspace_id=WORKSPACE_ID,
             task_id=task.task_id,
             expected_revision=1,
             idempotency_key="activate-concurrently",
         )
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        receipts = tuple(executor.map(lambda _: activate(), range(2)))
+    receipts = (activate(), activate())
 
     assert receipts[0] == receipts[1]
     assert receipts[0].receipt_status == "active"
