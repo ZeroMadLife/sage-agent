@@ -155,6 +155,7 @@ def test_evidence_bundle_prefers_fetched_content_and_deduplicates_one_source(
                     "title": "Search result",
                     "excerpt": "Short search excerpt.",
                     "content_hash": "a" * 64,
+                    "retrieved_at": "2026-08-25T00:00:00Z",
                 }
             ],
         },
@@ -172,6 +173,7 @@ def test_evidence_bundle_prefers_fetched_content_and_deduplicates_one_source(
             "title": "Fetched result",
             "excerpt": "Longer fetched evidence.",
             "content_hash": "b" * 64,
+            "retrieved_at": "2026-08-25T00:01:00Z",
             "original_chars": 400,
         },
         evidence_refs=[
@@ -197,6 +199,7 @@ def test_evidence_bundle_prefers_fetched_content_and_deduplicates_one_source(
     assert len(bundle.items) == 1
     assert bundle.items[0].kind == "web_fetch"
     assert bundle.items[0].evidence_ref == "wcite_fetch"
+    assert bundle.items[0].metadata["fetched_at"] == "2026-08-25T00:01:00Z"
     assert bundle.duplicate_count == 1
     assert bundle.missing_refs == ()
 

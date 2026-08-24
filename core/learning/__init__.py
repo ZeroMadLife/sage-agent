@@ -35,6 +35,12 @@ from core.learning.materials import (
     LearningMapService,
     LearningPlan,
 )
+from core.learning.research import (
+    LearningResearchEvidence,
+    LearningResearchOutcome,
+    LearningResearchReceipt,
+    LearningResearchService,
+)
 from core.learning.task_repository import (
     LearningTaskConflictError,
     LearningTaskError,
@@ -77,6 +83,10 @@ __all__ = [
     "LearningMapOutcome",
     "LearningMapService",
     "LearningPlan",
+    "LearningResearchEvidence",
+    "LearningResearchOutcome",
+    "LearningResearchReceipt",
+    "LearningResearchService",
     "LearningSourcePolicy",
     "LearningTask",
     "LearningTaskConflictError",

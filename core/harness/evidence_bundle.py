@@ -226,7 +226,10 @@ def _web_search_items(
                 canonical_url=url,
                 content_hash=str(citation.get("content_hash", ""))[:128],
                 token_count=estimated_tokens(url, content),
-                metadata={"provider": str(payload.get("provider", ""))[:80]},
+                metadata={
+                    "provider": str(payload.get("provider", ""))[:80],
+                    "fetched_at": str(citation.get("retrieved_at", ""))[:80],
+                },
             )
         )
         aliases.add(ref)
@@ -256,7 +259,10 @@ def _web_fetch_items(
             content_hash=str(payload.get("content_hash", ""))[:128],
             token_count=estimated_tokens(url, content),
             truncated=bool(payload.get("original_chars", 0)) and content.endswith("..."),
-            metadata={"artifact_ref": artifact_ref[:1_000]},
+            metadata={
+                "artifact_ref": artifact_ref[:1_000],
+                "fetched_at": str(payload.get("retrieved_at", ""))[:80],
+            },
         )
     ], aliases
 
