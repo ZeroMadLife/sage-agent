@@ -666,7 +666,7 @@ Provider、capability 与 artifact smoke 合同保持不变。
   full/build、source product smoke、secret scan、精确进程零残留和 `git diff --check`。代码/docs 独立中文
   commit；源码变化后只从新的 clean docs HEAD 和全新输出目录重建 arm64 artifact。
 
-### D2.6 实施收口（2026-08-25，artifact 待生成）
+### D2.6 实施收口（2026-08-25）
 
 - **代码候选**：`626da17fb56572558bb8c1231ecbca7c902d63d5`。host-owned
   `ConfigurationMutationGuard` 以 `configuration_epoch` 统一 action admission、短 SQLite commit 与 restart
@@ -686,8 +686,26 @@ Provider、capability 与 artifact smoke 合同保持不变。
   smoke `1 passed`。changed-range private-key/long-token 与敏感扩展名扫描零命中，四类精确进程零残留，
   `git diff --check` 通过。首次 secret-scan 命令因 zsh 引号解析失败，未形成结论，随后以拆分只读命令
   重跑通过。
-- **待完成**：本段不复用 D2.5 receipt。下一笔 clean docs HEAD 固定后，从全新目录运行正式 arm64
-  bundle 入口，再补 source/dirty、12+6、269 manifest SHA、strict codesign、arm64、secret 与零残留收据。
+- **正式 artifact**：不复用 D2.5 receipt；从 clean docs HEAD
+  `fb0f0e56a24069a34db9581eeb5e9aff791d3000` 及全新输出目录运行唯一 bundle 入口，一次成功。receipt 位于
+  `/private/tmp/sage-desktop-fb0f0e5-r1/desktop-bundle-receipt.json`，SHA-256
+  `354b73dfc4873b76cd637388643102b6003f91a5edd95d7861dc2da313372315`；`source_dirty=false`、
+  Python `3.12.13`、target `aarch64-apple-darwin`。冻结 sidecar 12 项真实 product smoke 与 `.app` 6 项
+  lifecycle smoke 全部 `passed`。
+- **manifest 与计数**：sidecar receipt SHA-256 为
+  `9efb4804e6d1d6ed0db0f73d309248f2d4bf9427890c3fb0b8af06fece771fca`；269 manifest entries 在原始
+  sidecar 与最终 `.app` 中均逐项 SHA 复核 `269/269` 匹配、0 missing、0 mismatch。原始 entries 类型为
+  247 个 regular files、22 个 symlinks；写入 `build-receipt.json` 后目录为 248 个 regular files、116 个
+  directories、22 个 symlinks。最终 `.app` 为 274 个 regular files、121 个 directories、0 symlink。
+- **签名与安全**：host、launcher、sidecar 均为 thin arm64 Mach-O；app deep strict 与三个嵌套 executable
+  strict codesign 全部通过，签名为 ad-hoc。packaged secret/bearer 长 token、两个 product smoke sentinel、
+  通用 `sk-*`、private-key marker、Provider key 文件与 `.env` 均零命中；host 中仅有不含 token 的
+  `Authorization: Bearer` 协议模板，唯一 `.pem` 为 certifi 公共 CA trust bundle。`sage-desktop`、
+  `sage-api`、`sage-api-aarch64-apple-darwin`、`sage-sidecar-launcher` 精确进程检查均为零。
+- **核验恢复记录**：第一次 manifest 逐项 SHA 命令误用 zsh 特殊变量 `path`，覆盖 `PATH` 后使
+  `shasum/awk` 未执行，故该次 `0/269` 输出作废；随后改用 `artifact_path` 与显式 `/usr/bin/shasum`，
+  对原始 sidecar 和 `.app` 分别只读重跑，均得到有效 `269/269`。当前候选只等待第七轮中枢三镜头短审；
+  未 push、未建 PR、未合入，也未删除分支或 worktree。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
