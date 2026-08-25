@@ -16,6 +16,7 @@ from core.coding.tools.schemas import ToolSearchArgs, first_error_message
 
 ToolHandler = Callable[[WorkspaceContext, dict[str, Any], ToolContext | None], ToolResult | str]
 _WORKSPACE_PATH_TOOLS = {"list_files", "read_file", "search", "write_file", "patch_file"}
+_SIDE_EFFECT_TOOLS = {"write_file", "patch_file", "run_shell"}
 
 
 class ToolArgumentValidationError(ValueError):
@@ -100,6 +101,8 @@ def build_tool_registry(
     workspace: WorkspaceContext,
     tool_context: ToolContext | None = None,
     activated_tools: set[str] | None = None,
+    *,
+    side_effect_tools_enabled: bool = True,
 ) -> dict[str, RegisteredTool]:
     """Build coding tools for one workspace."""
     _ensure_default_modules_loaded()
@@ -122,6 +125,7 @@ def build_tool_registry(
             deferred=definition.deferred,
         )
         for name, definition in definitions.items()
+        if side_effect_tools_enabled or name not in _SIDE_EFFECT_TOOLS
     }
 
 

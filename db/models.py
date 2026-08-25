@@ -82,6 +82,23 @@ class CloudLoginSessionRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class CloudRefreshTokenRecord(Base):
+    """Rotating refresh-token digest bound to one server-side device session."""
+
+    __tablename__ = "cloud_refresh_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("cloud_users.id", ondelete="CASCADE"), index=True
+    )
+    family_id: Mapped[str] = mapped_column(String(36), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class CloudOAuthTransactionRecord(Base):
     """Short-lived, one-time OAuth transaction with encrypted private state."""
 

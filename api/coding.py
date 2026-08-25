@@ -45,7 +45,7 @@ from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from api.cloud_dependencies import (
-    SESSION_COOKIE,
+    authenticated_connection_user,
     require_cloud_authentication_in_production,
 )
 from api.cloud_model_context import (
@@ -375,24 +375,39 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         return
     sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
     runtime = sessions.get(session_id)
-    owner_user_id = runtime.owner_user_id if runtime is not None else None
-    if owner_user_id is None:
+    app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
+    if runtime is not None:
+        owner_user_id = runtime.owner_user_id
+        if owner_user_id is None and app_env == "production":
+            _raise_unknown_coding_session(connection, session_id)
+    else:
         store = CodingSessionStore(Path(connection.app.state.coding_storage_root) / "sessions")
         try:
             persisted = store.load(session_id)
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError:
+            return
+        except ValueError:
+            if app_env == "production":
+                _raise_unknown_coding_session(connection, session_id)
             return
         owner_user_id = str(persisted.get("owner_user_id", "")).strip() or None
     if owner_user_id is None:
+        if app_env == "production":
+            _raise_unknown_coding_session(connection, session_id)
         return
     cloud = getattr(connection.app.state, "cloud_repository", None)
     user = (
-        await cloud.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+        await authenticated_connection_user(connection)
         if isinstance(cloud, CloudRepository)
         else None
     )
     if user is None or user.user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
+        _raise_unknown_coding_session(connection, session_id)
+
+
+def _raise_unknown_coding_session(connection: HTTPConnection, session_id: str) -> None:
+    detail = f"Unknown coding session: {session_id}"
+    raise HTTPException(status_code=404, detail=detail)
 
 
 router = APIRouter(
@@ -892,8 +907,8 @@ async def _deerflow_timeline_events(
             thread_id=runtime.session_id,
             app_env=app_env,
             provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
-            allow_host_shell=True,
-            allow_writes=True,
+            allow_host_shell=runtime.side_effect_tools_enabled,
+            allow_writes=runtime.side_effect_tools_enabled,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
         )
         try:
@@ -1759,6 +1774,9 @@ async def create_coding_session(
             getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
         ),
         sandbox_image=str(getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")),
+        side_effect_tools_enabled=bool(
+            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
+        ),
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -1784,6 +1802,7 @@ async def list_coding_sessions(
     store = CodingSessionStore(storage_root / "sessions")
     account = await load_account_model_context(request)
     current_user_id = account.user_id if account is not None else None
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
     visible: list[CodingSessionSummary] = []
     for item in store.list_sessions(include_archived=include_archived):
         try:
@@ -1791,7 +1810,13 @@ async def list_coding_sessions(
         except FileNotFoundError:
             continue
         owner_user_id = str(state.get("owner_user_id", "")).strip() or None
-        if owner_user_id is not None and owner_user_id != current_user_id:
+        if app_env == "production" and owner_user_id != current_user_id:
+            continue
+        if (
+            app_env != "production"
+            and owner_user_id is not None
+            and owner_user_id != current_user_id
+        ):
             continue
         visible.append(CodingSessionSummary(**item))
     return CodingSessionsResponse(sessions=visible)
@@ -1872,7 +1897,10 @@ def _harness_capability_context(
         from core.coding.skills import SkillRegistry
         from core.coding.tools.registry import build_tool_registry
 
-        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        tools = build_tool_registry(
+            WorkspaceContext(workspace_root),
+            side_effect_tools_enabled=bool(persisted.get("side_effect_tools_enabled", True)),
+        )
         skills = SkillRegistry(root=workspace_root).list()
         owner_id = str(persisted.get("owner_user_id") or "local")
     workspace_id = workspace_id_from_path(workspace_root)
@@ -2090,6 +2118,9 @@ async def resume_coding_session(
                 "sandbox_image",
                 getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim"),
             )
+        ),
+        side_effect_tools_enabled=bool(
+            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
         ),
     )
     sessions[session_id] = runtime

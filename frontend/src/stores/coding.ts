@@ -48,6 +48,7 @@ import {
   updateCodingProviderSettings as saveCodingProviderSettings,
   upsertCodingThreadGoal,
 } from '../api/coding'
+import { desktopSocket, isDesktopRuntime } from '../desktop/hostAdapter'
 import type {
   CodingApproval,
   CodingActiveRun,
@@ -869,6 +870,7 @@ export const useCodingStore = defineStore('coding', () => {
     void loadKnowledgeSourceProposals()
     stream?.disconnect()
     stream = new CodingStream({
+      ...(isDesktopRuntime() ? { createSocket: desktopSocket } : {}),
       onEvent: handleTimelineEvent,
       onRawEvent: handleServerEvent,
       onOpen: (openedSessionId) => {

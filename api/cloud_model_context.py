@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import Request
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import authenticated_connection_user
 from core.cloud.auth.repository import CloudRepository
 from core.cloud.model_providers import (
     AccountModelFactory,
@@ -35,7 +35,7 @@ async def load_account_model_context(
     providers = getattr(request.app.state, "cloud_model_provider_repository", None)
     if not isinstance(cloud, CloudRepository) or not isinstance(providers, ModelProviderRepository):
         return None
-    user = await cloud.authenticated_user(request.cookies.get(SESSION_COOKIE, ""))
+    user = await authenticated_connection_user(request)
     if user is None:
         return None
     configured = await providers.list_providers(user.user_id)

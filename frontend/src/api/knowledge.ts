@@ -20,11 +20,12 @@ import type {
   KnowledgeSyncPlan,
   KnowledgeWorkspaceSummary,
 } from '../types/api'
+import { desktopAwareFetch } from '../desktop/hostAdapter'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(new URL(path, API_BASE_URL), {
+  const response = await desktopAwareFetch(new URL(path, API_BASE_URL), {
     credentials: 'include',
     ...init,
   })

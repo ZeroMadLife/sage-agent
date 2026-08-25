@@ -10,6 +10,7 @@ BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 API_TARGET="${VITE_API_PROXY_TARGET:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
+DEV_RELOAD="${SAGE_DEV_RELOAD:-1}"
 PYTHON_BIN="${SAGE_PYTHON:-${ROOT_DIR}/.venv/bin/python}"
 REPOSITORY_PYTHONPATH="${ROOT_DIR}/packages/sage_harness:${ROOT_DIR}"
 
@@ -65,6 +66,11 @@ fi
 if [[ ! -f "${ENV_FILE}" ]]; then
   echo "Missing environment file: ${ENV_FILE}"
   echo "Create one with: cp .env.example .env"
+  exit 1
+fi
+
+if [[ "${DEV_RELOAD}" != "0" && "${DEV_RELOAD}" != "1" ]]; then
+  echo "SAGE_DEV_RELOAD must be 0 or 1 (found: ${DEV_RELOAD})"
   exit 1
 fi
 
@@ -158,12 +164,19 @@ export SAGE_WEB_SEARCH_ENDPOINT="$(
 export SAGE_WEB_FETCH_ENABLED="$(resolve_dev_setting SAGE_WEB_FETCH_ENABLED true)"
 
 echo "Starting backend: http://${BACKEND_HOST}:${BACKEND_PORT}"
-"${PYTHON_BIN}" -m uvicorn api.main:app \
+uvicorn_args=(
+  api.main:app
   --host "${BACKEND_HOST}" \
   --port "${BACKEND_PORT}" \
-  --reload \
-  --reload-exclude '.venv/*' \
-  --env-file "${ENV_FILE}" &
+  --env-file "${ENV_FILE}"
+)
+if [[ "${DEV_RELOAD}" == "1" ]]; then
+  uvicorn_args+=(
+    --reload
+    --reload-exclude '.venv/**'
+  )
+fi
+"${PYTHON_BIN}" -m uvicorn "${uvicorn_args[@]}" &
 BACKEND_PID="$!"
 
 echo "Starting frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"

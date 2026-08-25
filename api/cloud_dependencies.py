@@ -5,6 +5,7 @@ from starlette.requests import HTTPConnection
 
 from core.cloud.auth.models import CloudUser
 from core.cloud.auth.repository import CloudRepository
+from core.cloud.auth.tokens import InvalidAccessToken, decode_access_token
 
 SESSION_COOKIE = "sage_session"
 
@@ -22,8 +23,8 @@ async def require_authenticated_user(request: Request) -> CloudUser:
     return await require_authenticated_connection(request)
 
 
-async def require_authenticated_connection(connection: HTTPConnection) -> CloudUser:
-    """Authenticate an HTTP or WebSocket connection with the server session."""
+async def authenticated_connection_user(connection: HTTPConnection) -> CloudUser | None:
+    """Resolve a browser cookie or Bearer token without raising on absence."""
     repository = getattr(connection.app.state, "cloud_repository", None)
     is_websocket = connection.scope.get("type") == "websocket"
     if not isinstance(repository, CloudRepository):
@@ -33,7 +34,30 @@ async def require_authenticated_connection(connection: HTTPConnection) -> CloudU
                 reason="cloud control plane is unavailable",
             )
         raise HTTPException(status_code=503, detail="cloud control plane is unavailable")
-    user = await repository.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+    authorization = connection.headers.get("authorization", "")
+    user = None
+    if authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        try:
+            claims = decode_access_token(
+                token,
+                secret=str(getattr(connection.app.state, "cloud_token_secret", "")),
+            )
+        except InvalidAccessToken:
+            claims = None
+        if claims is not None:
+            user = await repository.authenticated_user_by_session_id(claims.session_id)
+            if user is None or user.user_id != claims.user_id:
+                user = None
+    if user is None and not authorization.lower().startswith("bearer "):
+        user = await repository.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+    return user
+
+
+async def require_authenticated_connection(connection: HTTPConnection) -> CloudUser:
+    """Authenticate a browser cookie or a short-lived Bearer access token."""
+    is_websocket = connection.scope.get("type") == "websocket"
+    user = await authenticated_connection_user(connection)
     if user is None:
         if is_websocket:
             raise WebSocketException(

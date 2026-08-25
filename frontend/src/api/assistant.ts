@@ -1,9 +1,11 @@
 import type { AssistantHomeSummary } from '../types/api'
 
+import { desktopAwareFetch } from '../desktop/hostAdapter'
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || window.location.origin
 
 export async function fetchAssistantHome(): Promise<AssistantHomeSummary> {
-  const response = await fetch(new URL('/api/v1/assistant/home', API_BASE_URL), {
+  const response = await desktopAwareFetch(new URL('/api/v1/assistant/home', API_BASE_URL), {
     credentials: 'include',
   })
   if (!response.ok) {

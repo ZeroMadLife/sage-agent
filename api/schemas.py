@@ -1689,6 +1689,57 @@ class CloudCurrentUserResponse(BaseModel):
     display_name: str
 
 
+class CloudDeviceLoginRequest(BaseModel):
+    """Invite exchange for TUI and desktop clients without browser cookies."""
+
+    invite_code: str = Field(min_length=1, max_length=256)
+    device_name: str = Field(default="Unknown device", max_length=120)
+    email: str | None = Field(default=None, min_length=3, max_length=320)
+    display_name: str = Field(default="", max_length=200)
+
+    @field_validator("invite_code", "device_name")
+    @classmethod
+    def strip_required_device_values(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def strip_device_display_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("email")
+    @classmethod
+    def strip_device_email(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip().lower()
+        return value or None
+
+
+class CloudRefreshTokenRequest(BaseModel):
+    """Refresh-token rotation request."""
+
+    refresh_token: str = Field(min_length=32, max_length=256)
+
+
+class CloudTokenRevokeRequest(BaseModel):
+    """Revoke one refresh-token family during client logout."""
+
+    refresh_token: str = Field(min_length=32, max_length=256)
+
+
+class CloudTokenResponse(CloudCurrentUserResponse):
+    """Short-lived access token plus a one-time-use refresh token."""
+
+    access_token: str
+    token_type: str = "Bearer"
+    expires_in: int = Field(gt=0)
+    refresh_token: str
+
+
 class CloudAuthOptionsResponse(BaseModel):
     """Public login methods enabled by the trusted server configuration."""
 

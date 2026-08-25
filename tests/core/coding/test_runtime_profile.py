@@ -62,3 +62,17 @@ def test_resume_preserves_sandbox_provider_and_image(tmp_path: Path) -> None:
 
     assert resumed.sandbox_provider == "container"
     assert resumed.sandbox_image == "python:3.12-slim"
+
+
+def test_runtime_can_fail_closed_without_side_effect_tools(tmp_path: Path) -> None:
+    runtime = CodingRuntime(
+        session_id="desktop-read-only",
+        workspace_root=tmp_path,
+        model=object(),
+        storage_root=tmp_path / ".coding-read-only",
+        side_effect_tools_enabled=False,
+    )
+
+    assert {"list_files", "read_file", "search"}.issubset(runtime.tools)
+    assert {"write_file", "patch_file", "run_shell"}.isdisjoint(runtime.tools)
+    assert runtime.session["side_effect_tools_enabled"] is False

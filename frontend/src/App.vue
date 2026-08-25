@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NConfigProvider,
@@ -16,6 +16,8 @@ import { AssistantNavigation } from './components/assistant'
 import { CommandPalette } from './components/product-shell'
 import CloudAuthGate from './components/auth/CloudAuthGate.vue'
 import { useCloudAuth } from './composables/useCloudAuth'
+import DesktopHostGate from './components/desktop/DesktopHostGate.vue'
+import { isDesktopRuntime } from './desktop/hostAdapter'
 
 const { themeMode } = useWorkbenchPreferences()
 const osTheme = useOsTheme()
@@ -26,12 +28,21 @@ const cloudAuthRequired = import.meta.env.VITE_CLOUD_AUTH_REQUIRED === 'true'
 const cloudAuthenticated = ref(!cloudAuthRequired)
 const cloudAuthChecking = ref(cloudAuthRequired)
 const { check: checkCloudAuth } = useCloudAuth()
+const desktopRuntime = isDesktopRuntime()
+const desktopAvailable = ref(false)
 
 onMounted(async () => {
   if (!cloudAuthRequired) return
+  window.addEventListener('sage-auth-logout', handleCloudLogout)
   cloudAuthenticated.value = await checkCloudAuth()
   cloudAuthChecking.value = false
 })
+
+function handleCloudLogout() {
+  if (cloudAuthRequired) cloudAuthenticated.value = false
+}
+
+onBeforeUnmount(() => window.removeEventListener('sage-auth-logout', handleCloudLogout))
 
 const naiveTheme = computed(() => {
   const mode = themeMode.value
@@ -56,12 +67,19 @@ watch(
     <NLoadingBarProvider>
       <NMessageProvider>
         <NDialogProvider>
+          <DesktopHostGate
+            v-if="desktopRuntime"
+            @availability="desktopAvailable = $event"
+          />
           <CloudAuthGate
-            v-if="cloudAuthRequired && !cloudAuthenticated"
+            v-if="!desktopRuntime && cloudAuthRequired && !cloudAuthenticated"
             :checking="cloudAuthChecking"
             @authenticated="cloudAuthenticated = true"
           />
-          <div v-else class="app-shell">
+          <div
+            v-if="desktopRuntime ? desktopAvailable : (!cloudAuthRequired || cloudAuthenticated)"
+            class="app-shell"
+          >
             <AssistantNavigation v-if="usesAssistantShell">
               <RouterView />
             </AssistantNavigation>

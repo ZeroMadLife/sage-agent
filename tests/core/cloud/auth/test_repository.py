@@ -1,12 +1,15 @@
 """Cloud control-plane persistence tests."""
 
 import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from core.cloud.auth.models import CloudUser
-from core.cloud.auth.repository import CloudRepository
+from core.cloud.auth.repository import CloudRepository, RefreshTokenReuseDetected
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
 
@@ -15,6 +18,17 @@ from db.migrations import init_db
 async def repository():
     """Provide an isolated database-backed cloud repository."""
     engine = create_engine("sqlite+aiosqlite:///:memory:")
+    session_factory = create_session_factory(engine)
+    await init_db(engine)
+    try:
+        yield CloudRepository(session_factory)
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture
+async def concurrent_repository(tmp_path: Path) -> AsyncIterator[CloudRepository]:
+    engine = create_engine(f"sqlite+aiosqlite:///{tmp_path / 'cloud-concurrency.sqlite3'}")
     session_factory = create_session_factory(engine)
     await init_db(engine)
     try:
@@ -89,6 +103,62 @@ async def test_login_session_stores_only_a_hash_and_honors_revoke_and_expiry(
         expires_at=datetime.now(UTC) - timedelta(seconds=1),
     )
     assert await repository.authenticated_user("expired-token") is None
+
+
+async def test_concurrent_refresh_rotation_revokes_the_winning_replacement(
+    repository: CloudRepository,
+) -> None:
+    await repository.create_invite("refresh-race", email="refresh@example.com")
+    user, login_session = await repository.create_canary_invite_session(
+        invite_code="refresh-race",
+        token="refresh-race-session",
+        device_name="Concurrent client",
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    original = "refresh-race-original-token-value"
+    replacements = (
+        "refresh-race-replacement-a-value",
+        "refresh-race-replacement-b-value",
+    )
+    await repository.create_refresh_token(
+        user_id=user.user_id,
+        family_id=login_session.session_id,
+        token=original,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+
+    results = await asyncio.gather(
+        *(
+            repository.rotate_refresh_token(
+                token=original,
+                replacement=replacement,
+                expires_at=datetime.now(UTC) + timedelta(days=1),
+            )
+            for replacement in replacements
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert sum(isinstance(result, RefreshTokenReuseDetected) for result in results) == 1
+    assert await repository.authenticated_user_by_session_id(login_session.session_id) is None
+    winner_index = next(index for index, result in enumerate(results) if isinstance(result, tuple))
+    winner = replacements[winner_index]
+    loser = replacements[1 - winner_index]
+    with pytest.raises(RefreshTokenReuseDetected):
+        await repository.rotate_refresh_token(
+            token=winner,
+            replacement=f"{winner}-next",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+    assert (
+        await repository.rotate_refresh_token(
+            token=loser,
+            replacement=f"{loser}-next",
+            expires_at=datetime.now(UTC) + timedelta(days=1),
+        )
+        is None
+    )
 
 
 async def test_revoking_one_device_frees_a_slot_without_affecting_other_devices(
@@ -205,6 +275,262 @@ async def test_canary_invite_creates_at_most_one_device_session_under_race(
     assert sum(isinstance(result, tuple) for result in results) == 1
     assert sum(isinstance(result, PermissionError) for result in results) == 1
     assert len(await repository.list_active_sessions("owner@example.com")) == 1
+
+
+async def test_canary_device_login_rolls_back_invite_session_and_identity_on_refresh_failure(
+    repository: CloudRepository,
+) -> None:
+    expires_at = datetime.now(UTC) + timedelta(days=30)
+    duplicate_refresh = "duplicate-refresh-token-value-for-atomic-canary"
+    await repository.create_invite("refresh-seed", email="seed@example.com")
+    seed_user, seed_session = await repository.create_canary_invite_session(
+        invite_code="refresh-seed",
+        token="refresh-seed-session",
+        device_name="Seed",
+        expires_at=expires_at,
+    )
+    await repository.create_refresh_token(
+        user_id=seed_user.user_id,
+        family_id=seed_session.session_id,
+        token=duplicate_refresh,
+        expires_at=expires_at,
+    )
+    await repository.create_invite("atomic-canary-failure", email="atomic@example.com")
+
+    with pytest.raises(IntegrityError):
+        await repository.create_canary_invite_session(
+            invite_code="atomic-canary-failure",
+            token="atomic-canary-session",
+            device_name="Atomic Canary",
+            expires_at=expires_at,
+            refresh_token=duplicate_refresh,
+            refresh_expires_at=expires_at,
+        )
+
+    assert await repository.invite_is_consumed("atomic-canary-failure") is False
+    assert await repository.list_active_sessions("atomic@example.com") == []
+    user, session = await repository.create_canary_invite_session(
+        invite_code="atomic-canary-failure",
+        token="atomic-canary-session-retry",
+        device_name="Atomic Canary",
+        expires_at=expires_at,
+        refresh_token="fresh-canary-refresh-token-after-rollback",
+        refresh_expires_at=expires_at,
+    )
+    assert user.email == "atomic@example.com"
+    assert session.device_name == "Atomic Canary"
+
+
+async def test_development_login_rolls_back_identity_and_invite_on_session_failure(
+    repository: CloudRepository,
+) -> None:
+    expires_at = datetime.now(UTC) + timedelta(days=7)
+    await repository.create_invite("development-seed", email="seed-dev@example.com")
+    await repository.create_development_invite_session(
+        email="seed-dev@example.com",
+        display_name="Seed",
+        invite_code="development-seed",
+        token="duplicate-development-session-token",
+        device_name="Seed browser",
+        expires_at=expires_at,
+    )
+    await repository.create_invite("atomic-development-failure", email="dev@example.com")
+
+    with pytest.raises(IntegrityError):
+        await repository.create_development_invite_session(
+            email="dev@example.com",
+            display_name="Developer",
+            invite_code="atomic-development-failure",
+            token="duplicate-development-session-token",
+            device_name="Browser",
+            expires_at=expires_at,
+        )
+
+    assert await repository.invite_is_consumed("atomic-development-failure") is False
+    assert await repository.list_active_sessions("dev@example.com") == []
+    user, _ = await repository.create_development_invite_session(
+        email="dev@example.com",
+        display_name="Developer",
+        invite_code="atomic-development-failure",
+        token="development-session-after-rollback",
+        device_name="Browser",
+        expires_at=expires_at,
+    )
+    assert user.email == "dev@example.com"
+
+
+async def test_development_login_reuses_an_existing_user_without_development_identity(
+    repository: CloudRepository,
+) -> None:
+    email = "linked-dev@example.com"
+    await repository.create_invite("linked-github", email=email)
+    existing = await repository.get_or_create_identity(
+        provider="github",
+        provider_subject="linked-github-subject",
+        email=email,
+        display_name="Linked User",
+        invite_code="linked-github",
+    )
+    await repository.create_invite("linked-development", email=email)
+
+    user, session = await repository.create_development_invite_session(
+        email=email,
+        display_name="Linked User",
+        invite_code="linked-development",
+        token="linked-development-session",
+        device_name="Development browser",
+        expires_at=datetime.now(UTC) + timedelta(days=7),
+        refresh_token="linked-development-refresh-token",
+        refresh_expires_at=datetime.now(UTC) + timedelta(days=7),
+    )
+
+    assert user.user_id == existing.user_id
+    assert session.user_id == existing.user_id
+    assert await repository.invite_is_consumed("linked-development") is True
+
+
+async def test_concurrent_canary_device_login_persists_one_complete_refresh_family(
+    concurrent_repository: CloudRepository,
+) -> None:
+    repository = concurrent_repository
+    expires_at = datetime.now(UTC) + timedelta(days=30)
+    invite = "atomic-device-race"
+    refresh_tokens = (
+        "atomic-device-refresh-token-first-value",
+        "atomic-device-refresh-token-second-value",
+    )
+    await repository.create_invite(invite, email="race@example.com")
+
+    results = await asyncio.gather(
+        *(
+            repository.create_canary_invite_session(
+                invite_code=invite,
+                token=f"atomic-device-session-{index}",
+                device_name=f"Device {index}",
+                expires_at=expires_at,
+                refresh_token=refresh_token,
+                refresh_expires_at=expires_at,
+            )
+            for index, refresh_token in enumerate(refresh_tokens)
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert sum(isinstance(result, PermissionError) for result in results) == 1
+    winner_index = next(index for index, result in enumerate(results) if isinstance(result, tuple))
+    loser_index = 1 - winner_index
+    assert (
+        await repository.rotate_refresh_token(
+            token=refresh_tokens[winner_index],
+            replacement="winner-refresh-replacement-token-value",
+            expires_at=expires_at,
+        )
+    ) is not None
+    assert (
+        await repository.rotate_refresh_token(
+            token=refresh_tokens[loser_index],
+            replacement="loser-refresh-replacement-token-value",
+            expires_at=expires_at,
+        )
+        is None
+    )
+
+
+async def test_concurrent_canary_first_logins_share_one_user_across_distinct_invites(
+    concurrent_repository: CloudRepository,
+) -> None:
+    repository = concurrent_repository
+    expires_at = datetime.now(UTC) + timedelta(days=30)
+    email = "parallel-canary@example.com"
+    invites = ("parallel-canary-first", "parallel-canary-second")
+    refresh_tokens = (
+        "parallel-canary-refresh-token-first-value",
+        "parallel-canary-refresh-token-second-value",
+    )
+    for invite in invites:
+        await repository.create_invite(invite, email=email)
+
+    results = await asyncio.gather(
+        *(
+            repository.create_canary_invite_session(
+                invite_code=invite,
+                token=f"parallel-canary-session-{index}",
+                device_name=f"Device {index}",
+                expires_at=expires_at,
+                refresh_token=refresh_tokens[index],
+                refresh_expires_at=expires_at,
+            )
+            for index, invite in enumerate(invites)
+        ),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(result, tuple) for result in results), results
+    user_ids = {result[0].user_id for result in results if isinstance(result, tuple)}
+    assert len(user_ids) == 1
+    assert len(await repository.list_active_sessions(email)) == 2
+    for refresh_token in refresh_tokens:
+        assert (
+            await repository.rotate_refresh_token(
+                token=refresh_token,
+                replacement=f"replacement-{refresh_token}",
+                expires_at=expires_at,
+            )
+            is not None
+        )
+
+
+async def test_concurrent_development_login_persists_one_complete_refresh_family(
+    concurrent_repository: CloudRepository,
+) -> None:
+    repository = concurrent_repository
+    expires_at = datetime.now(UTC) + timedelta(days=7)
+    invite = "atomic-development-race"
+    email = "development-race@example.com"
+    refresh_tokens = (
+        "development-race-refresh-token-first-value",
+        "development-race-refresh-token-second-value",
+    )
+    await repository.create_invite(invite, email=email)
+
+    results = await asyncio.gather(
+        *(
+            repository.create_development_invite_session(
+                email=email,
+                display_name="Development Race",
+                invite_code=invite,
+                token=f"development-race-session-{index}",
+                device_name=f"Browser {index}",
+                expires_at=expires_at,
+                refresh_token=refresh_token,
+                refresh_expires_at=expires_at,
+            )
+            for index, refresh_token in enumerate(refresh_tokens)
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, tuple) for result in results) == 1
+    assert sum(isinstance(result, PermissionError) for result in results) == 1
+    assert len(await repository.list_active_sessions(email)) == 1
+    winner_index = next(index for index, result in enumerate(results) if isinstance(result, tuple))
+    loser_index = 1 - winner_index
+    assert (
+        await repository.rotate_refresh_token(
+            token=refresh_tokens[winner_index],
+            replacement="development-winner-refresh-replacement",
+            expires_at=expires_at,
+        )
+    ) is not None
+    assert (
+        await repository.rotate_refresh_token(
+            token=refresh_tokens[loser_index],
+            replacement="development-loser-refresh-replacement",
+            expires_at=expires_at,
+        )
+        is None
+    )
 
 
 async def test_workspace_lookup_is_scoped_to_its_project_owner(repository: CloudRepository) -> None:

@@ -43,6 +43,7 @@ export function useCloudAuth() {
       })
       if (!response.ok) {
         user.value = null
+        if (response.status === 401) localStorage.removeItem('sage.coding.recentSessionId')
         return false
       }
       user.value = (await response.json()) as CloudUser
@@ -90,5 +91,27 @@ export function useCloudAuth() {
     return user.value
   }
 
-  return { user, error, check, options, loginWithInvite, startGitHubLogin }
+  async function logout(): Promise<boolean> {
+    error.value = ''
+    try {
+      const response = await fetch(new URL('/api/v1/cloud/auth/logout', API_BASE_URL), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { Accept: 'application/json' },
+      })
+      if (response.status !== 204) {
+        error.value = '退出登录未完成，请重试'
+        return false
+      }
+    } catch {
+      error.value = '退出登录未完成，请重试'
+      return false
+    }
+    user.value = null
+    localStorage.removeItem('sage.coding.recentSessionId')
+    window.dispatchEvent(new CustomEvent('sage-auth-logout'))
+    return true
+  }
+
+  return { user, error, check, options, loginWithInvite, startGitHubLogin, logout }
 }
