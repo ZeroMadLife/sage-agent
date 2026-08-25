@@ -280,6 +280,9 @@ impl ConfigurationReconciliationLease {
     }
 
     fn validate_locked(&self, inner: &HostInner) -> Result<(), ConfigurationActionFailure> {
+        if inner.stopping {
+            return Err(configuration_failure("desktop_stopping", "restart_sage"));
+        }
         if inner.configuration_epoch != self.epoch
             || inner.launch_generation != self.request.generation
             || !inner.configuration_restart_in_progress
@@ -2707,6 +2710,22 @@ mod tests {
             Err(ConfigurationMutationCommitError::Admission(_))
         ));
         assert_eq!(repository.load_unpublished_orphans().unwrap(), [record]);
+    }
+
+    #[test]
+    fn reconciliation_lease_cannot_commit_after_desktop_starts_stopping() {
+        let shared = SharedHostState::default();
+        let guard = acquire_configuration_mutation_guard(&shared).unwrap();
+        let lease = guard.begin_reconciliation().unwrap();
+        shared.0.lock().unwrap().stopping = true;
+
+        let committed = lease.commit(|| Ok::<_, ()>("metadata-visible"));
+
+        let Err(ConfigurationMutationCommitError::Admission(error)) = committed else {
+            panic!("stopping reconciliation unexpectedly committed")
+        };
+        assert_eq!(error.reason_code, "desktop_stopping");
+        assert_eq!(error.action, "restart_sage");
     }
 
     #[test]

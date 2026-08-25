@@ -872,7 +872,17 @@ impl OnboardingService {
                 ));
             }
         };
-        let models = normalize_models(models)?;
+        let models = match normalize_models(models) {
+            Ok(models) => models,
+            Err(error) => {
+                self.record_probe_failure_coordinated(
+                    guard,
+                    provider_id,
+                    "provider_probe_invalid_response",
+                )?;
+                return Err(error);
+            }
+        };
         let current_default = self.default_model(provider_id)?;
         let selected_default = current_default
             .filter(|value| models.contains(value))
@@ -2823,6 +2833,46 @@ mod tests {
     }
 
     #[test]
+    fn malformed_success_probe_persists_error_reason_with_valid_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let service = OnboardingService::open_with(
+            root.path().join("data"),
+            Arc::new(BarrierSecrets::default()),
+            Arc::new(MalformedSuccessProbe),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, _) = test_host(root.path());
+        let provider_id = {
+            let mut runtime = locked_runtime(&state);
+            let OnboardingRuntime::Ready(service) = &mut *runtime else {
+                panic!("service not ready")
+            };
+            service.add_provider(provider_input()).unwrap().provider_id
+        };
+
+        let outcome = execute_onboarding_action(
+            DesktopOnboardingAction::ProbeProvider { provider_id },
+            &state,
+            &host,
+        );
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "provider_probe_invalid_response"
+        );
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        assert_eq!(service.snapshot().providers[0].status, "error");
+        assert_eq!(
+            service.snapshot().providers[0].reason_code.as_deref(),
+            Some("provider_probe_invalid_response")
+        );
+    }
+
+    #[test]
     fn production_probe_failure_lease_drift_does_not_write_error_metadata() {
         let root = tempfile::tempdir().unwrap();
         let completed = Arc::new(Barrier::new(2));
@@ -2881,6 +2931,18 @@ mod tests {
 
     struct FailingProbe {
         error: ProviderProbeError,
+    }
+
+    struct MalformedSuccessProbe;
+
+    impl ProviderProbe for MalformedSuccessProbe {
+        fn discover_models(
+            &self,
+            _base_url: &str,
+            _secret: &str,
+        ) -> Result<Vec<String>, ProviderProbeError> {
+            Ok(vec!["   ".into()])
+        }
     }
 
     impl ProviderProbe for FailingProbe {
