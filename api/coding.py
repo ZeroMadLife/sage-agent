@@ -46,6 +46,7 @@ from starlette.requests import HTTPConnection
 from starlette.websockets import WebSocketDisconnect
 
 from api.cloud_dependencies import (
+    SESSION_COOKIE,
     authenticated_connection_user,
     require_cloud_authentication_in_production,
 )
@@ -2644,7 +2645,7 @@ async def _rehydrate_coding_runtime_inner(
             )
         ),
         side_effect_tools_enabled=bool(
-            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
+            getattr(connection.app.state, "coding_side_effect_tools_enabled", True)
         ),
     )
     pending_approval = coordinator.journal.recoverable_approval()
