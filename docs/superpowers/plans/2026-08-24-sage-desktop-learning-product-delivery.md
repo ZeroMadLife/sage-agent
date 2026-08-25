@@ -704,10 +704,10 @@ Provider、capability 与 artifact smoke 合同保持不变。
   `sage-api`、`sage-api-aarch64-apple-darwin`、`sage-sidecar-launcher` 精确进程检查均为零。
 - **核验恢复记录**：第一次 manifest 逐项 SHA 命令误用 zsh 特殊变量 `path`，覆盖 `PATH` 后使
   `shasum/awk` 未执行，故该次 `0/269` 输出作废；随后改用 `artifact_path` 与显式 `/usr/bin/shasum`，
-  对原始 sidecar 和 `.app` 分别只读重跑，均得到有效 `269/269`。当前候选只等待第七轮中枢三镜头短审；
+  对原始 sidecar 和 `.app` 分别只读重跑，均得到有效 `269/269`。当前候选只等待第八轮中枢三镜头短审；
   未 push、未建 PR、未合入，也未删除分支或 worktree。
 
-### D2.7 实施收口（2026-08-25，artifact 待生成）
+### D2.7 实施收口（2026-08-25，artifact 已固定）
 
 - **mini-spec**：`RetryProviderReconciliation` 必须先取得 host-owned restart reconciliation lease，
   再在锁外执行 Keychain 长调用；每个 operation 的 journal/metadata 终结动作回到同一 lease 的短
@@ -722,7 +722,7 @@ Provider、capability 与 artifact smoke 合同保持不变。
   `ConfigurationReconciliationLease`、lease-safe journal cleanup、probe failure CAS 与三个 production
   caller tests，Keychain 长调用仍不持有 host mutex。
 - **源码门禁**：代码 commit `8efb4e2`；Rust focused supervisor `36`、onboarding `7`、Provider contract
-  `14`，Rust full `47`，fmt 与 Clippy `-D warnings` 通过；临时 Keychain round-trip/cleanup 通过；Python
+  `14`，Rust full `89`，fmt 与 Clippy `-D warnings` 通过；临时 Keychain round-trip/cleanup 通过；Python
   desktop `61`、source product smoke `1`、Vue host adapter/HostGate focused `39`，标准与 public Vue
   production build 通过。Vue full `548/552`，剩余 4 项为既有 router/Settings 超时或 legacy evolution
   路由兼容失败，与本轮 Rust 变更无关。`git diff --check` 通过。
@@ -742,7 +742,8 @@ Provider、capability 与 artifact smoke 合同保持不变。
   private-key marker、Provider key 文件与 `.env` 均零命中；唯一 `.pem` 为 certifi 公共 CA trust bundle。
   `sage-desktop`、`sage-api`、`sage-api-aarch64-apple-darwin`、`sage-sidecar-launcher` 精确进程检查均为零。
 - **收口状态**：代码 commit `8efb4e2c497b044064590ac284e945118e6f5a57`，bundle source/docs SHA 为
-  `5e48ce544aaf2c581386b240813d16e34f113859`；最终 docs receipt commit 待本段收据提交后固定。当前候选
+  `5e48ce544aaf2c581386b240813d16e34f113859`；最终 docs receipt commit 为
+  `a6d7cec26e935d475a1a40de14d597c1651e5547`。当前候选
   等待第八轮中枢三镜头短审，未 push、未建 PR、未合入，也未删除分支或 worktree。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
