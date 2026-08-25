@@ -26,7 +26,7 @@ SQLite 是本机可携带的 canonical store，能在没有 PostgreSQL、Redis �
 
 - 当前只验收 macOS Apple Silicon；Intel、Windows、Linux 不在本版本范围。
 - 原生目录选择器依赖 macOS 桌面宿主；浏览器开发模式仍保留手工粘贴路径作为后备。
-- 本轮正式 bundle 基于 `0b6b1de47cb1ff938478444e688bc416a9b49354` 构建；receipt 的生命周期 smoke 全部通过，人工 picker 验收覆盖选择、回填、提交和恢复。
+- 本轮正式 bundle 基于 `3b09fc6ab20e5a24dad15fe56af9b868be7aee4d` 构建；receipt 的生命周期 smoke 全部通过，人工 picker 验收覆盖选择、回填、提交和恢复。
 - ad-hoc `.app` 不是可公开安装的商业发行版；没有 Developer ID、公证、DMG 和自动更新。
 - 本地 fake Provider/Web 的 E2E 不代表真实 Provider 质量、Web 新鲜度、生成正确率或生产 SLA。
 - 桌面默认关闭 Web Provider；不能把源码层 Research API 或 fake Web 测试描述成当前 App 已具备联网 Research。

@@ -41,10 +41,10 @@ git diff --check
 本轮 picker 修复的正式 arm64 bundle：
 
 ```text
-App: /private/tmp/sage-desktop-v120-onboarding-final-1787672344/Sage.app
-Receipt: /private/tmp/sage-desktop-v120-onboarding-final-1787672344/desktop-bundle-receipt.json
-Receipt SHA-256: c4480068942af067a5509229972dfdc544050bf2cf00c84d3772c246b1731edc
-Source SHA: 0b6b1de47cb1ff938478444e688bc416a9b49354
+App: /private/tmp/sage-desktop-v120-onboarding-final-1787674819/Sage.app
+Receipt: /private/tmp/sage-desktop-v120-onboarding-final-1787674819/desktop-bundle-receipt.json
+Receipt SHA-256: e35f4cd17ff86b9ae2e14e17ea7c376a55d937d144911da6bc520e2b564891fe
+Source SHA: 3b09fc6ab20e5a24dad15fe56af9b868be7aee4d
 ```
 
 Bundler smoke 已通过 `app_launch`、`crash_restart`、`explicit_exit`、`handshake_health`、`process_cleanup`、`webview_reconnect`；原生 picker 的人工验收另外记录为：打开 `Open` 面板、选择目录、路径回填、提交进入 Provider 配置、重新启动后 workspace 名称恢复。

@@ -64,10 +64,13 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 
 ## 最新冻结构建
 
-- App 构建目录：`/private/tmp/sage-desktop-v120-onboarding-final-1787672344/Sage.app`
-- Bundle receipt：`/private/tmp/sage-desktop-v120-onboarding-final-1787672344/desktop-bundle-receipt.json`
-- Bundle receipt SHA-256：`c4480068942af067a5509229972dfdc544050bf2cf00c84d3772c246b1731edc`
-- Bundle source SHA：`0b6b1de47cb1ff938478444e688bc416a9b49354`
-- 自用 zip SHA-256：`604f1e7e4a1f40bd14354c25d499b66179410ce49035c17f7eee32b24c910cdf`
+- App 构建目录：`/private/tmp/sage-desktop-v120-onboarding-final-1787674819/Sage.app`
+- 安装路径：`/Users/zeromadlife/Applications/Sage-v1.2.0-macOS-arm64.app`
+- Bundle receipt：`/private/tmp/sage-desktop-v120-onboarding-final-1787674819/desktop-bundle-receipt.json`
+- Bundle receipt SHA-256：`e35f4cd17ff86b9ae2e14e17ea7c376a55d937d144911da6bc520e2b564891fe`
+- Bundle source SHA：`3b09fc6ab20e5a24dad15fe56af9b868be7aee4d`
+- 自用 zip：`/Users/zeromadlife/Desktop/Sage-v1.2.0-macOS-arm64-picker-fix.zip`
+- 自用 zip SHA-256：`e0f3c95909fc10feb053c4b177fbe5cc7fbc45b18064f5f17a26bf8e53f4e60c`
+- Sidecar receipt SHA-256：`ccb2f4d7007b1fff7e4d76e230a56d9f1e791ea6f6b486a8a4f1455b582859cf`
 - Bundle lifecycle：`app_launch`、`crash_restart`、`explicit_exit`、`handshake_health`、`process_cleanup`、`webview_reconnect` 全部通过。
 - Sidecar smoke：学习链路、重启恢复、本地对话、SQLite RAG、副作用工具阻断、secret hygiene 全部通过。
