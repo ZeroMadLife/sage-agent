@@ -4,7 +4,7 @@
 
 **建议：允许作为本机单用户 MVP 候选使用和创建 PR。**
 
-这版的发布对象是个人 Mac 上可双击运行的 `.app`，目标是验证 Sage 的学习产品主线，而不是完成商业软件发行。桌面宿主、sidecar、Provider、Learning Task、RAG/Research、引用材料和恢复链已经形成一条可运行路径。
+这版的发布对象是个人 Mac 上可双击运行的 `.app`，目标是验证 Sage 的学习产品主线，而不是完成商业软件发行。桌面宿主、sidecar、Provider、Learning Task、本地 RAG、引用材料和恢复链已经形成一条可运行路径；Research/L3 API 已随 sidecar 打包，但默认没有 Web Provider，因此知识不足时保持 `source_gap`。
 
 ## 关键取舍
 
@@ -27,6 +27,7 @@ SQLite 是本机可携带的 canonical store，能在没有 PostgreSQL、Redis �
 - 当前只验收 macOS Apple Silicon；Intel、Windows、Linux 不在本版本范围。
 - ad-hoc `.app` 不是可公开安装的商业发行版；没有 Developer ID、公证、DMG 和自动更新。
 - 本地 fake Provider/Web 的 E2E 不代表真实 Provider 质量、Web 新鲜度、生成正确率或生产 SLA。
+- 桌面默认关闭 Web Provider；不能把源码层 Research API 或 fake Web 测试描述成当前 App 已具备联网 Research。
 - 全仓仍可能受既有 Coding 测试隔离债务和依赖环境 Mypy 影响；不阻断本地 MVP 验收。
 
 ## 下一步

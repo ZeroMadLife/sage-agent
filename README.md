@@ -77,7 +77,7 @@ Sage 不是给聊天框加几个工具，而是一个本地优先的个人 AI �
   -> Permission -> Policy -> Approval -> Container Sandbox
   -> PostgreSQL hybrid retrieval
   -> EvidenceBundle + Claim Sufficiency
-  -> Answer / bounded Research child / honest abstention
+  -> Answer / bounded Research child / honest abstention（桌面默认未配置 Web Provider 时保留 source_gap）
   -> Checkpoint / Timeline / Trace / Artifact
 ```
 

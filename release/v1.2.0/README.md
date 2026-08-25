@@ -31,6 +31,10 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 - durable checkpoint、generation guard、lease/takeover 和 SQLite 持久化支持刷新、进程重启后的继续执行。
 - 退出时宿主终止并确认 sidecar，不留下 Sage sidecar 残留进程。
 
+本版本的冻结 sidecar 已在提交 `e93b5eaf2ea0c10b745deef3060550d8c4ba939c` 上完成真实学习 smoke：本地 Markdown 摄取、任务激活、kickoff、`knowledge_pending → knowledge_ready → synthesize_pending → artifact_ready` 四阶段推进、Artifact citation 读取，以及使用同一数据目录重启后的 `resume` 均通过。
+
+桌面 sidecar 当前默认关闭 Web Search/Web Fetch Provider。Research/L3 路由已经随 sidecar 打包，但桌面知识不足时会保留可恢复的 `source_gap`，不会在未配置 Web Provider 的情况下伪造联网结果。
+
 ## 明确不做
 
 - 注册、OAuth、在线账号、刷新令牌、多用户和云端同步；
@@ -38,6 +42,7 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 - 商业化部署、生产 SLA、跨平台发行和公网服务；
 - 自动把学习过程写入长期记忆或自动批准 Memory Proposal；
 - 把本地 fake Provider/Web 的通过结果包装成真实模型质量或生产准确率。
+- 把桌面默认关闭 Web Provider 的 `source_gap` 包装成已完成联网 Research。
 
 ## 运行入口
 
@@ -53,3 +58,10 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 - 发布候选分支：`release/v1.2.0`
 - `main` 只接收通过本地 MVP 验收的同一不可变 SHA。
 - 本版本允许创建 GitHub PR 和推送候选分支，但不自动执行商业签名、公证或公开发布。
+
+## 最新冻结构建
+
+- App 构建目录：`/private/tmp/sage-desktop-v120-learning-e93b5ea/Sage.app`
+- Bundle receipt：`/private/tmp/sage-desktop-v120-learning-e93b5ea/desktop-bundle-receipt.json`
+- Bundle lifecycle：`app_launch`、`crash_restart`、`explicit_exit`、`handshake_health`、`process_cleanup`、`webview_reconnect` 全部通过。
+- Sidecar smoke：学习链路、重启恢复、本地对话、SQLite RAG、副作用工具阻断、secret hygiene 全部通过。

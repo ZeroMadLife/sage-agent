@@ -44,7 +44,8 @@ git diff --check
 - Provider Key 不出现在前端、URL、日志、SQLite 正文和诊断包；
 - 普通学习请求没有写入、Patch、Shell、MCP 或子 Agent 副作用工具；
 - 学习材料能读取 citation，Research 失败时返回明确的可恢复状态；
+- 冻结 sidecar 的学习 smoke 能完成 `knowledge_pending → knowledge_ready → synthesize_pending → artifact_ready`，并在重启后恢复到 `artifact_ready`；
 - 刷新或进程重启后任务不丢失、不重复执行、不扩大权限；
 - 退出后 `sage-desktop`、launcher 和 sidecar 进程数量为零。
 
-本地 fake Provider/Web 的自动化通过只证明协议、持久化和恢复边界，不证明线上模型质量、Web 新鲜度、生产准确率或 SLA。
+桌面默认关闭 Web Search/Web Fetch Provider；知识不足时的 `source_gap` 是预期的可恢复状态。自动化通过只证明协议、持久化和恢复边界，不证明线上模型质量、Web 新鲜度、生产准确率或 SLA。

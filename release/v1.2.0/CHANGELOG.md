@@ -8,6 +8,7 @@
 - Assistant 聊天、可恢复 Learning Task、Knowledge-first RAG、条件只读 Research 和引用材料。
 - 刷新、关闭、后端重启后的 checkpoint/resume 与 generation takeover。
 - `release/v1.2.0/` 本地 MVP 运行说明、验收清单和发布边界。
+- 冻结 sidecar 增加本地 Learning L3 打包 smoke，覆盖四阶段推进、Artifact citation 和同数据目录重启恢复。
 
 ## Changed
 
@@ -15,6 +16,7 @@
 - 前端和 Tauri 应用版本统一为 `1.2.0`。
 - README 从“平台能力总览”调整为“打开即用的本地学习产品 + 工程事实”双层结构。
 - 普通学习场景默认只读；Coding 场景才允许受控执行能力。
+- 桌面默认不启用 Web Search/Web Fetch；知识不足时保留可恢复 `source_gap`，不伪造联网 Research。
 
 ## Not Included
 
