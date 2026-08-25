@@ -4,7 +4,7 @@
 >
 > L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
 >
-> L3 状态（2026-08-25）：前两轮候选均未通过中枢三镜头复审；第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 已从 clean `b036b17cd47caa2383732289f2f98f617d69028f` 在原职责分支完成，等待新一轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
+> L3 状态（2026-08-25）：前两轮候选均未通过中枢三镜头复审；L3.1 code candidate `dd9c93f` 已在原职责分支完成，等待第八轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -340,7 +340,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
-> 第二轮修复 code candidate：`40af474980d33cb64d3546fc34aa163b8fffccdf`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。前两轮候选均未获三镜头放行，当前结论仅为“第二轮修复候选已完成本地门禁，等待重新复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
+> L3.1 code candidate：`dd9c93f`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。前两轮候选均未获三镜头放行，当前结论仅为“L3.1 已完成本地门禁，等待第八轮复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 
@@ -374,7 +374,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - Slice 4（`4848cf4`、`bbf7c19`）：Learning 失败码集中为可穷举枚举，L3 4xx/OpenAPI 使用统一结构；共享 UI 以 task + generation 拒绝迟到响应。Playwright 不再在浏览器用 `Map/page.route` 重写状态机，而是启动隔离真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web，并以服务进程 PID 变化验证重启恢复。
 - 第二轮修复（`40af474`）：request journal 增加可过期 lease、owner 与递增 fencing，failed/cancelled/orphan running 可接管，旧 owner 不能 complete 新 claim；最终 checkpoint CAS 重验完整 frozen binding。Research 使用单调 deadline 覆盖 executor、EvidenceBundle read 与冲突/sufficiency projection，timeout/cancel 终结 child 并留下 terminal receipt；Knowledge 与 Web evidence 合并后重新判定冲突。Resume 与 replay 重验跨 task Artifact、response digest/schema/canonical binding；Learning API 的 404/409/422/503 与 OpenAPI 同构，UI refresh 可接管旧 generation 并解除 busy。
 - fixture-verified：B1/B2/B3、L0-L2 邻接与必要 Coding 定向 `136 passed`；最终 Research/Artifact/Execution/API focused `68 passed`；Vue 组件定向 `4 passed`；仓库化纵向 Playwright `3 passed`；全仓 Ruff、Mypy（`255 source files`）、private/public production build、15 个改动 Python 文件 format 与 `git diff --check` 均通过。
-- 完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；3 个失败均位于未被 L3 修改的 `tests/api/test_coding_context_routes.py`。detached `b036b17` 固定基线单独运行该文件同样得到 `3 failed, 11 passed`：一个 helper 重复 `mkdir`，两个 resume 用例未移除内存 runtime，因而没有进入篡改后的持久化校验。本片不扩大为 Coding runtime 重构；该基线测试隔离债务仍未关闭。
+- 历史第二轮 fixture 记录为 `527 passed` / `2154 passed`；L3.1 当前受控单线程 Vue 为 `71 files / 527 passed`，Python 全量为 `2168 passed, 12 skipped, 3 failed`。3 个失败均位于未被 L3 修改的 `tests/api/test_coding_context_routes.py`，固定 `b036b17` 对照同为 `3 failed, 11 passed`；本片不扩大为 Coding runtime 重构。
 - 未证明：本地 fake Knowledge/Provider/Web 只证明协议、scope、幂等、冲突投影与重启恢复，不证明真实 Knowledge 检索质量、真实 Provider/Web 质量、学习效果、生产准确率或 SLA。
 - Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀、书本 RAG projection 修改和 B4 跨领域 Eval 均保持未交付。
 
@@ -460,3 +460,11 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - 需要不可逆数据库迁移、用户数据物理删除策略或公开发布；
 - sidecar 打包证明当前 Python 原生依赖无法可靠分发，需要切换 Electron/服务端路线；
 - 产品方向、收费、隐私承诺或公开 SLA 发生变化。
+
+## L3.1 第八轮复审固定点（2026-08-25）
+
+- code candidate：`dd9c93f`；docs candidate 将在本段更新后单独提交；两者均只在本地，未 push、未建 PR、未合入。
+- implemented：Knowledge coverage 不再用 `bool(citations)`，并以完整 token/CJK phrase 语义交集保守判定；首个 Knowledge search 前接入 scope revalidator barrier；Research receipt 对 HTTPS/domain/freshness、evidence ref/title/hash/time/kind/conflict group 做 canonical readback 校验；hard deadline 不叠加固定 cancel grace；SQLite connect/BEGIN 失败释放锁，API 将 sqlite 故障映射为结构化 storage-unavailable 503。
+- fixture-verified：L3 focused `69 passed`；受控 Vue `71 files / 527 passed`；真实 FastAPI + SQLite Playwright `3 passed`；Python 全量 `2168 passed, 12 skipped, 3 failed`。
+- baseline comparison：3 个失败仍是未修改 `tests/api/test_coding_context_routes.py`；固定 `b036b17` 对照此前同为 `3 failed, 11 passed`，本轮未扩大 Coding 隔离债务。
+- not-proven：当前依赖组合全仓 Mypy 受既有 LangChain/LangGraph stub/API mismatch 影响；changed Research module targeted mypy 通过。fake Knowledge/Provider/Web 不证明真实质量、生产准确率、SLA 或学习效果；当前等待第八轮三镜头复审。

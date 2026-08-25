@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3 前两轮候选未获放行，第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 等待新一轮三镜头复审；B4-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3 前两轮候选未获放行，L3.1 code candidate `dd9c93f` 等待第八轮三镜头复审；B4-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -16,9 +16,9 @@
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
 | A4 Assistant 确认 | L2 docs candidate 已最终复审通过 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`、`ca6e618d6df993dff40ed3a304ca942c239e7d84` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
-| B1 Knowledge-only map | L3 第二轮修复候选，待重新复审 | `5705d33`、`40af474` | owner/workspace scoped Plan/Unit identity 与 reopen integrity；Knowledge-first map 使用真实 sufficiency/conflict，Knowledge/Web 冲突保留双方 citation，source gap/unverified 不代表 Mastery |
-| B2 条件 Research | L3 第二轮修复候选，待重新复审 | `5705d33`、`40af474` | 复用既有只读 Research/Web/Evidence runtime；单调 deadline 覆盖 executor、Evidence read 与 projection，gate/timeout/cancel/overrun receipt 可追溯 |
-| B3 Artifact + Resume | L3 第二轮修复候选，待重新复审 | `7997044`、`bccb10d`、`4848cf4`、`bbf7c19`、`40af474` | durable lease takeover、完整 frozen-binding CAS、replay/Resume tamper fail-closed、结构化 API、refresh/task generation guard 与真实服务重启 E2E；未合入 `dev/sage-v7` |
+| B1 Knowledge-only map | L3.1 修复候选，待第八轮复审 | `5705d33`、`40af474`、`dd9c93f` | owner/workspace scoped Plan/Unit identity 与 reopen integrity；真实 sufficiency/lexical coverage、scope barrier、Knowledge/Web 冲突保留双方 citation，source gap/unverified 不代表 Mastery |
+| B2 条件 Research | L3.1 修复候选，待第八轮复审 | `5705d33`、`40af474`、`dd9c93f` | 复用既有只读 Research/Web/Evidence runtime；全 transaction hard deadline、bounded cancel、provenance readback 与 gate/timeout/cancel/overrun receipt 可追溯 |
+| B3 Artifact + Resume | L3.1 修复候选，待第八轮复审 | `7997044`、`bccb10d`、`4848cf4`、`bbf7c19`、`40af474`、`dd9c93f` | durable takeover/CAS/replay 既有能力加 SQLite lock-safe transaction、结构化 storage 503、refresh/task generation guard 与真实服务重启 E2E；未合入 `dev/sage-v7` |
 | B4-E | 未开始 | - | 跨领域 Eval、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -718,6 +718,14 @@ A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candida
 
 B1-B3 前两轮候选未获三镜头放行。第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 在既有四个垂直 slice 上补齐 durable lease takeover 与旧 owner fencing、最终 CAS 的完整 frozen binding、Research transaction deadline 和真实 overrun receipt、Knowledge/Web 冲突证据合并、replay/Resume tamper fail-closed、闭集公共错误与 refresh generation 接管；Playwright 继续走真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web 及进程重启。
 
-当前 fixture 验证为：Python 相邻 `136 passed`、最终 Research/Artifact/Execution/API focused `68 passed`、Vue 组件定向 `4 passed`、真实服务 Playwright `3 passed`；全仓 Ruff、Mypy `255 source files`、private/public build、15 个改动 Python 文件 format 与 `git diff --check` 通过。完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；detached `b036b17` 固定基线单独运行同一 Coding context 文件也为 `3 failed, 11 passed`，证明本轮未扩大这 3 个既有测试隔离失败。
+当前 L3.1 fixture 验证为：focused `69 passed`、受控单线程 Vue `71 files / 527 passed`、真实服务 Playwright `3 passed`；Ruff、改动文件 format、compileall 与 `git diff --check` 通过。Python 全量 `2168 passed, 12 skipped, 3 failed`；detached `b036b17` 固定基线同一 Coding context 文件为 `3 failed, 11 passed`，证明本轮未扩大这 3 个既有测试隔离失败。全仓 Mypy 在当前依赖组合有既有 LangChain/LangGraph stub/API mismatch，targeted Research module 通过。
 
 当前停止在 L3 修复候选，等待中枢重新三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；本地 fake Knowledge/Provider/Web 只证明协议和恢复链路，不证明真实 Provider/Web 质量或学习效果。
+
+## L3.1 第八轮复审固定点（2026-08-25）
+
+- code candidate：`dd9c93f`；本轮 docs candidate 在本次文档提交中固定；均为本地提交，未 push、未建 PR、未合入。
+- implemented：Knowledge coverage 的 token/CJK phrase 语义 barrier、首个 Knowledge search 前 scope revalidator、Research provenance canonical readback、hard deadline cancel 边界、SQLite lock-safe transaction 与结构化 storage 503。
+- fixture-verified：L3 focused `69 passed`；受控 Vue `527 passed`；真实 FastAPI + SQLite Playwright `3 passed`；Python 全量 `2168 passed, 12 skipped, 3 failed`。
+- baseline comparison：3 个 Coding context 失败保持在未修改文件，固定 `b036b17` 对照同为 `3 failed, 11 passed`；没有把它们写成 L3 已关闭。
+- not-proven：全仓 Mypy 在当前依赖组合仍有既有 LangChain/LangGraph stub/API mismatch；targeted Research mypy 通过。真实 Provider/Web 质量、SLA、学习效果和第八轮复审结论均未证明。

@@ -2,7 +2,7 @@
 
 > 日期：2026-08-25
 >
-> 状态：L3 第二轮修复候选实施合同；code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 待中枢重新三镜头复审
+> 状态：L3.1 修复候选实施合同；code candidate `dd9c93f` 待第八轮三镜头复审
 >
 > 固定起点：`ca6e618d6df993dff40ed3a304ca942c239e7d84`
 >
@@ -111,6 +111,21 @@ Research receipt V1 固定：
 Evidence sufficiency 必须调用既有 `evaluate_retrieval_sufficiency` 合同，不能退化为
 `bool(citations)`。同一 conflict group 内不同 source revision/content hash 视为冲突，即使 URL
 不同或相同也保留双方 evidence/citation；冲突 Artifact 固定为 `unverified`，不能进入 ready。
+
+Coverage 只能来自 evidence 与当前 learning query 的显式 aspect 或保守 token 语义交集：Latin
+词按完整 token 比较，CJK 按连续短语比较；`api/capital`、`sage/message` 等 substring 命中不算
+覆盖，无法确认时保持 `source_gap/unverified` 并允许继续 Research。Research receipt provenance
+要求每项 evidence ref/title/url/fetched_at/kind/conflict_group 有界且可解析，URL 必须 HTTPS 且符合
+冻结 `allowed_domains/freshness`；`content_hash` 兼容 bare 64-hex digest 与受控
+`sha256:<opaque>`（仅安全字符、长度有界），不接受空值、脚本 scheme 或任意超长 payload。
+
+首次 Knowledge search 前必须通过 durable claim 后的 `learning_scope_revalidator` barrier；scope
+漂移在外部 search 前 fail closed，`KnowledgePort.search` 调用数保持为零。Research executor、
+EvidenceBundle read、冲突/sufficiency projection 与 child cancel 共享 monotonic deadline；deadline
+内只等待剩余时间，超时后以非阻塞 cancel 请求终结 child trace，不再额外叠加固定 1 秒 grace，receipt
+记录真实 wall elapsed。SQLite connect/BEGIN 失败必须释放进程锁；浏览器 advance/resume/artifact
+边界统一把 `sqlite3.Error` 映射为 `LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE` 的结构化
+503，不回显异常正文、路径或数据库细节。
 
 ### 4.4 Learning Artifact
 
@@ -236,17 +251,21 @@ Resume Summary 只投影：
 
 ## 10. 当前实现证据与未证明边界
 
-- code candidate：`40af474980d33cb64d3546fc34aa163b8fffccdf`；仅本地 commit，未 push、
+- code candidate：`dd9c93f`；仅本地 commit，未 push、
   未建 PR、未合入，且尚未获中枢重新三镜头放行。
 - implemented：durable request lease/takeover 与旧 owner fencing、完整 frozen-binding checkpoint CAS、
   response replay/Resume canonical tamper 校验、Research 全 transaction deadline 与 terminal usage receipt、
-  Knowledge/Web evidence 合并冲突、闭集 API error、UI refresh/task generation guard。
-- fixture-verified：Python 相邻 `136 passed`、最终 Research/Artifact/Execution/API focused `68 passed`、
-  Vue 组件 `4 passed`、真实服务纵向 Playwright `3 passed`；全仓 Ruff、Mypy `255 source files`、
-  private/public build、15 个改动 Python 文件 format 与 `git diff --check` 通过。
-- 完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；detached
+  lexical sufficiency coverage、scope revalidation barrier、provenance readback quarantine、SQLite
+  lock-safe transaction 与 browser-safe storage 503、Knowledge/Web evidence 合并冲突、闭集 API error、
+  UI refresh/task generation guard。
+- fixture-verified：L3.1 focused `69 passed`；受控单线程 Vue `71 files / 527 passed`（`--pool=threads
+  --no-file-parallelism --maxWorkers=1`）；真实服务纵向 Playwright `3 passed`；Ruff、改动文件 format、
+  compileall 与 `git diff --check` 通过。Research changed module targeted mypy 通过。
+- 完整 Vue 为 `527 passed`。完整 Python 为 `2168 passed, 12 skipped, 3 failed`；detached
   `b036b17` 固定基线单独运行同一 Coding context 文件也为 `3 failed, 11 passed`，因此这 3 项仍是
   L3 之外的未关闭测试隔离债务，而不是本轮新增失败。
+- not-proven：当前本地依赖组合执行全仓 Mypy 时出现既有 LangChain/LangGraph stub/API 不匹配，
+  尚未取得全仓 Mypy 绿灯；这不改变 targeted changed-module 结果，也未将该环境失败归因于本轮代码。
 - 本地 fake Knowledge/Provider/Web 只验证协议、持久化、并发、scope、恢复和 UI 投影，不证明
   真实 Knowledge 检索质量、Provider/Web 质量、学习效果、生产准确率或 SLA。
 
