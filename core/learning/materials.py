@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Literal
 
@@ -104,6 +106,7 @@ class LearningMapService:
         self,
         *,
         knowledge_port: KnowledgePort | None,
+        learning_scope_revalidator: Callable[[], object] | None = None,
         top_k: int = 8,
         token_budget: int = 3_000,
     ) -> None:
@@ -112,6 +115,7 @@ class LearningMapService:
         if not 256 <= token_budget <= 20_000:
             raise ValueError("token_budget must be between 256 and 20000")
         self.knowledge_port = knowledge_port
+        self.learning_scope_revalidator = learning_scope_revalidator
         self.top_k = top_k
         self.token_budget = token_budget
 
@@ -143,6 +147,10 @@ class LearningMapService:
         elif self.knowledge_port is None or not self.knowledge_port.available:
             gap_reason = "knowledge_unavailable"
         else:
+            if self.learning_scope_revalidator is not None:
+                # Durable claim has already fenced this request; revalidate the
+                # frozen scope immediately before the first external read.
+                self.learning_scope_revalidator()
             try:
                 result = await self.knowledge_port.search(
                     _knowledge_query(task),
@@ -598,12 +606,22 @@ def assess_learning_citations(
                 (item.source_revision, item.content_hash)
             )
     conflict_count = sum(1 for values in conflict_groups.values() if len(values) > 1)
-    query_fingerprint = f"learning_{_canonical_hash(_knowledge_query(task))[:32]}"
+    query = _knowledge_query(task)
+    query_terms = _learning_query_terms(query)
+    covered_aspects = (
+        ("learning_goal",)
+        if any(
+            set(query_terms).intersection(_learning_text_terms(f"{item.title} {item.content}"))
+            for item in citations
+        )
+        else ()
+    )
+    query_fingerprint = f"learning_{_canonical_hash(query)[:32]}"
     return evaluate_retrieval_sufficiency(
         query_fingerprint=query_fingerprint,
         round_index=1,
         required_aspects=("learning_goal",),
-        covered_aspects=("learning_goal",) if citations else (),
+        covered_aspects=covered_aspects,
         citation_refs=(item.citation_id for item in citations),
         source_refs=(item.url or item.source_revision for item in citations),
         conflict_count=conflict_count,
@@ -616,6 +634,16 @@ def assess_learning_citations(
 
 def _knowledge_query(task: LearningTask) -> str:
     return " ".join(filter(None, (task.topic, task.desired_outcome or "")))
+
+
+def _learning_query_terms(query: str) -> tuple[str, ...]:
+    """Extract bounded semantic anchors; citations without one remain a gap."""
+    terms = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", query.casefold())
+    return tuple(dict.fromkeys(term for term in terms if term not in {"学习", "能够", "解释"}))
+
+
+def _learning_text_terms(text: str) -> set[str]:
+    return set(re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]{2,}|[\u4e00-\u9fff]{2,}", text.casefold()))
 
 
 def _canonical_hash(payload: object) -> str:

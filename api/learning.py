@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import sqlite3
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -450,6 +451,12 @@ async def advance_learning_task(
             LearningFailureCode.RUNTIME_REHYDRATE_FAILED,
             "learning runtime could not be restored",
         ) from exc
+    except sqlite3.Error as exc:
+        raise _learning_error(
+            503,
+            LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE,
+            "learning state is temporarily unavailable",
+        ) from exc
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
     except ValueError as exc:
@@ -501,6 +508,12 @@ async def get_learning_resume(
         raise _learning_error(
             404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
         ) from exc
+    except sqlite3.Error as exc:
+        raise _learning_error(
+            503,
+            LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE,
+            "learning state is temporarily unavailable",
+        ) from exc
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
     return LearningResumeResponse.model_validate(asdict(summary))
@@ -543,6 +556,12 @@ async def get_learning_artifact(
             raise LearningArtifactNotFoundError("Learning Artifact not found")
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
+    except sqlite3.Error as exc:
+        raise _learning_error(
+            503,
+            LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE,
+            "learning state is temporarily unavailable",
+        ) from exc
     return LearningArtifactResponse.model_validate(asdict(artifact))
 
 
@@ -684,7 +703,12 @@ async def _execution_service(
     return (
         LearningExecutionService(
             store=_artifact_store(request),
-            map_service=LearningMapService(knowledge_port=knowledge_port),
+            map_service=LearningMapService(
+                knowledge_port=knowledge_port,
+                learning_scope_revalidator=lambda: scope.assert_current(
+                    _scope_resolver(request).revalidate(scope)
+                ),
+            ),
             research_service=research,
         ),
         LearningExecutionContext(

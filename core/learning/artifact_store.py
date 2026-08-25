@@ -8,6 +8,7 @@ import re
 import sqlite3
 import uuid
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1292,9 +1293,19 @@ class _ImmediateTransaction:
 
     def __enter__(self) -> sqlite3.Connection:
         self.store._lock.acquire()
-        self.connection = self.store._connect()
-        self.connection.execute("BEGIN IMMEDIATE")
-        return self.connection
+        try:
+            self.connection = self.store._connect()
+            self.connection.execute("BEGIN IMMEDIATE")
+            return self.connection
+        except Exception:
+            try:
+                if self.connection is not None:
+                    with suppress(Exception):
+                        self.connection.close()
+                    self.connection = None
+            finally:
+                self.store._lock.release()
+            raise
 
     def __exit__(self, exc_type, exc, traceback) -> None:  # type: ignore[no-untyped-def]
         assert self.connection is not None
@@ -1310,6 +1321,10 @@ class _ImmediateTransaction:
 
 _STAGES = frozenset(cast(tuple[str, ...], get_args(LearningCheckpointStage)))
 _ARTIFACT_ID = re.compile(r"lart_[0-9a-f]{24}")
+_RESEARCH_CONTENT_HASH = re.compile(
+    r"(?:[0-9a-f]{64}|sha256:[A-Za-z0-9][A-Za-z0-9._-]{0,159})\Z"
+)
+_RESEARCH_KINDS = frozenset({"web_search", "web_fetch"})
 
 
 def _lease_expiry() -> str:
@@ -1755,6 +1770,11 @@ def _validate_research_receipt(
         or (usage_overrun and not _allows_terminal_research_overrun(receipt))
     ):
         raise LearningResumeConflictError("Learning Research receipt budget binding changed")
+    _validate_research_evidence_provenance(
+        receipt.evidence,
+        allowed_domains=receipt.allowed_domains,
+        freshness=receipt.freshness,
+    )
     if not attempted and (
         receipt.token_budget < 0
         or receipt.max_steps < 0
@@ -1961,6 +1981,50 @@ def _validate_stored_research_receipt(
         or receipt.receipt_id != canonical_learning_research_receipt_id(receipt)
     ):
         raise ValueError("Learning Research receipt canonical binding is invalid")
+    _validate_research_evidence_provenance(
+        receipt.evidence,
+        allowed_domains=receipt.allowed_domains,
+        freshness=receipt.freshness,
+    )
+
+
+def _validate_research_evidence_provenance(
+    evidence: Sequence[LearningResearchEvidence],
+    *,
+    allowed_domains: Sequence[str],
+    freshness: str,
+) -> None:
+    if freshness not in {"all", "current"}:
+        raise ValueError("Learning Research freshness policy is invalid")
+    domains = tuple(str(domain).strip().casefold() for domain in allowed_domains)
+    for item in evidence:
+        evidence_ref = _bounded(item.evidence_ref, "evidence_ref", 256)
+        title = _bounded(item.title, "evidence_title", 300)
+        if not evidence_ref or not title or not _RESEARCH_CONTENT_HASH.fullmatch(item.content_hash):
+            raise ValueError("Learning Research evidence provenance is invalid")
+        if len(item.url) > 2_000 or item.url != item.url.strip():
+            raise ValueError("Learning Research evidence URL is invalid")
+        parsed = urlsplit(item.url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("Learning Research evidence URL is invalid")
+        host = parsed.hostname.casefold().rstrip(".")
+        if domains and not any(host == domain or host.endswith(f".{domain}") for domain in domains):
+            raise ValueError("Learning Research evidence domain is not allowed")
+        if item.kind not in _RESEARCH_KINDS:
+            raise ValueError("Learning Research evidence kind is invalid")
+        if len(item.conflict_group) > 160:
+            raise ValueError("Learning Research conflict group is invalid")
+        try:
+            fetched = datetime.fromisoformat(item.fetched_at.replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("Learning Research evidence fetched_at is invalid") from exc
+        if fetched.tzinfo is None:
+            raise ValueError("Learning Research evidence fetched_at requires timezone")
+        if freshness == "current":
+            now = datetime.now(UTC)
+            fetched = fetched.astimezone(UTC)
+            if fetched < now - timedelta(days=366) or fetched > now + timedelta(days=1):
+                raise ValueError("Learning Research evidence freshness is invalid")
 
 
 def _allows_terminal_research_overrun(receipt: LearningResearchReceipt) -> bool:

@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 from sage_harness import KnowledgeEvidence, KnowledgeRetrievalResult
 
+from core.harness.learning_scope import LearningScopeConflict
 from core.learning.materials import LearningMapService
 from core.learning.tasks import (
     LearningClarification,
@@ -196,6 +197,83 @@ async def test_disabled_knowledge_does_not_call_port() -> None:
     assert port.calls == 0
     assert outcome.artifact.status == "source_gap"
     assert outcome.gap_reason == "knowledge_disabled"
+
+
+@pytest.mark.asyncio
+async def test_unrelated_citation_does_not_cover_learning_goal_or_skip_research() -> None:
+    unrelated = KnowledgeEvidence(
+        citation_id="kcite-unrelated",
+        content="A recipe for sourdough bread and kitchen fermentation.",
+        page_revision="page-rev-unrelated",
+        source_revision="source-rev-unrelated",
+        metadata={"title": "Sourdough recipe"},
+    )
+    task = _task(policy=LearningSourcePolicy(web="allowed_when_insufficient"))
+    outcome = await LearningMapService(knowledge_port=FakeKnowledgePort(_result(unrelated))).build(
+        owner_id="local",
+        task=task,
+        parent_run_id="run-learning-1",
+        capability_revision="cap-rev-2",
+        catalog_revision="catalog-rev-1",
+    )
+
+    assert outcome.artifact.status == "unverified"
+    assert outcome.plan.units[0].status == "unverified"
+    assert outcome.gap_reason != "evidence_sufficient"
+    assert "source_gap" not in outcome.artifact.content or "来源状态" in outcome.artifact.content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("topic", "content", "title"),
+    (
+        ("学习 api", "Capital allocation is unrelated.", "Capital markets"),
+        ("学习 Sage", "A message queue is unrelated.", "Message systems"),
+    ),
+)
+async def test_learning_coverage_uses_tokens_not_substrings(
+    topic: str, content: str, title: str
+) -> None:
+    task = replace(_task(), topic=topic, desired_outcome="能够解释接口")
+    citation = KnowledgeEvidence(
+        citation_id="kcite-token-negative",
+        content=content,
+        page_revision="page-rev-negative",
+        source_revision="source-rev-negative",
+        metadata={"title": title},
+    )
+    outcome = await LearningMapService(knowledge_port=FakeKnowledgePort(_result(citation))).build(
+        owner_id="local",
+        task=task,
+        parent_run_id="run-learning-1",
+        capability_revision="cap-rev-2",
+        catalog_revision="catalog-rev-1",
+    )
+
+    assert outcome.artifact.status == "unverified"
+    assert outcome.plan.units[0].status == "unverified"
+
+
+@pytest.mark.asyncio
+async def test_scope_revalidation_barrier_runs_before_knowledge_search() -> None:
+    port = FakeKnowledgePort(_result(_evidence()))
+
+    def drift() -> None:
+        raise LearningScopeConflict("learning_scope_plan_mismatch")
+
+    with pytest.raises(LearningScopeConflict):
+        await LearningMapService(
+            knowledge_port=port,
+            learning_scope_revalidator=drift,
+        ).build(
+            owner_id="local",
+            task=_task(),
+            parent_run_id="run-learning-1",
+            capability_revision="cap-rev-2",
+            catalog_revision="catalog-rev-1",
+        )
+
+    assert port.calls == 0
 
 
 @pytest.mark.asyncio

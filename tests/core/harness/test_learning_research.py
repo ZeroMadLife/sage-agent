@@ -60,6 +60,17 @@ class CancelTrackingExecutor(FakeExecutor):
         self.cancelled.append(child_run_id)
 
 
+class SlowCancelExecutor(SlowExecutor):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel_started = asyncio.Event()
+        self.release_cancel = asyncio.Event()
+
+    async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
+        self.cancel_started.set()
+        await self.release_cancel.wait()
+
+
 class FakeEvidencePort:
     available = True
 
@@ -390,6 +401,54 @@ async def test_research_timeout_covers_evidence_read_and_cancels_child_trace() -
     assert outcome.receipt.actual_tool_count == 2
     assert outcome.receipt.actual_elapsed_seconds >= 0.09
     assert executor.cancelled == [outcome.receipt.child_run_id]
+
+
+@pytest.mark.asyncio
+async def test_research_cancel_cleanup_does_not_extend_hard_deadline() -> None:
+    task = _task()
+    executor = SlowCancelExecutor()
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"research"}),
+        profiles=(
+            SubagentProfile(
+                name="research",
+                tool_scope=("search_web",),
+                token_budget=2_000,
+                timeout_seconds=0.1,
+                max_steps=2,
+            ),
+        ),
+    )
+    service = LearningResearchService(
+        subagent_executor=executor,
+        subagent_config=config,
+        evidence_bundle_port=FakeEvidencePort(_bundle()),
+    )
+    plan = await _plan(task)
+
+    started = asyncio.get_running_loop().time()
+    outcome = await service.run(
+        task=task,
+        plan=plan,
+        unit_id=plan.units[0].unit_id,
+        thread_id="session-1",
+        parent_run_id="run-parent",
+        workspace_path="/workspace",
+        capability_revision="cap-rev-1",
+        allowed_capabilities=frozenset({"web:search"}),
+        evidence_sufficient=False,
+        remaining_token_budget=2_000,
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+    await asyncio.sleep(0)
+
+    assert outcome.reason_code == "learning_research_timeout"
+    assert outcome.receipt is not None
+    assert outcome.receipt.actual_elapsed_seconds < 0.5
+    assert elapsed < 0.5
+    assert executor.cancel_started.is_set()
+    executor.release_cancel.set()
+    await asyncio.sleep(0)
 
 
 @pytest.mark.asyncio

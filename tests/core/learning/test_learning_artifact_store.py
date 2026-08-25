@@ -15,6 +15,7 @@ from core.learning.artifact_store import (
     LearningArtifactStoreError,
     LearningCheckpointConflictError,
     LearningFencingConflictError,
+    LearningPersistenceIntegrityError,
     LearningResumeConflictError,
     LearningResumeNotFoundError,
 )
@@ -220,7 +221,7 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
                 evidence_ref="wcite-1",
                 url="https://docs.example.com/checkpoint",
                 title="Checkpoint docs",
-                content_hash="sha256:web-r1",
+                content_hash="a" * 64,
                 fetched_at="2026-08-25T01:00:00Z",
                 kind="web_fetch",
             ),
@@ -261,6 +262,87 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
             owner_id="other",
             workspace_id="workspace-1",
             receipt_ref=stored.receipt_ref,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("url", "http://docs.example.com/checkpoint"),
+        ("title", ""),
+        ("content_hash", "sha256:bad<script>"),
+        ("content_hash", "javascript:bad"),
+        ("fetched_at", "not-a-timestamp"),
+        ("kind", "local_file"),
+        ("evidence_ref", ""),
+    ),
+)
+async def test_research_receipt_tamper_is_rejected_on_sqlite_readback(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    outcome = await _outcome()
+    receipt = LearningResearchReceipt(
+        schema_version=1,
+        receipt_id="",
+        owner_id="local",
+        workspace_id="workspace-1",
+        task_id=_task().task_id,
+        task_revision=_task().task_revision,
+        plan_id=outcome.plan.plan_id,
+        plan_revision=outcome.plan.plan_revision,
+        unit_id=outcome.plan.units[0].unit_id,
+        parent_run_id="run-parent",
+        child_run_id="run-child",
+        capability_revision=outcome.plan.capability_revision,
+        source_policy_revision=outcome.plan.source_policy_revision,
+        query_receipt_hash="lquery_tamper",
+        token_budget=2_000,
+        max_steps=4,
+        timeout_seconds=20,
+        actual_token_usage=600,
+        actual_tool_count=2,
+        actual_elapsed_seconds=0.25,
+        allowed_domains=(),
+        freshness="all",
+        risk_decision="general_education",
+        terminal_status="succeeded",
+        reason_code="",
+        evidence=(
+            LearningResearchEvidence(
+                evidence_ref="wcite-tamper",
+                url="https://docs.example.com/checkpoint",
+                title="Checkpoint docs",
+                content_hash="sha256:provider-r1",
+                fetched_at="2026-08-25T01:00:00Z",
+                kind="web_fetch",
+            ),
+        ),
+    )
+    receipt = replace(receipt, receipt_id=canonical_learning_research_receipt_id(receipt))
+    path = tmp_path / "tampered-receipt.sqlite3"
+    store = LearningArtifactStore(path)
+    stored = store.save_research_receipt(
+        owner_id="local", workspace_id="workspace-1", task=_task(), plan=outcome.plan, receipt=receipt
+    )
+    payload = json.loads(
+        sqlite3.connect(path).execute(
+            "SELECT payload_json FROM learning_research_receipts WHERE receipt_ref = ?",
+            (stored.receipt_ref,),
+        ).fetchone()[0]
+    )
+    payload["evidence"][0][field] = value
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE learning_research_receipts SET payload_json = ? WHERE receipt_ref = ?",
+        (json.dumps(payload), stored.receipt_ref),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(LearningPersistenceIntegrityError):
+        store.read_research_receipt(
+            owner_id="local", workspace_id="workspace-1", receipt_ref=stored.receipt_ref
         )
 
 
@@ -462,6 +544,42 @@ async def test_checkpoint_cas_and_fencing_reject_stale_writer(tmp_path: Path) ->
             task_id="ltask-1",
             lease_owner_id="writer-other",
         )
+
+
+@pytest.mark.asyncio
+async def test_transaction_connect_failure_releases_lock_for_next_advance(
+    tmp_path: Path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    outcome = await _outcome()
+    store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
+    original_connect = store._connect
+    failed = True
+
+    def fail_once() -> sqlite3.Connection:
+        nonlocal failed
+        if failed:
+            failed = False
+            raise sqlite3.OperationalError("database is locked")
+        return original_connect()
+
+    monkeypatch.setattr(store, "_connect", fail_once)
+    with pytest.raises(sqlite3.OperationalError):
+        store.begin_execution(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            plan=outcome.plan,
+            lease_owner_id="writer-a",
+        )
+
+    checkpoint = store.begin_execution(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        lease_owner_id="writer-a",
+    )
+    assert checkpoint.checkpoint_revision >= 1
 
 
 @pytest.mark.asyncio

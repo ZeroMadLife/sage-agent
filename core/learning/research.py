@@ -187,14 +187,16 @@ class LearningResearchService:
             execution = asyncio.ensure_future(self.subagent_executor.execute(request))
             result = await asyncio.wait_for(execution, timeout=_remaining(deadline))
         except TimeoutError:
-            await _cancel_child(self.subagent_executor, child_run_id, "timeout")
+            await _cancel_child(self.subagent_executor, child_run_id, "timeout", deadline=deadline)
             result = SubagentResult(
                 child_run_id=child_run_id,
                 status="timed_out",
                 error_code="timeout",
             )
         except asyncio.CancelledError:
-            await _cancel_child(self.subagent_executor, child_run_id, "parent_cancelled")
+            await _cancel_child(
+                self.subagent_executor, child_run_id, "parent_cancelled", deadline=deadline
+            )
             result = SubagentResult(
                 child_run_id=child_run_id,
                 status="cancelled",
@@ -324,7 +326,7 @@ class LearningResearchService:
             if monotonic() >= deadline:
                 raise TimeoutError
         except TimeoutError:
-            await _cancel_child(self.subagent_executor, child_run_id, "timeout")
+            await _cancel_child(self.subagent_executor, child_run_id, "timeout", deadline=deadline)
             return self._terminal(
                 task,
                 plan,
@@ -342,7 +344,9 @@ class LearningResearchService:
                 terminal_status="timed_out",
             )
         except asyncio.CancelledError:
-            await _cancel_child(self.subagent_executor, child_run_id, "parent_cancelled")
+            await _cancel_child(
+                self.subagent_executor, child_run_id, "parent_cancelled", deadline=deadline
+            )
             return self._terminal(
                 task,
                 plan,
@@ -489,9 +493,27 @@ async def _cancel_child(
     executor: SubagentExecutorPort,
     child_run_id: str,
     reason: Literal["parent_cancelled", "timeout"],
+    *,
+    deadline: float,
 ) -> None:
+    """Request child termination without extending the Research transaction deadline."""
+    cancellation: asyncio.Future[None] = asyncio.ensure_future(
+        executor.cancel(child_run_id, reason)
+    )
+    cancellation.add_done_callback(_discard_cancel_error)
+    remaining = max(0.0, deadline - monotonic())
+    if remaining <= 0:
+        # Give the cancellation coroutine one scheduling turn so the child
+        # trace receives the request without waiting for its cleanup.
+        await asyncio.sleep(0)
+        return
+    with suppress(Exception, asyncio.CancelledError, TimeoutError):
+        await asyncio.wait_for(asyncio.shield(cancellation), timeout=min(1.0, remaining))
+
+
+def _discard_cancel_error(task: asyncio.Future[None]) -> None:
     with suppress(Exception, asyncio.CancelledError):
-        await asyncio.wait_for(executor.cancel(child_run_id, reason), timeout=1.0)
+        task.result()
 
 
 def _validate_binding(

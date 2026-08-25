@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,23 @@ def test_request_validation_and_execution_helpers_return_structured_errors(
     assert LearningErrorResponse.model_validate(unavailable.json()).detail.code == (
         "learning_artifact_store_unavailable"
     )
+
+
+def test_sqlite_faults_are_browser_safe_storage_503(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task = _active_task(client)
+
+        def broken_connect() -> None:
+            raise sqlite3.OperationalError("database is locked: /private/path")
+
+        monkeypatch.setattr(app.state.learning_artifact_store, "_connect", broken_connect)
+        response = client.get(f"/api/v1/learning/tasks/{task['task_id']}/resume")
+
+    assert response.status_code == 503
+    body = LearningErrorResponse.model_validate(response.json())
+    assert body.detail.code == "learning_artifact_store_unavailable"
+    assert "/private/path" not in response.text
 
 
 def test_runtime_rehydrate_failure_is_closed_structured_503(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
