@@ -188,6 +188,13 @@ pub(crate) struct ConfigurationRestartReceipt {
     request: ConfigurationRestartRequest,
 }
 
+pub(crate) struct ConfigurationReconciliationLease {
+    shared: SharedHostState,
+    epoch: u64,
+    request: ConfigurationRestartRequest,
+    receipt: ConfigurationRestartReceipt,
+}
+
 pub(crate) fn acquire_configuration_mutation_guard(
     shared: &SharedHostState,
 ) -> Result<ConfigurationMutationGuard, ConfigurationActionFailure> {
@@ -223,6 +230,21 @@ impl ConfigurationMutationGuard {
         Ok(ConfigurationMutationCommit { value, restart })
     }
 
+    pub(crate) fn begin_reconciliation(
+        &self,
+    ) -> Result<ConfigurationReconciliationLease, ConfigurationActionFailure> {
+        let mut inner = self.shared.0.lock().expect("host state poisoned");
+        self.validate_locked(&inner)?;
+        let request = begin_configuration_restart_locked(&mut inner);
+        let epoch = inner.configuration_epoch;
+        Ok(ConfigurationReconciliationLease {
+            shared: self.shared.clone(),
+            epoch,
+            request: request.clone(),
+            receipt: ConfigurationRestartReceipt { request },
+        })
+    }
+
     fn validate_locked(&self, inner: &HostInner) -> Result<(), ConfigurationActionFailure> {
         if inner.configuration_epoch != self.epoch {
             return Err(configuration_failure(
@@ -231,6 +253,45 @@ impl ConfigurationMutationGuard {
             ));
         }
         configuration_mutation_failure(inner)
+    }
+}
+
+impl ConfigurationReconciliationLease {
+    pub(crate) fn commit<T, E, F>(
+        &self,
+        mutation: F,
+    ) -> Result<T, ConfigurationMutationCommitError<E>>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        let inner = self.shared.0.lock().expect("host state poisoned");
+        self.validate_locked(&inner)
+            .map_err(ConfigurationMutationCommitError::Admission)?;
+        mutation().map_err(ConfigurationMutationCommitError::Mutation)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), ConfigurationActionFailure> {
+        let inner = self.shared.0.lock().expect("host state poisoned");
+        self.validate_locked(&inner)
+    }
+
+    pub(crate) fn into_receipt(self) -> ConfigurationRestartReceipt {
+        self.receipt
+    }
+
+    fn validate_locked(&self, inner: &HostInner) -> Result<(), ConfigurationActionFailure> {
+        if inner.configuration_epoch != self.epoch
+            || inner.launch_generation != self.request.generation
+            || !inner.configuration_restart_in_progress
+            || inner.disk.orphan != self.request.orphan
+            || ownership_admission_failure(inner).is_some()
+        {
+            return Err(configuration_failure(
+                "desktop_configuration_superseded",
+                "retry_provider_reconciliation",
+            ));
+        }
+        Ok(())
     }
 }
 

@@ -1,6 +1,7 @@
 use crate::secret_broker::{broker_error, SecretBroker, SecretBrokerError};
 use crate::supervisor::{
-    ConfigurationMutationCommitError, ConfigurationMutationGuard, ConfigurationRestartReceipt,
+    ConfigurationMutationCommitError, ConfigurationMutationGuard, ConfigurationReconciliationLease,
+    ConfigurationRestartReceipt,
 };
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -319,6 +320,16 @@ fn run_configuration_commit<T>(
     }
 }
 
+fn reconciliation_commit<T>(
+    lease: &ConfigurationReconciliationLease,
+    mutation: impl FnOnce() -> Result<T, DesktopActionError>,
+) -> Result<T, DesktopActionError> {
+    lease.commit(mutation).map_err(|error| match error {
+        ConfigurationMutationCommitError::Admission(error) => configuration_error(error),
+        ConfigurationMutationCommitError::Mutation(error) => error,
+    })
+}
+
 pub struct OnboardingService {
     database_path: PathBuf,
     connection: Connection,
@@ -558,8 +569,16 @@ fn apply_action(
             service.delete_provider_operation_coordinated(&provider_id, Some(guard)),
         ),
         DesktopOnboardingAction::RetryProviderReconciliation => {
-            service.reconcile_pending_operations()?;
-            commit_configuration(guard, true, || Ok(()))
+            let lease = guard
+                .begin_reconciliation()
+                .map_err(configuration_error)
+                .map_err(ActionFailure::from)?;
+            let result = service.reconcile_pending_operations_coordinated(&lease);
+            let restart = Some(lease.into_receipt());
+            match result {
+                Ok(()) => Ok(ActionApplied { restart }),
+                Err(error) => Err(ActionFailure { error, restart }),
+            }
         }
     }
 }
@@ -835,18 +854,18 @@ impl OnboardingService {
         let models = match probe_result {
             Ok(models) if !models.is_empty() => models,
             Ok(_) | Err(ProviderProbeError::InvalidResponse) => {
-                if guard.is_none() {
-                    self.record_probe_failure(provider_id, "provider_probe_invalid_response")?;
-                }
+                self.record_probe_failure_coordinated(
+                    guard,
+                    provider_id,
+                    "provider_probe_invalid_response",
+                )?;
                 return Err(DesktopActionError::new(
                     "provider_probe_invalid_response",
                     "check_provider_settings",
                 ));
             }
             Err(ProviderProbeError::Unavailable) => {
-                if guard.is_none() {
-                    self.record_probe_failure(provider_id, "provider_probe_failed")?;
-                }
+                self.record_probe_failure_coordinated(guard, provider_id, "provider_probe_failed")?;
                 return Err(DesktopActionError::new(
                     "provider_probe_failed",
                     "check_provider_settings",
@@ -1589,6 +1608,120 @@ impl OnboardingService {
         Ok(())
     }
 
+    fn reconcile_pending_operations_coordinated(
+        &mut self,
+        lease: &ConfigurationReconciliationLease,
+    ) -> Result<(), DesktopActionError> {
+        for operation in self.pending_operations()? {
+            lease.validate().map_err(configuration_error)?;
+            let metadata_ref = self
+                .connection
+                .query_row(
+                    "SELECT key_ref FROM local_providers WHERE provider_id = ?1",
+                    [&operation.provider_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|_| DesktopActionError::storage())?;
+            match operation.kind.as_str() {
+                "add" => {
+                    if metadata_ref.as_deref() != Some(operation.target_key_ref.as_str()) {
+                        self.reconcile_delete_secret(
+                            lease,
+                            &operation.operation_id,
+                            &operation.target_key_ref,
+                        )?;
+                    }
+                    reconciliation_commit(lease, || {
+                        self.remove_operation(&operation.operation_id)
+                    })?;
+                }
+                "rotate" => {
+                    let key_ref = if metadata_ref.as_deref()
+                        == Some(operation.target_key_ref.as_str())
+                        || operation.phase == "metadata_applied"
+                    {
+                        operation.previous_key_ref.as_deref()
+                    } else {
+                        Some(operation.target_key_ref.as_str())
+                    };
+                    if let Some(key_ref) = key_ref {
+                        self.reconcile_delete_secret(lease, &operation.operation_id, key_ref)?;
+                    }
+                    reconciliation_commit(lease, || {
+                        self.remove_operation(&operation.operation_id)
+                    })?;
+                }
+                "disconnect" => {
+                    if operation.phase == "metadata_applied" {
+                        self.reconcile_delete_secret(
+                            lease,
+                            &operation.operation_id,
+                            &operation.target_key_ref,
+                        )?;
+                    }
+                    reconciliation_commit(lease, || {
+                        self.remove_operation(&operation.operation_id)
+                    })?;
+                }
+                "delete" => {
+                    if operation.phase != "metadata_applied" {
+                        reconciliation_commit(lease, || {
+                            self.remove_operation(&operation.operation_id)
+                        })?;
+                        continue;
+                    }
+                    self.reconcile_delete_secret(
+                        lease,
+                        &operation.operation_id,
+                        &operation.target_key_ref,
+                    )?;
+                    reconciliation_commit(lease, || {
+                        let transaction = self
+                            .connection
+                            .transaction()
+                            .map_err(|_| DesktopActionError::reconciliation())?;
+                        transaction
+                            .execute(
+                                "DELETE FROM local_providers WHERE provider_id = ?1",
+                                [&operation.provider_id],
+                            )
+                            .and_then(|_| {
+                                transaction.execute(
+                                    "DELETE FROM provider_operations WHERE operation_id = ?1",
+                                    [&operation.operation_id],
+                                )
+                            })
+                            .and_then(|_| transaction.commit())
+                            .map_err(|_| DesktopActionError::reconciliation())?;
+                        Ok(())
+                    })?;
+                }
+                _ => return Err(DesktopActionError::reconciliation()),
+            }
+        }
+        Ok(())
+    }
+
+    fn reconcile_delete_secret(
+        &self,
+        lease: &ConfigurationReconciliationLease,
+        operation_id: &str,
+        key_ref: &str,
+    ) -> Result<(), DesktopActionError> {
+        if self.delete_secret_if_present(key_ref).is_err() {
+            let recorded = reconciliation_commit(lease, || {
+                self.record_operation_error(operation_id, "provider_reconciliation_required");
+                Ok(())
+            });
+            return match recorded {
+                Ok(()) => Err(DesktopActionError::reconciliation()),
+                Err(error) => Err(error),
+            };
+        }
+        Ok(())
+    }
+
     fn active_provider_id(&self) -> Result<Option<String>, DesktopActionError> {
         self.connection
             .query_row(
@@ -1862,6 +1995,18 @@ impl OnboardingService {
             )
             .map_err(|_| DesktopActionError::storage())?;
         Ok(())
+    }
+
+    fn record_probe_failure_coordinated(
+        &self,
+        guard: Option<&ConfigurationMutationGuard>,
+        provider_id: &str,
+        reason_code: &'static str,
+    ) -> Result<(), DesktopActionError> {
+        run_configuration_commit(guard, false, || {
+            self.record_probe_failure(provider_id, reason_code)
+        })
+        .map(|_| ())
     }
 }
 
@@ -2226,6 +2371,7 @@ mod tests {
     struct BarrierSecrets {
         values: Mutex<HashMap<String, String>>,
         stored: Option<(Arc<Barrier>, Arc<Barrier>)>,
+        delete_wait: Option<(Arc<Barrier>, Arc<Barrier>)>,
         fail_delete: Mutex<bool>,
     }
 
@@ -2257,6 +2403,10 @@ mod tests {
         }
 
         fn delete(&self, key_ref: &str) -> Result<(), SecretBrokerError> {
+            if let Some((started, resume)) = &self.delete_wait {
+                started.wait();
+                resume.wait();
+            }
             if std::mem::take(&mut *self.fail_delete.lock().unwrap()) {
                 return Err(SecretBrokerError::AccessDenied);
             }
@@ -2283,6 +2433,24 @@ mod tests {
             self.completed.wait();
             self.resume.wait();
             Ok(vec!["model-new".into()])
+        }
+    }
+
+    struct BarrierFailureProbe {
+        completed: Arc<Barrier>,
+        resume: Arc<Barrier>,
+        error: ProviderProbeError,
+    }
+
+    impl ProviderProbe for BarrierFailureProbe {
+        fn discover_models(
+            &self,
+            _base_url: &str,
+            _secret: &str,
+        ) -> Result<Vec<String>, ProviderProbeError> {
+            self.completed.wait();
+            self.resume.wait();
+            Err(self.error)
         }
     }
 
@@ -2548,5 +2716,189 @@ mod tests {
             action_error(outcome).reason_code,
             "provider_reconciliation_required"
         );
+    }
+
+    #[test]
+    fn retry_reconciliation_lease_drift_keeps_journal_and_owned_restart_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let delete_started = Arc::new(Barrier::new(2));
+        let delete_resume = Arc::new(Barrier::new(2));
+        let secrets = Arc::new(BarrierSecrets {
+            delete_wait: Some((delete_started.clone(), delete_resume.clone())),
+            ..BarrierSecrets::default()
+        });
+        let mut service = OnboardingService::open_with(
+            root.path().join("data"),
+            secrets.clone(),
+            Arc::new(BarrierProbe {
+                completed: Arc::new(Barrier::new(1)),
+                resume: Arc::new(Barrier::new(1)),
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let provider = service.add_provider(provider_input()).unwrap();
+        service
+            .connection
+            .execute(
+                "INSERT INTO provider_operations
+                 (operation_id, kind, provider_id, phase, target_key_ref)
+                 VALUES ('retry-op', 'disconnect', ?1, 'metadata_applied', ?2)",
+                params![provider.provider_id, provider.key_ref],
+            )
+            .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, repository) = test_host(root.path());
+        let worker = {
+            let state = state.clone();
+            let host = host.clone();
+            std::thread::spawn(move || {
+                execute_onboarding_action(
+                    DesktopOnboardingAction::RetryProviderReconciliation,
+                    &state,
+                    &host,
+                )
+            })
+        };
+
+        delete_started.wait();
+        assert!(crate::supervisor::test_reserve_unpublished(
+            &host,
+            &orphan()
+        ));
+        delete_resume.wait();
+
+        let outcome = worker.join().unwrap();
+        let reason_code = match &outcome.result {
+            Err(error) => error.reason_code,
+            Ok(_) => panic!("reconciliation unexpectedly succeeded"),
+        };
+        assert_eq!(reason_code, "desktop_configuration_superseded");
+        assert!(outcome.restart.is_some());
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        assert_eq!(service.pending_operation_count().unwrap(), 1);
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [orphan()]);
+    }
+
+    #[test]
+    fn production_probe_failure_persists_error_reason_with_valid_lease() {
+        let root = tempfile::tempdir().unwrap();
+        let service = OnboardingService::open_with(
+            root.path().join("data"),
+            Arc::new(BarrierSecrets::default()),
+            Arc::new(FailingProbe {
+                error: ProviderProbeError::Unavailable,
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, _) = test_host(root.path());
+        let provider_id = {
+            let mut runtime = locked_runtime(&state);
+            let OnboardingRuntime::Ready(service) = &mut *runtime else {
+                panic!("service not ready")
+            };
+            service.add_provider(provider_input()).unwrap().provider_id
+        };
+
+        let outcome = execute_onboarding_action(
+            DesktopOnboardingAction::ProbeProvider { provider_id },
+            &state,
+            &host,
+        );
+        assert_eq!(action_error(outcome).reason_code, "provider_probe_failed");
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        assert_eq!(service.snapshot().providers[0].status, "error");
+        assert_eq!(
+            service.snapshot().providers[0].reason_code.as_deref(),
+            Some("provider_probe_failed")
+        );
+    }
+
+    #[test]
+    fn production_probe_failure_lease_drift_does_not_write_error_metadata() {
+        let root = tempfile::tempdir().unwrap();
+        let completed = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let service = OnboardingService::open_with(
+            root.path().join("data"),
+            Arc::new(BarrierSecrets::default()),
+            Arc::new(BarrierFailureProbe {
+                completed: completed.clone(),
+                resume: resume.clone(),
+                error: ProviderProbeError::InvalidResponse,
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, repository) = test_host(root.path());
+        let provider_id = {
+            let mut runtime = locked_runtime(&state);
+            let OnboardingRuntime::Ready(service) = &mut *runtime else {
+                panic!("service not ready")
+            };
+            service.add_provider(provider_input()).unwrap().provider_id
+        };
+        let worker = {
+            let state = state.clone();
+            let host = host.clone();
+            std::thread::spawn(move || {
+                execute_onboarding_action(
+                    DesktopOnboardingAction::ProbeProvider { provider_id },
+                    &state,
+                    &host,
+                )
+            })
+        };
+        completed.wait();
+        assert!(crate::supervisor::test_reserve_unpublished(
+            &host,
+            &orphan()
+        ));
+        resume.wait();
+
+        let outcome = worker.join().unwrap();
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "desktop_configuration_superseded"
+        );
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        assert_eq!(service.snapshot().providers[0].status, "untested");
+        assert_eq!(service.snapshot().providers[0].reason_code, None);
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [orphan()]);
+    }
+
+    struct FailingProbe {
+        error: ProviderProbeError,
+    }
+
+    impl ProviderProbe for FailingProbe {
+        fn discover_models(
+            &self,
+            _base_url: &str,
+            _secret: &str,
+        ) -> Result<Vec<String>, ProviderProbeError> {
+            Err(self.error)
+        }
+    }
+
+    fn provider_input() -> LocalProviderInput {
+        LocalProviderInput {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-value".into(),
+            default_model: "model-old".into(),
+        }
     }
 }
