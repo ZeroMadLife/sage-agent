@@ -2,6 +2,10 @@
 
 > 状态：已获 CTO 全权实施授权，按阶段本地开发与审查；公开 push、PR 合并、签名凭据和发布仍按外部变更门禁单独执行。
 >
+> L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
+>
+> L3 状态（2026-08-25）：前两轮候选均未通过中枢三镜头复审；L3.1 code candidate `dd9c93f` 已在原职责分支完成，等待第八轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
+>
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
 > 设计提交：`b2891b1127e5b7b3038c0758eb611faf4e1bec17`
@@ -766,9 +770,14 @@ Provider、capability 与 artifact smoke 合同保持不变。
 
 **交付行为**
 
-- 审查并迁移现有 draft、CAS 修改、activation intent、幂等 Session/Goal/Plan bootstrap 和 reconciliation；
-- 使用 expand-migrate-contract：新增 `learning_plan_hash`，暂时兼容旧 `plan_hash`，后续调用者迁移完成再收缩；
-- 保留 activation receipt 的 owner、task revision、capability revision 和 source policy。
+- 审查并迁移现有 draft、CAS 修改、activation intent、幂等 Session/Goal/TurnContextPlan bootstrap 和 reconciliation；
+- 使用 expand-migrate-contract：内部和新持久化以 `turn_context_plan_id/turn_context_plan_hash` 为权威；公共 API 在 expand 阶段保留 deprecated `plan_id/plan_hash` 投影，持久化 decoder 兼容读取同名旧字段；
+- L0 不生成 LearningPlan 或 Task DAG，`learning_plan_id/learning_plan_hash/dag_hash` 保持为空，分别留到 L3/L4 的真实合同生成；
+- Task、activation、receipt 与全部查询以 `owner_id + workspace_id` 为 canonical scope；workspace 由服务端派生；
+- receipt v3 固化 task revision、catalog/capability revision 和覆盖 knowledge/web/domains/freshness 的 source policy snapshot/revision；
+- 新 receipt 使用 `resume_validation_version=canonical_l0_v3` 严格校验全部新字段；真实 v2 active receipt 迁移为 `legacy_l0_v2`，只校验旧 TurnContextPlan 当时实际保存的等价字段，不伪造其曾冻结后来新增的 resume/source revision；
+- `/resume` 在 L0 只重验证 canonical Session 与 TurnContextPlan，不宣称已实现运行中 Checkpoint Resume；legacy active 只在资源能唯一证明 workspace 时回填，其他旧行不可见并 blocked；
+- Session 失败补偿由 activation 状态 CAS/fencing 授权，active commit 在同一 SQLite 写事务内重新确认 Session 可见，防止并发失败 writer 留下 archived 的成功 Session。
 
 **公共 seam**
 
@@ -779,10 +788,12 @@ Provider、capability 与 artifact smoke 合同保持不变。
 
 **验收证据**
 
-- 并发激活只有一个 winner；四个故障注入点重启后完成或补偿；
-- 孤立 Session 被归档；
-- `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用；
-- 原 27 个定向测试、集成回归、Ruff、Mypy 通过。
+- 两个独立 repository/service/resources 实例共享 SQLite/storage 时，同 key 只产生一个 intent/Session/Goal/Plan，不同 key 只有一个 winner，stage 不回退；四个故障注入点重启后完成或补偿；
+- 孤立 Session 被归档；同 stage 竞争时，失败 writer 先补偿也不能让最终 active Session 保持 archived，active 后的旧归档快照不能执行回调；
+- `learning_plan_hash`、`turn_context_plan_hash`、`dag_hash` 不再混用，旧 `plan_hash` 只映射到 TurnContextPlan；
+- Session/Plan 缺失、删除、篡改，以及 owner/workspace/task/catalog/capability/source policy 漂移均稳定 `409`；LearningTask 与 receipt 任一侧出现非空 `learning_plan_id/learning_plan_hash/dag_hash` 都 fail closed；
+- 真实 a6d v2 active receipt 加旧 TurnContextPlan fixture 能完成 GET 与 legacy 等价 Resume；缺失旧时代已有的 source/tool 字段仍 fail closed；
+- 定向测试、相邻恢复回归、Ruff、Mypy 和前端 private/public production build 通过后才可收口。
 
 **依赖与非目标**
 
@@ -791,17 +802,55 @@ Provider、capability 与 artifact smoke 合同保持不变。
 
 ## 10. 切片 L1：首轮只读 Learning Scope
 
+> 候选状态（2026-08-24）：Runtime fix code candidate
+> `9a454d24843dd27f2e2c00bb34366219c428675e` 已补上最终 Runtime 复审指出的 no-runtime
+> HTTP Timeline Session 缺失/损坏 P2，并完成测试 helper 所有权整理；当前仍待中枢最后 Runtime 短复审，
+> 尚未合入 `dev/sage-v7`。实现复用 L0 canonical resume
+> validation、Capability Registry、ToolBundle 和 Harness middleware：模型 catalog 与真实
+> ToolNode 调用均受 `AllowedCapabilitySet + capability_revision + turn_context_plan_hash`
+> 约束；host Memory retrieval 与 Research child 的每次 model/tool 边界也会 canonical 重验。
+> `knowledge=disabled` 可按冻结策略直接开放只读 Web；`web=allowed_when_insufficient` 在 L1 尚无
+> durable sufficiency receipt，因此保持隐藏直到 L3 以 source-gap receipt 提升。Web
+> domains/freshness 由显式 policy-aware Web port 执行服务端冻结值；实现不能执行 domain policy 时不授予
+> `web:fetch`。Learning Timeline、stream 与 Run API 共用单一公开投影，只保留安全 ID、状态、计数和
+> reason code；模型正文不作为公共审计事件。由于当前 MCP descriptor 不能证明工具只读，Learning
+> Scope 暂不开放 MCP，且 Learning 路径不会读取 MCP catalog、server、transport 或 tool metadata。
+> 本候选不包含 L2 UI、真实 Provider 首轮、LearningPlan、Artifact、Practice 或 Mastery。
+> Evidence/Memory read 是 receipt 内部 authority，不作为伪工具加入普通公共 Capability Registry。
+> active `session_id` 通过 Learning repository 的 owner/workspace binding 反查；可变 Session JSON
+> 只作为待校验投影，marker 缺失或降级会稳定拒绝，不能恢复普通 Coding 的写权限或 raw Run API。
+> 进程重启且内存 runtime 不存在时，HTTP Timeline 先用认证 owner + `session_id` 查询 canonical
+> active binding；active Learning 的 Session JSON 删除或损坏稳定映射为
+> `learning_scope_validation_failed` 409，普通 Coding 的缺失 404 与损坏 500 兼容语义不变。
+> Retrieval receipt 在进入 Timeline/TurnContextPlan 前收敛为实际可执行来源；model 前重验失败保留
+> `learning_scope_*` reason，不包装为 Provider error。`knowledge=required` 且 Knowledge 当前不可用时，
+> 在 Provider 前稳定返回 `learning_scope_source_gap`；Knowledge 已调用但 zero-hit 的完整 sufficiency
+> 判定和有界 Web 提升仍属于 L3，L1 不宣称完成。
+
 **交付行为**
 
 - active task 冻结 `AllowedCapabilitySet`，模型可见工具和执行入口双重过滤；
-- 默认允许 Knowledge/Evidence/Memory read，按来源策略允许只读 Web/Research；
+- 默认允许 Knowledge/Evidence/Memory read；Research child 只继承当前可用的只读来源，直接 Web 仅在 Knowledge 被明确禁用时开放；
 - Shell、Patch、Git write、删除、write-MCP、Practice 和自动长期写入默认不可见且不可调用。
 
 **验收证据**
 
 - `不要联网`、旧 capability revision、伪造 tool call 和 Skill 未激活均 fail closed；
-- Context/Capability 漂移返回明确 409，不触发真实工具；
-- Timeline 不公开 query、source path、Skill prompt 或网页正文。
+- active Learning Session marker 被删除或降级时仍由 server-owned binding 识别，运行与 raw Run API 均 fail closed；
+- L0 REST activation/resume 漂移返回明确 `409`；L1 已启动 run 的 admission、model、retrieval 或 tool 漂移返回稳定 `learning_scope_*` 事件/error receipt，不触发 Provider 或真实工具；
+- 成功 Learning run 的 post-turn Goal evaluator 在额外 Provider call 前重新解析 active Task/receipt/Session/TurnContextPlan，任一 revision 漂移均不调用 evaluator；
+- HTTP Timeline、WS replay 与 Run API 对 active Learning Session 使用同一公开投影；`run_started.surface_context/thread_goal` 与 `thread_goal_evaluated.evaluation` 不公开 query、source path、Goal/criterion、模型正文、Skill prompt 或网页正文；scope 漂移时 fail closed。
+- no-runtime HTTP Timeline 在 active Learning Session 文件缺失或损坏时返回稳定 `learning_scope_validation_failed` 409；正常持久化 Learning 与普通 Coding 兼容路径均有真实 API 回归。
+
+**当前验证边界**
+
+- Learning 公共路径与拆分后的定向组：`42 passed`；
+- L0/L1、activation/resume/concurrency、DeerFlow context、MCP、Goal、Runtime adapter、ToolBundle 与 Web 相邻超集：`288 passed`；
+- 完整普通 Coding Routes：`58 passed`；
+- Ruff、9 个改动 Python 文件 format check、Mypy（`247 source files`）和 `git diff --check`：通过；
+- frontend private/public production build：通过；private build 仅有既有大 chunk warning；
+- 固定 Python 3.12 与完整复现命令见 `2026-08-13-sage-recoverable-learning-task-v1-delivery.md` 的 Slice A3；
+- 中枢最后 Runtime 短复审仍待执行，不能写成已关闭。
 
 **依赖与非目标**
 
@@ -809,24 +858,73 @@ Provider、capability 与 artifact smoke 合同保持不变。
 
 ## 11. 切片 L2：Assistant 任务确认与进入会话
 
+> code candidate：`2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`。当前只交付 Assistant 确认、durable kickoff accepted receipt 与共享会话入口，不包含 L3 Research/Artifact。初版候选复审的聚焦实跑为 `134 passed`，不是旧记录的 `131 passed`。
+
 **交付行为**
 
 - 在 Assistant 展示 draft、澄清项、来源策略和风险边界；
-- 用户确认后只调用一次 activate，成功后进入共享会话；
+- 用户确认后只调用一次 activate；active receipt 后请求 durable kickoff，服务端确认 accepted 后才进入并显示共享会话；
 - 失败保留 draft 和重试入口，刷新后恢复真实状态。
 
 **验收证据**
 
-- 前端覆盖 `draft/needs_confirmation/activating/active/activation_failed`；
-- 首轮消息不早于 activation receipt；
+- 前端覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed/kickoff_dispatching/receipt_recovery_failed`；
+- canonical `activating` 保持可恢复，active receipt GET 失败可显式重试；
+- 首轮不得早于 kickoff accepted receipt，同一 task revision/activation 只接受并启动一次；
 - 旧 Assistant/Coding 入口保持兼容；
-- ego-lite/Playwright 覆盖创建、确认、失败重试和刷新恢复。
+- 仓库内 Playwright 覆盖创建、澄清、确认、失败重试、刷新恢复与 accepted 前后的一次启动边界。
+
+**当前实现与验证**
+
+- Assistant 默认学习模式接入现有 Learning draft/CAS/activate API，展示可编辑摘要、确定性澄清、完整 source policy 和浏览器安全风险提示；“直接对话”模式保留旧 Assistant 行为。
+- store 覆盖 `draft/loading/needs_confirmation/activating/active/activation_failed/kickoff_dispatching/receipt_recovery_failed`，双击确认去重为一次 activate；同 revision 使用稳定 idempotency key，响应丢失后以 canonical Task/receipt 收敛。
+- active activation receipt 后调用 `POST /api/v1/learning/tasks/{task_id}/kickoff`；服务端以 Learning SQLite + Session Journal 持久化 revision/key/session/content-bound receipt。响应丢失后 canonical GET 或同 key POST 返回同一 accepted receipt，进程重启可查询、继续或重放。
+- kickoff accepted 后才选择并显示共享 Session；Coding WebSocket 以稳定 `turn_run_id` 启动一次。普通 Coding 的 `startSessionWithPrompt` 与 `UserMessage` 路径不变。
+- 新 app 上的 WS 直接重连会从持久 Session 幂等 lazy rehydrate runtime；owner/auth、cursor 与恢复均在 `websocket.accept()` 前完成，浏览器握手成功即 runtime REST ready，不依赖整页刷新，普通 Coding 同样受保护。
+- Provider pin、credential 读取、DNS pin 或其他 runtime 构造失败在 REST/WS 统一收敛为 `coding_session_rehydrate_failed`，固定响应不包含 secret 或内部异常；失败可重试。
+- `CodingRunRegistry` 以 `session_id` 共享 run hydration task，短 guard 之外执行 `recover_interrupted_runs`，不同 Session 的磁盘恢复可并行，同一 Session 只恢复/发布一次。
+- 外层完整 runtime reconstruction 共享 Task/result/error；当前 waiters 只执行一次，取消单 waiter 不取消 shared flight，最后 waiter/flight 完成后清理，失败后新顺序请求可重试。两层 guard 不嵌套执行 I/O。
+- 同一固定 run 的 stale-check 竞态只在该 run 已有 durable events 时收敛为 replay；其他 active run、Thread Goal 或 Journal 冲突不被吞掉。
+- receipt 存在但 canonical Task 缺失时，kickoff GET 与 WS 稳定返回 `learning_kickoff_binding_conflict`。
+- 激活失败保留原 draft 字段和重试入口；编辑 failed draft 会经 CAS 形成新 revision，再使用新 revision key 激活。
+- restart/reconnect、双层 single-flight、WS readiness、GET/WS 与完整 Coding Routes 定向 `80 passed`；9 个 Learning API/core 邻接文件 `76 passed`；Cloud/Coding/Thread Goal/Run Registry/Journal 邻接 `76 passed`。
+- 聚焦前端 `6 files / 138 passed`；完整 Vue `69 files / 521 tests passed`。
+- 全仓 Ruff/format（`483 files`）、pyproject 推荐 Mypy 范围（`249 source files`）、private/public production build 与 `git diff --check` 通过，private build 只有既有大 chunk warning。
+- 仓库内 Playwright `1 passed`，隔离 FastAPI/Vite 与非敏感 fake provider 覆盖创建、三项澄清、activation 失败重试、kickoff dispatching 和 Assistant 刷新恢复；accepted 前 `turn_started=0`，accepted 后稳定 `turn_started=1`，Coding 刷新重连不重复。
+
+可复现 E2E 命令：
+
+```bash
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_learning_kickoff_dispatch.py tests/api/test_coding_routes.py -q
+PYTHONPATH="$PWD/packages/sage_harness:$PWD" \
+  /Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m pytest \
+  tests/api/test_coding_run_registry.py \
+  tests/api/test_cloud_model_provider_routes.py \
+  tests/api/test_coding_surface_context.py tests/api/test_coding_thread_goal.py \
+  tests/core/coding/test_session_event_journal.py -q
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m ruff check api/ core/ db/ evals/ tests/
+/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python -m mypy core/ api/ packages/sage_harness/
+npm --prefix frontend run test -- --run src/api/assistant.test.ts src/stores/assistantHome.test.ts src/views/AssistantHomeView.test.ts src/stores/coding.test.ts src/views/CodingView.test.ts src/components/coding/chat/CodingContextBudget.test.ts
+npm --prefix frontend run test -- --run
+npm --prefix frontend run build
+npm --prefix frontend run build:public
+SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
+  npm --prefix frontend run test:e2e
+```
 
 **依赖与非目标**
 
 - 依赖 L0/L1；不重写 CodingView。
+- `AssistantHomeView` 学习确认表单、`TurnInputKind/learning_kickoff` 类型合同、`LearningKickoffErrorCode` 与结构化 OpenAPI error responses 已在 L3 前置提交 `ace45c4` 收敛；不把该重构扩大到旧 Coding 入口。
+- 不修改 L1 只读授权合同；不生成 LearningPlan、Task DAG、Artifact、Practice 或 Mastery。
+- 当前结论是“code candidate 与 docs candidate 已完成最终复审并成为 L3 固定起点”，不是已合入 `dev/sage-v7` 或已发布。
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
+
+> L3.1 code candidate：`dd9c93f`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。前两轮候选均未获三镜头放行，当前结论仅为“L3.1 已完成本地门禁，等待第八轮复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 
@@ -851,6 +949,18 @@ Provider、capability 与 artifact smoke 合同保持不变。
 **依赖与非目标**
 
 - 依赖 L1/L2；不执行任意 HTML/JS，不自动写 Knowledge/Memory。
+
+**当前实现与收口证据（2026-08-25）**
+
+- Slice 1（`7997044`）：`advance` 在一个 SQLite `BEGIN IMMEDIATE` 事务内完成 expected checkpoint、task/plan/source/capability frozen binding 校验、durable request claim 和 fencing 获取。每个 request key 以 owner/workspace/task、expected revision、请求/响应 digest 和终态持久化；同 revision loser 在 Knowledge/Research/Artifact 外部副作用前被拒绝，历史成功 key 在后续推进后仍可重放。
+- Slice 2（`bccb10d`）：Plan、Unit、Research receipt 与 Artifact identity 纳入 owner/workspace/plan scope；Plan hash 最终绑定 Unit IDs。SQLite reopen/read 重算 Plan、Unit、receipt、Artifact content hash/citation binding；篡改数据与旧空 identity fail closed，旧 Artifact 被 quarantine，不进入 API/UI。
+- Slice 3（`5705d33`）：Knowledge 首次推进不依赖 Research profile；无 provider 仍可形成 canonical `source_gap/degraded/blocked`。条件 Research 复用合法 Harness child seam，真实执行 timeout 与 max-steps/token/tool budget，所有 gate/失败也保存含实际 usage/elapsed 的 receipt。sufficiency 复用既有合同；冲突来源保留双方 citation，Artifact 为 `unverified` 且不得 ready。
+- Slice 4（`4848cf4`、`bbf7c19`）：Learning 失败码集中为可穷举枚举，L3 4xx/OpenAPI 使用统一结构；共享 UI 以 task + generation 拒绝迟到响应。Playwright 不再在浏览器用 `Map/page.route` 重写状态机，而是启动隔离真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web，并以服务进程 PID 变化验证重启恢复。
+- 第二轮修复（`40af474`）：request journal 增加可过期 lease、owner 与递增 fencing，failed/cancelled/orphan running 可接管，旧 owner 不能 complete 新 claim；最终 checkpoint CAS 重验完整 frozen binding。Research 使用单调 deadline 覆盖 executor、EvidenceBundle read 与冲突/sufficiency projection，timeout/cancel 终结 child 并留下 terminal receipt；Knowledge 与 Web evidence 合并后重新判定冲突。Resume 与 replay 重验跨 task Artifact、response digest/schema/canonical binding；Learning API 的 404/409/422/503 与 OpenAPI 同构，UI refresh 可接管旧 generation 并解除 busy。
+- 历史第二轮 fixture 记录：B1/B2/B3、L0-L2 邻接与必要 Coding 定向 `136 passed`；最终 Research/Artifact/Execution/API focused `68 passed`；Vue 组件定向 `4 passed`；仓库化纵向 Playwright `3 passed`；当时记录的 Ruff/Mypy/private-public build 与 format 门禁通过。
+- 历史第二轮 fixture 记录为 `527 passed` / `2154 passed`；L3.1 当前受控单线程 Vue 为 `71 files / 527 passed`，Python 全量为 `2168 passed, 12 skipped, 3 failed`。3 个失败均位于未被 L3 修改的 `tests/api/test_coding_context_routes.py`，固定 `b036b17` 对照同为 `3 failed, 11 passed`；本片不扩大为 Coding runtime 重构。
+- 未证明：本地 fake Knowledge/Provider/Web 只证明协议、scope、幂等、冲突投影与重启恢复，不证明真实 Knowledge 检索质量、真实 Provider/Web 质量、学习效果、生产准确率或 SLA。
+- Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀、书本 RAG projection 修改和 B4 跨领域 Eval 均保持未交付。
 
 ## 13. 切片 L4：Practice、Mastery 与 Resume
 
@@ -934,3 +1044,11 @@ Provider、capability 与 artifact smoke 合同保持不变。
 - 需要不可逆数据库迁移、用户数据物理删除策略或公开发布；
 - sidecar 打包证明当前 Python 原生依赖无法可靠分发，需要切换 Electron/服务端路线；
 - 产品方向、收费、隐私承诺或公开 SLA 发生变化。
+
+## L3.1 第八轮复审固定点（2026-08-25）
+
+- code candidate：`dd9c93f`；本地中枢复核已通过，docs candidate 随本段更新后单独提交；两者均只在本地，未 push、未建 PR、未合入。
+- implemented：Knowledge coverage 不再用 `bool(citations)`，并以完整 token/CJK phrase 语义交集保守判定；首个 Knowledge search 前接入 scope revalidator barrier；Research receipt 对 HTTPS/domain/freshness、evidence ref/title/hash/time/kind/conflict group 做 canonical readback 校验；hard deadline 不叠加固定 cancel grace；SQLite connect/BEGIN 失败释放锁，API 将 sqlite 故障映射为结构化 storage-unavailable 503。
+- fixture-verified：L3 focused `69 passed`；受控 Vue `71 files / 527 passed`；真实 FastAPI + SQLite Playwright `3 passed`；Python 全量 `2168 passed, 12 skipped, 3 failed`。
+- baseline comparison：3 个失败仍是未修改 `tests/api/test_coding_context_routes.py`；固定 `b036b17` 对照此前同为 `3 failed, 11 passed`，本轮未扩大 Coding 隔离债务。
+- not-proven：当前依赖组合全仓 Mypy 受既有 LangChain/LangGraph stub/API mismatch 影响；changed Research module targeted mypy 通过。fake Knowledge/Provider/Web 不证明真实质量、生产准确率、SLA 或学习效果；本地复核通过，但不等同于已发布或已合入。

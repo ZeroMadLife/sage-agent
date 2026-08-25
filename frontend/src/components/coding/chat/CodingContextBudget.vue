@@ -5,8 +5,11 @@ import { useCodingStore } from '../../../stores/coding'
 
 const store = useCodingStore()
 
-const used = computed(() => store.contextSnapshot?.used_tokens ?? store.contextChars)
-const total = computed(() => store.contextSnapshot?.model_limit_tokens ?? 0)
+const used = computed(() => numericValue(
+  store.contextSnapshot?.used_tokens,
+  numericValue(store.contextChars),
+))
+const total = computed(() => numericValue(store.contextSnapshot?.model_limit_tokens))
 const remaining = computed(() => Math.max(total.value - used.value, 0))
 const percent = computed(() => total.value > 0 ? Math.min(100, (used.value / total.value) * 100) : 0)
 const label = computed(() => `${compactNumber(used.value)} / ${compactNumber(total.value)} · 剩余 ${compactNumber(remaining.value)}`)
@@ -23,6 +26,10 @@ function compactNumber(value: number) {
   if (value >= 1_000_000) return `${formatDecimal(value / 1_000_000)}M`
   if (value >= 1_000) return `${formatDecimal(value / 1_000)}k`
   return value.toLocaleString()
+}
+
+function numericValue(value: unknown, fallback = 0) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
 function formatDecimal(value: number) {

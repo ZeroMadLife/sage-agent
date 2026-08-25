@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
+from core.learning import LearningFailureCode
+
 
 def _default_coding_runtime_profiles() -> list[Literal["legacy", "deerflow_v2"]]:
     return ["legacy"]
@@ -27,6 +29,7 @@ class CodingSessionResponse(BaseModel):
     runtime_profile: Literal["legacy", "deerflow_v2"] = "legacy"
     sandbox_provider: str = "local_workspace"
     sandbox_image: str = "python:3.11-slim"
+    learning_task_id: str | None = None
 
 
 class CodingSessionSummary(BaseModel):
@@ -42,6 +45,7 @@ class CodingSessionSummary(BaseModel):
     message_count: int = 0
     pinned: bool = False
     archived: bool = False
+    learning_task_id: str | None = None
 
 
 class CodingSessionMetadataRequest(BaseModel):
@@ -1958,6 +1962,247 @@ class UserMessage(BaseModel):
     content: str = Field(min_length=1, description="用户消息内容")
     surface_context: HarnessSurfaceContext | None = None
     thread_goal_revision: int | None = Field(default=None, ge=1)
+
+
+class LearningSourcePolicyRequest(BaseModel):
+    """Source constraints frozen into one learning-task draft."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    knowledge: Literal["preferred", "required", "disabled"] = "preferred"
+    web: Literal["allowed_when_insufficient", "forbidden"] = "allowed_when_insufficient"
+    domains: list[str] = Field(default_factory=list, max_length=20)
+    freshness: Literal["all", "current"] = "all"
+
+
+class LearningTaskDraftRequest(BaseModel):
+    """User-provided fields for starting a draft, without model completion."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    topic: str = Field(min_length=1, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = Field(default=None, ge=15, le=10_080)
+    target_date: str | None = Field(default=None, max_length=10)
+    source_policy: LearningSourcePolicyRequest | None = None
+
+
+class LearningTaskPatchRequest(BaseModel):
+    """Partial CAS update for a draft learning task."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+    topic: str | None = Field(default=None, max_length=500)
+    desired_outcome: str | None = Field(default=None, max_length=2_000)
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = Field(default=None, ge=15, le=10_080)
+    target_date: str | None = Field(default=None, max_length=10)
+    source_policy: LearningSourcePolicyRequest | None = None
+
+
+class LearningLearnerProfileResponse(BaseModel):
+    starting_level: Literal["beginner", "intermediate", "advanced"] | None = None
+    time_budget_minutes_per_week: int | None = None
+    target_date: str | None = None
+
+
+class LearningClarificationQuestionResponse(BaseModel):
+    field: str
+    prompt: str
+
+
+class LearningClarificationResponse(BaseModel):
+    required_fields: list[str]
+    questions: list[LearningClarificationQuestionResponse]
+    ready_to_activate: bool
+
+
+class LearningGoalRefResponse(BaseModel):
+    goal_id: str
+    goal_revision: str
+
+
+class LearningTaskResponse(BaseModel):
+    """Browser-safe projection of a versioned learning task."""
+
+    version: int
+    workspace_id: str = Field(min_length=1, max_length=128)
+    task_id: str
+    task_revision: int
+    template_id: str
+    topic: str
+    desired_outcome: str | None = None
+    learner_profile: LearningLearnerProfileResponse
+    source_policy: LearningSourcePolicyRequest
+    risk_class: Literal["general_education", "financial_education"]
+    risk_notice: str | None = None
+    clarification: LearningClarificationResponse
+    learning_plan_id: str | None = None
+    learning_plan_hash: str | None = None
+    dag_hash: str | None = None
+    learning_goal_ref: LearningGoalRefResponse | None = None
+    status: Literal[
+        "draft",
+        "activating",
+        "active",
+        "activation_failed",
+        "blocked",
+        "completed",
+        "archived",
+    ]
+    created_at: str
+    updated_at: str
+
+
+class LearningTaskActivationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class LearningKickoffDispatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(ge=1)
+
+
+class LearningErrorDetail(BaseModel):
+    """Stable browser-safe error detail for Learning control-plane APIs."""
+
+    code: LearningFailureCode
+    message: str = ""
+    current_revision: int | None = None
+
+
+class LearningErrorResponse(BaseModel):
+    """FastAPI error envelope exposed in OpenAPI."""
+
+    detail: LearningErrorDetail
+
+
+class LearningAdvanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_checkpoint_revision: int = Field(ge=0)
+
+
+class LearningArtifactSummaryResponse(BaseModel):
+    artifact_id: str
+    kind: str
+    content_hash: str
+    media_type: str
+    status: str
+    citation_count: int = Field(ge=0)
+    source_revisions: list[str]
+    retention: str
+
+
+class LearningResumeResponse(BaseModel):
+    task_id: str
+    task_revision: int = Field(ge=1)
+    goal_summary: str
+    plan_id: str
+    plan_hash: str
+    dag_hash: str
+    stage: str
+    evidence_count: int = Field(ge=0)
+    citation_count: int = Field(ge=0)
+    gap_codes: list[str]
+    blocking_reason: str
+    next_action: str
+    artifact_ref: str
+    artifact: LearningArtifactSummaryResponse | None = None
+    checkpoint_revision: int = Field(ge=1)
+    fencing_token: int = Field(ge=1)
+
+
+class LearningCitationResponse(BaseModel):
+    evidence_ref: str
+    title: str
+    url: str
+    content_hash: str
+    fetched_at: str
+    page_revision: str
+    source_revision: str
+
+
+class LearningArtifactResponse(BaseModel):
+    artifact_id: str
+    artifact_ref: str
+    schema_version: int = Field(ge=1)
+    kind: str
+    task_id: str
+    task_revision: int = Field(ge=1)
+    goal_id: str
+    goal_revision: str
+    plan_id: str
+    plan_revision: int = Field(ge=1)
+    unit_ids: list[str]
+    content_hash: str
+    media_type: str
+    status: str
+    evidence_refs: list[str]
+    source_revisions: list[str]
+    citations: list[LearningCitationResponse]
+    retention: str
+    research_receipt_ref: str
+    content: str
+    created_at: str
+    updated_at: str
+
+
+class LearningKickoffDispatchResponse(BaseModel):
+    """Browser-safe acceptance receipt for one canonical learning kickoff."""
+
+    version: Literal[1]
+    workspace_id: str = Field(min_length=1, max_length=128)
+    task_id: str
+    task_revision: int = Field(ge=1)
+    activation_idempotency_key_hash: str
+    kickoff_idempotency_key_hash: str
+    dispatch_id: str
+    session_id: str
+    message_id: str
+    acceptance_run_id: str
+    turn_run_id: str
+    content_hash: str
+    receipt_status: Literal["dispatching", "accepted"]
+    stage: Literal["intent", "journal", "accepted"]
+    created_at: str
+    updated_at: str
+    accepted_at: str | None = None
+
+
+class LearningActivationResponse(BaseModel):
+    """Browser-safe receipt for one cross-store learning bootstrap."""
+
+    version: int
+    workspace_id: str = Field(min_length=1, max_length=128)
+    task_id: str
+    task_revision: int
+    session_id: str
+    thread_goal_revision: int | None = Field(default=None, ge=1)
+    learning_goal_ref: LearningGoalRefResponse
+    learning_plan_id: str | None = None
+    learning_plan_hash: str | None = None
+    turn_context_plan_id: str
+    turn_context_plan_hash: str | None = None
+    dag_hash: str | None = None
+    plan_id: str = Field(deprecated=True)
+    plan_hash: str | None = Field(default=None, deprecated=True)
+    catalog_revision: str | None = None
+    capability_revision: str | None = None
+    allowed_capabilities: list[str]
+    source_policy_snapshot: LearningSourcePolicyRequest
+    source_policy_revision: str = Field(min_length=1, max_length=128)
+    resume_validation_version: Literal["canonical_l0_v3", "legacy_l0_v2"]
+    receipt_status: Literal["activating", "activation_failed", "active"]
+    failure_code: str | None = None
+    created_at: str
+    updated_at: str
+    completed_at: str | None = None
 
 
 class CodingThreadGoalCriterionEvaluation(BaseModel):

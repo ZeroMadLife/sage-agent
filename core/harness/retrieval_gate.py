@@ -7,7 +7,7 @@ import json
 import re
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from sage_harness import MemoryRetrievalResult
@@ -136,6 +136,33 @@ class RetrievalGateReceipt:
             "tool_scope": self.tool_scope,
             "intent_route": self.intent_route.to_context(),
         }
+
+
+def project_retrieval_gate_sources(
+    receipt: RetrievalGateReceipt,
+    *,
+    selected_sources: tuple[str, ...],
+    reason_code: str,
+) -> RetrievalGateReceipt:
+    """Project a policy-selected source set into one internally consistent receipt."""
+    selected = tuple(dict.fromkeys(selected_sources))
+    if any(source not in receipt.available_sources for source in selected):
+        raise ValueError("restricted retrieval source is unavailable")
+    if not selected:
+        decision: RetrievalDecision = "skip"
+    elif len(selected) > 1:
+        decision = "mixed"
+    else:
+        decision = cast(RetrievalDecision, selected[0])
+    return replace(
+        receipt,
+        decision=decision,
+        reason_code=reason_code,
+        candidate_sources=tuple(dict.fromkeys((*receipt.candidate_sources, *selected))),
+        selected_sources=selected,
+        token_budget_by_source={source: _SOURCE_BUDGETS[source] for source in selected},
+        degraded=receipt.degraded or selected != receipt.selected_sources,
+    )
 
 
 def decide_retrieval_gate(
@@ -433,6 +460,7 @@ __all__ = [
     "RetrievalToolScope",
     "decide_retrieval_gate",
     "memory_retrieval_events",
+    "project_retrieval_gate_sources",
     "retrieval_source_event",
     "retrieval_sources_from_events",
     "retrieval_tool_scope_from_events",

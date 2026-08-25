@@ -21,6 +21,8 @@ from sage_harness import (
 
 from core.coding.memory import workspace_id_from_path
 from core.coding.runtime import CodingRuntime
+from core.harness.evidence_bundle import CodingEvidenceBundlePort
+from core.harness.learning_scope import LearningReadonlyScope
 from core.harness.subagent_adapter import (
     CodingSubagentExecutor,
     build_coding_subagent_config,
@@ -89,6 +91,7 @@ class FakeWebSearchPort:
                     retrieved_at="2026-07-19T00:00:00Z",
                     content_hash="a" * 64,
                     rank=1,
+                    metadata={"conflict_group": "checkpoint-contract"},
                 ),
             ),
         )
@@ -97,9 +100,11 @@ class FakeWebSearchPort:
 class CountingWebSearchPort(FakeWebSearchPort):
     def __init__(self) -> None:
         self.calls = 0
+        self.last_kwargs: dict[str, object] = {}
 
     async def search(self, query: str, **kwargs) -> WebSearchResult:  # type: ignore[no-untyped-def]
         self.calls += 1
+        self.last_kwargs = dict(kwargs)
         return await super().search(query, **kwargs)
 
 
@@ -108,9 +113,19 @@ class CountingWebFetchPort:
 
     def __init__(self) -> None:
         self.calls = 0
+        self.last_domains: tuple[str, ...] = ()
 
     async def fetch(self, url: str) -> WebFetchResult:
+        return await self.fetch_with_policy(url, domains=())
+
+    async def fetch_with_policy(
+        self,
+        url: str,
+        *,
+        domains: tuple[str, ...],
+    ) -> WebFetchResult:
         self.calls += 1
+        self.last_domains = tuple(str(item) for item in domains)
         return WebFetchResult(
             status="evidence_found",
             document=WebFetchedDocument(
@@ -321,6 +336,27 @@ def test_coding_subagent_executes_read_only_and_replays_terminal_trace(tmp_path:
         "status": "completed",
         "type": "run_finished",
     }
+
+
+def test_rehydrated_learning_research_uses_frozen_parent_run(tmp_path: Path) -> None:
+    model = FakeModel(["<final>Rehydrated research completed.</final>"])
+    runtime = _runtime(tmp_path, model)
+    runtime.active_run_id = None
+    executor = CodingSubagentExecutor(
+        runtime,
+        web_search_port=FakeWebSearchPort(),
+        authorized_parent_run_id="run-parent",
+    )
+    request = replace(
+        _request(tmp_path, "child_rehydrated_research"),
+        subagent_type="research",
+        tool_scope=("search_web",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert model.calls == 1
 
 
 def test_practice_subagent_records_passing_test_as_candidate_and_replays_it(
@@ -603,10 +639,137 @@ def test_research_subagent_uses_bounded_evidence_tools_and_records_progress(
     assert result.token_usage == request.token_budget
     assert [event["phase"] for event in progress].count("tool_completed") == 2
     assert progress[-1]["evidence_count"] == 2
+    bundle = asyncio.run(
+        CodingEvidenceBundlePort(runtime).read(
+            runtime.session_id,
+            request.parent_run_id,
+            child_run_ids=(result.child_run_id,),
+            evidence_refs=("wcite_research",),
+            token_budget=1_000,
+        )
+    )
+    web = next(item for item in bundle.items if item.evidence_ref == "wcite_research")
+    assert web.metadata["fetched_at"] == "2026-07-19T00:00:00Z"
+    assert web.metadata["conflict_group"] == "checkpoint-contract"
     trace = runtime.run_store.get_run("child_research")["events"]
     terminal = next(event for event in reversed(trace) if event["type"] == "subagent_terminal")
     assert terminal["evidence_refs"] == ["kcite_research", "wcite_research"]
     assert terminal["query_fingerprints"] == list(result.query_fingerprints)
+
+
+def test_research_subagent_uses_server_frozen_web_source_policy(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            (
+                '<tool>{"name":"search_web","args":{"query":"Harness",'
+                '"freshness":"all","domains":["other.test"]}}</tool>'
+            ),
+            "<final>Current evidence was checked.</final>",
+        ]
+    )
+    port = CountingWebSearchPort()
+    runtime = _runtime(tmp_path, model)
+    executor = CodingSubagentExecutor(
+        runtime,
+        web_search_port=port,
+        web_policy_domains=("example.com",),
+        web_policy_freshness="year",
+    )
+    request = replace(
+        _request(tmp_path, "child_policy"),
+        subagent_type="research",
+        tool_scope=("search_web",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert port.last_kwargs["domains"] == ("example.com",)
+    assert port.last_kwargs["freshness"] == "year"
+
+
+def test_research_subagent_empty_frozen_domains_override_model_domains(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            (
+                '<tool>{"name":"search_web","args":{"query":"Harness",'
+                '"domains":["other.test"]}}</tool>'
+            ),
+            "<final>Current evidence was checked.</final>",
+        ]
+    )
+    port = CountingWebSearchPort()
+    runtime = _runtime(tmp_path, model)
+    executor = CodingSubagentExecutor(
+        runtime,
+        web_search_port=port,
+        web_policy_domains=(),
+        web_policy_freshness="all",
+    )
+    request = replace(
+        _request(tmp_path, "child_empty_policy"),
+        subagent_type="research",
+        tool_scope=("search_web",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "succeeded"
+    assert port.last_kwargs["domains"] == ()
+
+
+def test_research_subagent_revalidates_scope_before_real_web_call(tmp_path: Path) -> None:
+    model = FakeModel(
+        [
+            '<tool>{"name":"search_web","args":{"query":"PRIVATE_QUERY_SENTINEL"}}</tool>',
+            "<final>unsafe</final>",
+        ]
+    )
+    port = CountingWebSearchPort()
+    runtime = _runtime(tmp_path, model)
+    frozen = LearningReadonlyScope(
+        task_id="ltask_scope",
+        task_revision=1,
+        session_id=runtime.session_id,
+        owner_id="local",
+        workspace_id=workspace_id_from_path(tmp_path),
+        turn_context_plan_id="turnplan_scope",
+        turn_context_plan_hash="sha256:plan-scope",
+        catalog_revision="catalog-v1",
+        capability_revision="lcap-v1",
+        allowed_capabilities=("subagent:research", "web:search"),
+        source_policy_revision="lsrc-v1",
+        knowledge_policy="disabled",
+        web_policy="allowed_when_insufficient",
+        domains=(),
+        freshness="all",
+    )
+    calls = 0
+
+    def revalidate() -> LearningReadonlyScope:
+        nonlocal calls
+        calls += 1
+        return frozen if calls < 3 else replace(frozen, capability_revision="lcap-v2")
+
+    executor = CodingSubagentExecutor(
+        runtime,
+        web_search_port=port,
+        web_policy_domains=(),
+        web_policy_freshness="all",
+        learning_scope=frozen,
+        learning_scope_revalidator=revalidate,
+    )
+    request = replace(
+        _request(tmp_path, "child_scope_drift"),
+        subagent_type="research",
+        tool_scope=("search_web",),
+    )
+
+    result = asyncio.run(executor.execute(request))
+
+    assert result.status == "failed"
+    assert result.error_code == "learning_scope_capability_revision_mismatch"
+    assert port.calls == 0
 
 
 def test_research_subagent_does_not_treat_local_file_content_as_evidence(tmp_path: Path) -> None:
@@ -732,6 +895,7 @@ def test_research_subagent_allows_first_fetch_after_search_then_breaks_repeat(
         knowledge_port=FakeKnowledgePort(),
         web_search_port=FakeWebSearchPort(),
         web_fetch_port=fetch_port,
+        web_policy_domains=("example.com",),
     )
     request = replace(
         _request(tmp_path, "child_fetch_breaker"),
@@ -743,6 +907,7 @@ def test_research_subagent_allows_first_fetch_after_search_then_breaks_repeat(
 
     assert result.status == "succeeded"
     assert fetch_port.calls == 1
+    assert fetch_port.last_domains == ("example.com",)
     assert "wcite_research" in result.evidence_refs
     assert any(reference.startswith("sage://coding/") for reference in result.evidence_refs)
 

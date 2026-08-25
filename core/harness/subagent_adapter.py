@@ -48,6 +48,7 @@ from core.coding.tools.registry import (
 )
 from core.coding.tools.schemas import first_error_message
 from core.coding.usage_store import UsageSample
+from core.harness.learning_scope import LearningReadonlyScope, LearningScopeConflict
 from core.harness.web_fetch import fetch_web_evidence
 
 logger = logging.getLogger(__name__)
@@ -190,6 +191,11 @@ class CodingSubagentExecutor:
         evidence_bundle_port: EvidenceBundlePort | None = None,
         sandbox: SandboxPort | None = None,
         allow_shell_network: bool = True,
+        web_policy_domains: tuple[str, ...] | None = None,
+        web_policy_freshness: str | None = None,
+        learning_scope: LearningReadonlyScope | None = None,
+        learning_scope_revalidator: Callable[[], LearningReadonlyScope] | None = None,
+        authorized_parent_run_id: str | None = None,
     ) -> None:
         self.runtime = runtime
         self.knowledge_port = knowledge_port
@@ -198,6 +204,19 @@ class CodingSubagentExecutor:
         self.evidence_bundle_port = evidence_bundle_port
         self.sandbox = sandbox
         self.allow_shell_network = allow_shell_network
+        self.web_policy_domains = web_policy_domains
+        self.web_policy_freshness = web_policy_freshness
+        self.learning_scope = learning_scope
+        self.learning_scope_revalidator = learning_scope_revalidator
+        if authorized_parent_run_id is not None and not (
+            1 <= len(authorized_parent_run_id.strip()) <= 256
+        ):
+            raise ValueError("authorized parent run id must be non-empty and bounded")
+        self.authorized_parent_run_id = (
+            authorized_parent_run_id.strip() if authorized_parent_run_id else None
+        )
+        if learning_scope is not None and learning_scope_revalidator is None:
+            raise ValueError("Learning research requires a canonical scope revalidator")
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._cancel_reasons: dict[str, SubagentCancelReason] = {}
 
@@ -207,6 +226,7 @@ class CodingSubagentExecutor:
         progress: SubagentProgressSink | None = None,
     ) -> SubagentResult:
         self._validate(request)
+        self._assert_learning_scope()
         cached = self._cached_result(request.child_run_id)
         if cached is not None:
             if cached.status == "succeeded" and cached.model_calls == 0:
@@ -261,6 +281,8 @@ class CodingSubagentExecutor:
 
         def emit_child_event(event: dict[str, Any]) -> None:
             nonlocal model_calls, successful_bundle_reads, tool_count
+            if event.get("type") in {"model_requested", "tool_call"}:
+                self._assert_learning_scope()
             self.runtime.run_store.append_trace(
                 request.child_run_id,
                 {
@@ -407,6 +429,18 @@ class CodingSubagentExecutor:
                 source_fingerprints=tuple(source_fingerprints),
                 mastery_evidence=(tuple(mastery_evidence.values()) if succeeded else ()),
             )
+        except LearningScopeConflict as exc:
+            result = SubagentResult(
+                child_run_id=request.child_run_id,
+                status="failed",
+                result_ref=result_ref,
+                error_code=exc.code,
+                token_usage=_settled_token_usage(request, token_usage, model_calls),
+                model_calls=model_calls,
+                tool_count=tool_count,
+                query_fingerprints=tuple(query_fingerprints),
+                source_fingerprints=tuple(source_fingerprints),
+            )
         except WorkerTaskBudgetExceeded:
             result = SubagentResult(
                 child_run_id=request.child_run_id,
@@ -478,7 +512,10 @@ class CodingSubagentExecutor:
     def _validate(self, request: SubagentRequest) -> None:
         if request.parent_thread_id != self.runtime.session_id:
             raise ValueError("subagent thread does not match runtime")
-        if request.parent_run_id != self.runtime.active_run_id:
+        if request.parent_run_id not in {
+            self.runtime.active_run_id,
+            self.authorized_parent_run_id,
+        }:
             raise ValueError("subagent parent run is not active")
         expected_workspace_id = workspace_id_from_path(self.runtime.workspace.root)
         if request.workspace_id != expected_workspace_id:
@@ -520,6 +557,12 @@ class CodingSubagentExecutor:
                 raise ValueError("synthesize subagent requires successful Research evidence")
         if request.depth != 1:
             raise ValueError("nested subagents are disabled")
+
+    def _assert_learning_scope(self) -> None:
+        if self.learning_scope is None:
+            return
+        assert self.learning_scope_revalidator is not None
+        self.learning_scope.assert_current(self.learning_scope_revalidator())
 
     def _cancelled_result(
         self,
@@ -674,6 +717,7 @@ class CodingSubagentExecutor:
         args: Mapping[str, Any],
         seen_query_fingerprints: Mapping[str, None],
     ) -> ToolResult:
+        self._assert_learning_scope()
         port = self.knowledge_port
         if port is None:
             return ToolResult("knowledge unavailable", is_error=True)
@@ -716,6 +760,7 @@ class CodingSubagentExecutor:
         args: Mapping[str, Any],
         seen_query_fingerprints: Mapping[str, None],
     ) -> ToolResult:
+        self._assert_learning_scope()
         port = self.web_search_port
         if port is None:
             return ToolResult("web search unavailable", is_error=True)
@@ -727,8 +772,12 @@ class CodingSubagentExecutor:
             query,
             top_k=int(args.get("top_k", 5)),
             token_budget=int(args.get("token_budget", 2_000)),
-            freshness=str(args.get("freshness", "all")),
-            domains=tuple(str(item) for item in args.get("domains", ())),
+            freshness=self.web_policy_freshness or str(args.get("freshness", "all")),
+            domains=(
+                self.web_policy_domains
+                if self.web_policy_domains is not None
+                else tuple(str(item) for item in args.get("domains", ()))
+            ),
             language=str(args.get("language", "all")),
         )
         payload = {
@@ -746,6 +795,8 @@ class CodingSubagentExecutor:
                     "title": item.title,
                     "excerpt": item.excerpt,
                     "content_hash": item.content_hash,
+                    "retrieved_at": item.retrieved_at,
+                    "conflict_group": str(item.metadata.get("conflict_group", ""))[:160],
                 }
                 for item in result.evidence
             ],
@@ -758,6 +809,7 @@ class CodingSubagentExecutor:
         args: Mapping[str, Any],
         seen_source_fingerprints: Mapping[str, None],
     ) -> ToolResult:
+        self._assert_learning_scope()
         port = self.web_fetch_port
         if port is None:
             return ToolResult("web fetch unavailable", is_error=True)
@@ -783,6 +835,7 @@ class CodingSubagentExecutor:
             ),
             url=url,
             token_budget=int(args.get("token_budget", 3_000)),
+            domains=self.web_policy_domains or (),
         )
         return ToolResult(content)
 

@@ -11,7 +11,8 @@
     "preview:public": "vite preview --config vite.public.config.ts",
     "test": "vitest --environment jsdom",
     "tauri": "tauri",
-    "desktop:launcher": "cc -arch arm64 -mmacosx-version-min=11.0 -Wall -Wextra -Werror src-tauri/launcher/sage-sidecar-launcher.c -o src-tauri/binaries/sage-api-aarch64-apple-darwin"
+    "desktop:launcher": "cc -arch arm64 -mmacosx-version-min=11.0 -Wall -Wextra -Werror src-tauri/launcher/sage-sidecar-launcher.c -o src-tauri/binaries/sage-api-aarch64-apple-darwin",
+    "test:e2e": "playwright test --config playwright.config.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "2.10.1",
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "2.10.1",
+    "@playwright/test": "^1.62.1",
     "@types/markdown-it": "^14.1.2",
     "@types/node": "^24.13.2",
     "@vitejs/plugin-vue": "^6.0.7",

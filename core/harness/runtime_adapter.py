@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
@@ -41,6 +41,7 @@ from sage_harness.runtime.manager import StreamableGraph
 
 from core.coding.run_coordinator import RunEvent
 from core.harness.event_adapter import HarnessEventAdapter
+from core.harness.learning_scope import LearningReadonlyScope, LearningScopeMiddleware
 from core.harness.model_context_frame import (
     ModelContextFrame,
     ModelContextFrameDataMiddleware,
@@ -68,6 +69,8 @@ class SageHarnessRuntimeAdapter:
         capability_ids_by_tool_name: Mapping[str, str] | None = None,
         capability_revision: str | None = None,
         finalize_after_tool_calls: int | None = None,
+        learning_scope: LearningReadonlyScope | None = None,
+        learning_scope_revalidator: Callable[[], LearningReadonlyScope] | None = None,
     ) -> None:
         self.checkpointer = checkpointer
         self.config = config or HarnessConfig()
@@ -131,6 +134,21 @@ class SageHarnessRuntimeAdapter:
                 ),
                 before="tool_error",
             )
+        if learning_scope is not None:
+            if learning_scope_revalidator is None:
+                raise ValueError("Learning scope requires a canonical revalidator")
+            registry = registry.with_spec(
+                MiddlewareSpec(
+                    "learning_readonly_scope",
+                    lambda config: LearningScopeMiddleware(
+                        learning_scope,
+                        revalidate=learning_scope_revalidator,
+                    ),
+                ),
+                before="provider_error",
+            )
+        self._learning_scope_task_id = learning_scope.task_id if learning_scope is not None else ""
+        self._learning_capability_ids = dict(capability_ids_by_tool_name or {})
         if skill_catalog is not None:
             registry = registry.with_spec(
                 MiddlewareSpec(
@@ -284,6 +302,8 @@ class SageHarnessRuntimeAdapter:
                 if resume
                 else ()
             ),
+            learning_scope_task_id=self._learning_scope_task_id,
+            learning_capability_ids_by_tool_name=self._learning_capability_ids,
         )
         async for item in self.manager.stream(request):
             if compaction_event is not None:

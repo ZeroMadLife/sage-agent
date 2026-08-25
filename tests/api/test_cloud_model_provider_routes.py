@@ -10,10 +10,15 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse
+from starlette.websockets import WebSocketDisconnect
 
 from api.main import create_app
 from core.cloud.auth.repository import CloudRepository
-from core.cloud.model_providers import ModelProviderRepository, ProviderProbe
+from core.cloud.model_providers import (
+    ModelProviderRepository,
+    ProviderProbe,
+    ProviderProbeError,
+)
 from db.database import create_engine, create_session_factory
 from db.migrations import init_db
 
@@ -256,6 +261,65 @@ async def test_account_default_model_bootstraps_coding_and_survives_resume(
     assert client.app.state.coding_sessions[session_id].model_spec == runtime_model_id
     assert client.app.state.coding_sessions[session_id].reasoning_mode == "high"
     assert client.app.state.coding_sessions[session_id].model.reasoning_effort == "high"
+
+
+@pytest.mark.parametrize("failure_point", ["credential", "dns_pin"])
+async def test_account_session_rehydrate_failures_are_bounded_for_rest_and_websocket(
+    harness: Harness,
+    tmp_path: Path,
+    monkeypatch,
+    failure_point: str,
+) -> None:
+    """Credential and pin failures share one retryable public error without secrets."""
+    client = await _client_for_user(
+        harness,
+        f"rehydrate-{failure_point}-invite",
+        f"rehydrate-{failure_point}@example.com",
+        coding_workspace_root=tmp_path,
+    )
+    client.post("/api/v1/cloud/model-providers", json=_create_payload())
+    session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+    client.app.state.coding_sessions.clear()
+    sentinel = f"sensitive-{failure_point}-secret"
+
+    if failure_point == "credential":
+
+        async def failed_credentials(_owner_user_id: str):
+            raise RuntimeError(sentinel)
+
+        monkeypatch.setattr(harness.providers, "runtime_credentials", failed_credentials)
+    else:
+
+        async def failed_pin(_credential):  # type: ignore[no-untyped-def]
+            raise ProviderProbeError(sentinel)
+
+        monkeypatch.setattr(harness.probe, "pin", failed_pin)
+
+    resumed = client.post(f"/api/v1/coding/session/{session_id}/resume")
+
+    assert resumed.status_code == 503
+    assert resumed.json() == {
+        "detail": {
+            "code": "coding_session_rehydrate_failed",
+            "message": "Coding session runtime could not be restored",
+            "retryable": True,
+        }
+    }
+    assert sentinel not in resumed.text
+    assert session_id not in client.app.state.coding_sessions
+    assert client.app.state.coding_runtime_rehydrate_flights == {}
+
+    with (
+        pytest.raises(WebSocketDisconnect) as closed,
+        client.websocket_connect(f"/api/v1/coding/{session_id}/stream"),
+    ):
+        pass
+
+    assert closed.value.code == 1011
+    assert closed.value.reason == "coding_session_rehydrate_failed"
+    assert sentinel not in closed.value.reason
+    assert session_id not in client.app.state.coding_sessions
+    assert client.app.state.coding_runtime_rehydrate_flights == {}
 
 
 async def test_account_model_sessions_are_hidden_from_other_users(

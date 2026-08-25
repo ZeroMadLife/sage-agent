@@ -217,6 +217,47 @@ def test_search_web_run_guard_suppresses_duplicates_and_excess_calls() -> None:
     assert len(seen) == 2
 
 
+def test_search_web_uses_server_frozen_domains_and_freshness() -> None:
+    adapter, seen = _adapter(
+        {
+            "results": [
+                {
+                    "url": "https://docs.example.com/page",
+                    "title": "Allowed",
+                    "content": "bounded evidence",
+                },
+                {
+                    "url": "https://other.test/page",
+                    "title": "Blocked",
+                    "content": "must not pass",
+                },
+            ]
+        }
+    )
+    tool = build_web_search_tool(
+        adapter,
+        policy_freshness="year",
+        policy_domains=("example.com",),
+    )
+
+    payload = json.loads(
+        asyncio.run(
+            tool.ainvoke(
+                {
+                    "query": "Sage",
+                    "freshness": "all",
+                    "domains": ["other.test"],
+                }
+            )
+        )
+    )
+
+    assert payload["freshness"] == "year"
+    assert payload["domains"] == ["example.com"]
+    assert [item["url"] for item in payload["citations"]] == ["https://docs.example.com/page"]
+    assert seen[0].url.params["time_range"] == "year"
+
+
 def test_search_web_normalizes_common_domain_url_and_path_shapes() -> None:
     adapter, seen = _adapter({"results": []})
     tool = build_web_search_tool(adapter)

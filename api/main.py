@@ -10,11 +10,15 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sage_harness import (
     HarnessConfig,
     McpCatalogPort,
     McpManager,
+    PolicyAwareWebFetchPort,
     WebFetchPort,
     WebSearchPort,
 )
@@ -32,6 +36,7 @@ from core.harness.capability_health_store import CapabilityHealthStore
 from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_scope import LearningReadonlyScopeResolver
 from core.harness.mcp_adapter import ConfiguredMcpCatalog
 from core.harness.profile import normalize_runtime_profile
 from core.harness.sandbox_factory import (
@@ -60,7 +65,18 @@ from core.knowledge.jobs import (
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
 from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
-from core.learning import MasteryLedger
+from core.learning import (
+    LearningActivationService,
+    LearningArtifactStore,
+    LearningKickoffService,
+    LearningTaskRepository,
+    LearningTaskService,
+    MasteryLedger,
+)
+from core.learning.runtime_resources import (
+    SageLearningActivationResources,
+    SageLearningKickoffResources,
+)
 from core.llm import create_llm
 from core.publication import PublicationCandidateRepository, PublicationCandidateService
 from db.database import AsyncSessionFactory
@@ -104,6 +120,7 @@ def create_app(
     coding_web_search_port: WebSearchPort | None = None,
     coding_web_fetch_enabled: bool | None = None,
     coding_web_search_enabled: bool | None = None,
+    learning_knowledge_port_factory: Any | None = None,
     database_auto_migrate: bool | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
@@ -164,6 +181,9 @@ def create_app(
                 except Exception as exc:
                     logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
                     raise
+            app.state.learning_activations_reconciled = await asyncio.to_thread(
+                app.state.learning_activation_service.reconcile
+            )
             if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
                 app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
                     open_sqlite_checkpointer(
@@ -199,6 +219,23 @@ def create_app(
             await checkpoint_stack.aclose()
 
     app = FastAPI(title="Sage API", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def learning_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        if request.url.path.startswith("/api/v1/learning/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "learning_request_invalid",
+                        "message": "invalid learning request",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
+
     app.state.auth = auth
     app.state.coding_goal_evaluator_factory = coding_goal_evaluator_factory
     app.state.coding_goal_followup_tasks = set()
@@ -409,6 +446,7 @@ def create_app(
         )
     else:
         app.state.coding_web_search_port = None
+    app.state.learning_knowledge_port_factory = learning_knowledge_port_factory
     if coding_web_fetch_port is not None:
         app.state.coding_web_fetch_port = coding_web_fetch_port
     elif (
@@ -527,11 +565,55 @@ def create_app(
     app.state.mastery_ledger = MasteryLedger(
         app.state.coding_storage_root / "mastery-ledger.sqlite3"
     )
+    app.state.learning_artifact_store = LearningArtifactStore(
+        app.state.coding_storage_root / "learning-artifacts.sqlite3"
+    )
+    learning_task_repository = LearningTaskRepository(
+        app.state.coding_storage_root / "learning-tasks.sqlite3"
+    )
+    app.state.learning_task_service = LearningTaskService(learning_task_repository)
+    learning_activation_resources = SageLearningActivationResources(
+        storage_root=app.state.coding_storage_root,
+        workspace_root=app.state.coding_workspace_root,
+        runtime_profile=app.state.coding_default_runtime_profile,
+        sandbox_provider=app.state.coding_sandbox_provider,
+        sandbox_image=app.state.coding_sandbox_image,
+        knowledge_available=(
+            app.state.knowledge_store is not None
+            or app.state.learning_knowledge_port_factory is not None
+        ),
+        web_search_available=(
+            app.state.coding_web_search_port is not None
+            and getattr(app.state.coding_web_search_port, "available", True)
+        ),
+        web_fetch_available=(
+            app.state.coding_web_fetch_port is not None
+            and getattr(app.state.coding_web_fetch_port, "available", True)
+        ),
+        web_fetch_policy_aware=isinstance(
+            app.state.coding_web_fetch_port,
+            PolicyAwareWebFetchPort,
+        ),
+    )
+    app.state.learning_activation_service = LearningActivationService(
+        learning_task_repository,
+        learning_activation_resources,
+    )
+    app.state.learning_kickoff_service = LearningKickoffService(
+        learning_task_repository,
+        SageLearningKickoffResources(storage_root=app.state.coding_storage_root),
+    )
+    app.state.learning_readonly_scope_resolver = LearningReadonlyScopeResolver(
+        learning_task_repository,
+        learning_activation_resources,
+    )
     app.state.publication_candidate_service = (
         publication_candidate_service
         or PublicationCandidateService(PublicationCandidateRepository(AsyncSessionFactory))
     )
     app.state.coding_sessions = {}
+    app.state.coding_runtime_rehydrate_flights = {}
+    app.state.coding_runtime_rehydrate_flights_guard = asyncio.Lock()
     from api.coding_runs import CodingRunRegistry
 
     app.state.coding_run_registry = CodingRunRegistry(
@@ -546,6 +628,7 @@ def create_app(
         cloud_workspaces,
         coding,
         knowledge,
+        learning,
         publication,
         routes,
     )
@@ -554,6 +637,7 @@ def create_app(
     app.include_router(routes.health_router)
     app.include_router(routes.router)
     app.include_router(coding.router)
+    app.include_router(learning.router)
     app.include_router(knowledge.router)
     app.include_router(publication.router)
     if cloud_routes_enabled:

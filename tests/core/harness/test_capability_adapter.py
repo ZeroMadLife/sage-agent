@@ -59,6 +59,8 @@ def test_adapter_projects_current_sources_without_paths_or_secrets(tmp_path) -> 
 
     ids = {item.capability_id for item in registry.list()}
     assert "local:read_file" in ids
+    assert "local:evidence_read" not in ids
+    assert "local:memory_read" not in ids
     assert "mcp:github:search_code" in ids
     assert "skill:project:review" in ids
     assert "skill:user:hidden" in ids

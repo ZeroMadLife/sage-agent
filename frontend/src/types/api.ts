@@ -27,6 +27,7 @@ export type CodingSessionResponse = {
   runtime_profile: CodingRuntimeProfile
   sandbox_provider?: string
   sandbox_image?: string
+  learning_task_id?: string | null
 }
 
 export type CodingSessionSummary = {
@@ -40,6 +41,7 @@ export type CodingSessionSummary = {
   message_count: number
   pinned?: boolean
   archived?: boolean
+  learning_task_id?: string | null
 }
 
 export type CodingSessionsResponse = {
@@ -98,6 +100,179 @@ export type AssistantHomeSummary = {
     description: string
     target: string
   }>
+}
+
+export type LearningSourcePolicy = {
+  knowledge: 'preferred' | 'required' | 'disabled'
+  web: 'allowed_when_insufficient' | 'forbidden'
+  domains: string[]
+  freshness: 'all' | 'current'
+}
+
+export type LearningTaskStatus =
+  | 'draft'
+  | 'activating'
+  | 'active'
+  | 'activation_failed'
+  | 'blocked'
+  | 'completed'
+  | 'archived'
+
+export type LearningTaskResponse = {
+  version: number
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  template_id: string
+  topic: string
+  desired_outcome: string | null
+  learner_profile: {
+    starting_level: 'beginner' | 'intermediate' | 'advanced' | null
+    time_budget_minutes_per_week: number | null
+    target_date: string | null
+  }
+  source_policy: LearningSourcePolicy
+  risk_class: 'general_education' | 'financial_education'
+  risk_notice: string | null
+  clarification: {
+    required_fields: string[]
+    questions: Array<{ field: string; prompt: string }>
+    ready_to_activate: boolean
+  }
+  learning_plan_id: string | null
+  learning_plan_hash: string | null
+  dag_hash: string | null
+  learning_goal_ref: { goal_id: string; goal_revision: string } | null
+  status: LearningTaskStatus
+  created_at: string
+  updated_at: string
+}
+
+export type LearningArtifactSummary = {
+  artifact_id: string
+  kind: string
+  content_hash: string
+  media_type: string
+  status: string
+  citation_count: number
+  source_revisions: string[]
+  retention: string
+}
+
+export type LearningResumeResponse = {
+  task_id: string
+  task_revision: number
+  goal_summary: string
+  plan_id: string
+  plan_hash: string
+  dag_hash: string
+  stage: 'knowledge_pending' | 'knowledge_ready' | 'source_gap' | 'research_pending'
+    | 'research_ready' | 'user_input_pending' | 'approval_pending'
+    | 'synthesize_pending' | 'artifact_ready' | 'blocked'
+  evidence_count: number
+  citation_count: number
+  gap_codes: string[]
+  blocking_reason: string
+  next_action: string
+  artifact_ref: string
+  artifact: LearningArtifactSummary | null
+  checkpoint_revision: number
+  fencing_token: number
+}
+
+export type LearningArtifactResponse = {
+  artifact_id: string
+  artifact_ref: string
+  schema_version: number
+  kind: string
+  task_id: string
+  task_revision: number
+  goal_id: string
+  goal_revision: string
+  plan_id: string
+  plan_revision: number
+  unit_ids: string[]
+  content_hash: string
+  media_type: string
+  status: string
+  evidence_refs: string[]
+  source_revisions: string[]
+  citations: Array<{
+    evidence_ref: string
+    title: string
+    url: string
+    content_hash: string
+    fetched_at: string
+    page_revision: string
+    source_revision: string
+  }>
+  retention: string
+  research_receipt_ref: string
+  content: string
+  created_at: string
+  updated_at: string
+}
+
+export type LearningTaskDraftInput = {
+  topic: string
+  desired_outcome?: string | null
+  starting_level?: 'beginner' | 'intermediate' | 'advanced' | null
+  time_budget_minutes_per_week?: number | null
+  target_date?: string | null
+  source_policy?: LearningSourcePolicy | null
+}
+
+export type LearningTaskPatchInput = Partial<Omit<LearningTaskDraftInput, 'topic'>> & {
+  expected_revision: number
+  topic?: string
+}
+
+export type LearningActivationResponse = {
+  version: number
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  session_id: string
+  thread_goal_revision: number | null
+  learning_goal_ref: { goal_id: string; goal_revision: string }
+  learning_plan_id: string | null
+  learning_plan_hash: string | null
+  turn_context_plan_id: string
+  turn_context_plan_hash: string | null
+  dag_hash: string | null
+  plan_id: string
+  plan_hash: string | null
+  catalog_revision: string | null
+  capability_revision: string | null
+  allowed_capabilities: string[]
+  source_policy_snapshot: LearningSourcePolicy
+  source_policy_revision: string
+  resume_validation_version: 'canonical_l0_v3' | 'legacy_l0_v2'
+  receipt_status: 'activating' | 'activation_failed' | 'active'
+  failure_code: string | null
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+}
+
+export type LearningKickoffDispatchResponse = {
+  version: 1
+  workspace_id: string
+  task_id: string
+  task_revision: number
+  activation_idempotency_key_hash: string
+  kickoff_idempotency_key_hash: string
+  dispatch_id: string
+  session_id: string
+  message_id: string
+  acceptance_run_id: string
+  turn_run_id: string
+  content_hash: string
+  receipt_status: 'dispatching' | 'accepted'
+  stage: 'intent' | 'journal' | 'accepted'
+  created_at: string
+  updated_at: string
+  accepted_at: string | null
 }
 
 export type KnowledgeSourceRoot = {

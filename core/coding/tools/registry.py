@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +58,7 @@ class ToolDefinition:
 
 _TOOL_DEFINITIONS: dict[str, ToolDefinition] = {}
 _MODULES_LOADED = False
+_MODULES_LOCK = threading.Lock()
 
 
 def register_tool(
@@ -295,8 +297,9 @@ def _make_tool_search_handler(activated_tools: set[str]) -> ToolHandler:
 
 def _ensure_default_modules_loaded() -> None:
     global _MODULES_LOADED
-    if _MODULES_LOADED:
-        return
-    _MODULES_LOADED = True
-    for module_name in TOOL_MODULES:
-        importlib.import_module(module_name)
+    with _MODULES_LOCK:
+        if _MODULES_LOADED:
+            return
+        for module_name in TOOL_MODULES:
+            importlib.import_module(module_name)
+        _MODULES_LOADED = True
