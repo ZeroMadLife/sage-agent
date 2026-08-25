@@ -624,6 +624,71 @@ Provider/Keychain/onboarding/capability 与 artifact 合同保持不变，不复
   `Contents/MacOS/sage-api`、sidecar 是 `Contents/Resources/sidecar/sage-api-aarch64-apple-darwin`
   文件后，以真实路径重做 strict/file 全部通过。该错误不改变产物，未重跑或复用任何失败构建。
 
+### D2.6 Provider mutation admission 与 startup reload 修复 mini-spec（2026-08-25）
+
+本增量只关闭第六轮 Runtime/Standards 的一条 Provider admission TOCTOU 和一条 startup
+replace/reload 缺口；D2.5 write-ahead ownership、journal health、failure accounting、Keychain、active
+Provider、capability 与 artifact smoke 合同保持不变。
+
+**Configuration mutation lease 与锁序**
+
+- Provider action 在等待 onboarding mutex 前从 host admission state 取得短租约。租约绑定独立
+  `configuration_epoch`；write-ahead unpublished reservation、ownership health drift 或已有 configuration
+  restart owner 都使租约失效。入口检查不是提交授权，实际 mutation 前仍必须验证租约。
+- 固定锁序为 onboarding mutex -> host admission mutex -> repository unpublished lock。Probe 网络请求、
+  Keychain store/read/delete 和补偿都不持有 host mutex；只有短 SQLite transaction/statement commit 在
+  host 临界区内完成 epoch + journal health CAS。cleanup write-ahead 不读取 onboarding，不形成反向锁环。
+- 可见 metadata commit 与 configuration restart ownership 在同一 host 临界区完成。成功返回唯一
+  restart receipt；`restart_for_configuration` 只消费 receipt 并显式返回 `Result`，不再静默尝试新的 begin。
+  active Provider cleanup 后即使 Keychain delete 可恢复失败，receipt 仍立即停止旧 runtime，pending
+  Provider journal 在 reconciliation 前继续阻止 relaunch。
+- add/rotate 在 Keychain staged 后若租约漂移，复用既有 `provider_operations` journal 做确定性补偿：补偿
+  成功删除 staged secret 与 operation，补偿失败保留 journal 并返回 reconciliation error。Probe 结果、
+  active/default model、disconnect/delete metadata 在 CAS 失败时不得发布。
+
+**Startup replace-and-reload gate**
+
+- repository 在同一 repository lock 内执行 atomic replace，然后从真实文件 load/parse，并精确比较 ordered
+  remaining identities；production startup reconciliation 只以该读回值决定 `Healthy/Recovering`。
+- replace failure、reload parse/I/O error 或内容漂移都返回 `PersistFailed`，保留原始 ownership recovery
+  gate 与专用 blocked reason，绝不 schedule launch。unsafe termination 继续保留 exact identity。
+
+**Red/Green 与门禁**
+
+- production barrier Red 固定三处交错：action 过 admission 后等待 onboarding mutex；Probe 完成后、metadata
+  commit 前；Keychain staged 后、SQLite commit 前。旧实现缺少 coordinator/lease API；Green 后分别证明
+  零 Keychain 写入、Probe metadata/active 不漂移、staged secret 与 operation 被补偿，且 exact unpublished
+  identity 已在 journal 中。active cleanup failure 额外证明 error 与 restart receipt 同时存在。
+- file-backed Red 先证明 repository 没有 verified reload 返回值；Green 覆盖 safe reload、parse error、I/O
+  error、内容漂移、unsafe retain 与 replace failure，production reconciliation 对前三类读回失败均保留原
+  identity 并进入 `PersistFailed`。
+- focused 后运行 Rust full/fmt/clippy、Provider/Keychain、Python desktop、Vue host adapter/HostGate 与
+  full/build、source product smoke、secret scan、精确进程零残留和 `git diff --check`。代码/docs 独立中文
+  commit；源码变化后只从新的 clean docs HEAD 和全新输出目录重建 arm64 artifact。
+
+### D2.6 实施收口（2026-08-25，artifact 待生成）
+
+- **代码候选**：`626da17fb56572558bb8c1231ecbca7c902d63d5`。host-owned
+  `ConfigurationMutationGuard` 以 `configuration_epoch` 统一 action admission、短 SQLite commit 与 restart
+  owner；onboarding production dispatcher 在 mutex 前取 lease，Tauri wrapper 只消费显式 receipt。
+- **Provider 可恢复性**：Probe/Keychain 长操作不占 host mutex；write-ahead 可在 barrier 中立即完成并使
+  action fail closed。add/rotate staged secret 复用 durable Provider journal 补偿；active rotate/disconnect/
+  delete 的 metadata commit 与 restart receipt 原子协调，cleanup Err 不会让旧 sidecar 继续以 ready 运行。
+- **startup 读回**：`replace_unpublished_orphans_verified` 在同一 repository lock 内完成 atomic write、真实
+  reload 与 exact compare。parse/I/O/drift/replace failure 都保留 original records 并映射为
+  `PersistFailed`；safe 与 unsafe outcome 继续分别收敛为 `Healthy/Recovering`。
+- **Red/Green 证据**：host lease Red 缺少 acquire/commit API；三条 production action Red 缺少生产
+  coordinator 与真实 reservation seam；file Red 缺少 verified replace 返回值。Green 后 crate 单测从
+  33 增至 44，覆盖三 barrier、active cleanup receipt、restart 独占与 reload failure matrix。
+- **源码门禁**：Rust full 共 86 passed（44 crate + 42 integration），fmt、Clippy `-D warnings` 通过；
+  Provider integration `14 passed`，唯一临时 macOS Keychain round-trip/cleanup `1 passed`；Python desktop
+  `61 passed`；Vue focused `39 passed`、full `72 files / 552 tests`、production build 通过；source product
+  smoke `1 passed`。changed-range private-key/long-token 与敏感扩展名扫描零命中，四类精确进程零残留，
+  `git diff --check` 通过。首次 secret-scan 命令因 zsh 引号解析失败，未形成结论，随后以拆分只读命令
+  重跑通过。
+- **待完成**：本段不复用 D2.5 receipt。下一笔 clean docs HEAD 固定后，从全新目录运行正式 arm64
+  bundle 入口，再补 source/dirty、12+6、269 manifest SHA、strict codesign、arm64、secret 与零残留收据。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
