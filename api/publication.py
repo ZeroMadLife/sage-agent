@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 
 from api.cloud_dependencies import (
-    SESSION_COOKIE,
+    authenticated_connection_user,
     require_cloud_authentication_in_production,
 )
 from api.schemas import (
@@ -184,7 +184,7 @@ def _service(request: Request) -> PublicationCandidateService:
 async def _owner_id(request: Request) -> str:
     repository = getattr(request.app.state, "cloud_repository", None)
     if isinstance(repository, CloudRepository):
-        user = await repository.authenticated_user(request.cookies.get(SESSION_COOKIE, ""))
+        user = await authenticated_connection_user(request)
         if user is not None:
             return user.user_id
     if str(getattr(request.app.state, "cloud_app_env", "development")).lower() != "production":

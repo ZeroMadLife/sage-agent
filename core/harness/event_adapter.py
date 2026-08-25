@@ -15,6 +15,7 @@ from sage_harness.runtime.events import (
 )
 
 from core.coding.run_coordinator import RunEvent
+from core.harness.learning_public import LearningPublicProjector
 
 _PUBLIC_TOOL_CONTENT_LIMIT = 4_000
 _PUBLIC_KNOWLEDGE_CITATION_LIMIT = 12
@@ -121,6 +122,8 @@ class HarnessEventAdapter:
         run_id: str,
         stream_namespace: str = "initial",
         seen_tool_call_ids: Iterable[str] = (),
+        learning_scope_task_id: str = "",
+        learning_capability_ids_by_tool_name: Mapping[str, str] | None = None,
     ) -> None:
         if not session_id.strip() or not run_id.strip():
             raise ValueError("session_id and run_id are required")
@@ -138,6 +141,13 @@ class HarnessEventAdapter:
         self._seen_budget_signatures: set[str] = set()
         self._seen_budget_usage_signatures: set[str] = set()
         self._assistant_protocol_filter = _LegacyProtocolFilter()
+        self._learning_scope_task_id = learning_scope_task_id.strip()
+        self._learning_capability_ids = {
+            str(name): str(capability_id)
+            for name, capability_id in (learning_capability_ids_by_tool_name or {}).items()
+            if str(name).strip() and str(capability_id).strip()
+        }
+        self._learning_model_output_seen = False
 
     def adapt(self, item: HarnessStreamItem) -> tuple[RunEvent, ...]:
         """Return zero or more Sage events for one graph stream item."""
@@ -151,6 +161,9 @@ class HarnessEventAdapter:
 
     def finish(self) -> tuple[RunEvent, ...]:
         """Flush a trailing public fragment after the graph stream closes."""
+        if self._learning_scope_task_id:
+            self._assistant_protocol_filter.finish()
+            return ()
         content = self._assistant_protocol_filter.finish()
         if not content:
             return ()
@@ -182,14 +195,38 @@ class HarnessEventAdapter:
                     args = call.get("args", {})
                     if not name or not tool_call_id or tool_call_id in self._seen_model_tool_calls:
                         continue
-                    self._pending_model_tool_calls[tool_call_id] = {
-                        "type": "tool_call",
-                        "tool": name,
-                        "args": args if isinstance(args, Mapping) else {},
-                        "tool_call_id": tool_call_id,
-                        "message_id": projected.get("id", ""),
-                    }
+                    if self._learning_scope_task_id:
+                        self._pending_model_tool_calls[tool_call_id] = {
+                            "type": "learning_tool_call",
+                            "task_id": self._learning_scope_task_id,
+                            "capability_id": self._learning_capability_id(name, args),
+                            "tool_call_id": tool_call_id,
+                            "status": "running",
+                        }
+                    else:
+                        self._pending_model_tool_calls[tool_call_id] = {
+                            "type": "tool_call",
+                            "tool": name,
+                            "args": args if isinstance(args, Mapping) else {},
+                            "tool_call_id": tool_call_id,
+                            "message_id": projected.get("id", ""),
+                        }
                 return ()
+            if self._learning_scope_task_id:
+                if not str(content) or self._learning_model_output_seen:
+                    return ()
+                self._learning_model_output_seen = True
+                return (
+                    self._event(
+                        "assistant",
+                        "completed",
+                        LearningPublicProjector.model_output_receipt(
+                            task_id=self._learning_scope_task_id,
+                            run_id=self.run_id,
+                        ),
+                        source_event_id=source_event_id,
+                    ),
+                )
             content = self._assistant_protocol_filter.feed(str(content))
             if content:
                 return (
@@ -208,6 +245,56 @@ class HarnessEventAdapter:
             return ()
         if message_type == "tool":
             tool_name = str(projected.get("name", ""))
+            learning_scope = projected.get("sage_learning_scope")
+            if isinstance(learning_scope, Mapping):
+                tool_call_id = str(projected.get("tool_call_id", ""))
+                self._discard_pending_tool_call(tool_call_id, tool_name)
+                public = LearningPublicProjector.event(
+                    {
+                        "type": "learning_scope_denied",
+                        "tool_call_id": tool_call_id,
+                        "status": "denied",
+                        "reason_code": learning_scope.get("reason_code"),
+                    },
+                    task_id=_public_string(learning_scope.get("task_id"), 256),
+                )
+                return (
+                    self._event(
+                        "tool",
+                        "error",
+                        public,
+                        source_event_id=source_event_id,
+                    ),
+                )
+            if self._learning_scope_task_id:
+                tool_call_id = str(projected.get("tool_call_id", ""))
+                pending_call = self._take_pending_tool_call(
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    args={},
+                    source_event_id=f"{source_event_id}:safe-call",
+                )
+                capability_id = self._learning_capability_id(tool_name, {})
+                if pending_call is not None:
+                    capability_id = str(pending_call.payload.get("capability_id") or capability_id)
+                is_error = projected.get("status") == "error"
+                learning_events = [pending_call] if pending_call is not None else []
+                learning_events.append(
+                    self._event(
+                        "tool",
+                        "error" if is_error else "completed",
+                        {
+                            "type": "learning_tool_result",
+                            "task_id": self._learning_scope_task_id,
+                            "capability_id": capability_id,
+                            "tool_call_id": tool_call_id,
+                            "status": "error" if is_error else "completed",
+                            "reason_code": "learning_tool_error" if is_error else "",
+                        },
+                        source_event_id=source_event_id,
+                    )
+                )
+                return tuple(learning_events)
             content = _public_tool_result_content(tool_name, content)
             signature = _tool_result_signature(tool_name, content)
             if signature in self._custom_tool_results:
@@ -340,6 +427,8 @@ class HarnessEventAdapter:
         if not isinstance(payload, Mapping):
             return ()
         event_type = str(payload.get("type", ""))
+        if self._learning_scope_task_id:
+            return self._learning_custom(payload, source_event_id)
         if event_type == "run_budget_exhausted":
             return self._budget_events(payload, source_event_id)
         if event_type == "memory_proposal_ready":
@@ -480,6 +569,61 @@ class HarnessEventAdapter:
                 "harness",
                 "completed",
                 {"type": "custom", "data": safe},
+                source_event_id=source_event_id,
+            ),
+        )
+
+    def _learning_custom(
+        self,
+        payload: Mapping[str, Any],
+        source_event_id: str,
+    ) -> tuple[RunEvent, ...]:
+        """Project Learning custom events as identity-only browser receipts."""
+        event_type = str(payload.get("type", ""))
+        if event_type == "run_budget_exhausted":
+            return self._budget_events(payload, source_event_id)
+        if event_type in {"tool_call", "tool_result"}:
+            # The messages stream emits the canonical safe tool receipt. Custom
+            # duplicates may contain raw args or result bodies, so never persist them.
+            return ()
+        if event_type not in {
+            *_CAPABILITY_EVENT_TYPES,
+            "approval_required",
+            "approval_granted",
+            "agent_started",
+            "agent_completed",
+            "subagent_started",
+            "subagent_completed",
+            "subagent_failed",
+            "subagent_cancelled",
+            "subagent_timed_out",
+            "subagent_progress",
+        }:
+            return ()
+
+        projected = dict(payload)
+        projected["status"] = _learning_event_status(event_type, payload.get("status"))
+        if event_type.startswith("subagent") and not projected.get("agent_run_id"):
+            child_run_id = _public_string(projected.get("child_run_id"), 256)
+            if child_run_id:
+                projected["agent_run_id"] = child_run_id
+        public = LearningPublicProjector.event(
+            projected,
+            task_id=self._learning_scope_task_id,
+        )
+        event_status = str(public["status"])
+        kind = (
+            "approval"
+            if event_type.startswith("approval")
+            else "agent"
+            if event_type.startswith(("agent", "subagent"))
+            else "harness"
+        )
+        return (
+            self._event(
+                kind,
+                event_status,
+                public,
                 source_event_id=source_event_id,
             ),
         )
@@ -738,6 +882,30 @@ class HarnessEventAdapter:
             payload,
             source_event_id=source_event_id,
         )
+
+    def _discard_pending_tool_call(self, tool_call_id: str, tool_name: str) -> None:
+        if tool_call_id and tool_call_id in self._pending_model_tool_calls:
+            self._pending_model_tool_calls.pop(tool_call_id, None)
+            self._seen_model_tool_calls.add(tool_call_id)
+            return
+        pending_id = next(
+            (
+                call_id
+                for call_id, call in self._pending_model_tool_calls.items()
+                if str(call.get("tool", "")) == tool_name
+            ),
+            "",
+        )
+        if pending_id:
+            self._pending_model_tool_calls.pop(pending_id, None)
+            self._seen_model_tool_calls.add(pending_id)
+
+    def _learning_capability_id(self, tool_name: str, args: object) -> str:
+        if tool_name == "task" and isinstance(args, Mapping):
+            subagent_type = _public_string(args.get("subagent_type"), 64).casefold()
+            if subagent_type:
+                return f"subagent:{subagent_type}"
+        return self._learning_capability_ids.get(tool_name, "unknown:capability")
 
     def _tool_call_event(
         self,
@@ -1326,6 +1494,30 @@ def _public_knowledge_citation(
 
 def _public_string(value: object, limit: int) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
+
+
+def _learning_event_status(event_type: str, value: object) -> str:
+    status = _public_string(value, 64).casefold()
+    if status in {"blocked", "denied", "waiting"}:
+        return "blocked"
+    if status in {"error", "failed", "failure", "cancelled", "timed_out"}:
+        return "error"
+    if status in {"completed", "success", "succeeded"}:
+        return "completed"
+    if status in {"running", "started", "pending"}:
+        return "running"
+    if event_type in {"approval_required"}:
+        return "blocked"
+    if event_type in {
+        "capability_selection_failed",
+        "subagent_failed",
+        "subagent_cancelled",
+        "subagent_timed_out",
+    }:
+        return "error"
+    if event_type.endswith(("started", "progress")):
+        return "running"
+    return "completed"
 
 
 def _public_non_negative_int(value: object) -> int:

@@ -1,0 +1,414 @@
+"""Security contracts shared by the D1 desktop host and sidecar."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from desktop.sidecar import app as sidecar_app
+from desktop.sidecar.app import DESKTOP_API_VERSION, create_desktop_app
+from desktop.sidecar.security import DesktopBootstrap, DesktopSecurity
+
+BEARER = "test-only-bearer"
+ORIGIN = "tauri://localhost"
+DEV_ORIGIN = "http://127.0.0.1:5173"
+HOST = "127.0.0.1:43123"
+
+
+def _security() -> DesktopSecurity:
+    return DesktopSecurity(bearer=BEARER, origin=ORIGIN, host=HOST)
+
+
+def _headers(**overrides: str) -> dict[str, str]:
+    headers = {
+        "Authorization": f"Bearer {BEARER}",
+        "Origin": ORIGIN,
+        "Host": HOST,
+    }
+    headers.update(overrides)
+    return headers
+
+
+@contextmanager
+def _running_secure_sidecar(
+    tmp_path: Path,
+    *,
+    runtime: dict[str, object] | None = None,
+) -> Iterator[subprocess.Popen[str]]:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(Path.cwd()), str(Path.cwd() / "packages" / "sage_harness")]
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-m", "desktop.sidecar", "--desktop-host"],
+        cwd=Path.cwd(),
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert process.stdin is not None
+        bootstrap = {
+            "instance_id": "test-instance",
+            "nonce": "test-nonce",
+            "bearer": BEARER,
+            "origin": ORIGIN,
+            "data_dir": str(tmp_path),
+        }
+        if runtime is not None:
+            bootstrap["runtime"] = runtime
+        process.stdin.write(json.dumps(bootstrap) + "\n")
+        process.stdin.flush()
+        yield process
+    finally:
+        if process.poll() is None:
+            process.terminate()
+        process.communicate(timeout=10)
+
+
+def test_bootstrap_rejects_missing_or_unknown_fields() -> None:
+    valid = {
+        "instance_id": "instance",
+        "nonce": "nonce",
+        "bearer": "bearer",
+        "origin": ORIGIN,
+        "data_dir": "/tmp/sage",
+    }
+
+    for field in valid:
+        payload = dict(valid)
+        del payload[field]
+        with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+            DesktopBootstrap.from_json(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+        DesktopBootstrap.from_json(json.dumps({**valid, "secret": "must-fail"}))
+
+
+@pytest.mark.parametrize("origin", [ORIGIN, DEV_ORIGIN])
+def test_bootstrap_accepts_only_the_two_exact_desktop_origins(origin: str) -> None:
+    payload = {
+        "instance_id": "instance",
+        "nonce": "nonce",
+        "bearer": "bearer",
+        "origin": origin,
+        "data_dir": "/tmp/sage",
+    }
+
+    assert DesktopBootstrap.from_json(json.dumps(payload)).origin == origin
+    with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+        DesktopBootstrap.from_json(json.dumps({**payload, "origin": f"{origin}/"}))
+
+
+def test_bootstrap_accepts_one_local_provider_without_exporting_it_to_environment() -> None:
+    secret = "test-secret-bootstrap-only"
+    payload = {
+        "instance_id": "instance",
+        "nonce": "nonce",
+        "bearer": "bearer",
+        "origin": ORIGIN,
+        "data_dir": "/tmp/sage",
+        "runtime": {
+            "workspace_path": "/tmp/sage workspace",
+            "provider": {
+                "provider_id": "provider-1",
+                "base_url": "https://provider.example/v1",
+                "default_model": "model-small",
+                "api_mode": "openai_chat_completions",
+                "api_key": secret,
+            },
+        },
+    }
+
+    bootstrap = DesktopBootstrap.from_json(json.dumps(payload))
+
+    assert bootstrap.runtime is not None
+    assert bootstrap.runtime.provider.default_model == "model-small"
+    assert secret not in repr(bootstrap)
+    assert all(value != secret for value in os.environ.values())
+
+    with pytest.raises(ValueError, match="invalid desktop bootstrap"):
+        DesktopBootstrap.from_json(
+            json.dumps({**payload, "runtime": {**payload["runtime"], "unknown": True}})
+        )
+
+
+def test_exact_desktop_preflight_allows_authorization_without_bearer(tmp_path: Path) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+
+    with TestClient(app) as client:
+        response = client.options(
+            "/capabilities",
+            headers={
+                "Origin": ORIGIN,
+                "Host": HOST,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+
+    assert response.status_code == 204
+    assert response.headers["access-control-allow-origin"] == ORIGIN
+    assert response.headers["access-control-allow-methods"] == "GET"
+    assert response.headers["access-control-allow-headers"] == "Authorization"
+    assert response.headers["vary"] == "Origin"
+    assert response.headers.get("access-control-allow-credentials") is None
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason_code"),
+    [
+        ({"Origin": "https://evil.example"}, "desktop_origin_rejected"),
+        ({"Host": "localhost:43123"}, "desktop_host_rejected"),
+        ({"Access-Control-Request-Method": "POST"}, "desktop_preflight_rejected"),
+        (
+            {"Access-Control-Request-Headers": "authorization, x-extra"},
+            "desktop_preflight_rejected",
+        ),
+    ],
+)
+def test_desktop_preflight_fails_closed(
+    tmp_path: Path,
+    headers: dict[str, str],
+    reason_code: str,
+) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+    request_headers = {
+        "Origin": ORIGIN,
+        "Host": HOST,
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+        **headers,
+    }
+
+    with TestClient(app) as client:
+        response = client.options("/capabilities", headers=request_headers)
+
+    assert response.status_code == 403
+    assert response.json() == {"reason_code": reason_code, "action": "restart_sage"}
+    assert "access-control-allow-origin" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason_code"),
+    [
+        ({"Authorization": "Bearer wrong"}, "desktop_bearer_rejected"),
+        ({"Host": "localhost:43123"}, "desktop_host_rejected"),
+        ({"Origin": "https://evil.example"}, "desktop_origin_rejected"),
+    ],
+)
+def test_http_and_sse_fail_closed_for_each_security_dimension(
+    tmp_path: Path,
+    headers: dict[str, str],
+    reason_code: str,
+) -> None:
+    app = create_desktop_app(
+        data_dir=tmp_path,
+        build_sha="test-build",
+        security=_security(),
+    )
+    request_headers = _headers(**headers)
+
+    with TestClient(app) as client:
+        for path in ("/health/live", "/desktop/probe/sse"):
+            response = client.get(path, headers=request_headers)
+            assert response.status_code == 403
+            assert response.json() == {"reason_code": reason_code, "action": "restart_sage"}
+            assert BEARER not in response.text
+
+
+def test_secure_http_sse_and_websocket_accept_the_same_session(tmp_path: Path) -> None:
+    app = create_desktop_app(
+        data_dir=tmp_path,
+        build_sha="test-build",
+        security=_security(),
+    )
+
+    with TestClient(app) as client:
+        live = client.get("/health/live", headers=_headers())
+        capabilities = client.get("/capabilities", headers=_headers())
+        repeated_capabilities = client.get("/capabilities", headers=_headers())
+        sse = client.get("/desktop/probe/sse", headers=_headers())
+        with client.websocket_connect(
+            "/desktop/probe/ws",
+            headers={"Origin": ORIGIN, "Host": HOST},
+            subprotocols=["sage.v1", f"sage-bearer.{BEARER}"],
+        ) as websocket:
+            ws_payload = websocket.receive_json()
+
+    assert live.status_code == 200
+    assert live.headers["access-control-allow-origin"] == ORIGIN
+    assert live.headers["vary"] == "Origin"
+    assert capabilities.status_code == 200
+    assert repeated_capabilities.status_code == 200
+    assert capabilities.json()["status"] == "blocked"
+    assert capabilities.json()["capabilities"]["provider"] == {
+        "status": "blocked",
+        "reason_code": "provider_not_configured",
+        "action": "configure_provider",
+    }
+    assert sse.headers["content-type"].startswith("text/event-stream")
+    assert "event: ready" in sse.text
+    assert ws_payload == {"status": "ready", "api_version": DESKTOP_API_VERSION}
+    diagnostic_lines = (
+        (tmp_path / "diagnostics" / "desktop-sidecar.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert len(diagnostic_lines) == 1
+    diagnostic = json.loads(diagnostic_lines[0])
+    assert set(diagnostic) == {"timestamp", "event", "state", "reason_code"}
+    assert diagnostic["event"] == "webview_capabilities_observed"
+    assert diagnostic["reason_code"] == "desktop_session_authenticated"
+    assert BEARER not in diagnostic_lines[0]
+
+
+def test_capability_observation_retries_after_diagnostic_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_desktop_app(data_dir=tmp_path, build_sha="test-build", security=_security())
+    real_record = sidecar_app._record_capability_observation
+    attempts = 0
+
+    def flaky_record(data_dir: Path) -> bool:
+        nonlocal attempts
+        attempts += 1
+        return False if attempts == 1 else real_record(data_dir)
+
+    monkeypatch.setattr(sidecar_app, "_record_capability_observation", flaky_record)
+    with TestClient(app) as client:
+        assert client.get("/capabilities", headers=_headers()).status_code == 200
+        assert client.get("/capabilities", headers=_headers()).status_code == 200
+
+    lines = (
+        (tmp_path / "diagnostics" / "desktop-sidecar.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert attempts == 2
+    assert len(lines) == 1
+
+
+@pytest.mark.parametrize(
+    ("headers", "subprotocols"),
+    [
+        ({"Origin": "https://evil.example", "Host": HOST}, ["sage.v1", f"sage-bearer.{BEARER}"]),
+        ({"Origin": ORIGIN, "Host": "localhost:43123"}, ["sage.v1", f"sage-bearer.{BEARER}"]),
+        ({"Origin": ORIGIN, "Host": HOST}, ["sage.v1", "sage-bearer.wrong"]),
+    ],
+)
+def test_websocket_rejects_wrong_origin_host_or_bearer(
+    tmp_path: Path,
+    headers: dict[str, str],
+    subprotocols: list[str],
+) -> None:
+    app = create_desktop_app(
+        data_dir=tmp_path,
+        build_sha="test-build",
+        security=_security(),
+    )
+
+    with (
+        TestClient(app) as client,
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect(
+            "/desktop/probe/ws",
+            headers=headers,
+            subprotocols=subprotocols,
+        ),
+    ):
+        pass
+
+
+def test_secure_process_reads_bootstrap_from_pipe_and_echoes_only_public_handshake(
+    tmp_path: Path,
+) -> None:
+    with _running_secure_sidecar(tmp_path) as process:
+        assert process.stdout is not None
+        handshake = json.loads(process.stdout.readline())
+
+    assert handshake == {
+        "pid": process.pid,
+        "port": handshake["port"],
+        "instance_id": "test-instance",
+        "api_version": DESKTOP_API_VERSION,
+        "build_sha": "dev",
+        "nonce": "test-nonce",
+    }
+    assert isinstance(handshake["port"], int) and handshake["port"] > 0
+    assert BEARER not in json.dumps(handshake)
+
+
+def test_secure_process_exits_when_the_parent_pipe_closes(tmp_path: Path) -> None:
+    with _running_secure_sidecar(tmp_path) as process:
+        assert process.stdout is not None
+        json.loads(process.stdout.readline())
+        assert process.stdin is not None
+        process.stdin.close()
+        process.stdin = None
+        return_code = process.wait(timeout=10)
+
+    assert return_code == 0
+
+
+def test_secure_process_bootstraps_the_local_product_without_persisting_secret(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    secret = "test-secret-process-bootstrap"
+    runtime = {
+        "workspace_path": str(workspace),
+        "provider": {
+            "provider_id": "provider-1",
+            "base_url": "https://provider.example/v1",
+            "default_model": "model-small",
+            "api_mode": "openai_chat_completions",
+            "api_key": secret,
+        },
+    }
+
+    with _running_secure_sidecar(tmp_path, runtime=runtime) as process:
+        assert process.stdout is not None
+        handshake_line = process.stdout.readline()
+        handshake = json.loads(handshake_line)
+        headers = {
+            "Authorization": f"Bearer {BEARER}",
+            "Origin": ORIGIN,
+        }
+        with httpx.Client(
+            base_url=f"http://127.0.0.1:{handshake['port']}",
+            headers=headers,
+            timeout=10,
+        ) as client:
+            assistant = client.get("/api/v1/assistant/home")
+            knowledge = client.get("/api/v1/knowledge")
+            session = client.post("/api/v1/coding/session", json={})
+        assert process.stdin is not None
+        process.stdin.close()
+        process.stdin = None
+        process.wait(timeout=10)
+        stderr = process.stderr.read() if process.stderr is not None else ""
+
+    assert assistant.status_code == 200
+    assert knowledge.status_code == 200
+    assert session.status_code == 200
+    assert secret not in handshake_line
+    assert secret not in stderr
+    assert all(value != secret for value in os.environ.values())
+    for path in tmp_path.rglob("*"):
+        if path.is_file():
+            assert secret.encode() not in path.read_bytes()

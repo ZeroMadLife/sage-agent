@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import suppress
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -31,7 +33,8 @@ class CodingRunRegistry:
         self.owner_pid = os.getpid()
         self._coordinators: dict[str, RunCoordinator] = {}
         self._hydrated: set[str] = set()
-        self._lock = asyncio.Lock()
+        self._hydration_flights: dict[str, asyncio.Task[RunCoordinator]] = {}
+        self._hydration_flights_guard = asyncio.Lock()
         self._capability_health_store = capability_health_store
 
     def get(self, session_id: str) -> RunCoordinator:
@@ -75,12 +78,40 @@ class CodingRunRegistry:
 
     async def hydrate(self, session_id: str) -> RunCoordinator:
         """Recover prior-process leases at most once for this app instance."""
-        async with self._lock:
-            coordinator = self.get(session_id)
-            if session_id not in self._hydrated:
-                await coordinator.recover_interrupted_runs()
-                self._hydrated.add(session_id)
-            return coordinator
+        if session_id in self._hydrated:
+            return self.get(session_id)
+        async with self._hydration_flights_guard:
+            if session_id in self._hydrated:
+                return self.get(session_id)
+            flight = self._hydration_flights.get(session_id)
+            if flight is None:
+                coordinator = self.get(session_id)
+                flight = asyncio.create_task(
+                    self._hydrate_session(session_id, coordinator),
+                    name=f"coding-run-hydrate:{session_id}",
+                )
+                self._hydration_flights[session_id] = flight
+                flight.add_done_callback(partial(self._finish_hydration_flight, session_id))
+        return await asyncio.shield(flight)
+
+    async def _hydrate_session(
+        self,
+        session_id: str,
+        coordinator: RunCoordinator,
+    ) -> RunCoordinator:
+        await coordinator.recover_interrupted_runs()
+        self._hydrated.add(session_id)
+        return coordinator
+
+    def _finish_hydration_flight(
+        self,
+        session_id: str,
+        flight: asyncio.Task[RunCoordinator],
+    ) -> None:
+        with suppress(asyncio.CancelledError):
+            flight.exception()
+        if self._hydration_flights.get(session_id) is flight:
+            self._hydration_flights.pop(session_id, None)
 
     async def shutdown(self) -> None:
         """Stop app-owned tasks while preserving checkpoint-backed approvals."""

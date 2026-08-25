@@ -1,5 +1,27 @@
 """Cross-session, evidence-backed learning projections."""
 
+from core.learning.activation import (
+    LearningActivationError,
+    LearningActivationRecord,
+    LearningActivationService,
+    LearningActivationTurnContextBinding,
+    LearningGoalRef,
+)
+from core.learning.artifact_store import (
+    LearningArtifactStore,
+    LearningCheckpoint,
+    LearningResumeSummary,
+    StoredLearningArtifact,
+    StoredLearningResearchReceipt,
+)
+from core.learning.errors import LearningFailureCode
+from core.learning.execution import LearningExecutionContext, LearningExecutionService
+from core.learning.kickoff import (
+    LearningKickoffDispatchRecord,
+    LearningKickoffError,
+    LearningKickoffErrorCode,
+    LearningKickoffService,
+)
 from core.learning.mastery import (
     MASTERY_RUBRIC_REVISION,
     MasteryCapability,
@@ -14,9 +36,81 @@ from core.learning.mastery import (
     MasteryLedgerConflictError,
     MasteryLedgerNotFoundError,
 )
+from core.learning.materials import (
+    KnowledgeUnit,
+    LearningCitation,
+    LearningMapArtifact,
+    LearningMapOutcome,
+    LearningMapService,
+    LearningPlan,
+)
+from core.learning.research import (
+    LearningResearchEvidence,
+    LearningResearchOutcome,
+    LearningResearchReceipt,
+    LearningResearchService,
+)
+from core.learning.task_repository import (
+    LearningTaskConflictError,
+    LearningTaskError,
+    LearningTaskNotFoundError,
+    LearningTaskRepository,
+    LearningTaskService,
+)
+from core.learning.tasks import (
+    FINANCIAL_EDUCATION_NOTICE,
+    UNSET,
+    LearningClarification,
+    LearningClarificationQuestion,
+    LearningLearnerProfile,
+    LearningSourcePolicy,
+    LearningTask,
+    LearningTaskCreate,
+    LearningTaskPatch,
+    UnsetValue,
+)
 
 __all__ = [
+    "FINANCIAL_EDUCATION_NOTICE",
     "MASTERY_RUBRIC_REVISION",
+    "UNSET",
+    "KnowledgeUnit",
+    "LearningActivationError",
+    "LearningActivationRecord",
+    "LearningActivationService",
+    "LearningActivationTurnContextBinding",
+    "LearningArtifactStore",
+    "LearningCheckpoint",
+    "LearningCitation",
+    "LearningClarification",
+    "LearningClarificationQuestion",
+    "LearningExecutionContext",
+    "LearningExecutionService",
+    "LearningFailureCode",
+    "LearningGoalRef",
+    "LearningKickoffDispatchRecord",
+    "LearningKickoffError",
+    "LearningKickoffErrorCode",
+    "LearningKickoffService",
+    "LearningLearnerProfile",
+    "LearningMapArtifact",
+    "LearningMapOutcome",
+    "LearningMapService",
+    "LearningPlan",
+    "LearningResearchEvidence",
+    "LearningResearchOutcome",
+    "LearningResearchReceipt",
+    "LearningResearchService",
+    "LearningResumeSummary",
+    "LearningSourcePolicy",
+    "LearningTask",
+    "LearningTaskConflictError",
+    "LearningTaskCreate",
+    "LearningTaskError",
+    "LearningTaskNotFoundError",
+    "LearningTaskPatch",
+    "LearningTaskRepository",
+    "LearningTaskService",
     "MasteryCapability",
     "MasteryCapabilityProjection",
     "MasteryEvidence",
@@ -28,4 +122,7 @@ __all__ = [
     "MasteryLedger",
     "MasteryLedgerConflictError",
     "MasteryLedgerNotFoundError",
+    "StoredLearningArtifact",
+    "StoredLearningResearchReceipt",
+    "UnsetValue",
 ]

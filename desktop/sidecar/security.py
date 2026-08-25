@@ -1,0 +1,258 @@
+"""In-memory bootstrap and loopback request guard for the desktop profile."""
+
+from __future__ import annotations
+
+import hmac
+import json
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
+
+_BOOTSTRAP_FIELDS = {"instance_id", "nonce", "bearer", "origin", "data_dir"}
+_RUNTIME_FIELDS = {"workspace_path", "provider"}
+_RUNTIME_OPTIONAL_FIELDS = {"sandbox_provider", "side_effect_tools_enabled"}
+_PROVIDER_FIELDS = {
+    "provider_id",
+    "base_url",
+    "default_model",
+    "api_mode",
+    "api_key",
+}
+_MAX_BOOTSTRAP_BYTES = 64 * 1024
+_DESKTOP_ORIGINS = {"tauri://localhost", "http://127.0.0.1:5173"}
+
+
+@dataclass(frozen=True)
+class DesktopProviderBootstrap:
+    """One write-only local Provider copied from Keychain into process memory."""
+
+    provider_id: str
+    base_url: str
+    default_model: str
+    api_mode: str
+    api_key: str = field(repr=False)
+
+
+@dataclass(frozen=True)
+class DesktopRuntimeBootstrap:
+    """Local product runtime configuration selected during onboarding."""
+
+    workspace_path: Path
+    provider: DesktopProviderBootstrap
+    sandbox_provider: str = "local_workspace"
+    side_effect_tools_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class DesktopBootstrap:
+    """Secrets and process identity delivered once through child stdin."""
+
+    instance_id: str
+    nonce: str
+    bearer: str
+    origin: str
+    data_dir: Path
+    runtime: DesktopRuntimeBootstrap | None = None
+
+    @classmethod
+    def from_json(cls, raw: str) -> DesktopBootstrap:
+        try:
+            if len(raw.encode("utf-8")) > _MAX_BOOTSTRAP_BYTES:
+                raise ValueError
+            payload: Any = json.loads(raw)
+            if not isinstance(payload, dict) or frozenset(payload) not in {
+                frozenset(_BOOTSTRAP_FIELDS),
+                frozenset({*_BOOTSTRAP_FIELDS, "runtime"}),
+            }:
+                raise ValueError
+            values = {name: payload[name] for name in _BOOTSTRAP_FIELDS}
+            if not all(isinstance(value, str) and value for value in values.values()):
+                raise ValueError
+            if values["origin"] not in _DESKTOP_ORIGINS:
+                raise ValueError
+            data_dir = Path(values["data_dir"])
+            if not data_dir.is_absolute():
+                raise ValueError
+            runtime = _parse_runtime(payload.get("runtime"))
+        except (KeyError, TypeError, UnicodeEncodeError, json.JSONDecodeError, ValueError):
+            raise ValueError("invalid desktop bootstrap") from None
+        return cls(
+            instance_id=values["instance_id"],
+            nonce=values["nonce"],
+            bearer=values["bearer"],
+            origin=values["origin"],
+            data_dir=data_dir,
+            runtime=runtime,
+        )
+
+
+def _parse_runtime(value: Any) -> DesktopRuntimeBootstrap | None:
+    if value is None:
+        return None
+    if (
+        not isinstance(value, dict)
+        or not _RUNTIME_FIELDS.issubset(value)
+        or set(value) - _RUNTIME_FIELDS - _RUNTIME_OPTIONAL_FIELDS
+    ):
+        raise ValueError
+    workspace_path = value.get("workspace_path")
+    provider = value.get("provider")
+    if not isinstance(workspace_path, str) or not workspace_path:
+        raise ValueError
+    workspace = Path(workspace_path)
+    if not workspace.is_absolute():
+        raise ValueError
+    if not isinstance(provider, dict) or set(provider) != _PROVIDER_FIELDS:
+        raise ValueError
+    if not all(isinstance(provider.get(name), str) and provider[name] for name in _PROVIDER_FIELDS):
+        raise ValueError
+    api_mode = provider["api_mode"]
+    if api_mode not in {
+        "openai_chat_completions",
+        "openai_responses",
+        "anthropic_messages",
+    }:
+        raise ValueError
+    sandbox_provider = value.get("sandbox_provider", "local_workspace")
+    side_effect_tools_enabled = value.get("side_effect_tools_enabled", False)
+    if sandbox_provider not in {"local_workspace", "container"}:
+        raise ValueError
+    if not isinstance(side_effect_tools_enabled, bool):
+        raise ValueError
+    if side_effect_tools_enabled != (sandbox_provider == "container"):
+        raise ValueError
+    return DesktopRuntimeBootstrap(
+        workspace_path=workspace,
+        provider=DesktopProviderBootstrap(
+            provider_id=provider["provider_id"],
+            base_url=provider["base_url"],
+            default_model=provider["default_model"],
+            api_mode=api_mode,
+            api_key=provider["api_key"],
+        ),
+        sandbox_provider=sandbox_provider,
+        side_effect_tools_enabled=side_effect_tools_enabled,
+    )
+
+
+@dataclass(frozen=True)
+class DesktopSecurity:
+    """Expected loopback request identity, retained in process memory only."""
+
+    bearer: str
+    origin: str
+    host: str
+
+    def reject_reason(
+        self, *, authorization: str | None, host: str | None, origin: str | None
+    ) -> str | None:
+        supplied = "" if authorization is None else authorization
+        expected = f"Bearer {self.bearer}"
+        if not hmac.compare_digest(supplied.encode(), expected.encode()):
+            return "desktop_bearer_rejected"
+        if host != self.host:
+            return "desktop_host_rejected"
+        if origin != self.origin:
+            return "desktop_origin_rejected"
+        return None
+
+    def websocket_reject_reason(
+        self,
+        *,
+        host: str | None,
+        origin: str | None,
+        subprotocols: list[str],
+    ) -> str | None:
+        bearer_protocol = f"sage-bearer.{self.bearer}"
+        supplied = next(
+            (protocol for protocol in subprotocols if protocol.startswith("sage-bearer.")),
+            "",
+        )
+        if not hmac.compare_digest(supplied.encode(), bearer_protocol.encode()):
+            return "desktop_bearer_rejected"
+        if host != self.host:
+            return "desktop_host_rejected"
+        if origin != self.origin:
+            return "desktop_origin_rejected"
+        if "sage.v1" not in subprotocols:
+            return "desktop_protocol_rejected"
+        return None
+
+
+class DesktopSecurityMiddleware(BaseHTTPMiddleware):
+    """Apply the same fail-closed identity gate to every HTTP/SSE request."""
+
+    def __init__(self, app: Any, *, security: DesktopSecurity) -> None:
+        super().__init__(app)
+        self._security = security
+
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        if request.method == "OPTIONS":
+            reason = self._preflight_reject_reason(request)
+            if reason is not None:
+                return self._rejection(reason)
+            return Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": self._security.origin,
+                    "Access-Control-Allow-Methods": "GET",
+                    "Access-Control-Allow-Headers": "Authorization",
+                    "Vary": "Origin",
+                },
+            )
+        reason = self._security.reject_reason(
+            authorization=request.headers.get("authorization"),
+            host=request.headers.get("host"),
+            origin=request.headers.get("origin"),
+        )
+        if reason is not None:
+            return self._rejection(reason, expose_to_trusted_origin=request.headers.get("origin"))
+        response = await call_next(request)
+        response.headers["Access-Control-Allow-Origin"] = self._security.origin
+        response.headers["Vary"] = "Origin"
+        return response
+
+    def _preflight_reject_reason(self, request: Request) -> str | None:
+        if request.headers.get("host") != self._security.host:
+            return "desktop_host_rejected"
+        if request.headers.get("origin") != self._security.origin:
+            return "desktop_origin_rejected"
+        if request.headers.get("access-control-request-method") != "GET":
+            return "desktop_preflight_rejected"
+        requested_headers = {
+            value.strip().lower()
+            for value in request.headers.get("access-control-request-headers", "").split(",")
+            if value.strip()
+        }
+        if requested_headers != {"authorization"}:
+            return "desktop_preflight_rejected"
+        return None
+
+    def _rejection(
+        self,
+        reason: str,
+        *,
+        expose_to_trusted_origin: str | None = None,
+    ) -> JSONResponse:
+        response = JSONResponse(
+            {"reason_code": reason, "action": "restart_sage"},
+            status_code=403,
+        )
+        if expose_to_trusted_origin == self._security.origin:
+            response.headers["Access-Control-Allow-Origin"] = self._security.origin
+            response.headers["Vary"] = "Origin"
+        return response
+
+
+__all__ = [
+    "DesktopBootstrap",
+    "DesktopProviderBootstrap",
+    "DesktopRuntimeBootstrap",
+    "DesktopSecurity",
+    "DesktopSecurityMiddleware",
+]

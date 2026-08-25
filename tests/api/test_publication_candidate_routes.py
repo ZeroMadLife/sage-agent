@@ -172,6 +172,7 @@ async def test_production_publication_routes_require_authentication(dependencies
         create_app(
             cloud_repository=cloud,
             cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
             publication_candidate_service=publication,
         )
     )
@@ -183,3 +184,51 @@ async def test_production_publication_routes_require_authentication(dependencies
 
     assert response.status_code == 401
     assert response.json() == {"detail": "cloud authentication is required"}
+
+
+async def test_production_publication_uses_bearer_owner_scope(dependencies) -> None:
+    cloud, publication = dependencies
+    client = TestClient(
+        create_app(
+            cloud_repository=cloud,
+            cloud_canary_invite_login_enabled=True,
+            cloud_app_env="production",
+            cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+            publication_candidate_service=publication,
+        )
+    )
+
+    async def device_headers(invite: str, email: str) -> dict[str, str]:
+        await cloud.create_invite(invite, email=email)
+        login = client.post(
+            "/api/v1/cloud/auth/device/login",
+            json={"invite_code": invite, "device_name": email},
+        )
+        assert login.status_code == 200
+        return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    owner_headers = await device_headers("publication-bearer-a", "bearer-a@example.com")
+    other_headers = await device_headers("publication-bearer-b", "bearer-b@example.com")
+    created = client.post(
+        "/api/v1/publication/candidates",
+        headers=owner_headers,
+        json={"package": _package(), "reason": "Bearer review", "evidence_refs": []},
+    )
+    assert created.status_code == 201
+    candidate_id = created.json()["candidate_id"]
+
+    assert (
+        client.get(
+            f"/api/v1/publication/candidates/{candidate_id}", headers=owner_headers
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get(
+            f"/api/v1/publication/candidates/{candidate_id}", headers=other_headers
+        ).status_code
+        == 404
+    )
+    assert client.get("/api/v1/publication/candidates", headers=other_headers).json() == {
+        "candidates": []
+    }

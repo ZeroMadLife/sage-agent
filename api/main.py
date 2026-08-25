@@ -10,11 +10,15 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sage_harness import (
     HarnessConfig,
     McpCatalogPort,
     McpManager,
+    PolicyAwareWebFetchPort,
     WebFetchPort,
     WebSearchPort,
 )
@@ -32,6 +36,7 @@ from core.harness.capability_health_store import CapabilityHealthStore
 from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_scope import LearningReadonlyScopeResolver
 from core.harness.mcp_adapter import ConfiguredMcpCatalog
 from core.harness.profile import normalize_runtime_profile
 from core.harness.sandbox_factory import (
@@ -60,7 +65,18 @@ from core.knowledge.jobs import (
 from core.knowledge.parsing.adapters import build_external_parse_coordinator
 from core.knowledge.retrieval import DenseEmbeddingProvider
 from core.knowledge.source_proposals import KnowledgeSourceProposalRepository
-from core.learning import MasteryLedger
+from core.learning import (
+    LearningActivationService,
+    LearningArtifactStore,
+    LearningKickoffService,
+    LearningTaskRepository,
+    LearningTaskService,
+    MasteryLedger,
+)
+from core.learning.runtime_resources import (
+    SageLearningActivationResources,
+    SageLearningKickoffResources,
+)
 from core.llm import create_llm
 from core.publication import PublicationCandidateRepository, PublicationCandidateService
 from db.database import AsyncSessionFactory
@@ -98,17 +114,23 @@ def create_app(
     coding_harness_config: HarnessConfig | None = None,
     coding_sandbox_provider: str | None = None,
     coding_sandbox_image: str | None = None,
+    coding_side_effect_tools_enabled: bool = True,
     coding_mcp_catalog: McpCatalogPort | None = None,
     coding_web_fetch_port: WebFetchPort | None = None,
     coding_web_search_port: WebSearchPort | None = None,
+    coding_web_fetch_enabled: bool | None = None,
+    coding_web_search_enabled: bool | None = None,
+    learning_knowledge_port_factory: Any | None = None,
     database_auto_migrate: bool | None = None,
     cloud_repository: CloudRepository | None = None,
     cloud_dev_login_enabled: bool | None = None,
     cloud_canary_invite_login_enabled: bool | None = None,
     cloud_secure_cookies: bool | None = None,
     cloud_app_env: str | None = None,
+    cloud_token_secret: str | None = None,
     cloud_github_oauth_service: GitHubOAuthService | None = None,
     cloud_frontend_url: str | None = None,
+    cloud_routes_enabled: bool = True,
     cloud_model_provider_repository: ModelProviderRepository | None = None,
     cloud_model_provider_probe: ProviderProbe | None = None,
     knowledge_workspace_root: str | Path | None = None,
@@ -159,6 +181,9 @@ def create_app(
                 except Exception as exc:
                     logger.error("Container sandbox reconciliation failed: %s", type(exc).__name__)
                     raise
+            app.state.learning_activations_reconciled = await asyncio.to_thread(
+                app.state.learning_activation_service.reconcile
+            )
             if bool(getattr(app.state, "coding_deerflow_v2_enabled", False)):
                 app.state.sage_harness_checkpointer = await checkpoint_stack.enter_async_context(
                     open_sqlite_checkpointer(
@@ -194,15 +219,40 @@ def create_app(
             await checkpoint_stack.aclose()
 
     app = FastAPI(title="Sage API", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def learning_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        if request.url.path.startswith("/api/v1/learning/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "learning_request_invalid",
+                        "message": "invalid learning request",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
+
     app.state.auth = auth
     app.state.coding_goal_evaluator_factory = coding_goal_evaluator_factory
     app.state.coding_goal_followup_tasks = set()
     app.state.coding_goal_followup_shutdown = False
     settings = get_settings()
-    app_env = cloud_app_env or settings.app_env
+    app_env = str(cloud_app_env or settings.app_env).strip().lower()
+    resolved_cloud_token_secret = (
+        settings.app_secret_key if cloud_token_secret is None else cloud_token_secret
+    )
+    if app_env == "production":
+        settings.validate_cloud_token_signing_secret(resolved_cloud_token_secret)
     if app_env == "production" and cloud_repository is None:
-        settings.validate_cloud_production_secrets()
-    app.state.cloud_repository = cloud_repository or CloudRepository(AsyncSessionFactory)
+        settings.validate_cloud_production_secrets(app_env=app_env)
+    resolved_cloud_repository: CloudRepository | None = (
+        cloud_repository or CloudRepository(AsyncSessionFactory) if cloud_routes_enabled else None
+    )
+    app.state.cloud_repository = resolved_cloud_repository
     app.state.cloud_app_env = app_env
     app.state.cloud_dev_login_enabled = (
         settings.cloud_dev_login_enabled
@@ -222,6 +272,9 @@ def create_app(
         else cloud_secure_cookies
     )
     app.state.cloud_frontend_url = cloud_frontend_url or settings.cloud_frontend_url
+    app.state.cloud_token_secret = resolved_cloud_token_secret
+    app.state.cloud_access_token_ttl_seconds = settings.cloud_access_token_ttl_seconds
+    app.state.cloud_refresh_token_ttl_days = settings.cloud_refresh_token_ttl_days
     app.state.database_auto_migrate = (
         False
         if app_env == "production" or settings.app_env == "production"
@@ -245,16 +298,21 @@ def create_app(
         app_env=app_env
     )
     app.state.cloud_github_oauth_service = cloud_github_oauth_service
-    if app.state.cloud_github_oauth_service is None and all(
-        (
-            settings.github_oauth_client_id,
-            settings.github_oauth_client_secret,
-            settings.github_oauth_transaction_secret,
-            settings.github_token_encryption_secret,
+    if (
+        cloud_routes_enabled
+        and app.state.cloud_github_oauth_service is None
+        and all(
+            (
+                settings.github_oauth_client_id,
+                settings.github_oauth_client_secret,
+                settings.github_oauth_transaction_secret,
+                settings.github_token_encryption_secret,
+            )
         )
     ):
+        assert resolved_cloud_repository is not None
         app.state.cloud_github_oauth_service = GitHubOAuthService(
-            app.state.cloud_repository,
+            resolved_cloud_repository,
             GitHubOAuthConfig(
                 client_id=settings.github_oauth_client_id,
                 client_secret=settings.github_oauth_client_secret,
@@ -365,6 +423,7 @@ def create_app(
     ).strip()
     if not app.state.coding_sandbox_image:
         raise ValueError("coding sandbox image must not be empty")
+    app.state.coding_side_effect_tools_enabled = bool(coding_side_effect_tools_enabled)
     app.state.sage_harness_checkpointer = None
     resolved_mcp_catalog = coding_mcp_catalog or ConfiguredMcpCatalog({})
     app.state.coding_mcp_catalog = resolved_mcp_catalog
@@ -373,7 +432,11 @@ def create_app(
     )
     if coding_web_search_port is not None:
         app.state.coding_web_search_port = coding_web_search_port
-    elif settings.sage_web_search_enabled:
+    elif (
+        settings.sage_web_search_enabled
+        if coding_web_search_enabled is None
+        else coding_web_search_enabled
+    ):
         if not settings.sage_web_search_endpoint.strip():
             raise ValueError("SAGE_WEB_SEARCH_ENDPOINT is required when web search is enabled")
         app.state.coding_web_search_port = SearxngWebSearchAdapter(
@@ -383,9 +446,14 @@ def create_app(
         )
     else:
         app.state.coding_web_search_port = None
+    app.state.learning_knowledge_port_factory = learning_knowledge_port_factory
     if coding_web_fetch_port is not None:
         app.state.coding_web_fetch_port = coding_web_fetch_port
-    elif settings.sage_web_fetch_enabled:
+    elif (
+        settings.sage_web_fetch_enabled
+        if coding_web_fetch_enabled is None
+        else coding_web_fetch_enabled
+    ):
         app.state.coding_web_fetch_port = SafeWebFetchAdapter(
             connect_timeout_seconds=settings.sage_web_fetch_connect_timeout_seconds,
             read_timeout_seconds=settings.sage_web_fetch_read_timeout_seconds,
@@ -497,11 +565,55 @@ def create_app(
     app.state.mastery_ledger = MasteryLedger(
         app.state.coding_storage_root / "mastery-ledger.sqlite3"
     )
+    app.state.learning_artifact_store = LearningArtifactStore(
+        app.state.coding_storage_root / "learning-artifacts.sqlite3"
+    )
+    learning_task_repository = LearningTaskRepository(
+        app.state.coding_storage_root / "learning-tasks.sqlite3"
+    )
+    app.state.learning_task_service = LearningTaskService(learning_task_repository)
+    learning_activation_resources = SageLearningActivationResources(
+        storage_root=app.state.coding_storage_root,
+        workspace_root=app.state.coding_workspace_root,
+        runtime_profile=app.state.coding_default_runtime_profile,
+        sandbox_provider=app.state.coding_sandbox_provider,
+        sandbox_image=app.state.coding_sandbox_image,
+        knowledge_available=(
+            app.state.knowledge_store is not None
+            or app.state.learning_knowledge_port_factory is not None
+        ),
+        web_search_available=(
+            app.state.coding_web_search_port is not None
+            and getattr(app.state.coding_web_search_port, "available", True)
+        ),
+        web_fetch_available=(
+            app.state.coding_web_fetch_port is not None
+            and getattr(app.state.coding_web_fetch_port, "available", True)
+        ),
+        web_fetch_policy_aware=isinstance(
+            app.state.coding_web_fetch_port,
+            PolicyAwareWebFetchPort,
+        ),
+    )
+    app.state.learning_activation_service = LearningActivationService(
+        learning_task_repository,
+        learning_activation_resources,
+    )
+    app.state.learning_kickoff_service = LearningKickoffService(
+        learning_task_repository,
+        SageLearningKickoffResources(storage_root=app.state.coding_storage_root),
+    )
+    app.state.learning_readonly_scope_resolver = LearningReadonlyScopeResolver(
+        learning_task_repository,
+        learning_activation_resources,
+    )
     app.state.publication_candidate_service = (
         publication_candidate_service
         or PublicationCandidateService(PublicationCandidateRepository(AsyncSessionFactory))
     )
     app.state.coding_sessions = {}
+    app.state.coding_runtime_rehydrate_flights = {}
+    app.state.coding_runtime_rehydrate_flights_guard = asyncio.Lock()
     from api.coding_runs import CodingRunRegistry
 
     app.state.coding_run_registry = CodingRunRegistry(
@@ -516,6 +628,7 @@ def create_app(
         cloud_workspaces,
         coding,
         knowledge,
+        learning,
         publication,
         routes,
     )
@@ -524,11 +637,13 @@ def create_app(
     app.include_router(routes.health_router)
     app.include_router(routes.router)
     app.include_router(coding.router)
+    app.include_router(learning.router)
     app.include_router(knowledge.router)
     app.include_router(publication.router)
-    app.include_router(cloud_auth.router)
-    app.include_router(cloud_model_providers.router)
-    app.include_router(cloud_workspaces.router)
+    if cloud_routes_enabled:
+        app.include_router(cloud_auth.router)
+        app.include_router(cloud_model_providers.router)
+        app.include_router(cloud_workspaces.router)
     return app
 
 

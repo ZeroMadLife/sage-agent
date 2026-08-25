@@ -9,7 +9,8 @@ import re
 import time
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from functools import partial
 from inspect import signature
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -46,6 +47,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from api.cloud_dependencies import (
     SESSION_COOKIE,
+    authenticated_connection_user,
     require_cloud_authentication_in_production,
 )
 from api.cloud_model_context import (
@@ -117,7 +119,6 @@ from api.schemas import (
     CodingTimelineEvent,
     CodingTimelineResponse,
     CodingUsageSummary,
-    ErrorEvent,
     HarnessCapabilitiesResponse,
     HarnessCapabilityHealthItem,
     HarnessCapabilityHealthResponse,
@@ -152,6 +153,7 @@ from core.coding.provider_settings import SageProviderSettings, SageProviderSett
 from core.coding.run_coordinator import ActiveRunConflictError, RunEvent
 from core.coding.runtime import CodingRuntime
 from core.coding.skills import SkillLifecycleError
+from core.coding.turn_input import TurnInputKind
 from core.coding.usage_store import normalize_usage
 from core.harness import RuntimeProfile, normalize_runtime_profile
 from core.harness.book_learning_coordinator import (
@@ -170,6 +172,12 @@ from core.harness.knowledge_source_proposal_adapter import (
     CodingKnowledgeSourceProposalPort,
     CodingKnowledgeSourceProposalService,
 )
+from core.harness.learning_public import LearningPublicProjector
+from core.harness.learning_scope import (
+    LearningReadonlyScope,
+    LearningReadonlyScopeResolver,
+    LearningScopeConflict,
+)
 from core.harness.mcp_adapter import mcp_catalog_event
 from core.harness.memory_adapter import CodingMemoryPort
 from core.harness.model_context_frame import (
@@ -180,6 +188,7 @@ from core.harness.model_context_frame import (
 from core.harness.retrieval_gate import (
     decide_retrieval_gate,
     memory_retrieval_events,
+    project_retrieval_gate_sources,
     retrieval_source_event,
     retrieval_sources_from_events,
     retrieval_tool_scope_from_events,
@@ -224,10 +233,36 @@ from core.knowledge.source_proposals import (
     KnowledgeSourceProposalEvent,
     KnowledgeSourceProposalNotFoundError,
 )
-from core.learning import MasteryEvidenceInput, MasteryLedger
+from core.learning import (
+    LearningKickoffError,
+    LearningKickoffErrorCode,
+    LearningKickoffService,
+    MasteryEvidenceInput,
+    MasteryLedger,
+)
 
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 logger = logging.getLogger(__name__)
+
+
+class CodingRuntimeRehydrateError(RuntimeError):
+    """Bound an internal runtime restore failure at public transport edges."""
+
+    code = "coding_session_rehydrate_failed"
+
+    @property
+    def public_detail(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": "Coding session runtime could not be restored",
+            "retryable": True,
+        }
+
+
+@dataclass(slots=True)
+class _CodingRuntimeRehydrateFlight:
+    task: asyncio.Task[CodingRuntime]
+    waiters: int = 0
 
 
 def _port_available(port: object) -> bool:
@@ -291,6 +326,65 @@ def _turn_context_plan_failure_events(
     )
 
 
+def _learning_scope_failure_events(
+    run_id: str,
+    reason_code: str,
+    *,
+    runtime_profile: str = "deerflow_v2",
+) -> tuple[RunEvent, RunEvent]:
+    """Return one content-free scope denial and a stable terminal event."""
+    return (
+        RunEvent(
+            kind="harness",
+            status="error",
+            payload=LearningPublicProjector.scope_rejection(
+                run_id=run_id,
+                reason_code=reason_code,
+            ),
+            event_id=f"harness:{run_id}:learning-scope-denied",
+        ),
+        RunEvent(
+            kind="terminal",
+            status="error",
+            payload=LearningPublicProjector.terminal_failure(
+                reason_code=reason_code,
+                runtime_profile=runtime_profile,
+            ),
+            event_id=f"harness:{run_id}:terminal",
+        ),
+    )
+
+
+def _learning_workspace_diff_payload(
+    run_id: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return a path-free Learning diff receipt for browser timelines."""
+    return LearningPublicProjector.workspace_diff(run_id, payload)
+
+
+def _learning_run_detail_payload(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> dict[str, Any]:
+    """Project an internal Learning trace into browser-safe identity receipts."""
+    return LearningPublicProjector.run_detail(payload, task_id=task_id)
+
+
+def _learning_run_summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove paths and previews from one Learning run-list item."""
+    return LearningPublicProjector.run_summary(payload)
+
+
+def _learning_run_event(
+    payload: Mapping[str, Any],
+    *,
+    task_id: str,
+) -> dict[str, Any]:
+    return LearningPublicProjector.event(payload, task_id=task_id)
+
+
 def _graph_approval_resume_value(
     approval: Mapping[str, Any],
     choice: str,
@@ -310,7 +404,7 @@ def _graph_approval_resume_value(
     }
 
 
-def _require_enabled_runtime_profile(value: object, request: Request) -> RuntimeProfile:
+def _require_enabled_runtime_profile(value: object, request: HTTPConnection) -> RuntimeProfile:
     """Resolve a requested profile and enforce the server-owned rollout gate."""
     profile = normalize_runtime_profile(value)
     if profile == "deerflow_v2" and not bool(request.app.state.coding_deerflow_v2_enabled):
@@ -333,7 +427,7 @@ def _require_enabled_runtime_profile(value: object, request: Request) -> Runtime
     return profile
 
 
-def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
+def _available_runtime_profiles(request: HTTPConnection) -> list[RuntimeProfile]:
     """Advertise only runtime profiles that this deployment can safely create."""
     profiles: list[RuntimeProfile] = ["legacy"]
     if not bool(getattr(request.app.state, "coding_deerflow_v2_enabled", False)):
@@ -349,7 +443,7 @@ def _available_runtime_profiles(request: Request) -> list[RuntimeProfile]:
     return profiles
 
 
-def _effective_default_runtime_profile(request: Request) -> RuntimeProfile:
+def _effective_default_runtime_profile(request: HTTPConnection) -> RuntimeProfile:
     """Return the configured default only when this deployment can create it safely."""
     configured = normalize_runtime_profile(
         getattr(request.app.state, "coding_default_runtime_profile", "legacy")
@@ -375,24 +469,39 @@ async def _enforce_coding_session_owner(connection: HTTPConnection) -> None:
         return
     sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
     runtime = sessions.get(session_id)
-    owner_user_id = runtime.owner_user_id if runtime is not None else None
-    if owner_user_id is None:
+    app_env = str(getattr(connection.app.state, "cloud_app_env", "development")).lower()
+    if runtime is not None:
+        owner_user_id = runtime.owner_user_id
+        if owner_user_id is None and app_env == "production":
+            _raise_unknown_coding_session(connection, session_id)
+    else:
         store = CodingSessionStore(Path(connection.app.state.coding_storage_root) / "sessions")
         try:
             persisted = store.load(session_id)
-        except (FileNotFoundError, ValueError):
+        except FileNotFoundError:
+            return
+        except ValueError:
+            if app_env == "production":
+                _raise_unknown_coding_session(connection, session_id)
             return
         owner_user_id = str(persisted.get("owner_user_id", "")).strip() or None
     if owner_user_id is None:
+        if app_env == "production":
+            _raise_unknown_coding_session(connection, session_id)
         return
     cloud = getattr(connection.app.state, "cloud_repository", None)
     user = (
-        await cloud.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+        await authenticated_connection_user(connection)
         if isinstance(cloud, CloudRepository)
         else None
     )
     if user is None or user.user_id != owner_user_id:
-        raise HTTPException(status_code=404, detail=f"Unknown coding session: {session_id}")
+        _raise_unknown_coding_session(connection, session_id)
+
+
+def _raise_unknown_coding_session(connection: HTTPConnection, session_id: str) -> None:
+    detail = f"Unknown coding session: {session_id}"
+    raise HTTPException(status_code=404, detail=detail)
 
 
 router = APIRouter(
@@ -405,6 +514,112 @@ router = APIRouter(
 
 def _valid_session_id(session_id: str) -> bool:
     return _SESSION_ID.fullmatch(session_id) is not None
+
+
+def _resolve_runtime_learning_scope(
+    runtime: CodingRuntime,
+    resolver: LearningReadonlyScopeResolver | None,
+) -> LearningReadonlyScope | None:
+    """Resolve server-owned Learning authority before trusting mutable Session fields."""
+    if resolver is None:
+        if runtime.session.get("session_kind") == "learning":
+            raise LearningScopeConflict("learning_scope_resolver_unavailable")
+        return None
+    return resolver.resolve_runtime_session(
+        runtime.session,
+        session_id=runtime.session_id,
+        owner_id=runtime.owner_user_id or "local",
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
+    )
+
+
+def _http_runtime_learning_scope(
+    request: Request,
+    runtime: CodingRuntime,
+) -> LearningReadonlyScope | None:
+    try:
+        return _resolve_runtime_learning_scope(
+            runtime,
+            getattr(request.app.state, "learning_readonly_scope_resolver", None),
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+
+
+def _resolve_persisted_learning_scope(
+    connection: HTTPConnection,
+    *,
+    session_id: str,
+    session: Mapping[str, object],
+) -> LearningReadonlyScope | None:
+    """Resolve browser projection authority without requiring an in-memory runtime."""
+    resolver: LearningReadonlyScopeResolver | None = getattr(
+        connection.app.state,
+        "learning_readonly_scope_resolver",
+        None,
+    )
+    if resolver is None:
+        if session.get("session_kind") == "learning":
+            raise LearningScopeConflict("learning_scope_resolver_unavailable")
+        return None
+    owner_id = str(session.get("owner_user_id") or "").strip() or "local"
+    workspace_root = Path(str(session.get("workspace_root", ""))).resolve()
+    return resolver.resolve_runtime_session(
+        session,
+        session_id=session_id,
+        owner_id=owner_id,
+        workspace_id=workspace_id_from_path(workspace_root),
+    )
+
+
+def _http_timeline_learning_scope(
+    request: Request,
+    *,
+    session_id: str,
+    session: Mapping[str, object],
+) -> LearningReadonlyScope | None:
+    try:
+        return _resolve_persisted_learning_scope(
+            request,
+            session_id=session_id,
+            session=session,
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
+
+
+async def _coding_request_owner_id(connection: HTTPConnection) -> str:
+    repository = getattr(connection.app.state, "cloud_repository", None)
+    if isinstance(repository, CloudRepository):
+        user = await repository.authenticated_user(connection.cookies.get(SESSION_COOKIE, ""))
+        if user is not None:
+            return user.user_id
+    if str(getattr(connection.app.state, "cloud_app_env", "development")).lower() != ("production"):
+        return "local"
+    raise HTTPException(status_code=401, detail="cloud authentication is required")
+
+
+def _http_active_learning_scope(
+    connection: HTTPConnection,
+    *,
+    session_id: str,
+    owner_id: str,
+) -> LearningReadonlyScope | None:
+    """Resolve an active Learning binding before persisted Session access."""
+    resolver: LearningReadonlyScopeResolver | None = getattr(
+        connection.app.state,
+        "learning_readonly_scope_resolver",
+        None,
+    )
+    if resolver is None:
+        return None
+    try:
+        return resolver.resolve_active_owner_session(
+            owner_id=owner_id,
+            session_id=session_id,
+        )
+    except LearningScopeConflict as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code}) from exc
 
 
 def _require_valid_session_id(session_id: str) -> None:
@@ -438,10 +653,33 @@ async def _runtime_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
-    input_origin: Literal["user", "goal_followup"] = "user",
+    input_kind: TurnInputKind = TurnInputKind.USER,
     context_assembly_mode: ContextAssemblyMode = "shadow",
+    learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Project a complete runtime generator into durable nonterminal events."""
+    learning_scope: LearningReadonlyScope | None = None
+    try:
+        if (
+            runtime.session.get("session_kind") == "learning"
+            and runtime.runtime_profile != "deerflow_v2"
+        ):
+            raise LearningScopeConflict("learning_scope_runtime_profile_unsupported")
+        learning_scope = await asyncio.to_thread(
+            _resolve_runtime_learning_scope,
+            runtime,
+            learning_scope_resolver,
+        )
+        if learning_scope is not None and runtime.runtime_profile != "deerflow_v2":
+            raise LearningScopeConflict("learning_scope_runtime_profile_unsupported")
+    except LearningScopeConflict as exc:
+        for failure_event in _learning_scope_failure_events(
+            run_id,
+            exc.code,
+            runtime_profile=runtime.runtime_profile,
+        ):
+            yield failure_event
+        return
     if runtime.runtime_profile == "deerflow_v2":
         if harness_checkpointer is None:
             raise RuntimeError("deerflow_v2 checkpointer is not configured")
@@ -466,8 +704,10 @@ async def _runtime_timeline_events(
                 app_env=app_env,
                 resume_value=resume_value,
                 resume_attempt=resume_attempt,
-                input_origin=input_origin,
+                input_kind=input_kind,
                 context_assembly_mode=context_assembly_mode,
+                learning_scope=learning_scope,
+                learning_scope_resolver=learning_scope_resolver,
             ):
                 if graph_event.kind == "terminal":
                     diff_payload = await runtime.finish_harness_evidence(
@@ -476,10 +716,15 @@ async def _runtime_timeline_events(
                         duration_ms=int((time.monotonic() - evidence_start_time) * 1000),
                     )
                     evidence_finished = True
+                    public_diff_payload = (
+                        _learning_workspace_diff_payload(run_id, diff_payload)
+                        if learning_scope is not None
+                        else diff_payload
+                    )
                     yield RunEvent(
                         kind="tool",
                         status="completed",
-                        payload=diff_payload,
+                        payload=public_diff_payload,
                         event_id=f"harness:{run_id}:workspace-diff",
                     )
                 else:
@@ -507,13 +752,13 @@ async def _runtime_timeline_events(
         return
     terminal_status = "completed"
     harness = CodingHarnessStageProjector(run_id)
-    if input_origin == "user":
+    if input_kind.emits_user_event:
         yield RunEvent(
             kind="user",
             status="completed",
             payload={"type": "user", "content": content},
         )
-    else:
+    elif input_kind.emits_goal_followup_event:
         yield RunEvent(
             kind="harness",
             status="completed",
@@ -585,8 +830,10 @@ async def _deerflow_timeline_events(
     app_env: str = "development",
     resume_value: object | None = None,
     resume_attempt: int = 0,
-    input_origin: Literal["user", "goal_followup"] = "user",
+    input_kind: TurnInputKind = TurnInputKind.USER,
     context_assembly_mode: ContextAssemblyMode = "shadow",
+    learning_scope: LearningReadonlyScope | None = None,
+    learning_scope_resolver: LearningReadonlyScopeResolver | None = None,
 ) -> AsyncGenerator[RunEvent, None]:
     """Run the explicit DeerFlow-compatible graph and project public output."""
     context_assembly_mode = normalize_context_assembly_mode(context_assembly_mode)
@@ -693,16 +940,23 @@ async def _deerflow_timeline_events(
                 role="user",
                 content=content,
                 run_id=run_id,
-                input_origin=input_origin,
+                input_origin=input_kind.input_origin,
             )
-            if input_origin == "user":
+            if input_kind.emits_user_event:
                 yield RunEvent(
                     kind="user",
                     status="completed",
-                    payload={"type": "user", "content": content, "run_id": run_id},
+                    payload=(
+                        LearningPublicProjector.user_turn_receipt(
+                            task_id=learning_scope.task_id,
+                            run_id=run_id,
+                        )
+                        if learning_scope is not None
+                        else {"type": "user", "content": content, "run_id": run_id}
+                    ),
                     event_id=f"harness:{run_id}:user",
                 )
-            else:
+            elif input_kind.emits_goal_followup_event:
                 yield RunEvent(
                     kind="harness",
                     status="completed",
@@ -738,11 +992,40 @@ async def _deerflow_timeline_events(
                 web_available=_port_available(web_search_port),
                 intent_envelope=task_intent,
             )
+            if learning_scope is not None:
+                scoped_sources = learning_scope.constrain_retrieval_sources(
+                    retrieval_gate.selected_sources,
+                    available=retrieval_gate.available_sources,
+                )
+                if scoped_sources != retrieval_gate.selected_sources:
+                    retrieval_gate = project_retrieval_gate_sources(
+                        retrieval_gate,
+                        selected_sources=scoped_sources,
+                        reason_code="learning_scope_source_policy",
+                    )
             memory_source_budgets = {
                 source: budget
                 for source, budget in retrieval_gate.token_budget_by_source.items()
                 if source in {"semantic_memory", "episodic_memory"}
             }
+            if (
+                learning_scope is not None
+                and "local:memory_read" not in learning_scope.allowed_capabilities
+            ):
+                memory_source_budgets = {}
+            if learning_scope is not None:
+                try:
+                    if learning_scope_resolver is None:
+                        raise LearningScopeConflict("learning_scope_resolver_unavailable")
+                    current_learning_scope = await asyncio.to_thread(
+                        learning_scope_resolver.revalidate,
+                        learning_scope,
+                    )
+                    learning_scope.assert_current(current_learning_scope)
+                except LearningScopeConflict as exc:
+                    for event in _learning_scope_failure_events(run_id, exc.code):
+                        yield event
+                    return
             memory_result = (
                 await memory_port.query_context(
                     runtime.session_id,
@@ -770,6 +1053,13 @@ async def _deerflow_timeline_events(
             if memory_result is not None:
                 for memory_event in memory_retrieval_events(memory_result, run_id=run_id):
                     yield memory_event
+        if learning_scope is not None:
+            try:
+                learning_scope.assert_required_sources(frozenset(retrieval_sources or ()))
+            except LearningScopeConflict as exc:
+                for event in _learning_scope_failure_events(run_id, exc.code):
+                    yield event
+                return
         context_event = (
             None if is_resume else context_status_event(runtime, run_id, durable_context)
         )
@@ -829,12 +1119,27 @@ async def _deerflow_timeline_events(
             ):
                 yield event
             return
+        if learning_scope is not None:
+            skill_capability_id = (
+                skill_lifecycle.activation_ref.replace("skill://", "skill:").replace("/", ":")
+                if skill_lifecycle.activation_ref
+                else None
+            )
+            try:
+                learning_scope.skill_allowed_tool_names(
+                    skill_lifecycle,
+                    skill_capability_id=skill_capability_id,
+                )
+            except LearningScopeConflict as exc:
+                for event in _learning_scope_failure_events(run_id, exc.code):
+                    yield event
+                return
 
         mcp_tools: tuple[BaseTool, ...] = ()
         mcp_snapshot: McpToolSnapshot | None = None
         mcp_lifecycle = None
         mcp_servers = None
-        if isinstance(mcp_catalog, McpManager):
+        if isinstance(mcp_catalog, McpManager) and learning_scope is None:
             if prepared_resume is not None and prepared_resume.mcp_lifecycle is None:
                 for event in _turn_context_plan_failure_events(
                     run_id,
@@ -880,29 +1185,43 @@ async def _deerflow_timeline_events(
             ):
                 yield event
             return
-        if mcp_catalog is not None and not is_resume:
+        if mcp_catalog is not None and not is_resume and learning_scope is None:
             yield await mcp_catalog_event(
                 mcp_catalog,
                 session_id=runtime.session_id,
                 run_id=run_id,
                 servers=mcp_servers,
             )
+        elif learning_scope is not None and not is_resume:
+            yield RunEvent(
+                kind="harness",
+                status="blocked",
+                payload=LearningPublicProjector.mcp_blocked_receipt(
+                    task_id=learning_scope.task_id,
+                    run_id=run_id,
+                ),
+                event_id=f"harness:{run_id}:learning-mcp-blocked",
+            )
         sandbox = create_coding_sandbox(
             runtime.workspace,
             thread_id=runtime.session_id,
             app_env=app_env,
             provider=str(getattr(runtime, "sandbox_provider", "local_workspace")),
-            allow_host_shell=True,
-            allow_writes=True,
+            allow_host_shell=runtime.side_effect_tools_enabled and learning_scope is None,
+            allow_writes=runtime.side_effect_tools_enabled and learning_scope is None,
             container_image=str(getattr(runtime, "sandbox_image", "python:3.11-slim")),
         )
         try:
             evidence_bundle_port = CodingEvidenceBundlePort(runtime)
             knowledge_routed = retrieval_sources is None or "knowledge" in retrieval_sources
             web_routed = retrieval_sources is None or "web" in retrieval_sources
+            learning_web_ready = learning_scope is None or (
+                learning_scope.web_policy != "forbidden"
+                and learning_scope.knowledge_policy == "disabled"
+            )
             routed_knowledge_port = knowledge_port if knowledge_routed else None
-            routed_web_search_port = web_search_port if web_routed else None
-            routed_web_fetch_port = web_fetch_port if web_routed else None
+            routed_web_search_port = web_search_port if web_routed and learning_web_ready else None
+            routed_web_fetch_port = web_fetch_port if web_routed and learning_web_ready else None
             subagent_config = build_coding_subagent_config(
                 routed_knowledge_port,
                 routed_web_search_port,
@@ -910,6 +1229,18 @@ async def _deerflow_timeline_events(
                 evidence_bundle_port=evidence_bundle_port,
                 base_config=SubagentToolConfig(),
             )
+            if (
+                learning_scope is not None
+                and "subagent:research" in learning_scope.allowed_capabilities
+            ):
+                research_profiles = tuple(
+                    profile for profile in subagent_config.profiles if profile.name == "research"
+                )
+                subagent_config = replace(
+                    subagent_config,
+                    allowed_types=frozenset({"research"}),
+                    profiles=research_profiles,
+                )
             subagent_executor = CodingSubagentExecutor(
                 runtime,
                 knowledge_port=routed_knowledge_port,
@@ -917,10 +1248,29 @@ async def _deerflow_timeline_events(
                 web_fetch_port=routed_web_fetch_port,
                 evidence_bundle_port=evidence_bundle_port,
                 sandbox=sandbox,
-                allow_shell_network=web_routed,
+                allow_shell_network=web_routed and learning_web_ready,
+                web_policy_domains=(learning_scope.domains if learning_scope is not None else None),
+                web_policy_freshness=(
+                    "year"
+                    if learning_scope is not None and learning_scope.freshness == "current"
+                    else "all"
+                    if learning_scope is not None
+                    else None
+                ),
+                learning_scope=learning_scope,
+                learning_scope_revalidator=(
+                    (lambda: learning_scope_resolver.revalidate(learning_scope))
+                    if learning_scope is not None and learning_scope_resolver is not None
+                    else None
+                ),
             )
             book_learning_outcome = None
-            if not is_resume and retrieval_gate is not None and knowledge_routed:
+            if (
+                learning_scope is None
+                and not is_resume
+                and retrieval_gate is not None
+                and knowledge_routed
+            ):
                 coordinator = BookLearningCoordinator(
                     knowledge_port=routed_knowledge_port,
                     evidence_bundle_port=evidence_bundle_port,
@@ -987,8 +1337,8 @@ async def _deerflow_timeline_events(
                 skill_lifecycle=skill_lifecycle,
                 subagent_executor=subagent_executor,
                 subagent_config=subagent_config,
-                web_fetch_port=web_fetch_port,
-                web_search_port=web_search_port,
+                web_fetch_port=routed_web_fetch_port,
+                web_search_port=routed_web_search_port,
                 artifact_store=artifact_store,
                 knowledge_source_proposal_port=CodingKnowledgeSourceProposalPort(
                     runtime,
@@ -999,6 +1349,7 @@ async def _deerflow_timeline_events(
                 retrieval_sources=retrieval_sources,
                 retrieval_tool_scope=retrieval_tool_scope,
                 intent_envelope=task_intent,
+                learning_scope=learning_scope,
             )
             prompt_components = build_deerflow_prompt_components(
                 runtime,
@@ -1039,7 +1390,7 @@ async def _deerflow_timeline_events(
                     run_id=run_id,
                     owner_id=owner_id,
                     workspace_id=workspace_id,
-                    input_origin=input_origin,
+                    input_origin=input_kind.input_origin,
                     user_message=user_message,
                     surface_context=surface_context,
                     thread_goal=thread_goal,
@@ -1263,6 +1614,12 @@ async def _deerflow_timeline_events(
                 capability_ids_by_tool_name=tool_bundle.capability_ids_by_tool_name,
                 capability_revision=tool_bundle.capability_revision,
                 finalize_after_tool_calls=(4 if retrieval_tool_scope == "retrieval_only" else None),
+                learning_scope=learning_scope,
+                learning_scope_revalidator=(
+                    (lambda: learning_scope_resolver.revalidate(learning_scope))
+                    if learning_scope is not None and learning_scope_resolver is not None
+                    else None
+                ),
             )
             graph_compaction: dict[str, object] | None = None
             compaction_result = prepared.compaction_result if prepared is not None else None
@@ -1278,6 +1635,7 @@ async def _deerflow_timeline_events(
                     "summary_text": summary_text,
                 }
             response_parts: list[str] = []
+            learning_output_observed = False
             current_resume_attempt = resume_attempt
             resume = is_resume
             current_resume_value = resume_value
@@ -1301,6 +1659,8 @@ async def _deerflow_timeline_events(
                 ):
                     if event.payload.get("type") == "text_delta":
                         response_parts.append(str(event.payload.get("delta", "")))
+                    elif event.payload.get("type") == "learning_model_output":
+                        learning_output_observed = True
                     yield event
                     observed_retrieval = retrieval_source_event(event, run_id=run_id)
                     if observed_retrieval is not None:
@@ -1331,9 +1691,25 @@ async def _deerflow_timeline_events(
                     approval_to_resume,
                     choice,
                 )
+        except LearningScopeConflict as exc:
+            for event in _learning_scope_failure_events(run_id, exc.code):
+                yield event
+            return
         finally:
             await sandbox.aclose()
         answer = "".join(response_parts).strip()
+        if learning_scope is not None:
+            if not learning_output_observed:
+                raise RuntimeError(
+                    "deerflow_v2 learning graph completed without a public output receipt"
+                )
+            yield RunEvent(
+                kind="terminal",
+                status="completed",
+                payload={"event": "run_completed", "runtime_profile": "deerflow_v2"},
+                event_id=f"harness:{run_id}:terminal",
+            )
+            return
         if not answer:
             raise RuntimeError("deerflow_v2 graph completed without a public assistant response")
         runtime.append_harness_message(role="assistant", content=answer, run_id=run_id)
@@ -1395,7 +1771,21 @@ def _timeline_status(event_type: str, event: dict[str, Any]) -> str:
     return "completed"
 
 
-def _timeline_event_dict(event: SessionEvent) -> dict[str, Any]:
+def _timeline_event_dict(
+    event: SessionEvent,
+    *,
+    learning_scope: LearningReadonlyScope | None = None,
+) -> dict[str, Any]:
+    payload = event.payload
+    if learning_scope is not None:
+        payload = LearningPublicProjector.event(
+            {
+                **event.payload,
+                "run_id": event.run_id,
+                "status": event.status,
+            },
+            task_id=learning_scope.task_id,
+        )
     return {
         "event_id": event.event_id,
         "session_id": event.session_id,
@@ -1404,7 +1794,7 @@ def _timeline_event_dict(event: SessionEvent) -> dict[str, Any]:
         "kind": event.kind,
         "status": event.status,
         "timestamp": event.timestamp,
-        "payload": event.payload,
+        "payload": payload,
     }
 
 
@@ -1481,12 +1871,34 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
         run_id=source_run_id,
         events=await asyncio.to_thread(journal.events_for_run, source_run_id),
     )
-    if terminal.status != "completed":
+    learning_scope_failure: str | None = None
+    if terminal.status == "completed" and isinstance(frozen_goal.get("learning_goal"), Mapping):
+        try:
+            await asyncio.to_thread(_assert_goal_evaluator_learning_scope, app, runtime)
+        except LearningScopeConflict as exc:
+            learning_scope_failure = exc.code
+            await asyncio.to_thread(
+                _append_goal_learning_scope_failure,
+                journal,
+                source_run_id,
+                exc.code,
+            )
+    if terminal.status != "completed" or learning_scope_failure is not None:
         decision = GoalEvaluationDecision(
             status="blocked",
-            blocker="run_failed" if terminal.status == "error" else "external_wait",
+            blocker=(
+                "external_wait"
+                if learning_scope_failure is not None
+                else "run_failed"
+                if terminal.status == "error"
+                else "external_wait"
+            ),
             evidence_refs=(),
-            next_action="上一轮未正常完成；请检查运行状态后由用户决定是否继续",
+            next_action=(
+                "Learning 只读范围已变化；请重新验证任务后继续"
+                if learning_scope_failure is not None
+                else "上一轮未正常完成；请检查运行状态后由用户决定是否继续"
+            ),
             criteria=tuple(
                 GoalCriterionDecision(index=index, status="blocked", evidence_refs=())
                 for index, _ in enumerate(request.completion_criteria)
@@ -1524,6 +1936,36 @@ async def _post_turn_goal_followup(app: Any, session_id: str, source_run_id: str
     await _drain_mastery_outbox(app, session_id)
     if result.reservation is not None:
         await _start_pending_goal_followup(app, session_id)
+
+
+def _assert_goal_evaluator_learning_scope(app: Any, runtime: CodingRuntime) -> None:
+    """Reload every active Learning authority before the evaluator model call."""
+    resolver = getattr(app.state, "learning_readonly_scope_resolver", None)
+    scope = _resolve_runtime_learning_scope(runtime, resolver)
+    if scope is None or resolver is None:
+        raise LearningScopeConflict("learning_scope_not_active")
+    scope.assert_current(resolver.revalidate(scope))
+
+
+def _append_goal_learning_scope_failure(
+    journal: SessionEventJournal,
+    run_id: str,
+    reason_code: str,
+) -> None:
+    """Persist one content-free evaluator denial without replacing the run terminal."""
+    try:
+        journal.append(
+            run_id=run_id,
+            kind="harness",
+            status="error",
+            payload=LearningPublicProjector.scope_rejection(
+                run_id=run_id,
+                reason_code=reason_code,
+            ),
+            event_id=f"harness:{run_id}:goal-evaluator-learning-scope",
+        )
+    except SessionEventJournalError:
+        return
 
 
 async def _drain_mastery_outbox(app: Any, session_id: str) -> None:
@@ -1659,8 +2101,9 @@ async def _start_pending_goal_followup(app: Any, session_id: str) -> None:
             app.state, "knowledge_source_proposal_service", None
         ),
         app_env=str(getattr(app.state, "cloud_app_env", "development")),
-        input_origin="goal_followup",
+        input_kind=TurnInputKind.GOAL_FOLLOWUP,
         context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
+        learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
     )
     try:
         task = await coordinator.start_run(
@@ -1759,6 +2202,9 @@ async def create_coding_session(
             getattr(request.app.state, "coding_sandbox_provider", "local_workspace")
         ),
         sandbox_image=str(getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim")),
+        side_effect_tools_enabled=bool(
+            getattr(request.app.state, "coding_side_effect_tools_enabled", True)
+        ),
     )
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
     sessions[session_id] = runtime
@@ -1783,7 +2229,14 @@ async def list_coding_sessions(
     storage_root = Path(request.app.state.coding_storage_root)
     store = CodingSessionStore(storage_root / "sessions")
     account = await load_account_model_context(request)
-    current_user_id = account.user_id if account is not None else None
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
+    current_user_id = (
+        account.user_id
+        if account is not None
+        else "local"
+        if app_env != "production"
+        else None
+    )
     visible: list[CodingSessionSummary] = []
     for item in store.list_sessions(include_archived=include_archived):
         try:
@@ -1791,9 +2244,20 @@ async def list_coding_sessions(
         except FileNotFoundError:
             continue
         owner_user_id = str(state.get("owner_user_id", "")).strip() or None
-        if owner_user_id is not None and owner_user_id != current_user_id:
+        if app_env == "production" and owner_user_id != current_user_id:
             continue
-        visible.append(CodingSessionSummary(**item))
+        if (
+            app_env != "production"
+            and owner_user_id is not None
+            and owner_user_id != current_user_id
+        ):
+            continue
+        visible.append(
+            CodingSessionSummary(
+                **item,
+                learning_task_id=str(state.get("learning_task_id", "")).strip() or None,
+            )
+        )
     return CodingSessionsResponse(sessions=visible)
 
 
@@ -1872,7 +2336,10 @@ def _harness_capability_context(
         from core.coding.skills import SkillRegistry
         from core.coding.tools.registry import build_tool_registry
 
-        tools = build_tool_registry(WorkspaceContext(workspace_root))
+        tools = build_tool_registry(
+            WorkspaceContext(workspace_root),
+            side_effect_tools_enabled=bool(persisted.get("side_effect_tools_enabled", True)),
+        )
         skills = SkillRegistry(root=workspace_root).list()
         owner_id = str(persisted.get("owner_user_id") or "local")
     workspace_id = workspace_id_from_path(workspace_root)
@@ -2008,10 +2475,108 @@ async def resume_coding_session(
 ) -> CodingSessionResponse:
     """Rehydrate a persisted coding runtime session."""
     _require_valid_session_id(session_id)
-    model_factory = getattr(request.app.state, "coding_model_factory", None)
+    try:
+        runtime = await _rehydrate_coding_runtime(request, session_id)
+    except CodingRuntimeRehydrateError as exc:
+        raise HTTPException(status_code=503, detail=exc.public_detail) from exc
+    return CodingSessionResponse(
+        session_id=session_id,
+        workspace_root=str(runtime.workspace.root.resolve()),
+        workspace_id=workspace_id_from_path(runtime.workspace.root),
+        permission_mode=runtime.permission_mode,
+        runtime_profile=runtime.runtime_profile,
+        sandbox_provider=runtime.sandbox_provider,
+        sandbox_image=runtime.sandbox_image,
+        learning_task_id=str(runtime.session.get("learning_task_id", "")).strip() or None,
+    )
+
+
+def _finish_coding_runtime_rehydrate_flight(
+    connection: HTTPConnection,
+    session_id: str,
+    _completed: asyncio.Task[CodingRuntime],
+) -> None:
+    entries: dict[str, _CodingRuntimeRehydrateFlight] = (
+        connection.app.state.coding_runtime_rehydrate_flights
+    )
+    entry = entries.get(session_id)
+    if entry is None or not entry.task.done():
+        return
+    with suppress(asyncio.CancelledError):
+        entry.task.exception()
+    if entry.waiters == 0 and entries.get(session_id) is entry:
+        entries.pop(session_id, None)
+
+
+async def _rehydrate_coding_runtime(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Join one complete runtime reconstruction flight per persisted Session."""
+    sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
+    if sessions.get(session_id) is not None:
+        return await _execute_coding_runtime_rehydrate(connection, session_id)
+    guard: asyncio.Lock = connection.app.state.coding_runtime_rehydrate_flights_guard
+    entries: dict[str, _CodingRuntimeRehydrateFlight] = (
+        connection.app.state.coding_runtime_rehydrate_flights
+    )
+    async with guard:
+        runtime = sessions.get(session_id)
+        if runtime is not None:
+            return runtime
+        entry = entries.get(session_id)
+        if entry is None:
+            task = asyncio.create_task(
+                _execute_coding_runtime_rehydrate(connection, session_id),
+                name=f"coding-runtime-rehydrate:{session_id}",
+            )
+            entry = _CodingRuntimeRehydrateFlight(task=task)
+            entries[session_id] = entry
+            task.add_done_callback(
+                partial(_finish_coding_runtime_rehydrate_flight, connection, session_id)
+            )
+        entry.waiters += 1
+    try:
+        return await asyncio.shield(entry.task)
+    finally:
+        async with guard:
+            entry.waiters -= 1
+            if entry.waiters == 0 and entry.task.done() and entries.get(session_id) is entry:
+                entries.pop(session_id, None)
+
+
+async def _execute_coding_runtime_rehydrate(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Execute one reconstruction and bound its shared public result or error."""
+    try:
+        return await _rehydrate_coding_runtime_inner(connection, session_id)
+    except (HTTPException, CodingRuntimeRehydrateError):
+        raise
+    except Exception as exc:
+        logger.warning(
+            "Coding runtime rehydrate failed for %s: %s",
+            session_id,
+            type(exc).__name__,
+        )
+        raise CodingRuntimeRehydrateError from exc
+
+
+async def _rehydrate_coding_runtime_inner(
+    connection: HTTPConnection,
+    session_id: str,
+) -> CodingRuntime:
+    """Idempotently restore one persisted runtime for REST or WebSocket reconnects."""
+    sessions: dict[str, CodingRuntime] = connection.app.state.coding_sessions
+    runtime = sessions.get(session_id)
+    if runtime is not None:
+        await connection.app.state.coding_run_registry.hydrate(session_id)
+        return runtime
+    model_factory = getattr(connection.app.state, "coding_model_factory", None)
     if model_factory is None:
         raise RuntimeError("Coding model factory is not configured")
-    storage_root = Path(request.app.state.coding_storage_root)
+    storage_root = Path(connection.app.state.coding_storage_root)
     store = CodingSessionStore(storage_root / "sessions")
     try:
         persisted = store.load(session_id)
@@ -2019,40 +2584,28 @@ async def resume_coding_session(
         raise HTTPException(
             status_code=404, detail=f"Unknown coding session: {session_id}"
         ) from exc
-    sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
-    active_runtime = sessions.get(session_id)
-    coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
+    coordinator = await connection.app.state.coding_run_registry.hydrate(session_id)
     active_run_id = coordinator.active_run_id or coordinator.journal.active_run_id()
     if active_run_id is not None:
-        if active_runtime is None:
-            raise HTTPException(
-                status_code=409,
-                detail="active coding run has no in-memory runtime",
-            )
-        return CodingSessionResponse(
-            session_id=session_id,
-            workspace_root=str(active_runtime.workspace.root.resolve()),
-            workspace_id=workspace_id_from_path(active_runtime.workspace.root),
-            permission_mode=active_runtime.permission_mode,
-            runtime_profile=active_runtime.runtime_profile,
-            sandbox_provider=active_runtime.sandbox_provider,
-            sandbox_image=active_runtime.sandbox_image,
+        raise HTTPException(
+            status_code=409,
+            detail="active coding run has no in-memory runtime",
         )
     try:
         runtime_profile = _require_enabled_runtime_profile(
-            persisted.get("runtime_profile"), request
+            persisted.get("runtime_profile"), connection
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="invalid persisted runtime profile") from exc
-    account = await load_account_model_context(request, include_credentials=True)
-    catalog = combined_catalog(request, account)
-    model_factory = combined_model_factory(request, account)
-    registry = combined_capabilities(request, account)
-    reasoning_modes = combined_reasoning_modes(request, account)
-    model_id = str(persisted.get("model_spec") or request.app.state.coding_default_model)
+    account = await load_account_model_context(connection, include_credentials=True)
+    catalog = combined_catalog(connection, account)
+    model_factory = combined_model_factory(connection, account)
+    registry = combined_capabilities(connection, account)
+    reasoning_modes = combined_reasoning_modes(connection, account)
+    model_id = str(persisted.get("model_spec") or connection.app.state.coding_default_model)
     if model_id not in _catalog_model_ids(catalog):
         raise HTTPException(status_code=422, detail="unknown coding model")
-    default_workspace = Path(request.app.state.coding_workspace_root).resolve()
+    default_workspace = Path(connection.app.state.coding_workspace_root).resolve()
     persisted_workspace = _resolve_persisted_workspace_root(
         default_workspace, persisted.get("workspace_root")
     )
@@ -2072,41 +2625,36 @@ async def resume_coding_session(
         session_state=persisted,
         save_on_init=False,
         model_capabilities=registry,
-        checkpoint_anchor_key=request.app.state.coding_checkpoint_anchor_key,
+        checkpoint_anchor_key=connection.app.state.coding_checkpoint_anchor_key,
         model_spec=model_id,
         reasoning_mode=reasoning_mode,
         model_reasoning_modes=reasoning_modes,
-        usage_store=request.app.state.coding_usage_store,
-        knowledge_store=_coding_knowledge_store(request),
+        usage_store=connection.app.state.coding_usage_store,
+        knowledge_store=_coding_knowledge_store(connection),
         runtime_profile=runtime_profile,
         sandbox_provider=str(
             persisted.get(
                 "sandbox_provider",
-                getattr(request.app.state, "coding_sandbox_provider", "local_workspace"),
+                getattr(connection.app.state, "coding_sandbox_provider", "local_workspace"),
             )
         ),
         sandbox_image=str(
             persisted.get(
                 "sandbox_image",
-                getattr(request.app.state, "coding_sandbox_image", "python:3.11-slim"),
+                getattr(connection.app.state, "coding_sandbox_image", "python:3.11-slim"),
             )
         ),
+        side_effect_tools_enabled=bool(
+            getattr(connection.app.state, "coding_side_effect_tools_enabled", True)
+        ),
     )
-    sessions[session_id] = runtime
     pending_approval = coordinator.journal.recoverable_approval()
     if pending_approval is not None:
         runtime.approval_manager.restore_pending(pending_approval)
-    else:
-        _schedule_goal_reconciliation(request.app, session_id)
-    return CodingSessionResponse(
-        session_id=session_id,
-        workspace_root=str(persisted_workspace),
-        workspace_id=workspace_id_from_path(persisted_workspace),
-        permission_mode=runtime.permission_mode,
-        runtime_profile=runtime.runtime_profile,
-        sandbox_provider=runtime.sandbox_provider,
-        sandbox_image=runtime.sandbox_image,
-    )
+    sessions[session_id] = runtime
+    if pending_approval is None:
+        _schedule_goal_reconciliation(connection.app, session_id)
+    return runtime
 
 
 async def _thread_goal_service(request: Request, session_id: str) -> ThreadGoalService:
@@ -2358,14 +2906,32 @@ async def get_coding_session_timeline(
     if not 1 <= limit <= 500:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
     sessions: dict[str, CodingRuntime] = request.app.state.coding_sessions
-    if session_id not in sessions:
+    runtime = sessions.get(session_id)
+    learning_scope: LearningReadonlyScope | None = None
+    if runtime is None:
+        owner_id = await _coding_request_owner_id(request)
+        learning_scope = await asyncio.to_thread(
+            _http_active_learning_scope,
+            request,
+            session_id=session_id,
+            owner_id=owner_id,
+        )
         store = CodingSessionStore(Path(request.app.state.coding_storage_root) / "sessions")
         try:
-            store.load(session_id)
+            session = store.load(session_id)
         except FileNotFoundError as exc:
             raise HTTPException(
                 status_code=404, detail=f"Unknown coding session: {session_id}"
             ) from exc
+    else:
+        session = runtime.session
+    if learning_scope is None:
+        learning_scope = await asyncio.to_thread(
+            _http_timeline_learning_scope,
+            request,
+            session_id=session_id,
+            session=session,
+        )
     coordinator = await request.app.state.coding_run_registry.hydrate(session_id)
     if tail or before is not None:
         backward_page = coordinator.journal.replay_before(
@@ -2387,15 +2953,8 @@ async def get_coding_session_timeline(
     active_run_id = coordinator.journal.active_run_id()
     return CodingTimelineResponse(
         items=[
-            CodingTimelineEvent(
-                event_id=item.event_id,
-                session_id=item.session_id,
-                run_id=item.run_id,
-                sequence=item.sequence,
-                kind=item.kind,
-                status=item.status,
-                timestamp=item.timestamp,
-                payload=item.payload,
+            CodingTimelineEvent.model_validate(
+                _timeline_event_dict(item, learning_scope=learning_scope)
             )
             for item in items
         ],
@@ -2439,20 +2998,102 @@ async def get_coding_session_messages(
     )
 
 
+async def _start_accepted_learning_kickoff(
+    app: Any,
+    runtime: CodingRuntime,
+    coordinator: Any,
+) -> asyncio.Task[None] | None:
+    """Start one accepted learning turn without depending on browser memory."""
+    service = getattr(app.state, "learning_kickoff_service", None)
+    if not isinstance(service, LearningKickoffService):
+        if runtime.session.get("session_kind") == "learning":
+            raise LearningKickoffError(
+                "learning kickoff service is unavailable",
+                code=LearningKickoffErrorCode.SERVICE_UNAVAILABLE,
+            )
+        return None
+    owner_id = runtime.owner_user_id or "local"
+    workspace_id = workspace_id_from_path(runtime.workspace.root)
+    accepted = await asyncio.to_thread(
+        service.accepted_for_session,
+        owner_id=owner_id,
+        workspace_id=workspace_id,
+        session_id=runtime.session_id,
+    )
+    if accepted is None:
+        return None
+    receipt, task = accepted
+    existing = await asyncio.to_thread(
+        coordinator.journal.events_for_run,
+        receipt.turn_run_id,
+    )
+    if existing:
+        return None
+    thread_goal = coordinator.journal.thread_goal_context()
+    frozen_thread_goal_revision = coordinator.journal.current_thread_goal_revision()
+    stream = _runtime_timeline_events(
+        runtime,
+        content=task.topic,
+        skill_prompt=None,
+        command="",
+        arguments="",
+        run_id=receipt.turn_run_id,
+        surface_context=None,
+        thread_goal=thread_goal,
+        harness_checkpointer=getattr(app.state, "sage_harness_checkpointer", None),
+        harness_config=getattr(app.state, "coding_harness_config", None),
+        mcp_catalog=getattr(app.state, "coding_mcp_catalog", None),
+        web_fetch_port=getattr(app.state, "coding_web_fetch_port", None),
+        web_search_port=getattr(app.state, "coding_web_search_port", None),
+        knowledge_source_proposal_service=getattr(
+            app.state, "knowledge_source_proposal_service", None
+        ),
+        app_env=str(getattr(app.state, "cloud_app_env", "development")),
+        context_assembly_mode=getattr(app.state, "coding_context_assembly_mode", "shadow"),
+        learning_scope_resolver=getattr(app.state, "learning_readonly_scope_resolver", None),
+        input_kind=TurnInputKind.LEARNING_KICKOFF,
+    )
+    try:
+        run_task = await coordinator.start_run(
+            receipt.turn_run_id,
+            stream,
+            thread_goal=thread_goal,
+            expected_thread_goal_revision=frozen_thread_goal_revision,
+        )
+    except ActiveRunConflictError:
+        await stream.aclose()
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
+    except SessionThreadGoalConflictError:
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
+    except SessionEventJournalError:
+        replay = await asyncio.to_thread(
+            coordinator.journal.events_for_run,
+            receipt.turn_run_id,
+        )
+        if replay:
+            return None
+        raise
+    _attach_goal_post_turn(app, runtime.session_id, receipt.turn_run_id, run_task)
+    return cast(asyncio.Task[None], run_task)
+
+
 @router.websocket("/api/v1/coding/{session_id}/stream")
 async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     """Replay and stream durable events without owning the server run task."""
-    await websocket.accept()
     if not _valid_session_id(session_id):
         await websocket.close(code=1008, reason="invalid coding session id")
-        return
-    sessions: dict[str, CodingRuntime] = websocket.app.state.coding_sessions
-    runtime = sessions.get(session_id)
-    if runtime is None:
-        await websocket.send_json(
-            ErrorEvent(message=f"Unknown coding session: {session_id}").model_dump()
-        )
-        await websocket.close()
         return
     raw_after = websocket.query_params.get("after", "0")
     try:
@@ -2462,11 +3103,46 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
     except ValueError:
         await websocket.close(code=1008, reason="after must be a non-negative integer")
         return
+    try:
+        runtime = await _rehydrate_coding_runtime(websocket, session_id)
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            await websocket.close(code=1008, reason="coding_session_not_found")
+            return
+        await websocket.close(code=1008, reason="coding_session_rehydrate_failed")
+        return
+    except CodingRuntimeRehydrateError as exc:
+        await websocket.close(code=1011, reason=exc.code)
+        return
+    await websocket.accept()
     coordinator = await websocket.app.state.coding_run_registry.hydrate(session_id)
+    try:
+        await _start_accepted_learning_kickoff(websocket.app, runtime, coordinator)
+    except LearningKickoffError as exc:
+        await websocket.close(code=1008, reason=exc.code)
+        return
+    except ActiveRunConflictError:
+        await websocket.close(code=1008, reason="learning_kickoff_run_conflict")
+        return
+    except SessionThreadGoalConflictError:
+        await websocket.close(code=1008, reason="thread_goal_revision_conflict")
+        return
+    except SessionEventJournalError:
+        await websocket.close(code=1008, reason="learning_kickoff_journal_conflict")
+        return
 
     async def sender() -> None:
         async for event in coordinator.subscribe(after=after):
-            await websocket.send_json(_timeline_event_dict(event))
+            try:
+                learning_scope = await asyncio.to_thread(
+                    _resolve_runtime_learning_scope,
+                    runtime,
+                    getattr(websocket.app.state, "learning_readonly_scope_resolver", None),
+                )
+            except LearningScopeConflict as exc:
+                await websocket.close(code=1008, reason=exc.code)
+                return
+            await websocket.send_json(_timeline_event_dict(event, learning_scope=learning_scope))
 
     async def receiver() -> None:
         while True:
@@ -2548,6 +3224,9 @@ async def coding_stream(websocket: WebSocket, session_id: str) -> None:
                 app_env=str(getattr(websocket.app.state, "cloud_app_env", "development")),
                 context_assembly_mode=getattr(
                     websocket.app.state, "coding_context_assembly_mode", "shadow"
+                ),
+                learning_scope_resolver=getattr(
+                    websocket.app.state, "learning_readonly_scope_resolver", None
                 ),
             )
             try:
@@ -2809,6 +3488,9 @@ async def coding_approval_respond(
             resume_attempt=resume_attempt,
             context_assembly_mode=getattr(
                 request.app.state, "coding_context_assembly_mode", "shadow"
+            ),
+            learning_scope_resolver=getattr(
+                request.app.state, "learning_readonly_scope_resolver", None
             ),
         )
         try:
@@ -3297,9 +3979,11 @@ async def reject_knowledge_source_proposal(
 async def list_coding_runs(session_id: str, request: Request) -> CodingRunsResponse:
     """Return persisted run summaries for a coding session."""
     runtime = _require_runtime(request, session_id)
-    return CodingRunsResponse(
-        runs=[CodingRunSummary(**item) for item in runtime.run_store.list_runs()]
-    )
+    learning_scope = _http_runtime_learning_scope(request, runtime)
+    runs = runtime.run_store.list_runs()
+    if learning_scope is not None:
+        runs = [_learning_run_summary_payload(item) for item in runs]
+    return CodingRunsResponse(runs=[CodingRunSummary(**item) for item in runs])
 
 
 @router.get(
@@ -3313,8 +3997,15 @@ async def get_coding_run(
 ) -> CodingRunDetailResponse:
     """Return one persisted run trace."""
     runtime = _require_runtime(request, session_id)
+    learning_scope = _http_runtime_learning_scope(request, runtime)
     try:
-        return CodingRunDetailResponse(**runtime.run_store.get_run(run_id))
+        run = runtime.run_store.get_run(run_id)
+        if learning_scope is not None:
+            run = _learning_run_detail_payload(
+                run,
+                task_id=learning_scope.task_id,
+            )
+        return CodingRunDetailResponse(**run)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"Unknown run: {run_id}") from exc
 
@@ -3323,6 +4014,11 @@ async def get_coding_run(
 async def get_coding_run_diff(session_id: str, run_id: str, request: Request) -> dict[str, Any]:
     """Return the workspace diff artifact for a completed run."""
     runtime = _require_runtime(request, session_id)
+    if _http_runtime_learning_scope(request, runtime) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "learning_scope_diff_unavailable"},
+        )
     diff_path = runtime.run_store.evidence_root / run_id / "diff.json"
     if not diff_path.is_file():
         raise HTTPException(status_code=404, detail="diff not found for this run")

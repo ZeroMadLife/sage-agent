@@ -24,8 +24,11 @@ _KIND_PRIORITY = {"web_fetch": 0, "knowledge": 1, "web_search": 2}
 class CodingEvidenceBundlePort(EvidenceBundlePort):
     """Resolve only evidence already authorized by successful child receipts."""
 
-    def __init__(self, runtime: CodingRuntime) -> None:
+    def __init__(
+        self, runtime: CodingRuntime, *, authorized_parent_run_id: str | None = None
+    ) -> None:
         self._runtime = runtime
+        self._authorized_parent_run_id = authorized_parent_run_id
 
     @property
     def available(self) -> bool:
@@ -42,7 +45,10 @@ class CodingEvidenceBundlePort(EvidenceBundlePort):
     ) -> EvidenceBundle:
         if thread_id != self._runtime.session_id:
             raise PermissionError("evidence thread does not match adapter scope")
-        if parent_run_id != self._runtime.active_run_id:
+        if parent_run_id not in {
+            self._runtime.active_run_id,
+            self._authorized_parent_run_id,
+        }:
             raise PermissionError("evidence parent run is not active")
         if not _MIN_TOKEN_BUDGET <= token_budget <= _MAX_TOKEN_BUDGET:
             raise ValueError("evidence token_budget must be between 256 and 20000")
@@ -226,7 +232,11 @@ def _web_search_items(
                 canonical_url=url,
                 content_hash=str(citation.get("content_hash", ""))[:128],
                 token_count=estimated_tokens(url, content),
-                metadata={"provider": str(payload.get("provider", ""))[:80]},
+                metadata={
+                    "provider": str(payload.get("provider", ""))[:80],
+                    "fetched_at": str(citation.get("retrieved_at", ""))[:80],
+                    "conflict_group": str(citation.get("conflict_group", ""))[:160],
+                },
             )
         )
         aliases.add(ref)
@@ -256,7 +266,11 @@ def _web_fetch_items(
             content_hash=str(payload.get("content_hash", ""))[:128],
             token_count=estimated_tokens(url, content),
             truncated=bool(payload.get("original_chars", 0)) and content.endswith("..."),
-            metadata={"artifact_ref": artifact_ref[:1_000]},
+            metadata={
+                "artifact_ref": artifact_ref[:1_000],
+                "fetched_at": str(payload.get("retrieved_at", ""))[:80],
+                "conflict_group": str(payload.get("conflict_group", ""))[:160],
+            },
         )
     ], aliases
 
@@ -270,13 +284,20 @@ def _deduplicate_sources(
     )
     selected: list[EvidenceBundleItem] = []
     seen_refs: set[str] = set()
-    seen_sources: set[str] = set()
+    seen_sources: set[tuple[str, str, str]] = set()
     for item in ordered:
-        if item.evidence_ref in seen_refs or (item.source_ref and item.source_ref in seen_sources):
+        source_identity = (
+            item.source_ref,
+            item.content_hash,
+            str(item.metadata.get("conflict_group", "")),
+        )
+        if item.evidence_ref in seen_refs or (
+            item.source_ref and item.content_hash and source_identity in seen_sources
+        ):
             continue
         seen_refs.add(item.evidence_ref)
-        if item.source_ref:
-            seen_sources.add(item.source_ref)
+        if item.source_ref and item.content_hash:
+            seen_sources.add(source_identity)
         selected.append(item)
     return tuple(selected), max(0, len(items) - len(selected))
 

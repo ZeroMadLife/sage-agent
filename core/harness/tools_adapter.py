@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool, InjectedToolCallId, StructuredTool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 from sage_harness import (
+    CapabilityRegistry,
     DeferredToolSetup,
     KnowledgePort,
     KnowledgeSourceProposalPort,
@@ -40,6 +41,7 @@ from core.harness.capability_adapter import (
     local_tool_capability_id,
     mcp_tool_capability_id,
 )
+from core.harness.learning_scope import LearningReadonlyScope
 from core.harness.task_intent import TaskIntentEnvelope
 from core.harness.tool_bundle import ToolBundleSnapshot
 from core.harness.web_fetch import build_web_fetch_tool
@@ -152,6 +154,7 @@ def build_deerflow_coding_tool_bundle(
     retrieval_sources: frozenset[str] | None = None,
     retrieval_tool_scope: str = "default",
     intent_envelope: TaskIntentEnvelope | None = None,
+    learning_scope: LearningReadonlyScope | None = None,
 ) -> CodingToolBundle:
     """构造 V2 工具并保留 Sage 的执行、Permission 和 Approval 边界。"""
     resident_tools: list[BaseTool] = []
@@ -386,15 +389,21 @@ def build_deerflow_coding_tool_bundle(
     ):
         task_tool = build_task_tool(subagent_executor, subagent_config)
         task_metadata = dict(task_tool.metadata) if isinstance(task_tool.metadata, Mapping) else {}
-        task_metadata["capability_id"] = "subagent:explore"
-        resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
-        task_dag_tool = build_task_dag_tool(subagent_executor, subagent_config)
-        task_dag_metadata = (
-            dict(task_dag_tool.metadata) if isinstance(task_dag_tool.metadata, Mapping) else {}
+        task_metadata["capability_id"] = (
+            "subagent:research"
+            if learning_scope is not None
+            and "subagent:research" in learning_scope.allowed_capabilities
+            else "subagent:explore"
         )
-        # DAG 只新增编排入口；每个节点仍由 server-owned profile 决定权限和 scope。
-        task_dag_metadata["capability_id"] = "subagent:task-dag"
-        resident_tools.append(task_dag_tool.model_copy(update={"metadata": task_dag_metadata}))
+        resident_tools.append(task_tool.model_copy(update={"metadata": task_metadata}))
+        if learning_scope is None:
+            task_dag_tool = build_task_dag_tool(subagent_executor, subagent_config)
+            task_dag_metadata = (
+                dict(task_dag_tool.metadata) if isinstance(task_dag_tool.metadata, Mapping) else {}
+            )
+            # DAG 只新增编排入口；每个节点仍由 server-owned profile 决定权限和 scope。
+            task_dag_metadata["capability_id"] = "subagent:task-dag"
+            resident_tools.append(task_dag_tool.model_copy(update={"metadata": task_dag_metadata}))
 
     web_allowed = intent_scope is None or intent_scope.allows_tool_candidate(
         origin="web", category="web"
@@ -410,6 +419,14 @@ def build_deerflow_coding_tool_bundle(
         web_search_tool = build_web_search_tool(
             web_search_port,
             max_calls=2 if strict_retrieval else None,
+            policy_freshness=(
+                "year"
+                if learning_scope is not None and learning_scope.freshness == "current"
+                else "all"
+                if learning_scope is not None
+                else None
+            ),
+            policy_domains=(learning_scope.domains if learning_scope is not None else None),
         )
         (resident_tools if strict_retrieval else deferred_tools).append(web_search_tool)
     web_fetch_available = bool(
@@ -430,6 +447,7 @@ def build_deerflow_coding_tool_bundle(
             web_fetch_port,
             artifact_store,
             max_calls=2 if strict_retrieval else None,
+            policy_domains=(learning_scope.domains if learning_scope is not None else None),
         )
         (resident_tools if strict_retrieval else deferred_tools).append(web_fetch_tool)
     web_source_proposal_available = bool(
@@ -538,20 +556,50 @@ def build_deerflow_coding_tool_bundle(
         ),
     )
 
+    catalog_registry = capability_registry
+    catalog_residents = resident_tools
+    catalog_deferred = deferred_tools
+    if learning_scope is not None:
+        catalog_registry = CapabilityRegistry(
+            descriptor
+            for descriptor in capability_registry.list()
+            if descriptor.capability_id in learning_scope.allowed_capabilities
+        )
+        catalog_residents = [
+            tool
+            for tool in resident_tools
+            if learning_scope.allows_tool(
+                tool.name,
+                metadata=tool.metadata if isinstance(tool.metadata, Mapping) else {},
+            )
+        ]
+        catalog_deferred = [
+            tool
+            for tool in deferred_tools
+            if learning_scope.allows_tool(
+                tool.name,
+                metadata=tool.metadata if isinstance(tool.metadata, Mapping) else {},
+            )
+        ]
     graph_tools, deferred_setup = assemble_deferred_tools(
-        resident_tools,
-        deferred_tools,
+        catalog_residents,
+        catalog_deferred,
         enabled=enable_deferred_tools,
-        capability_registry=capability_registry,
+        capability_registry=catalog_registry,
         surface="coding",
         allowed_tool_names=active_skill_allowed_tools,
     )
+    visible_tools = [*catalog_residents, *catalog_deferred]
     return CodingToolBundle(
         tuple(graph_tools),
         deferred_setup,
-        capability_registry.revision,
-        _capability_bindings(graph_tools),
-        len(capability_registry.query(surface="coding")),
+        (
+            learning_scope.capability_revision
+            if learning_scope is not None
+            else capability_registry.revision
+        ),
+        _capability_bindings(visible_tools),
+        len(catalog_registry.query(surface="coding")),
         active_skill_allowed_tools=active_skill_allowed_tools,
         mcp_lifecycle=mcp_lifecycle,
         skill_lifecycle=skill_lifecycle,

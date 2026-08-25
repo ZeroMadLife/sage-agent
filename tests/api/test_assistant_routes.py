@@ -39,6 +39,9 @@ def _app(
         cloud_repository=repository,
         cloud_dev_login_enabled=True,
         cloud_app_env=app_env,
+        cloud_token_secret=(
+            "test-only-jwt-signing-secret-that-is-long-enough" if app_env == "production" else None
+        ),
     )
 
 
@@ -203,3 +206,36 @@ async def test_production_home_requires_a_valid_server_session(
 
     assert response.status_code == 401
     assert response.json() == {"detail": "cloud authentication is required"}
+
+
+async def test_cloud_home_accepts_device_bearer_and_keeps_owner_scope(
+    tmp_path: Path,
+    repository: CloudRepository,
+) -> None:
+    app = create_app(
+        coding_workspace_root=tmp_path / "workspace",
+        coding_storage_root=tmp_path / ".coding",
+        cloud_repository=repository,
+        cloud_canary_invite_login_enabled=True,
+        cloud_app_env="production",
+        cloud_token_secret="test-only-jwt-signing-secret-that-is-long-enough",
+    )
+    (tmp_path / "workspace").mkdir()
+    await repository.create_invite("device-home-invite", email="device-home@example.com")
+    client = TestClient(app)
+    login = client.post(
+        "/api/v1/cloud/auth/device/login",
+        json={"invite_code": "device-home-invite", "device_name": "Sage Desktop"},
+    )
+    assert login.status_code == 200
+    user_id = login.json()["user_id"]
+    await repository.create_project(user_id, "Private learning")
+
+    response = client.get(
+        "/api/v1/assistant/home",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["identity"]["user_id"] == user_id
+    assert response.json()["projects"]["items"][0]["name"] == "Private learning"

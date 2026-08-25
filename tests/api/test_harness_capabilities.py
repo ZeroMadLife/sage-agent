@@ -49,7 +49,7 @@ class FakeWebSearchPort:
 class FakeWebFetchPort:
     available = True
 
-    async def fetch(self, url: str) -> WebFetchResult:
+    async def fetch(self, url: str, **_: object) -> WebFetchResult:
         del url
         return WebFetchResult(status="unavailable", error_code="not_used")
 
@@ -199,6 +199,28 @@ def test_capability_api_isolates_workspace_skills_and_filters_surface(tmp_path: 
     assert "skill:project:alpha" not in second_ids
     assert first_ids - {"skill:project:alpha"} == second_ids
     assert all("knowledge" in item["surfaces"] for item in knowledge_payload["capabilities"])
+
+
+def test_capability_api_omits_side_effect_tools_when_server_disables_them(
+    tmp_path: Path,
+) -> None:
+    app = create_app(
+        coding_model_factory=FakeModel,
+        coding_workspace_root=tmp_path,
+        coding_storage_root=tmp_path / ".coding",
+        coding_side_effect_tools_enabled=False,
+    )
+
+    with TestClient(app) as client:
+        session_id = client.post("/api/v1/coding/session", json={}).json()["session_id"]
+        payload = client.get(
+            "/api/v1/harness/capabilities",
+            params={"session_id": session_id, "surface": "coding", "origin": "local"},
+        ).json()
+
+    capability_ids = {item["capability_id"] for item in payload["capabilities"]}
+    assert {"local:list_files", "local:read_file", "local:search"}.issubset(capability_ids)
+    assert {"local:write_file", "local:patch_file", "local:run_shell"}.isdisjoint(capability_ids)
 
 
 def test_capability_api_rejects_unknown_session_and_invalid_filters(tmp_path: Path) -> None:

@@ -2131,6 +2131,54 @@ describe('coding store', () => {
     store.disconnect()
   })
 
+  it('enters a server-activated learning session without sending browser-owned content', async () => {
+    const sockets: FakeSocket[] = []
+    class FakeSocket {
+      readyState = 0
+      onopen: (() => void) | null = null
+      onmessage: ((event: MessageEvent) => void) | null = null
+      onerror: (() => void) | null = null
+      onclose: (() => void) | null = null
+      send = vi.fn()
+      close = vi.fn()
+
+      constructor(_url: string) { sockets.push(this) }
+      open() { this.readyState = 1; this.onopen?.() }
+    }
+    const empty = {
+      items: [], next_cursor: 0, has_more: false, older_cursor: null,
+      latest_cursor: 0, active_run: null, messages: [], models: [], current: null,
+      entries: [], path: '.', is_git: false, branch: '', dirty_count: 0,
+      changed_files: [], sessions: [], runs: [], proposals: [], configured: false,
+      used_tokens: 0,
+    }
+    vi.stubGlobal('fetch', vi.fn((input: URL | string, init?: RequestInit) => {
+      const url = input instanceof URL ? input : new URL(input, window.location.origin)
+      if (init?.method === 'POST' && url.pathname.endsWith('/learning-session/resume')) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            session_id: 'learning-session', workspace_root: '/tmp/repo',
+            workspace_id: 'workspace-1', permission_mode: 'default', runtime_profile: 'legacy',
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: async () => empty })
+    }))
+    vi.stubGlobal('WebSocket', FakeSocket)
+    const store = useCodingStore()
+
+    await store.selectSession('learning-session')
+
+    expect(store.sessionId).toBe('learning-session')
+    expect(sockets).toHaveLength(1)
+    expect(sockets[0].send).not.toHaveBeenCalled()
+    sockets[0].open()
+    sockets[0].open()
+    expect(sockets[0].send).not.toHaveBeenCalled()
+    store.disconnect()
+  })
+
   it('refreshes run history when a run finishes', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

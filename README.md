@@ -2,6 +2,8 @@
 
 <p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的 Agent 执行链。</strong></p>
 
+<p align="center"><strong>当前版本：v1.2.0 Local Desktop MVP</strong> · 单用户 · macOS Apple Silicon · 打开即用</p>
+
 <p align="center"><strong>模块化 Agent Harness</strong> · <strong>PostgreSQL Agentic RAG</strong> · <strong>Sandbox 纵深防御</strong> · <strong>分层 Eval</strong></p>
 
 <p align="center">
@@ -12,11 +14,13 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-111827" alt="MIT License" /></a>
 </p>
 
-![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/readme/sage-harness-agentic-rag-overall.png)
+![Sage Agent Harness 与 Agentic RAG 总体架构](docs/assets/architecture/sage-harness-rag-integrated-v1-zh.png)
+
+> [可编辑 SVG 总体图](docs/assets/architecture/sage-harness-rag-integrated-v1-zh.svg) · [架构图资产说明](docs/assets/architecture/README.md)
 
 <p align="center">
-  <a href="release/v1.1.0/README.md"><strong>v1.1.0 发布入口</strong></a>
-  · <a href="release/v1.1.0/TESTING.md">发布验收</a>
+  <a href="release/v1.2.0/README.md"><strong>v1.2.0 发布入口</strong></a>
+  · <a href="release/v1.2.0/TESTING.md">MVP 验收</a>
   · <a href="#产品运行截图">产品运行截图</a>
   · <a href="docs/GETTING-STARTED.md">开发指南</a>
 </p>
@@ -59,7 +63,7 @@ Sage 不是给聊天框加几个工具，而是一个本地优先的个人 AI �
 | **Knowledge** | 把来源变成可检索、可引用、可审阅的知识 | 原始事实、revision 和模型 proposal 分开保存 |
 | **Practice Engine** | 阅读源码、修改代码、运行工具并验证理解 | 工具动作必须经过权限、策略、审批和 Sandbox |
 
-当前仓库面向本地开发与学习使用，不提供私人工作区的公网入口，也不把公开 Agent 当成私人 Harness。
+当前 v1.2.0 面向个人在自己的 Mac 上本地使用：不要求注册或 OAuth，双击 `.app` 后配置一次 Provider 即可开始聊天、学习和本地 RAG。普通学习任务默认只读，Coding 才开放受控执行能力。它不是商业发行版，也不提供云端账号、多用户、同步、自动更新、DMG 或公证。
 
 ## 一次请求如何运行
 
@@ -73,7 +77,7 @@ Sage 不是给聊天框加几个工具，而是一个本地优先的个人 AI �
   -> Permission -> Policy -> Approval -> Container Sandbox
   -> PostgreSQL hybrid retrieval
   -> EvidenceBundle + Claim Sufficiency
-  -> Answer / bounded Research child / honest abstention
+  -> Answer / bounded Research child / honest abstention（桌面默认未配置 Web Provider 时保留 source_gap）
   -> Checkpoint / Timeline / Trace / Artifact
 ```
 
@@ -113,7 +117,7 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 
 ## 当前可复核证据
 
-以下结果基于 `dev/sage-v7@9b8c8de1` 的阶段收口；它们是受控工程证据，不是统一的线上准确率。
+以下 Harness/RAG 结果来自 v1.1 阶段收口；它们是受控工程证据，不是统一的线上准确率。当前桌面 MVP 的运行验收以 [v1.2.0 MVP 验收](release/v1.2.0/TESTING.md) 为准。
 
 | 证据 | 已验证结果 | 解释边界 |
 | --- | --- | --- |
@@ -141,7 +145,20 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 
 ## 快速开始
 
-### 环境要求
+### 桌面 MVP（推荐）
+
+拿到 macOS Apple Silicon 的 `Sage.app` 后双击启动。首次启动按界面完成：
+
+1. 选择 Local；
+2. 选择一个学习工作区；
+3. 填写 Provider、API Key 和默认模型；
+4. 进入 Assistant，直接聊天或创建学习任务。
+
+Rust 桌面宿主会为每次启动生成一次性的本机 session bearer。它只在宿主、sidecar 和 WebView 内存中流转，不写入前端存储、URL、日志或 SQLite；退出时 sidecar 由宿主回收。
+
+桌面 MVP 的完整验收步骤见 [v1.2.0 MVP 验收](release/v1.2.0/TESTING.md)。
+
+### 源码开发环境
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
@@ -153,11 +170,19 @@ Eval 按 `intent -> retrieval -> claim -> generation -> recovery -> provider/lat
 git clone https://github.com/ZeroMadLife/sage-agent.git
 cd sage-agent
 
-bash scripts/bootstrap-dev-env.sh
-cd frontend && npm ci && cd ..
-cp .env.example .env
-bash scripts/dev.sh
+bash scripts/quickstart.sh
 ```
+
+首次运行会创建权限为 `0600` 的本地 `.env`、准备 Python/前端依赖并执行环境检查；
+检查通过后会启动现有 FastAPI、Vue 与 Docker Compose 链路。至少配置一个模型 Provider
+后，重新执行同一命令即可进入真实 Agent 会话。只做检查、不启动服务时使用：
+
+```bash
+bash scripts/quickstart.sh --check
+```
+
+需要分别调试已有启动链路时，仍可直接使用 `bash scripts/dev.sh`；完整手动安装步骤见
+[Getting Started](docs/GETTING-STARTED.md)。
 
 启动后访问：
 
@@ -167,7 +192,8 @@ bash scripts/dev.sh
 
 至少配置一个模型 Provider。`.env`、Provider key、OAuth secret 和运行凭据不得提交。
 
-完整环境变量和 worktree 联调说明见 [Getting Started](docs/GETTING-STARTED.md)。
+部署边界：`local` 使用 `scripts/quickstart.sh`；`private-canary` 继续由
+`scripts/deployctl.py` 和受控 Compose 管理；`public` 尚未开放，不复用本地 `.env` 或开发登录。
 
 ## 验证
 
@@ -184,7 +210,7 @@ npm --prefix frontend run build:public
 git diff --check
 ```
 
-PR 与 `dev/sage-v7` 会重复执行质量门禁；发布到 `main` 前还需要使用同一个 commit SHA 完成发布、部署、回滚和人工验收。
+PR 与 `dev/sage-local-mvp` 会重复执行质量门禁；发布到 `main` 前还需要使用同一个 commit SHA 完成本地 MVP 验收和人工验收。
 
 ## 仓库结构
 
@@ -213,9 +239,10 @@ sage-agent/
 
 ## 深入阅读
 
-- [v1.1.0 发布入口](release/v1.1.0/README.md)：版本事实、可用能力与发布边界
-- [v1.1.0 变更记录](release/v1.1.0/CHANGELOG.md)：本版本交付与不交付的能力
-- [v1.1.0 发布验收](release/v1.1.0/TESTING.md)：自动化门禁与复现实验入口
+- [v1.2.0 发布入口](release/v1.2.0/README.md)：本地桌面 MVP 的版本事实、可用能力与边界
+- [v1.2.0 变更记录](release/v1.2.0/CHANGELOG.md)：本版本交付与不交付的能力
+- [v1.2.0 MVP 验收](release/v1.2.0/TESTING.md)：双击启动、Provider、学习、恢复与退出检查
+- [v1.1.0 RAG 发布记录](release/v1.1.0/README.md)：上一阶段的 RAG 工程化证据
 - [v1.1.0 架构评审](release/v1.1.0/REVIEW.md)：架构取舍、风险和发布结论
 - [阶段总复盘](docs/evals/sage-harness-rag-stage-closeout-v1.md)：当前 Harness、RAG、Eval 与 Sandbox 的共同事实源
 - [Harness 输入分层 PRD](docs/superpowers/specs/2026-08-08-sage-harness-input-layers-prd.md)
@@ -229,9 +256,9 @@ sage-agent/
 ## 分支与贡献
 
 - `main` 只保留通过完整发布门禁、可部署上线的版本。
-- `dev/sage-v7` 是当前开发集成分支。
+- `dev/sage-local-mvp` 是当前本地桌面 MVP 的长期开发集成分支。
 - 功能、修复、文档和评测在独立 worktree 的 `feat/*`、`fix/*`、`docs/*`、`eval/*` 短期分支完成，通过 PR 合入开发分支。
-- 测试/ staging 使用 `dev/sage-v7` 上的不可变 commit SHA；同一个 SHA 通过发布门禁后再晋级到 `main`。
+- 测试/staging 使用 `dev/sage-local-mvp` 上的不可变 commit SHA；同一个 SHA 通过 MVP 验收后再创建 `release/v1.2.0` 发布候选。商业发行能力仍另行规划，不在本版本发布。
 
 提交前请保持职责单一，并附中文 PR 说明、匹配改动的测试/构建证据和 `git diff --check` 结果。
 

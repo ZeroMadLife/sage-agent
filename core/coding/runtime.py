@@ -105,6 +105,7 @@ class CodingRuntime:
         runtime_profile: RuntimeProfile | None = None,
         sandbox_provider: str = "local_workspace",
         sandbox_image: str = "python:3.11-slim",
+        side_effect_tools_enabled: bool = True,
     ) -> None:
         self.session_id = session_id
         self.workspace = WorkspaceContext(root=Path(workspace_root))
@@ -144,6 +145,10 @@ class CodingRuntime:
             str(self.session.get("sandbox_image", sandbox_image)).strip() or "python:3.11-slim"
         )
         self.session["sandbox_image"] = self.sandbox_image
+        self.side_effect_tools_enabled = bool(
+            self.session.get("side_effect_tools_enabled", side_effect_tools_enabled)
+        ) and bool(side_effect_tools_enabled)
+        self.session["side_effect_tools_enabled"] = self.side_effect_tools_enabled
         self.session["id"] = session_id
         self.session["workspace_root"] = str(self.workspace.root)
         persisted_owner = str(self.session.get("owner_user_id", "")).strip()
@@ -204,6 +209,7 @@ class CodingRuntime:
             self.workspace,
             tool_context=self.tool_context,
             activated_tools=self.activated_tools,
+            side_effect_tools_enabled=self.side_effect_tools_enabled,
         )
         self.skill_registry = SkillRegistry(root=self.workspace.root)
         self.memory_manager = MemoryManager(self.storage_root, self.workspace.root)
@@ -243,6 +249,7 @@ class CodingRuntime:
         runtime_profile: RuntimeProfile | None = None,
         sandbox_provider: str = "local_workspace",
         sandbox_image: str = "python:3.11-slim",
+        side_effect_tools_enabled: bool = True,
     ) -> CodingRuntime:
         """Rehydrate a persisted coding runtime for a new WebSocket connection."""
         storage_path = Path(storage_root)
@@ -271,6 +278,7 @@ class CodingRuntime:
             runtime_profile=runtime_profile,
             sandbox_provider=str(session_state.get("sandbox_provider", sandbox_provider)),
             sandbox_image=str(session_state.get("sandbox_image", sandbox_image)),
+            side_effect_tools_enabled=side_effect_tools_enabled,
         )
 
     @property

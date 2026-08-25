@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 
 ToolExecutionStatus = Literal["succeeded", "failed", "rejected"]
 EvidenceKind = Literal["knowledge", "web_search", "web_fetch"]
@@ -344,6 +344,18 @@ class WebFetchPort(Protocol):
     def available(self) -> bool: ...
 
     async def fetch(self, url: str) -> WebFetchResult: ...
+
+
+@runtime_checkable
+class PolicyAwareWebFetchPort(WebFetchPort, Protocol):
+    """Fetch Web evidence while enforcing a server-frozen domain allowlist."""
+
+    async def fetch_with_policy(
+        self,
+        url: str,
+        *,
+        domains: Sequence[str],
+    ) -> WebFetchResult: ...
 
 
 class EvidenceBundlePort(Protocol):

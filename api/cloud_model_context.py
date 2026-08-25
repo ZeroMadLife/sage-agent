@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import Request
+from starlette.requests import HTTPConnection
 
-from api.cloud_dependencies import SESSION_COOKIE
+from api.cloud_dependencies import authenticated_connection_user
 from core.cloud.auth.repository import CloudRepository
 from core.cloud.model_providers import (
     AccountModelFactory,
@@ -29,13 +29,13 @@ class AccountModelContext:
 
 
 async def load_account_model_context(
-    request: Request, *, include_credentials: bool = False
+    request: HTTPConnection, *, include_credentials: bool = False
 ) -> AccountModelContext | None:
     cloud = getattr(request.app.state, "cloud_repository", None)
     providers = getattr(request.app.state, "cloud_model_provider_repository", None)
     if not isinstance(cloud, CloudRepository) or not isinstance(providers, ModelProviderRepository):
         return None
-    user = await cloud.authenticated_user(request.cookies.get(SESSION_COOKIE, ""))
+    user = await authenticated_connection_user(request)
     if user is None:
         return None
     configured = await providers.list_providers(user.user_id)
@@ -78,7 +78,9 @@ async def load_account_model_context(
     )
 
 
-def combined_catalog(request: Request, account: AccountModelContext | None) -> list[dict[str, Any]]:
+def combined_catalog(
+    request: HTTPConnection, account: AccountModelContext | None
+) -> list[dict[str, Any]]:
     return [
         *request.app.state.coding_model_catalog,
         *(list(account.catalog) if account is not None else []),
@@ -86,7 +88,7 @@ def combined_catalog(request: Request, account: AccountModelContext | None) -> l
 
 
 def combined_capabilities(
-    request: Request, account: AccountModelContext | None
+    request: HTTPConnection, account: AccountModelContext | None
 ) -> ModelCapabilityRegistry:
     values: dict[str, object] = {}
     local: ModelCapabilityRegistry = request.app.state.coding_model_capabilities
@@ -104,7 +106,7 @@ def combined_capabilities(
 
 
 def combined_reasoning_modes(
-    request: Request, account: AccountModelContext | None
+    request: HTTPConnection, account: AccountModelContext | None
 ) -> dict[str, tuple[str, ...]]:
     values = dict(request.app.state.coding_model_reasoning_modes)
     if account is not None:
@@ -112,7 +114,7 @@ def combined_reasoning_modes(
     return values
 
 
-def combined_model_factory(request: Request, account: AccountModelContext | None) -> Any:
+def combined_model_factory(request: HTTPConnection, account: AccountModelContext | None) -> Any:
     local = request.app.state.coding_model_factory
     if account is None:
         return local
@@ -122,7 +124,7 @@ def combined_model_factory(request: Request, account: AccountModelContext | None
 
 
 async def _account_factory(
-    request: Request,
+    request: HTTPConnection,
     providers: ModelProviderRepository,
     owner_user_id: str,
 ) -> AccountModelFactory:

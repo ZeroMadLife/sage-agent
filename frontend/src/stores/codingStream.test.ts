@@ -284,6 +284,7 @@ describe('CodingStream', () => {
       onError: vi.fn(),
     })
     stream.connect('coding_1', 'ws://local/stream?after=0')
+    sockets[0].emitOpen()
     sockets[0].emit(envelope(7))
     sockets[0].readyState = 3
     sockets[0].onclose?.()
@@ -331,6 +332,33 @@ describe('CodingStream', () => {
     sockets[0].onclose?.({ code: 1008, wasClean: false })
     vi.advanceTimersByTime(10_000)
     expect(sockets).toHaveLength(1)
+    stream.disconnect()
+    vi.useRealTimers()
+  })
+
+  it('does not reconnect when the websocket handshake never opened', () => {
+    vi.useFakeTimers()
+    const sockets: FakeSocket[] = []
+    const onConnectionState = vi.fn()
+    const stream = new CodingStream({
+      createSocket: () => {
+        const socket = new FakeSocket()
+        socket.readyState = 0
+        sockets.push(socket)
+        return socket
+      },
+      onEvent: vi.fn(),
+      onConnectionState,
+      onError: vi.fn(),
+    })
+
+    stream.connect('coding_1', 'ws://local/stream?after=0')
+    sockets[0].readyState = 3
+    sockets[0].onclose?.({ code: 1006, wasClean: false })
+    vi.advanceTimersByTime(10_000)
+
+    expect(sockets).toHaveLength(1)
+    expect(onConnectionState).toHaveBeenLastCalledWith('coding_1', 'disconnected')
     stream.disconnect()
     vi.useRealTimers()
   })

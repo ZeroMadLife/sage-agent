@@ -54,3 +54,18 @@ it('hides unconfigured models and sends explicit compaction from the icon contro
   await wrapper.get('button[aria-label="压缩上下文"]').trigger('click')
   expect(store.compactContext).toHaveBeenCalledOnce()
 })
+
+it('keeps the shared composer renderable during a transient session handoff', () => {
+  const store = configuredBudget()
+  store.contextSnapshot = {
+    ...store.contextSnapshot!,
+    used_tokens: null,
+    model_limit_tokens: null,
+  }
+  store.contextChars = undefined as never
+
+  const wrapper = mount(CodingContextBudget)
+
+  expect(wrapper.get('[role="progressbar"]').text()).toContain('0 / 0')
+  expect(wrapper.get('[role="progressbar"]').attributes('aria-valuenow')).toBe('0')
+})

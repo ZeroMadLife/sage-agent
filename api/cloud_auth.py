@@ -12,13 +12,25 @@ from api.schemas import (
     CloudCanaryInviteLoginRequest,
     CloudCurrentUserResponse,
     CloudDevelopmentLoginRequest,
+    CloudDeviceLoginRequest,
     CloudGitHubOAuthStartRequest,
     CloudGitHubOAuthStartResponse,
+    CloudRefreshTokenRequest,
+    CloudTokenResponse,
+    CloudTokenRevokeRequest,
 )
+from core.cloud.auth.models import CloudUser
 from core.cloud.auth.repository import (
     CloudRepository,
     DeviceLimitReached,
+    RefreshTokenReuseDetected,
     new_browser_session_token,
+)
+from core.cloud.auth.tokens import (
+    InvalidAccessToken,
+    decode_access_token,
+    encode_access_token,
+    new_refresh_token,
 )
 from core.cloud.github import (
     GitHubOAuthService,
@@ -58,6 +70,36 @@ def _set_session_cookie(response: Response, request: Request, token: str, ttl: t
         samesite="lax",
         max_age=int(ttl.total_seconds()),
         path="/",
+    )
+
+
+def _set_token_response_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+
+
+def _token_response(
+    request: Request,
+    *,
+    user: CloudUser,
+    session_id: str,
+    refresh_token: str,
+) -> CloudTokenResponse:
+    """Create a short-lived JWT for an already committed refresh family."""
+    access_ttl = int(getattr(request.app.state, "cloud_access_token_ttl_seconds", 900))
+    access = encode_access_token(
+        user_id=user.user_id,
+        session_id=session_id,
+        secret=str(getattr(request.app.state, "cloud_token_secret", "")),
+        ttl_seconds=access_ttl,
+    )
+    return CloudTokenResponse(
+        user_id=user.user_id,
+        email=user.email,
+        display_name=user.display_name,
+        access_token=access,
+        expires_in=access_ttl,
+        refresh_token=refresh_token,
     )
 
 
@@ -186,15 +228,121 @@ async def complete_github_oauth(
 
 @router.get("/api/v1/cloud/me", response_model=CloudCurrentUserResponse)
 async def get_cloud_current_user(request: Request, response: Response) -> CloudCurrentUserResponse:
-    """Return the user resolved from the HttpOnly server session cookie."""
-    user = await _repository(request).authenticated_user(request.cookies.get(_SESSION_COOKIE, ""))
-    if user is None:
-        raise HTTPException(status_code=401, detail="cloud authentication is required")
+    """Return the user resolved from either the browser or client session."""
+    from api.cloud_dependencies import require_authenticated_connection
+
+    user = await require_authenticated_connection(request)
     response.headers["Cache-Control"] = "no-store"
     payload = CloudCurrentUserResponse(
         user_id=user.user_id, email=user.email, display_name=user.display_name
     )
     return payload
+
+
+@router.post("/api/v1/cloud/auth/device/login", response_model=CloudTokenResponse)
+async def device_login(
+    payload: CloudDeviceLoginRequest,
+    request: Request,
+    response: Response,
+) -> CloudTokenResponse:
+    """Exchange a private invite for tokens intended for TUI/desktop clients."""
+    repository = _repository(request)
+    app_env = str(getattr(request.app.state, "cloud_app_env", "development")).lower()
+    opaque = new_browser_session_token()
+    refresh = new_refresh_token()
+    session_expires_at = datetime.now(UTC) + timedelta(days=30)
+    refresh_expires_at = datetime.now(UTC) + timedelta(
+        days=int(getattr(request.app.state, "cloud_refresh_token_ttl_days", 30))
+    )
+    try:
+        if app_env == "development" and bool(
+            getattr(request.app.state, "cloud_dev_login_enabled", False)
+        ):
+            if not payload.email:
+                raise HTTPException(status_code=422, detail="email is required in development")
+            user, session = await repository.create_development_invite_session(
+                email=payload.email,
+                display_name=payload.display_name,
+                invite_code=payload.invite_code,
+                token=opaque,
+                device_name=payload.device_name,
+                expires_at=session_expires_at,
+                refresh_token=refresh,
+                refresh_expires_at=refresh_expires_at,
+            )
+        elif bool(getattr(request.app.state, "cloud_canary_invite_login_enabled", False)):
+            user, session = await repository.create_canary_invite_session(
+                invite_code=payload.invite_code,
+                token=opaque,
+                device_name=payload.device_name,
+                expires_at=session_expires_at,
+                refresh_token=refresh,
+                refresh_expires_at=refresh_expires_at,
+            )
+        else:
+            raise HTTPException(status_code=404, detail="not found")
+    except DeviceLimitReached as exc:
+        raise HTTPException(status_code=409, detail="最多允许 3 台设备保持登录") from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail="邀请码无效、已使用或账号已停用") from exc
+    _set_token_response_headers(response)
+    return _token_response(
+        request,
+        user=user,
+        session_id=session.session_id,
+        refresh_token=refresh,
+    )
+
+
+@router.post("/api/v1/cloud/auth/token/refresh", response_model=CloudTokenResponse)
+async def refresh_cloud_token(
+    payload: CloudRefreshTokenRequest,
+    request: Request,
+    response: Response,
+) -> CloudTokenResponse:
+    """Rotate a refresh token exactly once and issue a new access token."""
+    replacement = new_refresh_token()
+    try:
+        rotated = await _repository(request).rotate_refresh_token(
+            token=payload.refresh_token,
+            replacement=replacement,
+            expires_at=datetime.now(UTC)
+            + timedelta(days=int(getattr(request.app.state, "cloud_refresh_token_ttl_days", 30))),
+        )
+    except RefreshTokenReuseDetected as exc:
+        raise HTTPException(status_code=401, detail="refresh token reuse detected") from exc
+    if rotated is None:
+        raise HTTPException(status_code=401, detail="refresh token is invalid or expired")
+    user_id, session_id = rotated
+    user = await _repository(request).authenticated_user_by_session_id(session_id)
+    if user is None or user.user_id != user_id:
+        raise HTTPException(status_code=401, detail="cloud authentication is required")
+    access_ttl = int(getattr(request.app.state, "cloud_access_token_ttl_seconds", 900))
+    access = encode_access_token(
+        user_id=user.user_id,
+        session_id=session_id,
+        secret=str(getattr(request.app.state, "cloud_token_secret", "")),
+        ttl_seconds=access_ttl,
+    )
+    _set_token_response_headers(response)
+    return CloudTokenResponse(
+        user_id=user.user_id,
+        email=user.email,
+        display_name=user.display_name,
+        access_token=access,
+        expires_in=access_ttl,
+        refresh_token=replacement,
+    )
+
+
+@router.post("/api/v1/cloud/auth/token/revoke", status_code=204, response_class=Response)
+async def revoke_cloud_token(
+    payload: CloudTokenRevokeRequest,
+    request: Request,
+) -> Response:
+    """Revoke a refresh-token family and its server-side device session."""
+    await _repository(request).revoke_refresh_token(payload.refresh_token)
+    return Response(status_code=204)
 
 
 @router.post("/api/v1/cloud/auth/dev/login", response_model=CloudCurrentUserResponse)
@@ -210,22 +358,18 @@ async def development_login(
         raise HTTPException(status_code=404, detail="not found")
     response.headers["Cache-Control"] = "no-store"
     repository = _repository(request)
+    token = new_browser_session_token()
     try:
-        user = await repository.get_or_create_identity(
-            provider="development",
-            provider_subject=payload.email.strip().lower(),
+        user, _ = await repository.create_development_invite_session(
             email=payload.email,
             display_name=payload.display_name,
             invite_code=payload.invite_code,
-            reject_existing_identity=True,
+            token=token,
+            device_name="Browser",
+            expires_at=datetime.now(UTC) + _SESSION_TTL,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail="a valid invite is required") from exc
-    token = new_browser_session_token()
-    try:
-        await repository.create_session(
-            user.user_id, token, expires_at=datetime.now(UTC) + _SESSION_TTL
-        )
     except DeviceLimitReached as exc:
         raise HTTPException(status_code=409, detail="最多允许 3 台设备保持登录") from exc
     _set_session_cookie(response, request, token, _SESSION_TTL)
@@ -239,6 +383,17 @@ async def logout_cloud_session(request: Request) -> Response:
     """Revoke the server record and clear the browser's cookie."""
     token = request.cookies.get(_SESSION_COOKIE, "")
     await _repository(request).revoke_session(token)
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        try:
+            claims = decode_access_token(
+                authorization[7:].strip(),
+                secret=str(getattr(request.app.state, "cloud_token_secret", "")),
+            )
+        except InvalidAccessToken:
+            claims = None
+        if claims is not None:
+            await _repository(request).revoke_session_by_id(claims.session_id)
     response = Response(status_code=204)
     response.delete_cookie(
         key=_SESSION_COOKIE,

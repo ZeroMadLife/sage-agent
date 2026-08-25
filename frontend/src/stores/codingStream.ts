@@ -90,9 +90,11 @@ export class CodingStream {
     const sessionId = this.sessionId
     const url = withCursor(this.url, this.cursor)
     const socket = this.createSocket(url)
+    let opened = false
     this.socket = socket
     socket.onopen = () => {
       if (generation !== this.generation || this.socket !== socket) return
+      opened = true
       this.reconnectAttempt = 0
       this.onConnectionState?.(sessionId, 'connected')
       this.onOpen?.(sessionId)
@@ -133,6 +135,10 @@ export class CodingStream {
       if (this.socket === socket) this.socket = null
       if (!this.reconnectEnabled) return
       const code = event?.code ?? 1006
+      if (!opened) {
+        this.onConnectionState?.(sessionId, 'disconnected')
+        return
+      }
       if (code === 1000 || code === 1008 || (event?.wasClean && code < 4000)) {
         this.onConnectionState?.(sessionId, 'disconnected')
         return

@@ -63,8 +63,7 @@ def message_payload(message: Any) -> dict[str, Any]:
             content,
             text_limit=(
                 _TOOL_MESSAGE_CONTENT_LIMIT
-                if isinstance(message, ToolMessage)
-                and name in {"knowledge_search", "search_web"}
+                if isinstance(message, ToolMessage) and name in {"knowledge_search", "search_web"}
                 else 4_000
             ),
         ),
@@ -131,6 +130,13 @@ def message_payload(message: Any) -> dict[str, Any]:
                 "blocked_count",
             )
             if key in task_dag_meta
+        }
+    learning_scope_meta = message.additional_kwargs.get("sage_learning_scope")
+    if isinstance(message, ToolMessage) and isinstance(learning_scope_meta, dict):
+        projected["sage_learning_scope"] = {
+            key: _bounded_json(learning_scope_meta[key])
+            for key in ("task_id", "status", "reason_code")
+            if key in learning_scope_meta
         }
     return projected
 

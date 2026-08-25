@@ -1,0 +1,223 @@
+digraph SageHarnessRAGIntegrated {
+  graph [
+    rankdir=TB,
+    bgcolor="#F8FAFC",
+    pad="0.30",
+    nodesep="0.34",
+    ranksep="0.56",
+    compound=true,
+    newrank=true,
+    splines=polyline,
+    fontname="PingFang SC",
+    label=<<B>Sage Agent Harness x Agentic RAG 端到端架构</B><BR/><FONT POINT-SIZE="13">可约束 · 可恢复 · 可评测</FONT>>,
+    labelloc=t,
+    fontsize=24
+  ];
+
+  node [
+    shape=box,
+    style="rounded,filled",
+    color="#CBD5E1",
+    fillcolor="#FFFFFF",
+    fontcolor="#172033",
+    fontname="PingFang SC",
+    fontsize=11,
+    margin="0.16,0.10",
+    penwidth=1.25
+  ];
+
+  edge [
+    color="#64748B",
+    fontcolor="#475569",
+    penwidth=1.35,
+    arrowsize=0.72,
+    fontname="PingFang SC",
+    fontsize=9
+  ];
+
+  subgraph cluster_input {
+    label="1. 输入、能力收窄与冻结计划";
+    color="#3B82F6";
+    fillcolor="#EFF6FF";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#1E3A8A";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    request [label="用户 Turn", fillcolor="#FFFFFF", color="#60A5FA"];
+    task_intent [label="TaskIntent\n任务形态 / 风险提示", fillcolor="#FFFFFF", color="#60A5FA"];
+    learning_intent [label="LearningIntent\n学习来源路由", fillcolor="#FFFFFF", color="#60A5FA"];
+    retrieval_gate [label="Retrieval Gate\n收窄知识候选", fillcolor="#FFFFFF", color="#60A5FA"];
+    plan [label="TurnContextPlan\n冻结 scope / revision / budget", fillcolor="#DBEAFE", color="#2563EB"];
+    frame [label="ModelContextFrame\nStatic Policy / Dynamic Authority\nUntrusted Context Data", fillcolor="#DBEAFE", color="#2563EB"];
+    capability [label="ToolBundle / MCP / Skill\n能力快照与 catalog hash", style="rounded,dashed,filled", fillcolor="#FFFFFF", color="#93C5FD"];
+    intent_note [label="意图只收窄候选，不授予权限", shape=note, fillcolor="#FFFFFF", color="#93C5FD", fontsize=10];
+
+    { rank=same; request; task_intent; learning_intent; retrieval_gate; plan; frame; }
+    request -> task_intent -> learning_intent -> retrieval_gate -> plan -> frame;
+    capability -> plan [style=dashed, label="冻结本轮能力"];
+    intent_note -> task_intent [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  subgraph cluster_harness {
+    label="2. Harness 运行编排";
+    color="#0F766E";
+    fillcolor="#F0FDFA";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#115E59";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    harness_graph [label="Harness Graph\n统一 Agent Loop", fillcolor="#FFFFFF", color="#2DD4BF"];
+    model_loop [label="Model / Tool Loop\n模型决策 + Tool Calling", fillcolor="#FFFFFF", color="#2DD4BF"];
+    task_dag [label="Task DAG / Subagent\n服务端校验 · 预算预约\nready wave 有界执行", fillcolor="#CCFBF1", color="#0D9488"];
+    tool_action [label="Tool Action\nLocal / MCP / Skill / Web", fillcolor="#FFFFFF", color="#2DD4BF"];
+    bounded_note [label="子任务复用原有预算、权限与运行合同", shape=note, fillcolor="#FFFFFF", color="#5EEAD4", fontsize=10];
+
+    { rank=same; harness_graph; model_loop; task_dag; tool_action; }
+    harness_graph -> model_loop;
+    harness_graph -> task_dag [label="复杂任务"];
+    model_loop -> tool_action [label="普通工具调用"];
+    bounded_note -> task_dag [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  subgraph cluster_rag {
+    label="3. PostgreSQL Agentic RAG 证据链";
+    color="#D97706";
+    fillcolor="#FFFBEB";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#92400E";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    knowledge_search [label="knowledge_search\n受 Plan 约束的检索入口", fillcolor="#FFFFFF", color="#F59E0B"];
+    canonical [label="SQLite Canonical Truth\nSource / Revision / Proposal / Wiki", fillcolor="#ECFDF5", color="#10B981"];
+    projection [label="PostgreSQL Search Projection\n可重建索引", fillcolor="#FFFFFF", color="#F59E0B"];
+    sparse [label="Sparse\nGIN + tsvector + ts_rank_cd", fillcolor="#FFFFFF", color="#F59E0B"];
+    dense [label="Dense\npgvector exact cosine", fillcolor="#FFFFFF", color="#F59E0B"];
+    rrf [label="RRF Fusion\n双路排名融合", fillcolor="#FEF3C7", color="#D97706"];
+    bundle [label="EvidenceBundle + Citation\n有界、可核验的证据", fillcolor="#ECFDF5", color="#10B981"];
+    sufficiency [label="Claim Sufficiency\n必要事实是否找齐", shape=diamond, fillcolor="#FFF7ED", color="#EA580C", margin="0.12,0.08"];
+    answer_gate [label="Answer Gate\n最终答案 + Citation", fillcolor="#ECFDF5", color="#10B981"];
+    research_child [label="只读 Research Child\n一次有界恢复", fillcolor="#EFF6FF", color="#3B82F6"];
+    abstain [label="诚实拒答\n证据仍不足", fillcolor="#FFF1F2", color="#EF4444"];
+    candidate_note [label="Query Rewrite / HNSW / BM25\n未过门禁不默认启用", shape=note, style="dashed,filled", fillcolor="#FFFFFF", color="#FBBF24", fontsize=10];
+
+    { rank=same; knowledge_search; canonical; projection; sparse; dense; rrf; bundle; sufficiency; }
+    { rank=same; answer_gate; research_child; abstain; candidate_note; }
+
+    knowledge_search -> projection;
+    canonical -> projection [style=dashed, label="revision / ingest"];
+    projection -> sparse;
+    projection -> dense;
+    sparse -> rrf;
+    dense -> rrf;
+    rrf -> bundle -> sufficiency;
+    sufficiency -> answer_gate [label="证据足够", color="#10B981", fontcolor="#047857"];
+    sufficiency -> research_child [label="缺少 Claim", color="#3B82F6", fontcolor="#1D4ED8"];
+    research_child -> bundle [label="新增证据", color="#3B82F6", fontcolor="#1D4ED8", constraint=false];
+    sufficiency -> abstain [label="仍不足", color="#EF4444", fontcolor="#B91C1C"];
+    candidate_note -> projection [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  subgraph cluster_security {
+    label="4. 副作用安全链";
+    color="#DC2626";
+    fillcolor="#FEF2F2";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#991B1B";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    schema [label="Schema / Path\n参数与工作区边界", fillcolor="#FFFFFF", color="#F87171"];
+    permission [label="Permission", fillcolor="#FFFFFF", color="#F87171"];
+    policy [label="Policy", fillcolor="#FFFFFF", color="#F87171"];
+    approval [label="Approval", fillcolor="#FFFFFF", color="#F87171"];
+    sandbox [label="Container Sandbox\nnetwork / rootfs / CPU / RAM / PID", fillcolor="#FEE2E2", color="#DC2626"];
+    security_note [label="意图、DAG 与 RAG 均不能扩大权限", shape=note, fillcolor="#FFFFFF", color="#FCA5A5", fontsize=10];
+
+    { rank=same; schema; permission; policy; approval; sandbox; security_note; }
+    schema -> permission -> policy -> approval -> sandbox;
+    security_note -> permission [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  subgraph cluster_state {
+    label="5. 恢复与运行证据";
+    color="#475569";
+    fillcolor="#F8FAFC";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#334155";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    checkpoint [label="Checkpoint\n恢复 Graph 动态状态", fillcolor="#FFFFFF", color="#94A3B8"];
+    resume [label="Resume\n校验 plan_hash / scope / revision", fillcolor="#FFFFFF", color="#94A3B8"];
+    timeline [label="Timeline / Trace\n可重放事件与终态", fillcolor="#FFFFFF", color="#94A3B8"];
+    artifact [label="Artifact\n大结果外置 + 稳定引用", fillcolor="#FFFFFF", color="#94A3B8"];
+    lease [label="lease / fencing\n拒绝过期 writer", fillcolor="#FFFFFF", color="#94A3B8"];
+    state_note [label="Checkpoint != Timeline\n订阅断开 != 运行取消", shape=note, fillcolor="#FFFFFF", color="#CBD5E1", fontsize=10];
+
+    { rank=same; checkpoint; resume; timeline; artifact; lease; state_note; }
+    checkpoint -> resume [label="作用域绑定恢复"];
+    resume -> lease [label="新租约"];
+    state_note -> checkpoint [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  subgraph cluster_eval {
+    label="6. 分层 Eval（消费收据，不参与授权）";
+    color="#7C3AED";
+    fillcolor="#F5F3FF";
+    style="rounded,filled";
+    penwidth=1.5;
+    fontcolor="#5B21B6";
+    fontname="PingFang SC";
+    fontsize=15;
+    margin=18;
+
+    eval_intent [label="Intent", fillcolor="#FFFFFF", color="#A78BFA"];
+    eval_retrieval [label="Retrieval", fillcolor="#FFFFFF", color="#A78BFA"];
+    eval_claim [label="Claim", fillcolor="#FFFFFF", color="#A78BFA"];
+    eval_generation [label="Generation", fillcolor="#FFFFFF", color="#A78BFA"];
+    eval_recovery [label="Recovery", fillcolor="#FFFFFF", color="#A78BFA"];
+    eval_provider [label="Provider / Latency", fillcolor="#FFFFFF", color="#A78BFA"];
+    metrics [label="Claim Evidence Coverage | Answer Correctness\nCorrect Abstention / False Acceptance | Claim Recovery Gain", shape=note, fillcolor="#FFFFFF", color="#C4B5FD", fontsize=10];
+
+    { rank=same; eval_intent; eval_retrieval; eval_claim; eval_generation; eval_recovery; eval_provider; metrics; }
+    eval_intent -> eval_retrieval -> eval_claim -> eval_generation -> eval_recovery -> eval_provider;
+    metrics -> eval_claim [style=dotted, arrowhead=none, constraint=false];
+  }
+
+  frame -> harness_graph [label="冻结输入", color="#2563EB", penwidth=1.7, weight=100];
+  model_loop -> knowledge_search [label="需要知识证据", color="#D97706", penwidth=1.7, weight=100];
+  task_dag -> research_child [label="只读 child profile", style=dashed, color="#3B82F6", constraint=false];
+  tool_action -> schema [label="所有副作用", color="#DC2626", penwidth=1.7];
+  task_dag -> schema [style=dashed, color="#DC2626", constraint=false];
+
+  harness_graph -> checkpoint [style=dashed, label="Graph 状态", color="#64748B", constraint=false];
+  model_loop -> timeline [style=dashed, label="事件", color="#64748B", constraint=false];
+  task_dag -> timeline [style=dashed, color="#64748B", constraint=false];
+  tool_action -> artifact [style=dashed, label="大结果", color="#64748B", constraint=false];
+  sandbox -> timeline [style=dashed, label="执行收据", color="#64748B", constraint=false];
+  answer_gate -> timeline [style=dashed, label="答案与引用", color="#64748B", constraint=false];
+  abstain -> timeline [style=dashed, label="停止原因", color="#64748B", constraint=false];
+  resume -> harness_graph [label="同一冻结计划", color="#475569", constraint=false];
+
+  timeline -> eval_intent [style=dashed, label="脱敏运行收据", color="#7C3AED", constraint=false];
+  bundle -> eval_retrieval [style=dashed, color="#7C3AED", constraint=false];
+  answer_gate -> eval_generation [style=dashed, color="#7C3AED", constraint=false];
+  research_child -> eval_recovery [style=dashed, color="#7C3AED", constraint=false];
+
+  sufficiency -> schema [style=invis, weight=100];
+  sandbox -> checkpoint [style=invis, weight=100];
+  checkpoint -> eval_intent [style=invis, weight=100];
+}

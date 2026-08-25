@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,7 @@ from core.coding.tools.schemas import ToolSearchArgs, first_error_message
 
 ToolHandler = Callable[[WorkspaceContext, dict[str, Any], ToolContext | None], ToolResult | str]
 _WORKSPACE_PATH_TOOLS = {"list_files", "read_file", "search", "write_file", "patch_file"}
+_SIDE_EFFECT_TOOLS = {"write_file", "patch_file", "run_shell"}
 
 
 class ToolArgumentValidationError(ValueError):
@@ -56,6 +58,7 @@ class ToolDefinition:
 
 _TOOL_DEFINITIONS: dict[str, ToolDefinition] = {}
 _MODULES_LOADED = False
+_MODULES_LOCK = threading.Lock()
 
 
 def register_tool(
@@ -100,6 +103,8 @@ def build_tool_registry(
     workspace: WorkspaceContext,
     tool_context: ToolContext | None = None,
     activated_tools: set[str] | None = None,
+    *,
+    side_effect_tools_enabled: bool = True,
 ) -> dict[str, RegisteredTool]:
     """Build coding tools for one workspace."""
     _ensure_default_modules_loaded()
@@ -122,6 +127,7 @@ def build_tool_registry(
             deferred=definition.deferred,
         )
         for name, definition in definitions.items()
+        if side_effect_tools_enabled or name not in _SIDE_EFFECT_TOOLS
     }
 
 
@@ -291,8 +297,9 @@ def _make_tool_search_handler(activated_tools: set[str]) -> ToolHandler:
 
 def _ensure_default_modules_loaded() -> None:
     global _MODULES_LOADED
-    if _MODULES_LOADED:
-        return
-    _MODULES_LOADED = True
-    for module_name in TOOL_MODULES:
-        importlib.import_module(module_name)
+    with _MODULES_LOCK:
+        if _MODULES_LOADED:
+            return
+        for module_name in TOOL_MODULES:
+            importlib.import_module(module_name)
+        _MODULES_LOADED = True
