@@ -6,7 +6,7 @@
 
 1. 双击 `Sage.app`，等待主界面出现；
 2. 选择 `Local`；
-3. 选择一个空目录或已有 Markdown 学习目录；
+3. 点击“选择文件夹”，在 macOS 原生目录选择器中选择一个空目录或已有 Markdown 学习目录；也可以直接粘贴绝对路径；
 4. 填写 Provider 名称、OpenAI-compatible Base URL、API Key 和默认模型；
 5. 点击探测，确认 Provider 为 connected；
 6. 在 Assistant 发送一条普通问题；
@@ -41,11 +41,14 @@ git diff --check
 ## 通过标准
 
 - `.app` 能启动，sidecar handshake 和 health 通过；
+- 首次设置点击“选择文件夹”能打开原生 picker，选择后的绝对路径能回填并通过 onboarding 校验；取消 picker 不会误提交；
 - Provider Key 不出现在前端、URL、日志、SQLite 正文和诊断包；
 - 普通学习请求没有写入、Patch、Shell、MCP 或子 Agent 副作用工具；
 - 学习材料能读取 citation，Research 失败时返回明确的可恢复状态；
 - 冻结 sidecar 的学习 smoke 能完成 `knowledge_pending → knowledge_ready → synthesize_pending → artifact_ready`，并在重启后恢复到 `artifact_ready`；
 - 刷新或进程重启后任务不丢失、不重复执行、不扩大权限；
 - 退出后 `sage-desktop`、launcher 和 sidecar 进程数量为零。
+
+前端回归还覆盖 picker 调用参数、路径回填、取消、原生异常转中文提示，以及错误码不出现在首次设置界面。
 
 桌面默认关闭 Web Search/Web Fetch Provider；知识不足时的 `source_gap` 是预期的可恢复状态。自动化通过只证明协议、持久化和恢复边界，不证明线上模型质量、Web 新鲜度、生产准确率或 SLA。

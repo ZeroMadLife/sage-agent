@@ -11,6 +11,8 @@ const { desktopHostStatus, desktopCapabilities, desktopOnboardingStatus, desktop
   desktopOpenDiagnostics: vi.fn(),
   onDesktopConnectionState: vi.fn((_listener: (state: 'ready' | 'degraded') => void) => () => undefined),
 }))
+const { open } = vi.hoisted(() => ({ open: vi.fn() }))
+vi.mock('@tauri-apps/plugin-dialog', () => ({ open }))
 let connectionListener: ((state: 'ready' | 'degraded') => void) | undefined
 vi.mock('../../desktop/hostAdapter', () => ({
   desktopHostStatus,
@@ -31,6 +33,7 @@ beforeEach(() => {
   desktopExit.mockReset()
   desktopOpenDiagnostics.mockReset()
   onDesktopConnectionState.mockReset()
+  open.mockReset()
   onDesktopConnectionState.mockImplementation((listener) => {
     connectionListener = listener
     return () => {
@@ -76,6 +79,7 @@ it('renders the rebuildable first-launch flow before the capability surface', as
   await vi.advanceTimersByTimeAsync(0)
   expect(desktopOnboardingAction).toHaveBeenCalledWith({ kind: 'choose_mode', mode: 'local' })
   expect(wrapper.find('input[aria-label="Workspace 路径"]').exists()).toBe(true)
+  expect(wrapper.find('button[data-action="choose-workspace"]').exists()).toBe(true)
 })
 
 it('keeps polling the host while first-launch onboarding is blocked', async () => {
@@ -122,8 +126,9 @@ it('shows recoverable Keychain onboarding while the sidecar has not become ready
   await vi.advanceTimersByTimeAsync(0)
 
   expect(desktopOnboardingStatus).toHaveBeenCalledOnce()
-  expect(wrapper.text()).toContain('keychain_locked')
-  expect(wrapper.text()).toContain('unlock_keychain_and_retry')
+  expect(wrapper.text()).toContain('无法访问 macOS 钥匙串')
+  expect(wrapper.text()).not.toContain('keychain_locked')
+  expect(wrapper.text()).not.toContain('unlock_keychain_and_retry')
   await vi.advanceTimersByTimeAsync(500)
   expect(desktopHostStatus).toHaveBeenCalledTimes(2)
 })

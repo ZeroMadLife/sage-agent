@@ -54,6 +54,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(single_instance)
         .plugin(navigation_guard)
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(SharedHostState::default())
         .manage(SharedOnboardingState::default())

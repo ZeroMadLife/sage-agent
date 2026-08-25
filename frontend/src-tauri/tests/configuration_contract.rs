@@ -58,11 +58,18 @@ fn main_window_capability_does_not_expose_shell_or_filesystem() {
     .expect("main capability must be JSON");
     assert_eq!(
         capability.get("permissions").unwrap(),
-        &serde_json::json!([])
+        &serde_json::json!(["dialog:allow-open"])
     );
     let serialized = capability.to_string();
     assert!(!serialized.contains("shell"));
     assert!(!serialized.contains("fs:"));
+}
+
+#[test]
+fn desktop_host_registers_the_directory_dialog_plugin() {
+    let source = fs::read_to_string(crate_root().join("src/lib.rs"))
+        .expect("desktop host source must exist");
+    assert!(source.contains("tauri_plugin_dialog::init()"));
 }
 
 #[test]

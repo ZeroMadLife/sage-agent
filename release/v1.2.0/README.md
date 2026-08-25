@@ -23,7 +23,8 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 ## 已交付
 
 - Rust 桌面宿主负责 sidecar 启动、握手、重启和退出清理。
-- 首次启动可以选择 Local、选择 workspace、添加和探测 Provider、设置默认模型、轮换或注销 Key。
+- 首次启动可以选择 Local、通过 macOS 原生目录选择器选择 workspace（也可粘贴绝对路径）、添加和探测 Provider、设置默认模型、轮换或注销 Key。
+- 首次设置中的错误会转换为可操作的中文提示；内部 reason/action 只保留在诊断和自动化契约中。
 - Provider Key 只由 Rust 写入 macOS Keychain，再通过一次性 stdin bootstrap 进入 sidecar 进程内存；不进入前端存储、URL、日志、Timeline 或 SQLite 正文。
 - 每次启动由宿主生成一次性的高熵本机 session bearer。HTTP/SSE 使用 `Authorization: Bearer`，WebSocket 使用受控子协议；sidecar 同时校验 bearer、Host 和 Origin。
 - Assistant、Coding、Knowledge 和 Learning Task 共享同一个本地 sidecar；学习场景通过 scope 关闭写入、Shell、Patch、MCP 和子 Agent 副作用能力。
@@ -51,6 +52,8 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 - MVP 验收：[TESTING](TESTING.md)
 - 版本变更：[CHANGELOG](CHANGELOG.md)
 - 架构与风险：[REVIEW](REVIEW.md)
+
+首次启动选择 workspace 时，点击“选择文件夹”会打开 macOS 原生目录选择器。取消选择不会改变当前路径；选择目录后路径会回填到输入框，点击“继续”才会交给本地 onboarding 状态机校验并持久化。
 
 ## 分支与发布边界
 

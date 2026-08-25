@@ -12,6 +12,7 @@ import {
   CircleDot,
   X,
 } from 'lucide-vue-next'
+import { open } from '@tauri-apps/plugin-dialog'
 import { computed, ref } from 'vue'
 import type {
   DesktopOnboardingAction,
@@ -38,6 +39,45 @@ const addFormOpen = ref(false)
 const rotatingProvider = ref('')
 const rotationKey = ref('')
 const deleteCandidate = ref('')
+const pickerError = ref<string | null>(null)
+
+const ONBOARDING_MESSAGES: Record<string, { title: string, detail: string }> = {
+  onboarding_mode_required: {
+    title: '选择运行方式',
+    detail: 'Sage 会优先使用本机数据和 Provider，适合个人学习。',
+  },
+  workspace_required: {
+    title: '还没有选择学习空间',
+    detail: '请选择一个文件夹，Sage 会把学习任务和本地知识保存在这里。',
+  },
+  select_workspace: {
+    title: '请选择一个学习空间',
+    detail: '可以点击“选择文件夹”，也可以直接输入已有目录路径。',
+  },
+  provider_not_configured: {
+    title: '还没有配置模型 Provider',
+    detail: '添加一个 Provider 后即可开始聊天和创建学习任务。',
+  },
+  keychain_locked: {
+    title: '无法访问 macOS 钥匙串',
+    detail: '请解锁钥匙串后重试。',
+  },
+  keychain_access_denied: {
+    title: '钥匙串访问被拒绝',
+    detail: '请允许 Sage 访问 macOS 钥匙串后重试。',
+  },
+  desktop_onboarding_unavailable: {
+    title: '首次设置暂时不可用',
+    detail: '请重新检查本地服务；如果问题持续，请打开诊断。',
+  },
+}
+
+function onboardingMessage(reasonCode: string | null | undefined, fallback = '请重试。') {
+  return ONBOARDING_MESSAGES[reasonCode ?? ''] ?? {
+    title: '首次设置需要继续',
+    detail: fallback,
+  }
+}
 
 const showProviderForm = computed(() => (
   props.snapshot.stage === 'configure_provider' || addFormOpen.value
@@ -54,9 +94,28 @@ function chooseMode(mode: 'local' | 'cloud') {
 }
 
 function selectWorkspace() {
+  pickerError.value = null
   const path = workspacePath.value.trim()
   if (!path) return
   emit('action', { kind: 'select_workspace', workspace_path: path })
+}
+
+async function chooseWorkspace() {
+  if (props.busy) return
+  pickerError.value = null
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      title: '选择 Sage 学习空间',
+      canCreateDirectories: false,
+    })
+    if (typeof selected === 'string' && selected.trim()) {
+      workspacePath.value = selected
+    }
+  } catch {
+    pickerError.value = '文件夹选择器没有打开成功，请直接输入已有目录路径，或点击“重新检查”。'
+  }
 }
 
 function saveProvider() {
@@ -114,8 +173,10 @@ function confirmDelete(providerId: string) {
 <template>
   <section class="onboarding" aria-label="首次启动设置">
     <div v-if="snapshot.status === 'blocked' && snapshot.reason_code" class="onboarding-error" role="status">
-      <code>{{ snapshot.reason_code }}</code>
-      <span>{{ snapshot.action }}</span>
+      <div>
+        <strong>{{ onboardingMessage(snapshot.reason_code).title }}</strong>
+        <span>{{ onboardingMessage(snapshot.reason_code).detail }}</span>
+      </div>
       <button v-if="snapshot.action === 'retry_provider_reconciliation'" type="button" :disabled="busy" @click="retryReconciliation">
         <RefreshCw :size="16" aria-hidden="true" /> 重试
       </button>
@@ -137,7 +198,7 @@ function confirmDelete(providerId: string) {
     <div v-else-if="snapshot.stage === 'cloud_unavailable'" class="onboarding-step">
       <h2>Cloud 暂不可用</h2>
       <div class="inline-problem">
-        <code>cloud_oauth_not_available</code>
+        <span>当前版本先使用本机模式，云端 OAuth 尚未接入。</span>
         <button type="button" :disabled="busy" @click="chooseMode('local')">
           <Laptop :size="16" aria-hidden="true" /> 使用 Local
         </button>
@@ -149,10 +210,15 @@ function confirmDelete(providerId: string) {
       <label class="field wide">
         <span>Workspace 路径</span>
         <div class="input-with-icon">
-          <FolderOpen :size="16" aria-hidden="true" />
           <input v-model="workspacePath" aria-label="Workspace 路径" autocomplete="off" />
+          <button class="workspace-picker-button" data-action="choose-workspace" type="button" aria-label="选择文件夹" title="选择文件夹" :disabled="busy" @click="chooseWorkspace">
+            <FolderOpen :size="16" aria-hidden="true" />
+            <span>选择文件夹</span>
+          </button>
         </div>
+        <small class="field-hint">可以选择已有目录，也可以粘贴绝对路径。</small>
       </label>
+      <p v-if="pickerError" class="picker-error" role="alert">{{ pickerError }}</p>
       <button class="primary-command" type="submit" :disabled="busy || !workspacePath.trim()">
         <Check :size="16" aria-hidden="true" /> 继续
       </button>
@@ -243,8 +309,10 @@ function confirmDelete(providerId: string) {
     </div>
 
     <div v-if="error" class="onboarding-error" role="alert">
-      <code>{{ error.reason_code }}</code>
-      <span>{{ error.action }}</span>
+      <div>
+        <strong>{{ onboardingMessage(error.reason_code).title }}</strong>
+        <span>{{ onboardingMessage(error.reason_code, '请稍后重试。').detail }}</span>
+      </div>
     </div>
   </section>
 </template>
@@ -267,8 +335,12 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .primary-command { justify-self: end; color: var(--sage-on-brand); background: var(--sage-brand); border-color: var(--sage-brand); }
 .field { display: grid; min-width: 0; gap: 6px; color: var(--sage-text-secondary); font-size: var(--sage-font-sm); }
 .field input, select, .inline-editor input { width: 100%; min-width: 0; height: 36px; box-sizing: border-box; padding: 0 10px; color: var(--sage-text); background: var(--sage-surface); border: 1px solid var(--sage-border); border-radius: var(--sage-radius); }
-.input-with-icon { display: grid; grid-template-columns: 20px minmax(0, 1fr); align-items: center; padding-left: 10px; border: 1px solid var(--sage-border); border-radius: var(--sage-radius); }
+.input-with-icon { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; overflow: hidden; border: 1px solid var(--sage-border); border-radius: var(--sage-radius); }
 .input-with-icon input { border: 0; }
+.workspace-picker-button { display: inline-flex; min-height: 36px; align-items: center; gap: 6px; padding: 0 11px; border: 0; border-left: 1px solid var(--sage-border); border-radius: 0; color: var(--sage-text-secondary); background: var(--sage-surface-muted); white-space: nowrap; }
+.workspace-picker-button:hover:not(:disabled) { color: var(--sage-text); background: var(--sage-surface-subtle); }
+.field-hint { color: var(--sage-text-muted); font-size: var(--sage-font-xs); }
+.picker-error { margin: -6px 0 0; color: var(--sage-danger); font-size: var(--sage-font-xs); }
 .section-heading, .provider-summary, .provider-controls, .provider-form footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .section-heading > div { display: grid; gap: 3px; }
 .section-heading > button, .provider-controls button, .inline-editor button { display: grid; width: 34px; height: 34px; padding: 0; place-items: center; }
@@ -289,6 +361,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .provider-form footer { grid-column: 1 / -1; justify-content: flex-end; }
 .provider-form footer > button { min-height: 34px; padding: 0 12px; }
 .onboarding-error { margin-top: 14px; color: var(--sage-danger); }
+.onboarding-error > div { display: grid; gap: 4px; }
+.onboarding-error strong { color: var(--sage-text); }
 @media (max-width: 640px) {
   .mode-control, .provider-form { grid-template-columns: 1fr; }
   .provider-controls { flex-wrap: wrap; }
