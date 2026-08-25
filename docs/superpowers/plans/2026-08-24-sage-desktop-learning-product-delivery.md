@@ -721,30 +721,26 @@ Provider、capability 与 artifact smoke 合同保持不变。
   再以 valid-lease failure 与 probe drift barrier 固定 error metadata 缺失/错误分类；Green 后新增
   `ConfigurationReconciliationLease`、lease-safe journal cleanup、probe failure CAS 与三个 production
   caller tests，Keychain 长调用仍不持有 host mutex。
-- **源码门禁**：代码 commit `8efb4e2`；Rust focused supervisor `36`、onboarding `7`、Provider contract
-  `14`，Rust full `89`，fmt 与 Clippy `-D warnings` 通过；临时 Keychain round-trip/cleanup 通过；Python
-  desktop `61`、source product smoke `1`、Vue host adapter/HostGate focused `39`，标准与 public Vue
-  production build 通过。Vue full `548/552`，剩余 4 项为既有 router/Settings 超时或 legacy evolution
-  路由兼容失败，与本轮 Rust 变更无关。`git diff --check` 通过。
-- **正式 artifact**：不复用 D2.6 receipt；从 clean docs HEAD
-  `5e48ce544aaf2c581386b240813d16e34f113859` 及全新输出目录运行唯一 bundle 入口，一次成功。receipt 位于
-  `/private/tmp/sage-desktop-5e48ce5-r1/desktop-bundle-receipt.json`，SHA-256
-  `0bf95096107277fb0a6e4ab45617f4085d0314515c18f82db91d015a7a9f7b88`；`source_dirty=false`、
-  Python `3.12.13`、target `aarch64-apple-darwin`。冻结 sidecar 12 项真实 product smoke 与 `.app` 6 项
-  lifecycle smoke 全部 `passed`。
+- **源码门禁**：D2.7 代码提交 `8f036cb`（包含 `25cd105` 的停止竞态修复）；Rust full `92 passed`
+  （49 crate + 43 integration/doc），fmt 与 Clippy `-D warnings` 通过；临时 Keychain round-trip/cleanup
+  通过；Python desktop `61 passed`，Vue focused `39 passed`，Vue serial full `552 passed`，标准与 public
+  Vue production build 通过。真实隔离 Playwright 学习链路 `3 passed`。`git diff --check` 通过。
+- **正式 artifact**：不复用此前任何 receipt；从 clean code HEAD
+  `8f036cbb530d3fe9cc8fc2a7c47947139312af5c` 及全新输出目录运行唯一 bundle 入口，一次成功。receipt 位于
+  `/private/tmp/sage-desktop-8f036cb-r1/desktop-bundle-receipt.json`，SHA-256
+  `71d6ed941f46724609dc32a11622bec02085cf9d8eb3848a36dddc19d139ad62`；`source_dirty=false`、
+  target `aarch64-apple-darwin`。冻结 sidecar 12 项真实 product smoke 与 `.app` 6 项 lifecycle smoke
+  全部 `passed`。
 - **manifest 与计数**：sidecar receipt SHA-256 为
-  `a3e67fbdf61a2d4d63b316ef5569b965d1f84d1d683d4793e8a946191fc201b1`；269 manifest entries 在原始
-  sidecar 中逐项 SHA 复核 `269/269` 匹配、0 missing、0 mismatch。原始 entries 类型为 247 个 regular
-  files、22 个 symlinks；写入 `build-receipt.json` 后目录为 248 个 regular files、116 个 directories、
-  22 个 symlinks。最终 `.app` 为 274 个 regular files、121 个 directories、0 symlink。
+  `2c61ec89ea4e185c256d929b894a7080f069c3d35e9730871ff1c9c01bacde21`；artifact manifest 逐项校验通过，
+  仍为 247 个 regular files、22 个 symlinks、0 missing。sidecar readiness、模型 turn、SQLite RAG、
+  checkpoint reopen、TLS、secret hygiene 与副作用工具 fail-closed 均来自冻结产物真实请求。
 - **签名与安全**：host、launcher、sidecar 均为 thin arm64 Mach-O；app deep strict 与三个嵌套 executable
-  strict codesign 全部通过，签名为 ad-hoc。两个 product smoke sentinel、长 bearer token、通用 `sk-*`、
-  private-key marker、Provider key 文件与 `.env` 均零命中；唯一 `.pem` 为 certifi 公共 CA trust bundle。
-  `sage-desktop`、`sage-api`、`sage-api-aarch64-apple-darwin`、`sage-sidecar-launcher` 精确进程检查均为零。
-- **收口状态**：代码 commit `8efb4e2c497b044064590ac284e945118e6f5a57`，bundle source/docs SHA 为
-  `5e48ce544aaf2c581386b240813d16e34f113859`；最终 docs receipt commit 为
-  `a6d7cec26e935d475a1a40de14d597c1651e5547`。当前候选
-  等待第八轮中枢三镜头短审，未 push、未建 PR、未合入，也未删除分支或 worktree。
+  strict codesign 全部通过，签名为 ad-hoc。product smoke sentinel、长 bearer token、通用 `sk-*`、
+  private-key marker、Provider key 文件与 `.env` 均零命中；精确进程检查均为零残留。
+- **收口状态**：当前代码 commit 为 `8f036cbb530d3fe9cc8fc2a7c47947139312af5c`，上述 receipt 已固定。
+  当前仅完成本地验收，未 push、未建 PR、未合入，也未删除分支或 worktree；Developer ID、公证、DMG
+  仍是后续发布工作。
 
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
