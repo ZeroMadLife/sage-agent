@@ -36,6 +36,8 @@ _CONTROL: dict[str, Any] = {
     "hold_kickoff": False,
     "model_calls": 0,
     "research_model_calls": 0,
+    "hold_knowledge": False,
+    "knowledge_hold_started": False,
 }
 
 
@@ -68,7 +70,17 @@ class _FakeModel(FakeMessagesListChatModel):
             raise RuntimeError("deterministic fake provider failure")
         self._worker_calls += 1
         if self._worker_calls == 1:
-            return '<tool>{"name":"search_web","args":{"query":"Sage checkpoint evidence"}}</tool>'
+            query = (
+                "Sage same URL conflict evidence"
+                if "同 URL 冲突" in prompt
+                else "Sage checkpoint evidence"
+            )
+            return f'<tool>{{"name":"search_web","args":{{"query":"{query}"}}}}</tool>'
+        if "同 URL 冲突" in prompt:
+            return (
+                "<final>Conflicting public evidence [wcite_e2e_same_url_a] "
+                "[wcite_e2e_same_url_b] was preserved.</final>"
+            )
         return "<final>Public evidence [wcite_e2e_research] was collected.</final>"
 
 
@@ -85,6 +97,10 @@ class _FakeKnowledgePort:
         top_k: int = 8,
     ) -> KnowledgeRetrievalResult:
         del top_k
+        if "刷新 pending" in query and _CONTROL["hold_knowledge"]:
+            _CONTROL["knowledge_hold_started"] = True
+            while _CONTROL["hold_knowledge"]:
+                await asyncio.sleep(0.02)
         evidence: tuple[KnowledgeEvidence, ...]
         if "Knowledge 已支持" in query:
             evidence = (
@@ -137,13 +153,35 @@ class _FakeWebSearchPort:
             if isinstance(raw_token_budget, int) and not isinstance(raw_token_budget, bool)
             else 2_000
         )
-        return WebSearchResult(
-            query=query,
-            provider=self.provider,
-            status="evidence_found",
-            token_budget=token_budget,
-            used_tokens=60,
-            evidence=(
+        evidence = (
+            (
+                WebEvidence(
+                    citation_id="wcite_e2e_same_url_a",
+                    canonical_url="https://docs.example.com/checkpoint-conflict",
+                    original_url="https://docs.example.com/checkpoint-conflict",
+                    title="Checkpoint conflict revision A",
+                    excerpt="Checkpoint includes the full generated body.",
+                    provider=self.provider,
+                    retrieved_at="2026-08-25T01:00:00Z",
+                    content_hash="e2e-same-url-a",
+                    rank=1,
+                    metadata={"conflict_group": "same-url-checkpoint"},
+                ),
+                WebEvidence(
+                    citation_id="wcite_e2e_same_url_b",
+                    canonical_url="https://docs.example.com/checkpoint-conflict",
+                    original_url="https://docs.example.com/checkpoint-conflict",
+                    title="Checkpoint conflict revision B",
+                    excerpt="Checkpoint stores only an opaque Artifact ref.",
+                    provider=self.provider,
+                    retrieved_at="2026-08-25T01:01:00Z",
+                    content_hash="e2e-same-url-b",
+                    rank=2,
+                    metadata={"conflict_group": "same-url-checkpoint"},
+                ),
+            )
+            if "same URL conflict" in query
+            else (
                 WebEvidence(
                     citation_id="wcite_e2e_research",
                     canonical_url="https://docs.example.com/checkpoint",
@@ -155,7 +193,15 @@ class _FakeWebSearchPort:
                     content_hash="e2e-web-content-r1",
                     rank=1,
                 ),
-            ),
+            )
+        )
+        return WebSearchResult(
+            query=query,
+            provider=self.provider,
+            status="evidence_found",
+            token_budget=token_budget,
+            used_tokens=60,
+            evidence=evidence,
         )
 
 
@@ -164,6 +210,7 @@ class _ControlRequest(BaseModel):
 
     activation_failures: int = Field(default=0, ge=0, le=3)
     hold_kickoff: bool = False
+    hold_knowledge: bool = False
 
 
 def _model_factory(*args: object, **kwargs: object) -> _FakeModel:
@@ -208,6 +255,8 @@ app.state.learning_kickoff_service.failure_injector = _kickoff_failure
 async def configure_e2e(payload: _ControlRequest) -> dict[str, object]:
     _CONTROL["activation_failures_remaining"] = payload.activation_failures
     _CONTROL["hold_kickoff"] = payload.hold_kickoff
+    _CONTROL["hold_knowledge"] = payload.hold_knowledge
+    _CONTROL["knowledge_hold_started"] = False
     return {"configured": True}
 
 
@@ -215,6 +264,54 @@ async def configure_e2e(payload: _ControlRequest) -> dict[str, object]:
 async def release_kickoff() -> dict[str, object]:
     _CONTROL["hold_kickoff"] = False
     return {"released": True}
+
+
+@app.post("/api/__e2e__/release-knowledge")
+async def release_knowledge() -> dict[str, object]:
+    _CONTROL["hold_knowledge"] = False
+    return {"released": True}
+
+
+class _OrphanAdvanceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    idempotency_key: str
+    expected_checkpoint_revision: int = Field(ge=0)
+
+
+@app.post("/api/__e2e__/orphan-advance")
+async def orphan_advance(payload: _OrphanAdvanceRequest) -> dict[str, object]:
+    workspace_id = workspace_id_from_path(_WORKSPACE_ROOT)
+    task = app.state.learning_task_service.get(
+        owner_id="local", workspace_id=workspace_id, task_id=payload.task_id
+    )
+    scope = app.state.learning_readonly_scope_resolver.resolve(
+        owner_id="local", workspace_id=workspace_id, task_id=payload.task_id
+    )
+    claim = app.state.learning_artifact_store.claim_advance_request(
+        owner_id="local",
+        workspace_id=workspace_id,
+        task=task,
+        capability_revision=scope.capability_revision,
+        catalog_revision=scope.catalog_revision,
+        expected_checkpoint_revision=payload.expected_checkpoint_revision,
+        idempotency_key=payload.idempotency_key,
+    )
+    with sqlite3.connect(_STORAGE_ROOT / "learning-artifacts.sqlite3") as connection:
+        connection.execute(
+            """UPDATE learning_advance_requests SET lease_expires_at = ?
+               WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+                 AND request_key_hash = ?""",
+            (
+                "2000-01-01T00:00:00Z",
+                "local",
+                workspace_id,
+                payload.task_id,
+                claim.request_key_hash,
+            ),
+        )
+    return {"orphaned": True, "fencing_token": claim.fencing_token}
 
 
 @app.post("/api/__e2e__/restart-process", status_code=status.HTTP_202_ACCEPTED)
@@ -237,6 +334,7 @@ async def e2e_stats() -> dict[str, object]:
         "turn_started_count": 0,
         "model_calls": _CONTROL["model_calls"],
         "research_model_calls": _CONTROL["research_model_calls"],
+        "knowledge_hold_started": _CONTROL["knowledge_hold_started"],
         "pid": os.getpid(),
     }
     if not tasks:

@@ -16,6 +16,7 @@ class LearningFailureCode(StrEnum):
     WORKSPACE_UNAVAILABLE = "learning_workspace_unavailable"
 
     ACTIVATION_CAPABILITY_CONFLICT = "learning_activation_capability_conflict"
+    ACTIVATION_IDEMPOTENCY_CONFLICT = "activation_idempotency_conflict"
     ACTIVATION_CONFLICT = "learning_activation_conflict"
     ACTIVATION_CONTRACT_CONFLICT = "learning_activation_contract_conflict"
     ACTIVATION_CORRUPT = "learning_activation_corrupt"
@@ -73,6 +74,7 @@ class LearningFailureCode(StrEnum):
     SCOPE_WEB_FORBIDDEN = "learning_scope_web_forbidden"
 
     RESEARCH_BUDGET_EXHAUSTED = "learning_research_budget_exhausted"
+    RESEARCH_CANCELLED = "learning_research_cancelled"
     RESEARCH_CAPABILITY_REVISION_CONFLICT = "learning_research_capability_revision_conflict"
     RESEARCH_CAPABILITY_UNAVAILABLE = "learning_research_capability_unavailable"
     RESEARCH_CONFLICT = "learning_research_conflict"
@@ -88,6 +90,7 @@ class LearningFailureCode(StrEnum):
     ARTIFACT_NOT_FOUND = "learning_artifact_not_found"
     ARTIFACT_STORE_ERROR = "learning_artifact_store_error"
     ARTIFACT_STORE_UNAVAILABLE = "learning_artifact_store_unavailable"
+    RUNTIME_REHYDRATE_FAILED = "learning_runtime_rehydrate_failed"
     PERSISTENCE_INTEGRITY_ERROR = "learning_persistence_integrity_error"
     RESUME_CHECKPOINT_CONFLICT = "learning_resume_checkpoint_conflict"
     RESUME_FENCING_CONFLICT = "learning_resume_fencing_conflict"

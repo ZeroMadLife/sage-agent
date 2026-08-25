@@ -269,6 +269,7 @@ def _web_fetch_items(
             metadata={
                 "artifact_ref": artifact_ref[:1_000],
                 "fetched_at": str(payload.get("retrieved_at", ""))[:80],
+                "conflict_group": str(payload.get("conflict_group", ""))[:160],
             },
         )
     ], aliases
@@ -283,13 +284,20 @@ def _deduplicate_sources(
     )
     selected: list[EvidenceBundleItem] = []
     seen_refs: set[str] = set()
-    seen_sources: set[str] = set()
+    seen_sources: set[tuple[str, str, str]] = set()
     for item in ordered:
-        if item.evidence_ref in seen_refs or (item.source_ref and item.source_ref in seen_sources):
+        source_identity = (
+            item.source_ref,
+            item.content_hash,
+            str(item.metadata.get("conflict_group", "")),
+        )
+        if item.evidence_ref in seen_refs or (
+            item.source_ref and item.content_hash and source_identity in seen_sources
+        ):
             continue
         seen_refs.add(item.evidence_ref)
-        if item.source_ref:
-            seen_sources.add(item.source_ref)
+        if item.source_ref and item.content_hash:
+            seen_sources.add(source_identity)
         selected.append(item)
     return tuple(selected), max(0, len(items) - len(selected))
 

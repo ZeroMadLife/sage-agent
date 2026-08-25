@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from sage_harness import SubagentToolConfig
 
 from api.cloud_dependencies import SESSION_COOKIE, require_cloud_authentication_in_production
+from api.coding import CodingRuntimeRehydrateError
 from api.schemas import (
     LearningActivationResponse,
     LearningAdvanceRequest,
@@ -65,6 +67,9 @@ router = APIRouter(
     dependencies=[Depends(require_cloud_authentication_in_production)],
 )
 
+_LEARNING_TASK_ID = re.compile(r"ltask_[0-9a-f]{32}")
+_LEARNING_ARTIFACT_ID = re.compile(r"lart_[0-9a-f]{24}")
+
 
 @router.post(
     "/tasks/draft", response_model=LearningTaskResponse, status_code=status.HTTP_201_CREATED
@@ -91,7 +96,9 @@ async def create_learning_draft(
             ),
         )
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _response(task)
 
 
@@ -116,6 +123,7 @@ async def get_learning_task(
     response: Response,
 ) -> LearningTaskResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         task = await asyncio.to_thread(
             _service(request).get,
@@ -124,9 +132,13 @@ async def get_learning_task(
             task_id=task_id,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _response(task)
 
 
@@ -138,11 +150,14 @@ async def update_learning_draft(
     response: Response,
 ) -> LearningTaskResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     fields = payload.model_fields_set
     topic_patch: str | UnsetValue = UNSET
     if "topic" in fields:
         if payload.topic is None:
-            raise HTTPException(status_code=422, detail="topic cannot be cleared")
+            raise _learning_error(
+                422, LearningFailureCode.REQUEST_INVALID, "topic cannot be cleared"
+            )
         topic_patch = payload.topic
     try:
         task = await asyncio.to_thread(
@@ -167,17 +182,20 @@ async def update_learning_draft(
             ),
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except LearningTaskConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "learning_task_revision_conflict",
-                "current_revision": exc.current_revision,
-            },
+        raise _learning_error(
+            409,
+            LearningFailureCode.TASK_REVISION_CONFLICT,
+            "",
+            current_revision=exc.current_revision,
         ) from exc
     except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _response(task)
 
 
@@ -193,6 +211,7 @@ async def activate_learning_task(
     idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
 ) -> LearningActivationResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         receipt = await asyncio.to_thread(
             _activation_service(request).activate,
@@ -203,23 +222,27 @@ async def activate_learning_task(
             idempotency_key=idempotency_key,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except LearningTaskConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "learning_task_revision_conflict",
-                "current_revision": exc.current_revision,
-            },
+        raise _learning_error(
+            409,
+            LearningFailureCode.TASK_REVISION_CONFLICT,
+            "",
+            current_revision=exc.current_revision,
         ) from exc
     except LearningActivationError as exc:
         status_code = 503 if exc.code == "learning_activation_failed" else 409
-        raise HTTPException(
-            status_code=status_code,
-            detail={"code": exc.code, "message": str(exc)},
+        raise _learning_error(
+            status_code,
+            _failure_code(exc.code, LearningFailureCode.ACTIVATION_CONFLICT),
+            "learning activation failed",
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _activation_response(receipt)
 
 
@@ -233,6 +256,7 @@ async def get_learning_activation(
     response: Response,
 ) -> LearningActivationResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         receipt = await asyncio.to_thread(
             _activation_service(request).get,
@@ -241,12 +265,15 @@ async def get_learning_activation(
             task_id=task_id,
         )
     except LearningActivationError as exc:
-        raise HTTPException(
-            status_code=404 if exc.code == "learning_activation_not_found" else 409,
-            detail={"code": exc.code, "message": str(exc)},
+        raise _learning_error(
+            404 if exc.code == "learning_activation_not_found" else 409,
+            _failure_code(exc.code, LearningFailureCode.ACTIVATION_CONFLICT),
+            "learning activation unavailable",
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _activation_response(receipt)
 
 
@@ -266,6 +293,7 @@ async def dispatch_learning_kickoff(
     idempotency_key: str = Header(min_length=1, max_length=200, alias="Idempotency-Key"),
 ) -> LearningKickoffDispatchResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         receipt = await asyncio.to_thread(
             _kickoff_service(request).dispatch,
@@ -276,22 +304,26 @@ async def dispatch_learning_kickoff(
             idempotency_key=idempotency_key,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except LearningTaskConflictError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "learning_task_revision_conflict",
-                "current_revision": exc.current_revision,
-            },
+        raise _learning_error(
+            409,
+            LearningFailureCode.TASK_REVISION_CONFLICT,
+            "",
+            current_revision=exc.current_revision,
         ) from exc
     except LearningKickoffError as exc:
-        raise HTTPException(
-            status_code=503 if exc.code == "learning_kickoff_dispatch_failed" else 409,
-            detail={"code": exc.code, "message": str(exc)},
+        raise _learning_error(
+            503 if exc.code == "learning_kickoff_dispatch_failed" else 409,
+            _failure_code(exc.code, LearningFailureCode.KICKOFF_CONFLICT),
+            "learning kickoff failed",
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _kickoff_response(receipt)
 
 
@@ -305,6 +337,7 @@ async def get_learning_kickoff(
     response: Response,
 ) -> LearningKickoffDispatchResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         receipt = await asyncio.to_thread(
             _kickoff_service(request).get,
@@ -313,12 +346,15 @@ async def get_learning_kickoff(
             task_id=task_id,
         )
     except LearningKickoffError as exc:
-        raise HTTPException(
-            status_code=404 if exc.code == "learning_kickoff_not_found" else 409,
-            detail={"code": exc.code, "message": str(exc)},
+        raise _learning_error(
+            404 if exc.code == "learning_kickoff_not_found" else 409,
+            _failure_code(exc.code, LearningFailureCode.KICKOFF_CONFLICT),
+            "learning kickoff unavailable",
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _kickoff_response(receipt)
 
 
@@ -333,6 +369,7 @@ async def resume_learning_task(
     response: Response,
 ) -> LearningActivationResponse:
     response.headers["Cache-Control"] = "no-store"
+    _validate_learning_task_id(task_id)
     try:
         receipt = await asyncio.to_thread(
             _activation_service(request).resume,
@@ -342,14 +379,19 @@ async def resume_learning_task(
             expected_revision=payload.expected_revision,
         )
     except LearningTaskNotFoundError as exc:
-        raise HTTPException(status_code=404, detail="learning task not found") from exc
+        raise _learning_error(
+            404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
+        ) from exc
     except LearningActivationError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": exc.code, "message": str(exc)},
+        raise _learning_error(
+            409,
+            _failure_code(exc.code, LearningFailureCode.ACTIVATION_CONFLICT),
+            "learning activation conflict",
         ) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise _learning_error(
+            422, LearningFailureCode.REQUEST_INVALID, "invalid learning request"
+        ) from exc
     return _activation_response(receipt)
 
 
@@ -397,9 +439,16 @@ async def advance_learning_task(
             404, LearningFailureCode.TASK_NOT_FOUND, "learning task not found"
         ) from exc
     except LearningKickoffError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"code": exc.code, "message": str(exc)[:200]},
+        raise _learning_error(
+            409,
+            _failure_code(exc.code, LearningFailureCode.KICKOFF_CONFLICT),
+            "learning kickoff conflict",
+        ) from exc
+    except CodingRuntimeRehydrateError as exc:
+        raise _learning_error(
+            503,
+            LearningFailureCode.RUNTIME_REHYDRATE_FAILED,
+            "learning runtime could not be restored",
         ) from exc
     except (LearningScopeConflict, LearningArtifactStoreError) as exc:
         raise _learning_execution_http_error(exc) from exc
@@ -500,35 +549,55 @@ async def get_learning_artifact(
 def _service(request: Request) -> LearningTaskService:
     service = getattr(request.app.state, "learning_task_service", None)
     if not isinstance(service, LearningTaskService):
-        raise HTTPException(status_code=503, detail="learning task service is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.TASK_SERVICE_UNAVAILABLE,
+            "learning task service is unavailable",
+        )
     return service
 
 
 def _activation_service(request: Request) -> LearningActivationService:
     service = getattr(request.app.state, "learning_activation_service", None)
     if not isinstance(service, LearningActivationService):
-        raise HTTPException(status_code=503, detail="learning activation service is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.ACTIVATION_SERVICE_UNAVAILABLE,
+            "learning activation service is unavailable",
+        )
     return service
 
 
 def _kickoff_service(request: Request) -> LearningKickoffService:
     service = getattr(request.app.state, "learning_kickoff_service", None)
     if not isinstance(service, LearningKickoffService):
-        raise HTTPException(status_code=503, detail="learning kickoff service is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.KICKOFF_SERVICE_UNAVAILABLE,
+            "learning kickoff service is unavailable",
+        )
     return service
 
 
 def _artifact_store(request: Request) -> LearningArtifactStore:
     store = getattr(request.app.state, "learning_artifact_store", None)
     if not isinstance(store, LearningArtifactStore):
-        raise HTTPException(status_code=503, detail="learning artifact store is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE,
+            "learning artifact store is unavailable",
+        )
     return store
 
 
 def _scope_resolver(request: Request) -> LearningReadonlyScopeResolver:
     resolver = getattr(request.app.state, "learning_readonly_scope_resolver", None)
     if not isinstance(resolver, LearningReadonlyScopeResolver):
-        raise HTTPException(status_code=503, detail="learning scope is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.SCOPE_SERVICE_UNAVAILABLE,
+            "learning scope is unavailable",
+        )
     return resolver
 
 
@@ -631,13 +700,28 @@ async def _execution_service(
 
 
 def _learning_execution_http_error(exc: Exception) -> HTTPException:
-    code = LearningFailureCode(str(getattr(exc, "code", LearningFailureCode.ARTIFACT_NOT_FOUND)))
+    code = _failure_code(
+        str(getattr(exc, "code", "")),
+        LearningFailureCode.RESUME_VALIDATION_FAILED,
+    )
     not_found = isinstance(exc, LearningResumeNotFoundError | LearningArtifactNotFoundError)
+    unavailable = code in {
+        LearningFailureCode.ARTIFACT_STORE_UNAVAILABLE,
+        LearningFailureCode.SCOPE_SERVICE_UNAVAILABLE,
+        LearningFailureCode.RUNTIME_REHYDRATE_FAILED,
+    }
     return _learning_error(
-        404 if not_found else 409,
+        404 if not_found else (503 if unavailable else 409),
         code,
         "not found" if not_found else "learning state conflict",
     )
+
+
+def _failure_code(value: str, fallback: LearningFailureCode) -> LearningFailureCode:
+    try:
+        return LearningFailureCode(value)
+    except ValueError:
+        return fallback
 
 
 def _learning_error(
@@ -647,14 +731,16 @@ def _learning_error(
     *,
     current_revision: int | None = None,
 ) -> HTTPException:
-    detail: dict[str, str | int] = {"code": code.value, "message": message}
+    detail: dict[str, str | int] = {"code": code.value}
+    if message:
+        detail["message"] = message
     if current_revision is not None:
         detail["current_revision"] = current_revision
     return HTTPException(status_code=status_code, detail=detail)
 
 
 def _validate_learning_task_id(task_id: str) -> None:
-    if not task_id.startswith("ltask_") or len(task_id) > 128:
+    if _LEARNING_TASK_ID.fullmatch(task_id) is None:
         raise _learning_error(
             422,
             LearningFailureCode.TASK_INVALID_ID,
@@ -663,7 +749,7 @@ def _validate_learning_task_id(task_id: str) -> None:
 
 
 def _validate_learning_artifact_id(artifact_id: str) -> None:
-    if not artifact_id.startswith("lart_") or len(artifact_id) > 128:
+    if _LEARNING_ARTIFACT_ID.fullmatch(artifact_id) is None:
         raise _learning_error(
             422,
             LearningFailureCode.REQUEST_INVALID,
@@ -685,7 +771,11 @@ async def _owner_id(request: Request) -> str:
 def _workspace_id(request: Request) -> str:
     root = getattr(request.app.state, "coding_workspace_root", None)
     if not isinstance(root, Path):
-        raise HTTPException(status_code=503, detail="learning workspace is unavailable")
+        raise _learning_error(
+            503,
+            LearningFailureCode.WORKSPACE_UNAVAILABLE,
+            "learning workspace is unavailable",
+        )
     return workspace_id_from_path(root)
 
 

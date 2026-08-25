@@ -10,7 +10,10 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from sage_harness import (
     HarnessConfig,
     McpCatalogPort,
@@ -211,6 +214,23 @@ def create_app(
             await checkpoint_stack.aclose()
 
     app = FastAPI(title="Sage API", lifespan=lifespan)
+
+    @app.exception_handler(RequestValidationError)
+    async def learning_request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        if request.url.path.startswith("/api/v1/learning/"):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": {
+                        "code": "learning_request_invalid",
+                        "message": "invalid learning request",
+                    }
+                },
+            )
+        return await request_validation_exception_handler(request, exc)
+
     app.state.auth = auth
     app.state.coding_goal_evaluator_factory = coding_goal_evaluator_factory
     app.state.coding_goal_followup_tasks = set()

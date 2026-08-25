@@ -37,6 +37,7 @@ class LearningResearchEvidence:
     content_hash: str
     fetched_at: str
     kind: str
+    conflict_group: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ class LearningResearchReceipt:
     risk_decision: str
     terminal_status: str
     reason_code: str
+    actual_step_count: int = 0
     evidence: tuple[LearningResearchEvidence, ...] = ()
 
 
@@ -180,23 +182,39 @@ class LearningResearchService:
             source_fingerprints=(plan.source_policy_revision, capability_revision),
         )
         started_at = monotonic()
+        deadline = started_at + profile.timeout_seconds
         try:
-            execution: asyncio.Future[SubagentResult] = asyncio.ensure_future(
-                self.subagent_executor.execute(request)
+            execution = asyncio.ensure_future(self.subagent_executor.execute(request))
+            result = await asyncio.wait_for(execution, timeout=_remaining(deadline))
+        except TimeoutError:
+            await _cancel_child(self.subagent_executor, child_run_id, "timeout")
+            result = SubagentResult(
+                child_run_id=child_run_id,
+                status="timed_out",
+                error_code="timeout",
             )
-            done, _ = await asyncio.wait((execution,), timeout=profile.timeout_seconds)
-            if done:
-                result = execution.result()
-            else:
-                await self.subagent_executor.cancel(child_run_id, "timeout")
-                execution.cancel()
-                with suppress(asyncio.CancelledError):
-                    await execution
-                result = SubagentResult(
-                    child_run_id=child_run_id,
-                    status="timed_out",
-                    error_code="timeout",
-                )
+        except asyncio.CancelledError:
+            await _cancel_child(self.subagent_executor, child_run_id, "parent_cancelled")
+            result = SubagentResult(
+                child_run_id=child_run_id,
+                status="cancelled",
+                error_code="cancelled",
+            )
+            return self._terminal(
+                task,
+                plan,
+                unit_id,
+                parent_run_id,
+                child_run_id,
+                query_hash,
+                profile.max_steps,
+                profile.timeout_seconds,
+                token_budget,
+                result,
+                status="blocked",
+                reason="learning_research_cancelled",
+                actual_elapsed_seconds=max(0.0, monotonic() - started_at),
+            )
         except Exception:
             result = SubagentResult(
                 child_run_id=child_run_id,
@@ -219,6 +237,7 @@ class LearningResearchService:
                 status="blocked",
                 reason="learning_research_step_budget_exhausted",
                 actual_elapsed_seconds=actual_elapsed_seconds,
+                terminal_status="budget_exhausted",
             )
         if result.token_usage > token_budget:
             return self._terminal(
@@ -235,6 +254,7 @@ class LearningResearchService:
                 status="blocked",
                 reason="learning_research_budget_exhausted",
                 actual_elapsed_seconds=actual_elapsed_seconds,
+                terminal_status="budget_exhausted",
             )
         if result.status == "timed_out":
             return self._terminal(
@@ -285,21 +305,69 @@ class LearningResearchService:
                 actual_elapsed_seconds=actual_elapsed_seconds,
             )
         try:
-            bundle = await self.evidence_bundle_port.read(
-                thread_id,
+            bundle = await asyncio.wait_for(
+                self.evidence_bundle_port.read(
+                    thread_id,
+                    parent_run_id,
+                    child_run_ids=(child_run_id,),
+                    evidence_refs=result.evidence_refs,
+                    token_budget=min(self.evidence_token_budget, token_budget),
+                ),
+                timeout=_remaining(deadline),
+            )
+            evidence, reason = _validated_web_evidence(
+                bundle,
+                result.evidence_refs,
+                domains=task.source_policy.domains,
+                freshness=task.source_policy.freshness,
+            )
+            if monotonic() >= deadline:
+                raise TimeoutError
+        except TimeoutError:
+            await _cancel_child(self.subagent_executor, child_run_id, "timeout")
+            return self._terminal(
+                task,
+                plan,
+                unit_id,
                 parent_run_id,
-                child_run_ids=(child_run_id,),
-                evidence_refs=result.evidence_refs,
-                token_budget=min(self.evidence_token_budget, token_budget),
+                child_run_id,
+                query_hash,
+                profile.max_steps,
+                profile.timeout_seconds,
+                token_budget,
+                result,
+                status="blocked",
+                reason="learning_research_timeout",
+                actual_elapsed_seconds=max(0.0, monotonic() - started_at),
+                terminal_status="timed_out",
+            )
+        except asyncio.CancelledError:
+            await _cancel_child(self.subagent_executor, child_run_id, "parent_cancelled")
+            return self._terminal(
+                task,
+                plan,
+                unit_id,
+                parent_run_id,
+                child_run_id,
+                query_hash,
+                profile.max_steps,
+                profile.timeout_seconds,
+                token_budget,
+                result,
+                status="blocked",
+                reason="learning_research_cancelled",
+                actual_elapsed_seconds=max(0.0, monotonic() - started_at),
+                terminal_status="cancelled",
             )
         except Exception:
             bundle = EvidenceBundle(status="unavailable")
-        evidence, reason = _validated_web_evidence(
-            bundle,
-            result.evidence_refs,
-            domains=task.source_policy.domains,
-            freshness=task.source_policy.freshness,
-        )
+            evidence, reason = _validated_web_evidence(
+                bundle,
+                result.evidence_refs,
+                domains=task.source_policy.domains,
+                freshness=task.source_policy.freshness,
+            )
+        actual_elapsed_seconds = max(0.0, monotonic() - started_at)
         if reason:
             return self._terminal(
                 task,
@@ -365,6 +433,7 @@ class LearningResearchService:
                 content_hash=item.content_hash,
                 fetched_at=str(item.metadata.get("fetched_at", "")),
                 kind=item.kind,
+                conflict_group=str(item.metadata.get("conflict_group", ""))[:160],
             )
             for item in evidence
         )
@@ -394,6 +463,7 @@ class LearningResearchService:
             risk_decision=task.risk_class,
             terminal_status=terminal_status or result.status,
             reason_code=reason,
+            actual_step_count=result.model_calls,
             evidence=provenance,
         )
         receipt = replace(
@@ -406,6 +476,22 @@ class LearningResearchService:
             receipt=receipt,
             evidence=evidence,
         )
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
+
+
+async def _cancel_child(
+    executor: SubagentExecutorPort,
+    child_run_id: str,
+    reason: Literal["parent_cancelled", "timeout"],
+) -> None:
+    with suppress(Exception, asyncio.CancelledError):
+        await asyncio.wait_for(executor.cancel(child_run_id, reason), timeout=1.0)
 
 
 def _validate_binding(

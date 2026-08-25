@@ -37,6 +37,7 @@ const canAdvance = computed(() => !resume.value || !['artifact_ready', 'blocked'
 async function load() {
   const taskId = props.taskId
   const current = ++generation
+  advancing.value = false
   loading.value = true
   error.value = ''
   try {

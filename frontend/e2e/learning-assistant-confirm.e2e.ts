@@ -10,6 +10,7 @@ type LearningE2EStats = {
   turn_started_count: number
   model_calls: number
   research_model_calls: number
+  knowledge_hold_started: boolean
   pid: number
 }
 
@@ -217,6 +218,10 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
   const research = await createLearningTask(request, '条件 Research 成功', webAllowed)
   const researchFailure = await createLearningTask(request, 'Research 失败', webAllowed)
   const conflict = await createLearningTask(request, 'Knowledge 冲突 checkpoint', forbidden)
+  const sameUrlConflict = await createLearningTask(request, '同 URL 冲突 Research', webAllowed)
+  const orphan = await createLearningTask(request, '崩溃 takeover 恢复', {
+    ...forbidden, knowledge: 'disabled',
+  })
 
   const knowledgeRun = await advanceUntilTerminal(request, knowledge.taskId)
   expect(knowledgeRun.summaries.map(item => item.stage)).toEqual([
@@ -268,6 +273,18 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
     'Knowledge Source A', 'Knowledge Source B',
   ])
 
+  const sameUrlRun = await advanceUntilTerminal(request, sameUrlConflict.taskId)
+  const sameUrlFinal = sameUrlRun.summaries.at(-1)!
+  expect(sameUrlFinal.artifact).toMatchObject({ status: 'unverified', citation_count: 2 })
+  const sameUrlArtifact = await readArtifact(
+    request, sameUrlConflict.taskId, sameUrlFinal.artifact!.artifact_id,
+  )
+  expect(sameUrlArtifact.citations.map(item => item.url)).toEqual([
+    'https://docs.example.com/checkpoint-conflict',
+    'https://docs.example.com/checkpoint-conflict',
+  ])
+  expect(sameUrlArtifact.content).toContain('证据冲突未解决')
+
   const crossTaskArtifact = await request.get(
     `/api/v1/learning/tasks/${conflict.taskId}/artifacts/${researchArtifact.artifact_id}`,
   )
@@ -290,6 +307,15 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
   await page.screenshot({ path: testInfo.outputPath('learning-artifact-ready.png'), fullPage: true })
 
   const oldPid = (await readStats(request)).pid
+  const orphanKey = `e2e-orphan-${orphan.taskId}`
+  const orphaned = await request.post('/api/__e2e__/orphan-advance', {
+    data: {
+      task_id: orphan.taskId,
+      idempotency_key: orphanKey,
+      expected_checkpoint_revision: 0,
+    },
+  })
+  expect(orphaned.ok(), await orphaned.text()).toBe(true)
   const restart = await request.post('/api/__e2e__/restart-process')
   expect(restart.status()).toBe(202)
   await expect.poll(async () => {
@@ -299,7 +325,7 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
     } catch {
       return false
     }
-  }, { timeout: 20_000 }).toBe(true)
+  }, { timeout: 45_000 }).toBe(true)
 
   const resumedAfterRestart = await request.get(`/api/v1/learning/tasks/${research.taskId}/resume`)
   expect(resumedAfterRestart.ok()).toBe(true)
@@ -308,6 +334,11 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
     request, research.taskId, researchArtifact.artifact_id,
   )
   expect(artifactAfterRestart.content_hash).toBe(researchArtifact.content_hash)
+
+  const takeover = await advance(request, orphan.taskId, 0, orphanKey)
+  expect(takeover).toMatchObject({ stage: 'knowledge_pending', checkpoint_revision: 1 })
+  const takeoverReplay = await advance(request, orphan.taskId, 0, orphanKey)
+  expect(takeoverReplay).toEqual(takeover)
 
   await page.reload()
   await expect(researchPanel).toContainText('artifact_ready')
@@ -328,4 +359,36 @@ test('uses real API and SQLite for Knowledge, Research, conflict, replay and res
   const failurePanel = await openLearningPanel(page, researchFailure)
   await expect(failurePanel).toContainText('learning_research_provider_unavailable')
   await expect(failurePanel.getByRole('button', { name: '继续生成' })).toHaveCount(0)
+})
+
+test('refresh takes over from a pending real advance without staying busy', async ({
+  page,
+  request,
+}) => {
+  const configured = await request.post('/api/__e2e__/configure', {
+    data: { hold_knowledge: true },
+  })
+  expect(configured.ok()).toBe(true)
+  const handle = await createLearningTask(request, '刷新 pending Knowledge', {
+    knowledge: 'preferred', web: 'forbidden', domains: [], freshness: 'all',
+  })
+  const panel = await openLearningPanel(page, handle)
+  const advanceButton = panel.getByRole('button', { name: '开始生成' })
+  await expect(advanceButton).toBeEnabled()
+
+  await advanceButton.click()
+  await expect.poll(async () => (await readStats(request)).knowledge_hold_started).toBe(true)
+  await panel.getByRole('button', { name: '刷新学习进度' }).click()
+  await expect(panel.getByRole('button', { name: '开始生成' })).toBeEnabled()
+
+  const released = await request.post('/api/__e2e__/release-knowledge')
+  expect(released.ok()).toBe(true)
+  await expect.poll(async () => {
+    const response = await request.get(`/api/v1/learning/tasks/${handle.taskId}/resume`)
+    return response.status()
+  }).toBe(200)
+  await expect(panel.getByRole('button', { name: '开始生成' })).toBeEnabled()
+
+  await panel.getByRole('button', { name: '刷新学习进度' }).click()
+  await expect(panel).toContainText('knowledge_pending')
 })

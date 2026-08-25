@@ -104,6 +104,7 @@ it('ignores a late advance response after switching tasks', async () => {
   await wrapper.setProps({ taskId: 'ltask-b' })
   await flushPromises()
   expect(wrapper.text()).toContain('学习 ltask-b')
+  expect(wrapper.get('.advance-button').attributes('disabled')).toBeUndefined()
 
   releaseA(resume('artifact_ready', 'ltask-a'))
   await flushPromises()
@@ -111,4 +112,27 @@ it('ignores a late advance response after switching tasks', async () => {
   expect(wrapper.text()).toContain('学习 ltask-b')
   expect(wrapper.text()).toContain('synthesize_pending')
   expect(wrapper.text()).not.toContain('学习 ltask-a')
+})
+
+it('refresh takes ownership from a pending advance and clears stale busy state', async () => {
+  let releaseAdvance!: (value: LearningResumeResponse) => void
+  fetchLearningResume.mockResolvedValue(resume('synthesize_pending'))
+  advanceLearningTask.mockImplementation(() => new Promise<LearningResumeResponse>((resolve) => {
+    releaseAdvance = resolve
+  }))
+  const wrapper = mount(LearningExecutionPanel, { props: { taskId: 'ltask-1' } })
+  await flushPromises()
+
+  await wrapper.get('.advance-button').trigger('click')
+  expect(wrapper.get('.advance-button').attributes('disabled')).toBeDefined()
+  await wrapper.get('button[aria-label="刷新学习进度"]').trigger('click')
+  await flushPromises()
+
+  expect(wrapper.text()).toContain('synthesize_pending')
+  expect(wrapper.get('.advance-button').attributes('disabled')).toBeUndefined()
+
+  releaseAdvance(resume('artifact_ready'))
+  await flushPromises()
+  expect(wrapper.text()).toContain('synthesize_pending')
+  expect(wrapper.find('.advance-button').exists()).toBe(true)
 })

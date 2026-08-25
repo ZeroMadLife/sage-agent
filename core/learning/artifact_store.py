@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
+import uuid
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
 from typing import Literal, cast, get_args
@@ -116,7 +118,11 @@ CREATE TABLE IF NOT EXISTS learning_advance_requests (
     request_key_hash TEXT NOT NULL,
     expected_checkpoint_revision INTEGER NOT NULL,
     request_digest TEXT NOT NULL,
+    schema_version INTEGER NOT NULL,
     status TEXT NOT NULL,
+    lease_owner_id TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    fencing_token INTEGER NOT NULL,
     response_digest TEXT NOT NULL,
     response_json TEXT NOT NULL,
     error_code TEXT NOT NULL,
@@ -137,6 +143,7 @@ CREATE TABLE IF NOT EXISTS learning_checkpoints (
     dag_hash TEXT NOT NULL,
     source_policy_revision TEXT NOT NULL,
     capability_revision TEXT NOT NULL,
+    catalog_revision TEXT NOT NULL,
     checkpoint_revision INTEGER NOT NULL,
     stage TEXT NOT NULL,
     next_action TEXT NOT NULL,
@@ -247,6 +254,8 @@ class StoredLearningResearchReceipt:
 class LearningAdvanceClaim:
     request_key_hash: str
     request_digest: str
+    lease_owner_id: str
+    fencing_token: int
     checkpoint: LearningCheckpoint | None
     plan: LearningPlan | None
     replay: LearningResumeSummary | None
@@ -261,6 +270,7 @@ class LearningCheckpoint:
     dag_hash: str
     source_policy_revision: str
     capability_revision: str
+    catalog_revision: str
     checkpoint_revision: int
     stage: LearningCheckpointStage
     next_action: str
@@ -316,6 +326,7 @@ class LearningArtifactStore:
         evidence_count: int = 0,
         citation_count: int = 0,
         gap_codes: Sequence[str] = (),
+        claim: LearningAdvanceClaim | None = None,
     ) -> LearningCheckpoint:
         _validate_scope(owner_id, workspace_id, task.task_id)
         _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
@@ -328,6 +339,14 @@ class LearningArtifactStore:
         )
         timestamp = _now()
         with self._transaction() as connection:
+            if claim is not None:
+                _validate_running_claim(
+                    connection,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task_id=task.task_id,
+                    claim=claim,
+                )
             existing = self._checkpoint_row(
                 connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task.task_id
             )
@@ -359,11 +378,12 @@ class LearningArtifactStore:
             connection.execute(
                 """INSERT INTO learning_checkpoints (
                     owner_id, workspace_id, task_id, task_revision, plan_id, plan_hash,
-                    dag_hash, source_policy_revision, capability_revision, checkpoint_revision,
+                    dag_hash, source_policy_revision, capability_revision, catalog_revision,
+                    checkpoint_revision,
                     stage, next_action, evidence_count, citation_count, gap_codes_json,
                     blocking_reason, artifact_ref, lease_owner_id, fencing_token,
                     last_advance_key_hash, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'knowledge_pending', 'read_knowledge',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'knowledge_pending', 'read_knowledge',
                     ?, ?, ?, '', ?, ?, 1, ?, ?)""",
                 (
                     owner_id,
@@ -375,6 +395,7 @@ class LearningArtifactStore:
                     plan.dag_hash,
                     plan.source_policy_revision,
                     plan.capability_revision,
+                    plan.catalog_revision,
                     evidence_count,
                     citation_count,
                     _json(gaps),
@@ -424,7 +445,8 @@ class LearningArtifactStore:
         *,
         owner_id: str,
         workspace_id: str,
-        task_id: str,
+        task: LearningTask,
+        plan: LearningPlan,
         expected_checkpoint_revision: int,
         lease_owner_id: str,
         fencing_token: int,
@@ -436,8 +458,10 @@ class LearningArtifactStore:
         blocking_reason: str = "",
         artifact_ref: str = "",
         idempotency_key: str = "",
+        claim: LearningAdvanceClaim | None = None,
     ) -> LearningCheckpoint:
-        _validate_scope(owner_id, workspace_id, task_id)
+        _validate_scope(owner_id, workspace_id, task.task_id)
+        _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
         if stage not in _STAGES:
             raise ValueError("unsupported Learning checkpoint stage")
         if min(expected_checkpoint_revision, fencing_token) < 1:
@@ -450,8 +474,16 @@ class LearningArtifactStore:
             _sha256(_bounded(idempotency_key, "idempotency_key", 300)) if idempotency_key else ""
         )
         with self._transaction() as connection:
+            if claim is not None:
+                _validate_running_claim(
+                    connection,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task_id=task.task_id,
+                    claim=claim,
+                )
             row = self._checkpoint_row(
-                connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task_id
+                connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task.task_id
             )
             if row is None:
                 raise LearningResumeNotFoundError("learning checkpoint not found")
@@ -462,13 +494,18 @@ class LearningArtifactStore:
                 raise LearningFencingConflictError("stale Learning checkpoint writer")
             if int(row["checkpoint_revision"]) != expected_checkpoint_revision:
                 raise LearningCheckpointConflictError("Learning checkpoint revision changed")
+            checkpoint = _checkpoint(row)
+            _assert_checkpoint_binding(task, plan, checkpoint)
             updated_revision = expected_checkpoint_revision + 1
             cursor = connection.execute(
                 """UPDATE learning_checkpoints SET checkpoint_revision = ?, stage = ?,
                    next_action = ?, evidence_count = ?, citation_count = ?, gap_codes_json = ?,
                    blocking_reason = ?, artifact_ref = ?, last_advance_key_hash = ?, updated_at = ?
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
-                     AND checkpoint_revision = ? AND lease_owner_id = ? AND fencing_token = ?""",
+                     AND task_revision = ? AND plan_id = ? AND plan_hash = ? AND dag_hash = ?
+                     AND source_policy_revision = ? AND capability_revision = ?
+                     AND catalog_revision = ? AND checkpoint_revision = ?
+                     AND lease_owner_id = ? AND fencing_token = ?""",
                 (
                     updated_revision,
                     stage,
@@ -482,7 +519,14 @@ class LearningArtifactStore:
                     _now(),
                     owner_id,
                     workspace_id,
-                    task_id,
+                    task.task_id,
+                    task.task_revision,
+                    plan.plan_id,
+                    plan.plan_hash,
+                    plan.dag_hash,
+                    plan.source_policy_revision,
+                    plan.capability_revision,
+                    plan.catalog_revision,
                     expected_checkpoint_revision,
                     lease_owner_id,
                     fencing_token,
@@ -491,7 +535,7 @@ class LearningArtifactStore:
             if cursor.rowcount != 1:
                 raise LearningCheckpointConflictError("Learning checkpoint CAS failed")
             updated = self._checkpoint_row(
-                connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task_id
+                connection, owner_id=owner_id, workspace_id=workspace_id, task_id=task.task_id
             )
             assert updated is not None
             return _checkpoint(updated)
@@ -544,7 +588,10 @@ class LearningArtifactStore:
                 }
             )
         )
+        lease_owner_id = f"advance:{uuid.uuid4().hex}"
+        lease_expires_at = _lease_expiry()
         with self._transaction() as connection:
+            _validate_task_for_advance(task, workspace_id=workspace_id)
             existing = connection.execute(
                 """SELECT * FROM learning_advance_requests
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
@@ -560,26 +607,70 @@ class LearningArtifactStore:
                         "Learning advance request binding changed"
                     )
                 if str(existing["status"]) == "succeeded":
-                    payload = json.loads(str(existing["response_json"]))
+                    replay = _validated_advance_replay(
+                        connection,
+                        row=existing,
+                        owner_id=owner_id,
+                        workspace_id=workspace_id,
+                        task=task,
+                    )
                     return LearningAdvanceClaim(
                         request_key_hash=key_hash,
                         request_digest=request_digest,
+                        lease_owner_id=str(existing["lease_owner_id"]),
+                        fencing_token=int(existing["fencing_token"]),
                         checkpoint=None,
                         plan=None,
-                        replay=_resume_summary(payload),
+                        replay=replay,
                     )
-                raise LearningCheckpointConflictError("Learning advance request is already running")
+                if str(existing["status"]) == "running" and not _lease_expired(existing):
+                    raise LearningCheckpointConflictError(
+                        "Learning advance request is already running"
+                    )
+                committed = _recover_committed_request(
+                    connection,
+                    row=existing,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task=task,
+                    capability_revision=capability_revision,
+                    catalog_revision=catalog_revision,
+                )
+                if committed is not None:
+                    replay, recovered_owner_id, recovered_fencing_token = committed
+                    return LearningAdvanceClaim(
+                        request_key_hash=key_hash,
+                        request_digest=request_digest,
+                        lease_owner_id=recovered_owner_id,
+                        fencing_token=recovered_fencing_token,
+                        checkpoint=None,
+                        plan=None,
+                        replay=replay,
+                    )
 
-            running = connection.execute(
-                """SELECT 1 FROM learning_advance_requests
+            running_rows = connection.execute(
+                """SELECT * FROM learning_advance_requests
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
-                     AND status = 'running' LIMIT 1""",
-                (owner_id, workspace_id, task.task_id),
-            ).fetchone()
-            if running is not None:
-                raise LearningCheckpointConflictError("Learning advance request is already running")
+                     AND status = 'running' AND request_key_hash != ?""",
+                (owner_id, workspace_id, task.task_id, key_hash),
+            ).fetchall()
+            for running in running_rows:
+                if not _lease_expired(running):
+                    raise LearningCheckpointConflictError(
+                        "Learning advance request is already running"
+                    )
+                committed = _recover_committed_request(
+                    connection,
+                    row=running,
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task=task,
+                    capability_revision=capability_revision,
+                    catalog_revision=catalog_revision,
+                )
+                if committed is None:
+                    _fence_expired_request(connection, running)
 
-            _validate_task_for_advance(task, workspace_id=workspace_id)
             checkpoint_row = self._checkpoint_row(
                 connection,
                 owner_id=owner_id,
@@ -613,11 +704,13 @@ class LearningArtifactStore:
                         )
                     raise LearningResumeConflictError("Learning execution binding changed")
                 fencing_token = checkpoint.fencing_token + 1
-                lease_owner_id = f"advance:{key_hash[:48]}"
-                connection.execute(
+                cursor = connection.execute(
                     """UPDATE learning_checkpoints
                        SET lease_owner_id = ?, fencing_token = ?, updated_at = ?
                        WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+                         AND task_revision = ? AND plan_id = ? AND plan_hash = ?
+                         AND dag_hash = ? AND source_policy_revision = ?
+                         AND capability_revision = ? AND catalog_revision = ?
                          AND checkpoint_revision = ? AND fencing_token = ?""",
                     (
                         lease_owner_id,
@@ -626,10 +719,19 @@ class LearningArtifactStore:
                         owner_id,
                         workspace_id,
                         task.task_id,
+                        task.task_revision,
+                        plan.plan_id,
+                        plan.plan_hash,
+                        plan.dag_hash,
+                        plan.source_policy_revision,
+                        plan.capability_revision,
+                        plan.catalog_revision,
                         expected_checkpoint_revision,
                         checkpoint.fencing_token,
                     ),
                 )
+                if cursor.rowcount != 1:
+                    raise LearningResumeConflictError("Learning execution binding changed")
                 checkpoint = LearningCheckpoint(
                     task_id=checkpoint.task_id,
                     task_revision=checkpoint.task_revision,
@@ -638,6 +740,7 @@ class LearningArtifactStore:
                     dag_hash=checkpoint.dag_hash,
                     source_policy_revision=checkpoint.source_policy_revision,
                     capability_revision=checkpoint.capability_revision,
+                    catalog_revision=checkpoint.catalog_revision,
                     checkpoint_revision=checkpoint.checkpoint_revision,
                     stage=checkpoint.stage,
                     next_action=checkpoint.next_action,
@@ -651,26 +754,58 @@ class LearningArtifactStore:
                     updated_at=checkpoint.updated_at,
                 )
             timestamp = _now()
-            connection.execute(
-                """INSERT INTO learning_advance_requests (
-                    owner_id, workspace_id, task_id, request_key_hash,
-                    expected_checkpoint_revision, request_digest, status,
-                    response_digest, response_json, error_code, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'running', '', '', '', ?, ?)""",
-                (
-                    owner_id,
-                    workspace_id,
-                    task.task_id,
-                    key_hash,
-                    expected_checkpoint_revision,
-                    request_digest,
-                    timestamp,
-                    timestamp,
-                ),
-            )
+            if existing is None:
+                request_fencing_token = 1
+                connection.execute(
+                    """INSERT INTO learning_advance_requests (
+                        owner_id, workspace_id, task_id, request_key_hash,
+                        expected_checkpoint_revision, request_digest, schema_version, status,
+                        lease_owner_id, lease_expires_at, fencing_token,
+                        response_digest, response_json, error_code, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, 'running', ?, ?, 1, '', '', '', ?, ?)""",
+                    (
+                        owner_id,
+                        workspace_id,
+                        task.task_id,
+                        key_hash,
+                        expected_checkpoint_revision,
+                        request_digest,
+                        lease_owner_id,
+                        lease_expires_at,
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            else:
+                request_fencing_token = int(existing["fencing_token"]) + 1
+                cursor = connection.execute(
+                    """UPDATE learning_advance_requests
+                       SET schema_version = 1, status = 'running', lease_owner_id = ?,
+                           lease_expires_at = ?, fencing_token = ?, error_code = '',
+                           response_digest = '', response_json = '', updated_at = ?
+                       WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+                         AND request_key_hash = ? AND request_digest = ?
+                         AND fencing_token = ? AND status IN ('running', 'failed')""",
+                    (
+                        lease_owner_id,
+                        lease_expires_at,
+                        request_fencing_token,
+                        timestamp,
+                        owner_id,
+                        workspace_id,
+                        task.task_id,
+                        key_hash,
+                        request_digest,
+                        int(existing["fencing_token"]),
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise LearningCheckpointConflictError("Learning advance takeover changed")
             return LearningAdvanceClaim(
                 request_key_hash=key_hash,
                 request_digest=request_digest,
+                lease_owner_id=lease_owner_id,
+                fencing_token=request_fencing_token,
                 checkpoint=checkpoint,
                 plan=plan,
                 replay=None,
@@ -693,7 +828,8 @@ class LearningArtifactStore:
                    SET status = 'succeeded', response_digest = ?, response_json = ?,
                        error_code = '', updated_at = ?
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
-                     AND request_key_hash = ? AND request_digest = ? AND status = 'running'""",
+                     AND request_key_hash = ? AND request_digest = ? AND status = 'running'
+                     AND schema_version = 1 AND lease_owner_id = ? AND fencing_token = ?""",
                 (
                     response_digest,
                     payload,
@@ -703,6 +839,8 @@ class LearningArtifactStore:
                     task_id,
                     claim.request_key_hash,
                     claim.request_digest,
+                    claim.lease_owner_id,
+                    claim.fencing_token,
                 ),
             )
             if cursor.rowcount != 1:
@@ -722,7 +860,8 @@ class LearningArtifactStore:
                 """UPDATE learning_advance_requests
                    SET status = 'failed', error_code = ?, updated_at = ?
                    WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
-                     AND request_key_hash = ? AND request_digest = ? AND status = 'running'""",
+                     AND request_key_hash = ? AND request_digest = ? AND status = 'running'
+                     AND schema_version = 1 AND lease_owner_id = ? AND fencing_token = ?""",
                 (
                     error_code[:160],
                     _now(),
@@ -731,6 +870,8 @@ class LearningArtifactStore:
                     task_id,
                     claim.request_key_hash,
                     claim.request_digest,
+                    claim.lease_owner_id,
+                    claim.fencing_token,
                 ),
             )
 
@@ -861,7 +1002,11 @@ class LearningArtifactStore:
                     str(item.get("evidence_ref", ""))
                     for item in receipt_payload.get("evidence", ())
                 )
-                if receipt_evidence_refs != artifact.evidence_refs:
+                if (
+                    not receipt_evidence_refs
+                    or artifact.evidence_refs[-len(receipt_evidence_refs) :]
+                    != receipt_evidence_refs
+                ):
                     raise LearningArtifactConflictError(
                         "Learning Artifact Research evidence binding changed"
                     )
@@ -1026,6 +1171,7 @@ class LearningArtifactStore:
             or checkpoint.dag_hash != plan.dag_hash
             or checkpoint.source_policy_revision != source_policy_revision(task.source_policy)
             or checkpoint.capability_revision != capability_revision
+            or checkpoint.catalog_revision != plan.catalog_revision
             or plan.capability_revision != capability_revision
         ):
             raise LearningResumeConflictError("Learning resume revision binding changed")
@@ -1036,16 +1182,8 @@ class LearningArtifactStore:
                 workspace_id=workspace_id,
                 artifact_ref=checkpoint.artifact_ref,
             )
-            artifact_summary = LearningArtifactSummary(
-                artifact_id=artifact.artifact_id,
-                kind=artifact.kind,
-                content_hash=artifact.content_hash,
-                media_type=artifact.media_type,
-                status=artifact.status,
-                citation_count=len(artifact.citations),
-                source_revisions=artifact.source_revisions,
-                retention=artifact.retention,
-            )
+            _assert_artifact_scope(task, plan, artifact)
+            artifact_summary = _artifact_summary(artifact)
         return LearningResumeSummary(
             task_id=task.task_id,
             task_revision=task.task_revision,
@@ -1093,11 +1231,30 @@ class LearningArtifactStore:
                 str(row["name"])
                 for row in connection.execute("PRAGMA table_info(learning_checkpoints)")
             }
-            if "last_advance_key_hash" not in columns:
-                connection.execute(
-                    "ALTER TABLE learning_checkpoints ADD COLUMN "
-                    "last_advance_key_hash TEXT NOT NULL DEFAULT ''"
-                )
+            checkpoint_expansions = {
+                "catalog_revision": "TEXT NOT NULL DEFAULT ''",
+                "last_advance_key_hash": "TEXT NOT NULL DEFAULT ''",
+            }
+            for name, declaration in checkpoint_expansions.items():
+                if name not in columns:
+                    connection.execute(
+                        f"ALTER TABLE learning_checkpoints ADD COLUMN {name} {declaration}"
+                    )
+            request_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(learning_advance_requests)")
+            }
+            request_expansions = {
+                "schema_version": "INTEGER NOT NULL DEFAULT 0",
+                "lease_owner_id": "TEXT NOT NULL DEFAULT ''",
+                "lease_expires_at": "TEXT NOT NULL DEFAULT ''",
+                "fencing_token": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for name, declaration in request_expansions.items():
+                if name not in request_columns:
+                    connection.execute(
+                        f"ALTER TABLE learning_advance_requests ADD COLUMN {name} {declaration}"
+                    )
             connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -1152,6 +1309,173 @@ class _ImmediateTransaction:
 
 
 _STAGES = frozenset(cast(tuple[str, ...], get_args(LearningCheckpointStage)))
+_ARTIFACT_ID = re.compile(r"lart_[0-9a-f]{24}")
+
+
+def _lease_expiry() -> str:
+    return (datetime.now(UTC) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+
+
+def _lease_expired(row: sqlite3.Row) -> bool:
+    try:
+        expiry = datetime.fromisoformat(str(row["lease_expires_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return expiry <= datetime.now(UTC)
+
+
+def _fence_expired_request(connection: sqlite3.Connection, row: sqlite3.Row) -> None:
+    cursor = connection.execute(
+        """UPDATE learning_advance_requests
+           SET status = 'failed', error_code = 'learning_advance_lease_expired',
+               lease_owner_id = ?, lease_expires_at = ?, fencing_token = ?, updated_at = ?
+           WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+             AND request_key_hash = ? AND status = 'running' AND fencing_token = ?""",
+        (
+            f"expired:{uuid.uuid4().hex}",
+            _now(),
+            int(row["fencing_token"]) + 1,
+            _now(),
+            str(row["owner_id"]),
+            str(row["workspace_id"]),
+            str(row["task_id"]),
+            str(row["request_key_hash"]),
+            int(row["fencing_token"]),
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise LearningCheckpointConflictError("Learning advance orphan fencing changed")
+
+
+def _recover_committed_request(
+    connection: sqlite3.Connection,
+    *,
+    row: sqlite3.Row,
+    owner_id: str,
+    workspace_id: str,
+    task: LearningTask,
+    capability_revision: str,
+    catalog_revision: str,
+) -> tuple[LearningResumeSummary, str, int] | None:
+    checkpoint_row = connection.execute(
+        """SELECT * FROM learning_checkpoints
+           WHERE owner_id = ? AND workspace_id = ? AND task_id = ?""",
+        (owner_id, workspace_id, task.task_id),
+    ).fetchone()
+    if checkpoint_row is None:
+        return None
+    checkpoint = _checkpoint(checkpoint_row)
+    if checkpoint.checkpoint_revision != int(row["expected_checkpoint_revision"]) + 1 or str(
+        checkpoint_row["last_advance_key_hash"]
+    ) != str(row["request_key_hash"]):
+        return None
+
+    plan_row = connection.execute(
+        """SELECT * FROM learning_plans
+           WHERE owner_id = ? AND workspace_id = ? AND task_id = ?""",
+        (owner_id, workspace_id, task.task_id),
+    ).fetchone()
+    if plan_row is None:
+        raise LearningResumeConflictError("Learning plan is missing")
+    plan = _validated_plan(plan_row)
+    _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
+    _assert_checkpoint_binding(task, plan, checkpoint)
+    if plan.capability_revision != capability_revision or plan.catalog_revision != catalog_revision:
+        raise LearningResumeConflictError("Learning execution binding changed")
+
+    artifact_summary = None
+    if checkpoint.artifact_ref:
+        artifact_row = connection.execute(
+            """SELECT * FROM learning_artifacts
+               WHERE owner_id = ? AND workspace_id = ? AND artifact_ref = ?""",
+            (owner_id, workspace_id, checkpoint.artifact_ref),
+        ).fetchone()
+        if artifact_row is None:
+            raise LearningResumeConflictError("Learning Artifact is missing")
+        try:
+            artifact = _artifact(artifact_row)
+            _validate_stored_artifact(artifact_row, artifact)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise LearningPersistenceIntegrityError(
+                "Learning Artifact failed canonical integrity validation"
+            ) from exc
+        _assert_artifact_scope(task, plan, artifact)
+        artifact_summary = _artifact_summary(artifact)
+
+    summary = LearningResumeSummary(
+        task_id=task.task_id,
+        task_revision=task.task_revision,
+        goal_summary=task.topic,
+        plan_id=plan.plan_id,
+        plan_hash=plan.plan_hash,
+        dag_hash=plan.dag_hash,
+        stage=checkpoint.stage,
+        evidence_count=checkpoint.evidence_count,
+        citation_count=checkpoint.citation_count,
+        gap_codes=checkpoint.gap_codes,
+        blocking_reason=checkpoint.blocking_reason,
+        next_action=checkpoint.next_action,
+        artifact_ref=checkpoint.artifact_ref,
+        artifact=artifact_summary,
+        checkpoint_revision=checkpoint.checkpoint_revision,
+        fencing_token=checkpoint.fencing_token,
+    )
+    payload = _json(asdict(summary))
+    recovered_owner_id = f"recovered:{uuid.uuid4().hex}"
+    recovered_fencing_token = int(row["fencing_token"]) + 1
+    cursor = connection.execute(
+        """UPDATE learning_advance_requests
+           SET schema_version = 1, status = 'succeeded', lease_owner_id = ?,
+               lease_expires_at = ?, fencing_token = ?, response_digest = ?,
+               response_json = ?, error_code = '', updated_at = ?
+           WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+             AND request_key_hash = ? AND request_digest = ?
+             AND expected_checkpoint_revision = ? AND fencing_token = ?
+             AND status IN ('running', 'failed')""",
+        (
+            recovered_owner_id,
+            _now(),
+            recovered_fencing_token,
+            "sha256:" + _sha256(payload),
+            payload,
+            _now(),
+            owner_id,
+            workspace_id,
+            task.task_id,
+            str(row["request_key_hash"]),
+            str(row["request_digest"]),
+            int(row["expected_checkpoint_revision"]),
+            int(row["fencing_token"]),
+        ),
+    )
+    if cursor.rowcount != 1:
+        raise LearningCheckpointConflictError("Learning advance recovery changed")
+    return summary, recovered_owner_id, recovered_fencing_token
+
+
+def _validate_running_claim(
+    connection: sqlite3.Connection,
+    *,
+    owner_id: str,
+    workspace_id: str,
+    task_id: str,
+    claim: LearningAdvanceClaim,
+) -> None:
+    row = connection.execute(
+        """SELECT * FROM learning_advance_requests
+           WHERE owner_id = ? AND workspace_id = ? AND task_id = ?
+             AND request_key_hash = ? AND request_digest = ?""",
+        (owner_id, workspace_id, task_id, claim.request_key_hash, claim.request_digest),
+    ).fetchone()
+    if (
+        row is None
+        or int(row["schema_version"]) != 1
+        or str(row["status"]) != "running"
+        or str(row["lease_owner_id"]) != claim.lease_owner_id
+        or int(row["fencing_token"]) != claim.fencing_token
+        or _lease_expired(row)
+    ):
+        raise LearningFencingConflictError("stale Learning advance request owner")
 
 
 def _checkpoint(row: sqlite3.Row) -> LearningCheckpoint:
@@ -1163,6 +1487,7 @@ def _checkpoint(row: sqlite3.Row) -> LearningCheckpoint:
         dag_hash=str(row["dag_hash"]),
         source_policy_revision=str(row["source_policy_revision"]),
         capability_revision=str(row["capability_revision"]),
+        catalog_revision=str(row["catalog_revision"]),
         checkpoint_revision=int(row["checkpoint_revision"]),
         stage=cast(LearningCheckpointStage, row["stage"]),
         next_action=str(row["next_action"]),
@@ -1253,6 +1578,96 @@ def _resume_summary(data: dict[str, object]) -> LearningResumeSummary:
     )
 
 
+def _artifact_summary(artifact: StoredLearningArtifact) -> LearningArtifactSummary:
+    return LearningArtifactSummary(
+        artifact_id=artifact.artifact_id,
+        kind=artifact.kind,
+        content_hash=artifact.content_hash,
+        media_type=artifact.media_type,
+        status=artifact.status,
+        citation_count=len(artifact.citations),
+        source_revisions=artifact.source_revisions,
+        retention=artifact.retention,
+    )
+
+
+def _assert_artifact_scope(
+    task: LearningTask,
+    plan: LearningPlan,
+    artifact: StoredLearningArtifact,
+) -> None:
+    goal = task.learning_goal_ref or {}
+    if (
+        artifact.task_id != task.task_id
+        or artifact.task_revision != task.task_revision
+        or artifact.goal_id != str(goal.get("goal_id", ""))
+        or artifact.goal_revision != str(goal.get("goal_revision", ""))
+        or artifact.plan_id != plan.plan_id
+        or artifact.plan_revision != plan.plan_revision
+        or artifact.unit_ids != tuple(unit.unit_id for unit in plan.units)
+    ):
+        raise LearningResumeConflictError("Learning Artifact scope binding changed")
+
+
+def _validated_advance_replay(
+    connection: sqlite3.Connection,
+    *,
+    row: sqlite3.Row,
+    owner_id: str,
+    workspace_id: str,
+    task: LearningTask,
+) -> LearningResumeSummary:
+    try:
+        if int(row["schema_version"]) != 1:
+            raise ValueError("Learning advance replay schema is unsupported")
+        payload = str(row["response_json"])
+        if str(row["response_digest"]) != "sha256:" + _sha256(payload):
+            raise ValueError("Learning advance replay digest changed")
+        summary = _resume_summary(json.loads(payload))
+        plan_row = connection.execute(
+            """SELECT * FROM learning_plans
+               WHERE owner_id = ? AND workspace_id = ? AND task_id = ?""",
+            (owner_id, workspace_id, task.task_id),
+        ).fetchone()
+        if plan_row is None:
+            raise ValueError("Learning advance replay plan is missing")
+        plan = _validated_plan(plan_row)
+        _validate_plan_binding(task, plan, owner_id=owner_id, workspace_id=workspace_id)
+        if (
+            summary.task_id != task.task_id
+            or summary.task_revision != task.task_revision
+            or summary.goal_summary != task.topic
+            or summary.plan_id != plan.plan_id
+            or summary.plan_hash != plan.plan_hash
+            or summary.dag_hash != plan.dag_hash
+            or summary.stage not in _STAGES
+            or summary.checkpoint_revision != int(row["expected_checkpoint_revision"]) + 1
+            or summary.fencing_token < 1
+            or min(summary.evidence_count, summary.citation_count) < 0
+        ):
+            raise ValueError("Learning advance replay binding changed")
+        if summary.artifact_ref:
+            artifact_row = connection.execute(
+                """SELECT * FROM learning_artifacts
+                   WHERE owner_id = ? AND workspace_id = ? AND artifact_ref = ?""",
+                (owner_id, workspace_id, summary.artifact_ref),
+            ).fetchone()
+            if artifact_row is None:
+                raise ValueError("Learning advance replay Artifact is missing")
+            artifact = _artifact(artifact_row)
+            _validate_stored_artifact(artifact_row, artifact)
+            _assert_artifact_scope(task, plan, artifact)
+            if summary.artifact != _artifact_summary(artifact):
+                raise ValueError("Learning advance replay Artifact summary changed")
+        elif summary.artifact is not None:
+            raise ValueError("Learning advance replay Artifact ref is missing")
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise LearningPersistenceIntegrityError(
+            "Learning advance replay failed canonical integrity validation"
+        ) from exc
+    return summary
+
+
 def _citation_payload(item: object) -> dict[str, str]:
     evidence_ref = str(
         getattr(item, "citation_id", None) or getattr(item, "evidence_ref", "")
@@ -1322,16 +1737,22 @@ def _validate_research_receipt(
         or receipt.risk_decision != task.risk_class
         or receipt.actual_token_usage < 0
         or receipt.actual_tool_count < 0
+        or receipt.actual_step_count < 0
         or receipt.actual_elapsed_seconds < 0
         or receipt.receipt_id != canonical_learning_research_receipt_id(receipt)
     ):
         raise LearningResumeConflictError("Learning Research receipt binding changed")
     attempted = bool(receipt.child_run_id)
+    usage_overrun = (
+        receipt.actual_token_usage > receipt.token_budget
+        or receipt.actual_tool_count > receipt.max_steps
+        or receipt.actual_step_count > receipt.max_steps
+    )
     if attempted and (
         receipt.token_budget < 1
         or receipt.max_steps < 1
         or receipt.timeout_seconds <= 0
-        or receipt.actual_token_usage > receipt.token_budget
+        or (usage_overrun and not _allows_terminal_research_overrun(receipt))
     ):
         raise LearningResumeConflictError("Learning Research receipt budget binding changed")
     if not attempted and (
@@ -1340,6 +1761,7 @@ def _validate_research_receipt(
         or receipt.timeout_seconds < 0
         or receipt.actual_token_usage != 0
         or receipt.actual_tool_count != 0
+        or receipt.actual_step_count != 0
         or receipt.terminal_status != "not_started"
     ):
         raise LearningResumeConflictError("Learning Research gate receipt is invalid")
@@ -1513,6 +1935,11 @@ def _validate_stored_research_receipt(
     expected_identity = _sha256("\0".join((owner_id, workspace_id, plan_id, receipt_id)))
     expected_ref = f"sage://learning/research-receipts/lrsearch_{expected_identity[:24]}"
     receipt = stored.receipt
+    usage_overrun = (
+        receipt.actual_token_usage > receipt.token_budget
+        or receipt.actual_tool_count > receipt.max_steps
+        or receipt.actual_step_count > receipt.max_steps
+    )
     if (
         stored.receipt_ref != expected_ref
         or receipt.receipt_id != receipt_id
@@ -1527,12 +1954,20 @@ def _validate_stored_research_receipt(
         or not receipt.parent_run_id.strip()
         or not receipt.query_receipt_hash.startswith("lquery_")
         or receipt.actual_token_usage < 0
-        or receipt.actual_token_usage > receipt.token_budget
         or receipt.actual_tool_count < 0
+        or receipt.actual_step_count < 0
+        or (usage_overrun and not _allows_terminal_research_overrun(receipt))
         or receipt.actual_elapsed_seconds < 0
         or receipt.receipt_id != canonical_learning_research_receipt_id(receipt)
     ):
         raise ValueError("Learning Research receipt canonical binding is invalid")
+
+
+def _allows_terminal_research_overrun(receipt: LearningResearchReceipt) -> bool:
+    return receipt.terminal_status == "budget_exhausted" and receipt.reason_code in {
+        "learning_research_budget_exhausted",
+        "learning_research_step_budget_exhausted",
+    }
 
 
 def _validate_task_for_advance(task: LearningTask, *, workspace_id: str) -> None:
@@ -1556,6 +1991,7 @@ def _assert_checkpoint_binding(
         or checkpoint.dag_hash != plan.dag_hash
         or checkpoint.source_policy_revision != plan.source_policy_revision
         or checkpoint.capability_revision != plan.capability_revision
+        or checkpoint.catalog_revision != plan.catalog_revision
     ):
         raise LearningResumeConflictError("Learning checkpoint binding changed")
 
@@ -1565,7 +2001,7 @@ def _artifact_id(artifact_ref: str) -> str:
     if parsed.scheme != "sage" or parsed.netloc != "learning":
         raise ValueError("invalid Learning Artifact ref")
     parts = parsed.path.strip("/").split("/")
-    if len(parts) != 2 or parts[0] != "artifacts" or not parts[1].startswith("lart_"):
+    if len(parts) != 2 or parts[0] != "artifacts" or _ARTIFACT_ID.fullmatch(parts[1]) is None:
         raise ValueError("invalid Learning Artifact ref")
     return parts[1]
 

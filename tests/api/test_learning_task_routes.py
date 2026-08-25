@@ -93,7 +93,7 @@ def test_create_read_and_patch_learning_draft_without_starting_runtime(tmp_path:
 def test_learning_draft_rejects_invalid_input_and_unknown_task(tmp_path: Path) -> None:
     with TestClient(_app(tmp_path)) as client:
         assert client.post("/api/v1/learning/tasks/draft", json={"topic": "   "}).status_code == 422
-        assert client.get("/api/v1/learning/tasks/ltask_missing").status_code == 404
+        assert client.get(f"/api/v1/learning/tasks/ltask_{'0' * 32}").status_code == 404
 
         created = client.post(
             "/api/v1/learning/tasks/draft", json={"topic": "学习 Java 并发"}

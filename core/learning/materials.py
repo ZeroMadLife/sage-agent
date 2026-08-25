@@ -467,7 +467,19 @@ def _artifact_for_plan(
         "## 学习单元",
         f"### 1. {unit.title}",
     ]
-    if citations:
+    if citations and status == "unverified" and "conflict" in gap_reason:
+        lines.extend(
+            [
+                "来源状态：证据冲突未解决，以下来源均保留，不能判定为已支持。",
+                "",
+                "## 来源",
+                *(
+                    f"- {item.title} [{item.citation_id}]" + (f"({item.url})" if item.url else "")
+                    for item in citations
+                ),
+            ]
+        )
+    elif citations:
         lines.extend(
             [
                 "来源状态：已由当前 revision 的证据支持。",
@@ -520,9 +532,11 @@ def synthesize_research_map(
     task: LearningTask,
     plan: LearningPlan,
     evidence: tuple[EvidenceBundleItem, ...],
+    *,
+    base_citations: tuple[LearningCitation, ...] = (),
 ) -> tuple[LearningMapArtifact, tuple[LearningCitation, ...]]:
-    """Build controlled Markdown only from the Research service's validated bundle."""
-    citations = tuple(
+    """Merge revision-bound Knowledge and Web evidence into controlled Markdown."""
+    web_citations = tuple(
         LearningCitation(
             citation_id=item.evidence_ref,
             title=item.title,
@@ -542,16 +556,35 @@ def synthesize_research_map(
         and item.canonical_url
         and str(item.metadata.get("fetched_at", ""))
     )
+    citations = _merge_learning_citations(base_citations, web_citations)
     assessment = assess_learning_citations(task, citations)
+    gap_reason = (
+        "learning_evidence_conflict"
+        if assessment.conflict_count
+        else ("" if assessment.sufficient else assessment.route_reason)
+    )
     return _artifact_for_plan(
         task,
         plan,
         citations,
-        gap_reason="" if citations else "learning_research_no_evidence",
+        gap_reason=gap_reason or ("learning_research_no_evidence" if not citations else ""),
         status=(
             "ready" if assessment.sufficient else ("unverified" if citations else "source_gap")
         ),
     ), citations
+
+
+def _merge_learning_citations(
+    *groups: tuple[LearningCitation, ...],
+) -> tuple[LearningCitation, ...]:
+    selected: list[LearningCitation] = []
+    seen_refs: set[str] = set()
+    for item in (citation for group in groups for citation in group):
+        if not item.citation_id or item.citation_id in seen_refs:
+            continue
+        seen_refs.add(item.citation_id)
+        selected.append(item)
+    return tuple(selected)
 
 
 def assess_learning_citations(

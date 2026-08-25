@@ -51,6 +51,15 @@ class SlowExecutor(FakeExecutor):
         self.cancelled.append(child_run_id)
 
 
+class CancelTrackingExecutor(FakeExecutor):
+    def __init__(self, result: SubagentResult) -> None:
+        super().__init__(result)
+        self.cancelled: list[str] = []
+
+    async def cancel(self, child_run_id: str, reason: str = "parent_cancelled") -> None:
+        self.cancelled.append(child_run_id)
+
+
 class FakeEvidencePort:
     available = True
 
@@ -69,6 +78,12 @@ class FakeEvidencePort:
     ) -> EvidenceBundle:
         self.calls.append((tuple(child_run_ids), tuple(evidence_refs)))
         return self.bundle
+
+
+class SlowEvidencePort(FakeEvidencePort):
+    async def read(self, *args: object, **kwargs: object) -> EvidenceBundle:
+        await asyncio.sleep(5)
+        return await super().read(*args, **kwargs)  # type: ignore[arg-type]
 
 
 def _task(policy: LearningSourcePolicy | None = None) -> LearningTask:
@@ -330,6 +345,120 @@ async def test_research_service_enforces_timeout_and_records_elapsed_usage() -> 
     assert outcome.receipt.actual_token_usage == 0
     assert outcome.receipt.actual_tool_count == 0
     assert executor.cancelled == [outcome.receipt.child_run_id]
+
+
+@pytest.mark.asyncio
+async def test_research_timeout_covers_evidence_read_and_cancels_child_trace() -> None:
+    task = _task()
+    executor = CancelTrackingExecutor(_result())
+    config = SubagentToolConfig(
+        allowed_types=frozenset({"research"}),
+        profiles=(
+            SubagentProfile(
+                name="research",
+                tool_scope=("search_web",),
+                token_budget=2_000,
+                timeout_seconds=0.1,
+                max_steps=2,
+            ),
+        ),
+    )
+    service = LearningResearchService(
+        subagent_executor=executor,
+        subagent_config=config,
+        evidence_bundle_port=SlowEvidencePort(_bundle(_item())),
+    )
+    plan = await _plan(task)
+
+    outcome = await service.run(
+        task=task,
+        plan=plan,
+        unit_id=plan.units[0].unit_id,
+        thread_id="session-1",
+        parent_run_id="run-parent",
+        workspace_path="/workspace",
+        capability_revision="cap-rev-1",
+        allowed_capabilities=frozenset({"web:search"}),
+        evidence_sufficient=False,
+        remaining_token_budget=2_000,
+    )
+
+    assert outcome.status == "blocked"
+    assert outcome.reason_code == "learning_research_timeout"
+    assert outcome.receipt is not None
+    assert outcome.receipt.actual_token_usage == 600
+    assert outcome.receipt.actual_tool_count == 2
+    assert outcome.receipt.actual_elapsed_seconds >= 0.09
+    assert executor.cancelled == [outcome.receipt.child_run_id]
+
+
+@pytest.mark.asyncio
+async def test_research_cancellation_terminates_child_and_returns_terminal_receipt() -> None:
+    task = _task()
+    executor = SlowExecutor()
+    service = LearningResearchService(
+        subagent_executor=executor,
+        subagent_config=_config(),
+        evidence_bundle_port=FakeEvidencePort(_bundle(_item())),
+    )
+    plan = await _plan(task)
+    pending = asyncio.create_task(
+        service.run(
+            task=task,
+            plan=plan,
+            unit_id=plan.units[0].unit_id,
+            thread_id="session-1",
+            parent_run_id="run-parent",
+            workspace_path="/workspace",
+            capability_revision="cap-rev-1",
+            allowed_capabilities=frozenset({"web:search", "web:fetch"}),
+            evidence_sufficient=False,
+            remaining_token_budget=2_000,
+        )
+    )
+    while not executor.requests:
+        await asyncio.sleep(0)
+    pending.cancel()
+
+    outcome = await pending
+
+    assert outcome.status == "blocked"
+    assert outcome.reason_code == "learning_research_cancelled"
+    assert outcome.receipt is not None
+    assert outcome.receipt.terminal_status == "cancelled"
+    assert executor.cancelled == [outcome.receipt.child_run_id]
+
+
+@pytest.mark.asyncio
+async def test_terminal_budget_receipt_preserves_actual_overrun_usage() -> None:
+    task = _task()
+    result = replace(_result(model_calls=6, tool_count=7), token_usage=2_500)
+    service = LearningResearchService(
+        subagent_executor=FakeExecutor(result),
+        subagent_config=_config(),
+        evidence_bundle_port=FakeEvidencePort(_bundle()),
+    )
+    plan = await _plan(task)
+
+    outcome = await service.run(
+        task=task,
+        plan=plan,
+        unit_id=plan.units[0].unit_id,
+        thread_id="session-1",
+        parent_run_id="run-parent",
+        workspace_path="/workspace",
+        capability_revision="cap-rev-1",
+        allowed_capabilities=frozenset({"web:search", "web:fetch"}),
+        evidence_sufficient=False,
+        remaining_token_budget=2_000,
+    )
+
+    assert outcome.status == "blocked"
+    assert outcome.reason_code == "learning_research_step_budget_exhausted"
+    assert outcome.receipt is not None
+    assert outcome.receipt.actual_token_usage == 2_500
+    assert outcome.receipt.actual_tool_count == 7
+    assert outcome.receipt.actual_step_count == 6
 
 
 @pytest.mark.asyncio

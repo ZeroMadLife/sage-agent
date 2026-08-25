@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Protocol, cast
 
 from core.learning.artifact_store import (
+    LearningAdvanceClaim,
     LearningArtifactStore,
     LearningCheckpoint,
     LearningCheckpointStage,
     LearningResumeNotFoundError,
     LearningResumeSummary,
 )
-from core.learning.materials import LearningMapService, LearningPlan, synthesize_research_map
+from core.learning.materials import (
+    LearningCitation,
+    LearningMapService,
+    LearningPlan,
+    synthesize_research_map,
+)
 from core.learning.research import LearningResearchOutcome
 from core.learning.tasks import LearningTask
 
@@ -90,6 +97,7 @@ class LearningExecutionService:
                     task=task,
                     context=context,
                     idempotency_key=idempotency_key,
+                    claim=claim,
                 )
             elif claim.checkpoint.stage not in {
                 "artifact_ready",
@@ -107,6 +115,7 @@ class LearningExecutionService:
                     context=context,
                     checkpoint=claim.checkpoint,
                     idempotency_key=idempotency_key,
+                    claim=claim,
                 )
             response = self.resume(
                 owner_id=owner_id,
@@ -122,6 +131,15 @@ class LearningExecutionService:
                 response=response,
             )
             return response
+        except asyncio.CancelledError:
+            self.store.fail_advance_request(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                task_id=task.task_id,
+                claim=claim,
+                error_code="cancelled",
+            )
+            raise
         except Exception as exc:
             self.store.fail_advance_request(
                 owner_id=owner_id,
@@ -155,6 +173,7 @@ class LearningExecutionService:
         task: LearningTask,
         context: LearningExecutionContext,
         idempotency_key: str,
+        claim: LearningAdvanceClaim,
     ) -> None:
         outcome = await self.map_service.build(
             owner_id=owner_id,
@@ -184,6 +203,7 @@ class LearningExecutionService:
             evidence_count=len(outcome.citations),
             citation_count=len(outcome.citations),
             gap_codes=(outcome.gap_reason,) if outcome.gap_reason else (),
+            claim=claim,
         )
 
     async def _advance_stage(
@@ -196,6 +216,7 @@ class LearningExecutionService:
         context: LearningExecutionContext,
         checkpoint: LearningCheckpoint,
         idempotency_key: str,
+        claim: LearningAdvanceClaim,
     ) -> None:
         values = await self._next_values(
             owner_id=owner_id,
@@ -208,7 +229,8 @@ class LearningExecutionService:
         self.store.advance_checkpoint(
             owner_id=owner_id,
             workspace_id=workspace_id,
-            task_id=task.task_id,
+            task=task,
+            plan=plan,
             expected_checkpoint_revision=checkpoint.checkpoint_revision,
             lease_owner_id=checkpoint.lease_owner_id,
             fencing_token=checkpoint.fencing_token,
@@ -220,6 +242,7 @@ class LearningExecutionService:
             stage=cast(LearningCheckpointStage, values["stage"]),
             next_action=str(values["next_action"]),
             idempotency_key=idempotency_key,
+            claim=claim,
         )
 
     async def _next_values(
@@ -300,7 +323,35 @@ class LearningExecutionService:
             )
             research_receipt_ref = stored_receipt.receipt_ref
         if outcome.status == "succeeded":
-            artifact_payload, citations = synthesize_research_map(task, plan, outcome.evidence)
+            current_artifact = self.store.read_artifact(
+                owner_id=owner_id,
+                workspace_id=workspace_id,
+                artifact_ref=self.store.checkpoint(
+                    owner_id=owner_id,
+                    workspace_id=workspace_id,
+                    task_id=task.task_id,
+                ).artifact_ref,
+            )
+            base_citations = tuple(
+                LearningCitation(
+                    citation_id=item.evidence_ref,
+                    title=item.title,
+                    content="",
+                    content_hash=item.content_hash,
+                    page_revision=item.page_revision,
+                    source_revision=item.source_revision,
+                    url=item.url,
+                    fetched_at=item.fetched_at,
+                    conflict_group=item.conflict_group,
+                )
+                for item in current_artifact.citations
+            )
+            artifact_payload, citations = synthesize_research_map(
+                task,
+                plan,
+                outcome.evidence,
+                base_citations=base_citations,
+            )
             artifact = self.store.save_artifact(
                 owner_id=owner_id,
                 workspace_id=workspace_id,

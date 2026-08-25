@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sage_harness import KnowledgeEvidence, KnowledgeRetrievalResult
 
+from api import coding as coding_api
 from api import learning as learning_api
+from api.coding import CodingRuntimeRehydrateError
 from api.main import create_app
 from api.schemas import LearningErrorResponse
 from core.learning import LearningExecutionContext, LearningExecutionService, LearningMapService
@@ -132,7 +135,9 @@ def test_advance_resume_and_scoped_artifact_get(tmp_path: Path, monkeypatch) -> 
         assert first.headers["cache-control"] == "no-store"
         assert replay.json() == first.json()
         assert stale.status_code == 409
-        assert stale.json()["detail"]["code"] == "learning_resume_checkpoint_conflict"
+        assert LearningErrorResponse.model_validate(stale.json()).detail.code == (
+            "learning_resume_checkpoint_conflict"
+        )
         assert "Large evidence body" not in first.text
 
         resume = client.get(f"/api/v1/learning/tasks/{task['task_id']}/resume")
@@ -159,11 +164,17 @@ def test_learning_l3_openapi_declares_browser_contracts(tmp_path: Path) -> None:
     assert "post" in paths[f"{base}/advance"]
     assert "get" in paths[f"{base}/resume"]
     assert "get" in paths[f"{base}/artifacts/{{artifact_id}}"]
-    for status_code in ("409", "503"):
-        response_schema = paths[f"{base}/advance"]["post"]["responses"][status_code]["content"][
-            "application/json"
-        ]["schema"]
-        assert response_schema["$ref"].endswith("/LearningErrorResponse")
+    operations = (
+        paths[f"{base}/advance"]["post"],
+        paths[f"{base}/resume"]["get"],
+        paths[f"{base}/artifacts/{{artifact_id}}"]["get"],
+    )
+    for operation in operations:
+        for status_code in ("404", "409", "422", "503"):
+            response_schema = operation["responses"][status_code]["content"]["application/json"][
+                "schema"
+            ]
+            assert response_schema["$ref"].endswith("/LearningErrorResponse")
     error_detail = schema["components"]["schemas"]["LearningErrorDetail"]
     code_schema = error_detail["properties"]["code"]
     assert code_schema["$ref"].endswith("/LearningFailureCode")
@@ -171,7 +182,7 @@ def test_learning_l3_openapi_declares_browser_contracts(tmp_path: Path) -> None:
 
 def test_missing_and_invalid_learning_task_ids_return_structured_errors(tmp_path: Path) -> None:
     with TestClient(_app(tmp_path)) as client:
-        missing = client.get("/api/v1/learning/tasks/ltask_missing/resume")
+        missing = client.get(f"/api/v1/learning/tasks/ltask_{'0' * 32}/resume")
         invalid = client.get("/api/v1/learning/tasks/not-a-learning-task/resume")
 
     assert missing.status_code == 404
@@ -181,6 +192,104 @@ def test_missing_and_invalid_learning_task_ids_return_structured_errors(tmp_path
     assert invalid.status_code == 422
     assert LearningErrorResponse.model_validate(invalid.json()).detail.code == (
         "learning_task_invalid_id"
+    )
+
+
+@pytest.mark.parametrize(
+    "task_id",
+    (
+        "ltask_",
+        f"ltask_{'a' * 31}",
+        f"ltask_{'a' * 33}",
+        f"ltask_{'A' * 32}",
+        f"ltask_{'a' * 31}!",
+    ),
+)
+def test_noncanonical_task_ids_fail_before_store_access(tmp_path: Path, task_id: str) -> None:
+    app = _app(tmp_path)
+    app.state.learning_task_service = None
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/learning/tasks/{task_id}/resume")
+
+    assert response.status_code == 422
+    assert LearningErrorResponse.model_validate(response.json()).detail.code == (
+        "learning_task_invalid_id"
+    )
+
+
+@pytest.mark.parametrize(
+    "artifact_id",
+    (
+        "lart_",
+        f"lart_{'a' * 23}",
+        f"lart_{'a' * 25}",
+        f"lart_{'A' * 24}",
+        f"lart_{'a' * 23}!",
+    ),
+)
+def test_noncanonical_artifact_ids_fail_before_store_access(
+    tmp_path: Path, artifact_id: str
+) -> None:
+    app = _app(tmp_path)
+    app.state.learning_readonly_scope_resolver = None
+    task_id = f"ltask_{'0' * 32}"
+    with TestClient(app) as client:
+        response = client.get(f"/api/v1/learning/tasks/{task_id}/artifacts/{artifact_id}")
+
+    assert response.status_code == 422
+    assert LearningErrorResponse.model_validate(response.json()).detail.code == (
+        "learning_request_invalid"
+    )
+
+
+def test_request_validation_and_execution_helpers_return_structured_errors(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    with TestClient(app) as client:
+        task = _active_task(client)
+        invalid = client.post(
+            f"/api/v1/learning/tasks/{task['task_id']}/advance",
+            headers={"Idempotency-Key": "invalid-revision"},
+            json={"expected_checkpoint_revision": -1},
+        )
+        app.state.learning_artifact_store = None
+        unavailable = client.get(f"/api/v1/learning/tasks/{task['task_id']}/resume")
+
+    assert invalid.status_code == 422
+    assert LearningErrorResponse.model_validate(invalid.json()).detail.code == (
+        "learning_request_invalid"
+    )
+    assert unavailable.status_code == 503
+    assert LearningErrorResponse.model_validate(unavailable.json()).detail.code == (
+        "learning_artifact_store_unavailable"
+    )
+
+
+def test_runtime_rehydrate_failure_is_closed_structured_503(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    app = _app(tmp_path)
+
+    async def fail_rehydrate(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise CodingRuntimeRehydrateError
+
+    monkeypatch.setattr(coding_api, "_rehydrate_coding_runtime", fail_rehydrate)
+    with TestClient(app, raise_server_exceptions=False) as client:
+        task = _active_task(client)
+        kickoff = client.post(
+            f"/api/v1/learning/tasks/{task['task_id']}/kickoff",
+            headers={"Idempotency-Key": "rehydrate-kickoff"},
+            json={"expected_revision": task["task_revision"]},
+        )
+        assert kickoff.status_code == 200, kickoff.text
+        response = client.post(
+            f"/api/v1/learning/tasks/{task['task_id']}/advance",
+            headers={"Idempotency-Key": "rehydrate-advance"},
+            json={"expected_checkpoint_revision": 0},
+        )
+
+    assert response.status_code == 503
+    assert LearningErrorResponse.model_validate(response.json()).detail.code == (
+        "learning_runtime_rehydrate_failed"
     )
 
 

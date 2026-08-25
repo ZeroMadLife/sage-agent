@@ -265,6 +265,55 @@ async def test_research_receipt_is_durable_and_scope_bound(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_terminal_budget_exhaustion_receipt_persists_actual_overrun(tmp_path: Path) -> None:
+    store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
+    outcome = await _outcome()
+    receipt = LearningResearchReceipt(
+        schema_version=1,
+        receipt_id="",
+        owner_id="local",
+        workspace_id="workspace-1",
+        task_id=_task().task_id,
+        task_revision=_task().task_revision,
+        plan_id=outcome.plan.plan_id,
+        plan_revision=outcome.plan.plan_revision,
+        unit_id=outcome.plan.units[0].unit_id,
+        parent_run_id="run-parent",
+        child_run_id="run-child-overrun",
+        capability_revision=outcome.plan.capability_revision,
+        source_policy_revision=outcome.plan.source_policy_revision,
+        query_receipt_hash="lquery_overrun",
+        token_budget=2_000,
+        max_steps=4,
+        timeout_seconds=20,
+        actual_token_usage=2_500,
+        actual_tool_count=7,
+        actual_elapsed_seconds=0.4,
+        allowed_domains=(),
+        freshness="all",
+        risk_decision="general_education",
+        terminal_status="budget_exhausted",
+        reason_code="learning_research_step_budget_exhausted",
+    )
+    receipt = replace(receipt, receipt_id=canonical_learning_research_receipt_id(receipt))
+
+    stored = store.save_research_receipt(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        receipt=receipt,
+    )
+    reopened = LearningArtifactStore(store.database_path).read_research_receipt(
+        owner_id="local",
+        workspace_id="workspace-1",
+        receipt_ref=stored.receipt_ref,
+    )
+    assert reopened.receipt.actual_token_usage == 2_500
+    assert reopened.receipt.actual_tool_count == 7
+
+
+@pytest.mark.asyncio
 async def test_research_receipt_identity_is_scoped_across_owners(tmp_path: Path) -> None:
     first_outcome = await _outcome(owner_id="owner-a")
     second_outcome = await _outcome(owner_id="owner-b")
@@ -345,7 +394,8 @@ async def test_checkpoint_cas_and_fencing_reject_stale_writer(tmp_path: Path) ->
         store.advance_checkpoint(
             owner_id="local",
             workspace_id="workspace-1",
-            task_id="ltask-1",
+            task=_task(),
+            plan=outcome.plan,
             expected_checkpoint_revision=first.checkpoint_revision,
             lease_owner_id="writer-a",
             fencing_token=first.fencing_token,
@@ -359,7 +409,8 @@ async def test_checkpoint_cas_and_fencing_reject_stale_writer(tmp_path: Path) ->
     advanced = store.advance_checkpoint(
         owner_id="local",
         workspace_id="workspace-1",
-        task_id="ltask-1",
+        task=_task(),
+        plan=outcome.plan,
         expected_checkpoint_revision=second.checkpoint_revision,
         lease_owner_id="writer-b",
         fencing_token=second.fencing_token,
@@ -374,7 +425,8 @@ async def test_checkpoint_cas_and_fencing_reject_stale_writer(tmp_path: Path) ->
         store.advance_checkpoint(
             owner_id="local",
             workspace_id="workspace-1",
-            task_id="ltask-1",
+            task=_task(),
+            plan=outcome.plan,
             expected_checkpoint_revision=second.checkpoint_revision,
             lease_owner_id="writer-b",
             fencing_token=second.fencing_token,
@@ -394,7 +446,8 @@ async def test_checkpoint_cas_and_fencing_reject_stale_writer(tmp_path: Path) ->
         store.advance_checkpoint(
             owner_id="local",
             workspace_id="workspace-1",
-            task_id="ltask-1",
+            task=_task(),
+            plan=outcome.plan,
             expected_checkpoint_revision=advanced.checkpoint_revision,
             lease_owner_id="writer-b",
             fencing_token=second.fencing_token,
@@ -435,7 +488,8 @@ async def test_resume_is_browser_safe_and_fails_on_revision_drift(tmp_path: Path
     store.advance_checkpoint(
         owner_id="local",
         workspace_id="workspace-1",
-        task_id="ltask-1",
+        task=_task(),
+        plan=outcome.plan,
         expected_checkpoint_revision=checkpoint.checkpoint_revision,
         lease_owner_id="writer-a",
         fencing_token=checkpoint.fencing_token,
@@ -489,6 +543,95 @@ async def test_resume_is_browser_safe_and_fails_on_revision_drift(tmp_path: Path
             task=source_drift,
             capability_revision="cap-r1",
         )
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_same_scope_artifact_from_another_task(tmp_path: Path) -> None:
+    store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
+    first_task = _task()
+    first_outcome = await _outcome()
+    store.begin_execution(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=first_task,
+        plan=first_outcome.plan,
+        lease_owner_id="writer-a",
+    )
+    second_task = replace(
+        _task(),
+        task_id="ltask-2",
+        learning_goal_ref={"goal_id": "goal-2", "goal_revision": "goal-r1"},
+    )
+    second_outcome = await LearningMapService(knowledge_port=FakeKnowledgePort()).build(
+        owner_id="local",
+        task=second_task,
+        parent_run_id="run-parent-2",
+        capability_revision="cap-r1",
+        catalog_revision="catalog-r1",
+    )
+    second_artifact = store.save_artifact(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=second_task,
+        plan=second_outcome.plan,
+        artifact=second_outcome.artifact,
+        citations=second_outcome.citations,
+        idempotency_key="task-2-artifact",
+        retention="task",
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE learning_checkpoints SET artifact_ref = ? WHERE task_id = ?",
+            (second_artifact.artifact_ref, first_task.task_id),
+        )
+
+    before = store.checkpoint(
+        owner_id="local", workspace_id="workspace-1", task_id=first_task.task_id
+    )
+    with pytest.raises(LearningResumeConflictError):
+        store.resume(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=first_task,
+            capability_revision="cap-r1",
+        )
+    after = store.checkpoint(
+        owner_id="local", workspace_id="workspace-1", task_id=first_task.task_id
+    )
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_final_checkpoint_cas_matches_all_frozen_bindings(tmp_path: Path) -> None:
+    outcome = await _outcome()
+    store = LearningArtifactStore(tmp_path / "learning-artifacts.sqlite3")
+    checkpoint = store.begin_execution(
+        owner_id="local",
+        workspace_id="workspace-1",
+        task=_task(),
+        plan=outcome.plan,
+        lease_owner_id="writer-a",
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        connection.execute(
+            "UPDATE learning_checkpoints SET catalog_revision = 'catalog-drift' WHERE task_id = ?",
+            (_task().task_id,),
+        )
+    before = store.checkpoint(owner_id="local", workspace_id="workspace-1", task_id=_task().task_id)
+    with pytest.raises(LearningResumeConflictError):
+        store.advance_checkpoint(
+            owner_id="local",
+            workspace_id="workspace-1",
+            task=_task(),
+            plan=outcome.plan,
+            expected_checkpoint_revision=checkpoint.checkpoint_revision,
+            lease_owner_id="writer-a",
+            fencing_token=checkpoint.fencing_token,
+            stage="knowledge_ready",
+            next_action="synthesize",
+        )
+    after = store.checkpoint(owner_id="local", workspace_id="workspace-1", task_id=_task().task_id)
+    assert after == before
 
 
 def test_citation_payload_type_is_not_required_by_checkpoint() -> None:
