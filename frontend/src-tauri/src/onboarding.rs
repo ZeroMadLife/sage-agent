@@ -1719,17 +1719,19 @@ impl OnboardingService {
         operation_id: &str,
         key_ref: &str,
     ) -> Result<(), DesktopActionError> {
-        if self.delete_secret_if_present(key_ref).is_err() {
-            let recorded = reconciliation_commit(lease, || {
-                self.record_operation_error(operation_id, "provider_reconciliation_required");
-                Ok(())
-            });
-            return match recorded {
-                Ok(()) => Err(DesktopActionError::reconciliation()),
-                Err(error) => Err(error),
-            };
+        let delete_error = match self.delete_secret_if_present(key_ref) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        let reason_code = delete_error.reason_code;
+        let recorded = reconciliation_commit(lease, || {
+            self.record_operation_error(operation_id, reason_code);
+            Ok(())
+        });
+        match recorded {
+            Ok(()) => Err(delete_error),
+            Err(error) => Err(error),
         }
-        Ok(())
     }
 
     fn active_provider_id(&self) -> Result<Option<String>, DesktopActionError> {
