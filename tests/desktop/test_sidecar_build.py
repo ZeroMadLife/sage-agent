@@ -20,6 +20,7 @@ from desktop.sidecar.build import (
     build_receipt,
     parse_lock_manifest,
     smoke_packaged_artifact,
+    smoke_packaged_learning,
     smoke_packaged_product,
     verify_artifact_hygiene,
     verify_environment_manifest,
@@ -67,6 +68,27 @@ def test_source_product_smoke_executes_model_rag_and_side_effect_boundaries(
         "local_sqlite_rag": "passed",
         "product_secret_hygiene": "passed",
         "side_effect_tools_blocked": "passed",
+    }
+
+
+def test_source_learning_smoke_executes_task_and_restart_resume(tmp_path: Path) -> None:
+    executable = tmp_path / "source-sidecar-learning"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        f"sys.path.insert(0, {str(ROOT)!r})\n"
+        f"sys.path.insert(0, {str(ROOT / 'packages' / 'sage_harness')!r})\n"
+        "from desktop.sidecar.__main__ import main\n"
+        "raise SystemExit(main())\n",
+        encoding="utf-8",
+    )
+    executable.chmod(0o755)
+
+    receipt = smoke_packaged_learning(executable, source_sha="dev", timeout=30)
+
+    assert receipt == {
+        "learning_restart_resume": "passed",
+        "learning_task_flow": "passed",
     }
 
 

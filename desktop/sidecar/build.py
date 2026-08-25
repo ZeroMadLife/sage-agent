@@ -1000,6 +1000,266 @@ def _product_smoke_receipt(executed_assertions: Sequence[str]) -> dict[str, str]
     }
 
 
+def smoke_packaged_learning(
+    executable: Path,
+    *,
+    source_sha: str,
+    timeout: float = 30,
+) -> dict[str, str]:
+    """Verify the frozen sidecar's local Learning L3 flow and restart resume."""
+    env = {
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+    }
+    secret = "test-secret-packaged-learning-smoke"
+    bearer = "test-bearer-packaged-learning-smoke"
+
+    def start_process(
+        *, data_dir: Path, workspace: Path, instance_id: str
+    ) -> tuple[subprocess.Popen[str], Any, int]:
+        # The stream outlives this helper until the caller has stopped the sidecar.
+        stderr_stream = tempfile.TemporaryFile(mode="w+", encoding="utf-8")  # noqa: SIM115
+        process = subprocess.Popen(
+            [str(executable), "--desktop-host"],
+            cwd=str(workspace.parent),
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=stderr_stream,
+            start_new_session=True,
+            text=True,
+        )
+        try:
+            if process.stdin is None:
+                raise RuntimeError("packaged learning sidecar stdin is unavailable")
+            process.stdin.write(
+                json.dumps(
+                    {
+                        "instance_id": instance_id,
+                        "nonce": f"{instance_id}-nonce",
+                        "bearer": bearer,
+                        "origin": "tauri://localhost",
+                        "data_dir": str(data_dir),
+                        "runtime": {
+                            "workspace_path": str(workspace),
+                            "provider": {
+                                "provider_id": "packaged-learning-provider",
+                                "base_url": provider_base_url,
+                                "default_model": "model-smoke",
+                                "api_mode": "openai_chat_completions",
+                                "api_key": secret,
+                            },
+                        },
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            process.stdin.flush()
+            startup = _read_startup_receipt(process, timeout)
+            if startup.get("build_sha") != source_sha:
+                raise RuntimeError("packaged learning build SHA does not match the receipt")
+            port = startup.get("port")
+            if not isinstance(port, int) or port <= 0:
+                raise RuntimeError("packaged learning sidecar did not bind an OS-assigned port")
+            return process, stderr_stream, port
+        except Exception:
+            if process.stdin is not None:
+                process.stdin.close()
+                process.stdin = None
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+            stderr_stream.close()
+            raise
+
+    def stop_process(process: subprocess.Popen[str], stderr_stream: Any) -> str:
+        if process.stdin is not None:
+            process.stdin.close()
+            process.stdin = None
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+        stderr_stream.seek(0)
+        stderr = stderr_stream.read()
+        stderr_stream.close()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.returncode != 0:
+            raise RuntimeError(
+                f"packaged learning sidecar exited with {process.returncode}: {stderr[-1000:]}"
+            )
+        return stderr
+
+    with (
+        _local_stub_provider() as provider_base_url,
+        tempfile.TemporaryDirectory(prefix="sage-sidecar-learning-smoke-") as temporary,
+    ):
+        root = Path(temporary)
+        data_dir = root / "data"
+        workspace = root / "workspace"
+        workspace.mkdir()
+        evidence_path = workspace / "learning-evidence.md"
+        topic = "理解 Sage 学习任务恢复"
+        desired_outcome = "能够解释本地 RAG 学习材料与重启恢复"
+        evidence_path.write_text(
+            f"# {topic}\n\n本地 RAG 学习材料应支持{desired_outcome}。\n",
+            encoding="utf-8",
+        )
+        headers = {
+            "Authorization": f"Bearer {bearer}",
+            "Origin": "tauri://localhost",
+        }
+        process: subprocess.Popen[str] | None = None
+        stderr_stream: Any | None = None
+        stderr_parts: list[str] = []
+        try:
+            process, stderr_stream, port = start_process(
+                data_dir=data_dir, workspace=workspace, instance_id="packaged-learning-smoke"
+            )
+            ingested = _request_json(
+                port,
+                "/api/v1/knowledge/ingest",
+                headers={**headers, "Content-Type": "application/json"},
+                method="POST",
+                body=json.dumps(
+                    {"source_root_id": "desktop-workspace", "relative_path": evidence_path.name}
+                ).encode(),
+            )
+            if not isinstance(ingested.get("proposal_id"), str):
+                raise RuntimeError("packaged learning ingest did not create a proposal")
+            draft = _request_json(
+                port,
+                "/api/v1/learning/tasks/draft",
+                headers={**headers, "Content-Type": "application/json"},
+                method="POST",
+                body=json.dumps(
+                    {
+                        "topic": topic,
+                        "desired_outcome": desired_outcome,
+                        "starting_level": "beginner",
+                        "time_budget_minutes_per_week": 120,
+                        "source_policy": {
+                            "knowledge": "required",
+                            "web": "forbidden",
+                            "domains": [],
+                            "freshness": "all",
+                        },
+                    }
+                ).encode(),
+            )
+            task_id = draft.get("task_id")
+            if not isinstance(task_id, str):
+                raise RuntimeError("packaged learning draft did not return a task id")
+            activation = _request_json(
+                port,
+                f"/api/v1/learning/tasks/{task_id}/activate",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": "packaged-learning-activate",
+                },
+                method="POST",
+                body=b'{"expected_revision":1}',
+            )
+            if activation.get("receipt_status") != "active":
+                raise RuntimeError("packaged learning activation did not become active")
+            kickoff = _request_json(
+                port,
+                f"/api/v1/learning/tasks/{task_id}/kickoff",
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "Idempotency-Key": "packaged-learning-kickoff",
+                },
+                method="POST",
+                body=b'{"expected_revision":1}',
+            )
+            if kickoff.get("receipt_status") not in {"accepted", "completed"}:
+                raise RuntimeError(f"packaged learning kickoff was not accepted: {kickoff!r}")
+
+            checkpoint_revision = 0
+            stages: list[str] = []
+            resume: dict[str, Any] | None = None
+            for step in range(6):
+                resume = _request_json(
+                    port,
+                    f"/api/v1/learning/tasks/{task_id}/advance",
+                    headers={
+                        **headers,
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": f"packaged-learning-advance-{step}",
+                    },
+                    method="POST",
+                    body=json.dumps(
+                        {"expected_checkpoint_revision": checkpoint_revision}
+                    ).encode(),
+                )
+                stage = resume.get("stage")
+                if not isinstance(stage, str):
+                    raise RuntimeError("packaged learning advance omitted stage")
+                stages.append(stage)
+                checkpoint_revision = int(resume.get("checkpoint_revision", -1))
+                if stage == "artifact_ready":
+                    break
+            if stages != ["knowledge_pending", "knowledge_ready", "synthesize_pending", "artifact_ready"]:
+                raise RuntimeError(f"packaged learning stages were unexpected: {stages!r}")
+            if resume is None or resume.get("artifact", {}).get("status") != "ready":
+                raise RuntimeError("packaged learning did not produce a ready artifact")
+            artifact_summary = resume.get("artifact")
+            if not isinstance(artifact_summary, dict) or int(artifact_summary.get("citation_count", 0)) < 1:
+                raise RuntimeError("packaged learning artifact did not retain a citation")
+            artifact_id = artifact_summary.get("artifact_id")
+            if not isinstance(artifact_id, str):
+                raise RuntimeError("packaged learning artifact id is missing")
+            artifact = _request_json(
+                port,
+                f"/api/v1/learning/tasks/{task_id}/artifacts/{artifact_id}",
+                headers=headers,
+            )
+            if artifact.get("status") != "ready" or not artifact.get("citations"):
+                raise RuntimeError("packaged learning artifact GET lost ready citations")
+            stderr_parts.append(stop_process(process, stderr_stream))
+            process = None
+            stderr_stream = None
+
+            process, stderr_stream, port = start_process(
+                data_dir=data_dir, workspace=workspace, instance_id="packaged-learning-restart"
+            )
+            resumed = _request_json(
+                port,
+                f"/api/v1/learning/tasks/{task_id}/resume",
+                headers=headers,
+            )
+            if resumed.get("stage") != "artifact_ready":
+                raise RuntimeError("packaged learning restart did not resume artifact_ready")
+            resumed_artifact = resumed.get("artifact")
+            if not isinstance(resumed_artifact, dict) or int(
+                resumed_artifact.get("citation_count", 0)
+            ) < 1:
+                raise RuntimeError("packaged learning restart lost artifact citation")
+            stderr_parts.append(stop_process(process, stderr_stream))
+            process = None
+            stderr_stream = None
+        finally:
+            if process is not None and stderr_stream is not None:
+                with suppress(Exception):
+                    stderr_parts.append(stop_process(process, stderr_stream))
+        if any(secret in stderr for stderr in stderr_parts):
+            raise RuntimeError("packaged learning secret leaked to stderr")
+        for path in root.rglob("*"):
+            if path.is_file() and _contains_bytes(path, (secret.encode(),)):
+                raise RuntimeError("packaged learning secret leaked to local state")
+    return {
+        "learning_task_flow": "passed",
+        "learning_restart_resume": "passed",
+    }
+
+
 def _exercise_packaged_model_turn(
     port: int,
     *,
@@ -1254,6 +1514,7 @@ def build(output_dir: Path) -> Path:
     )
     smoke = smoke_packaged_artifact(executable, source_sha=source_sha)
     smoke.update(smoke_packaged_product(executable, source_sha=source_sha))
+    smoke.update(smoke_packaged_learning(executable, source_sha=source_sha))
     final_receipt = build_receipt(
         artifact_dir=artifact_dir,
         source_sha=source_sha,
