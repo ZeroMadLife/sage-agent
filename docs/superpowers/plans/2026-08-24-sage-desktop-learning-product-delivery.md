@@ -707,6 +707,28 @@ Provider、capability 与 artifact smoke 合同保持不变。
   对原始 sidecar 和 `.app` 分别只读重跑，均得到有效 `269/269`。当前候选只等待第七轮中枢三镜头短审；
   未 push、未建 PR、未合入，也未删除分支或 worktree。
 
+### D2.7 实施收口（2026-08-25，artifact 待生成）
+
+- **mini-spec**：`RetryProviderReconciliation` 必须先取得 host-owned restart reconciliation lease，
+  再在锁外执行 Keychain 长调用；每个 operation 的 journal/metadata 终结动作回到同一 lease 的短
+  host+SQLite commit。write-ahead reservation 或 epoch 漂移时不发布可见 metadata，pending journal 与
+  restart receipt 均保留，动作返回 `desktop_configuration_superseded` 或结构化 reconciliation error。
+  不以空 commit 事后复验替代 admission。
+- **Probe 错误合同**：production guard 下 invalid/unavailable probe failure 通过既有
+  `run_configuration_commit` 写入 `status=error` 与精确 `reason_code`；有效 lease 成功返回原 probe
+  error，lease 漂移只返回 superseded 且不改 Provider metadata。
+- **Red/Green**：先以 delete barrier 固定 reconciliation drift 会提前删除 operation 且丢 restart receipt，
+  再以 valid-lease failure 与 probe drift barrier 固定 error metadata 缺失/错误分类；Green 后新增
+  `ConfigurationReconciliationLease`、lease-safe journal cleanup、probe failure CAS 与三个 production
+  caller tests，Keychain 长调用仍不持有 host mutex。
+- **源码门禁**：代码 commit `8efb4e2`；Rust focused supervisor `36`、onboarding `7`、Provider contract
+  `14`，Rust full `47`，fmt 与 Clippy `-D warnings` 通过；临时 Keychain round-trip/cleanup 通过；Python
+  desktop `61`、source product smoke `1`、Vue host adapter/HostGate focused `39`，标准与 public Vue
+  production build 通过。Vue full `548/552`，剩余 4 项为既有 router/Settings 超时或 legacy evolution
+  路由兼容失败，与本轮 Rust 变更无关。`git diff --check` 通过。
+- **待完成**：下一笔 clean docs HEAD 固定后，从全新输出目录重建正式 arm64 bundle，补 source/dirty、12+6
+  smoke、269 manifest、strict codesign、secret scan、零残留与 code/docs/receipt SHA；不复用 D2.6 receipt。
+
 ## 8. 切片 D3：Cloud OAuth 与桌面会话
 
 **交付行为**
