@@ -463,8 +463,8 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 ## L3.1 第八轮复审固定点（2026-08-25）
 
-- code candidate：`dd9c93f`；docs candidate 将在本段更新后单独提交；两者均只在本地，未 push、未建 PR、未合入。
+- code candidate：`dd9c93f`；本地中枢复核已通过，docs candidate 随本段更新后单独提交；两者均只在本地，未 push、未建 PR、未合入。
 - implemented：Knowledge coverage 不再用 `bool(citations)`，并以完整 token/CJK phrase 语义交集保守判定；首个 Knowledge search 前接入 scope revalidator barrier；Research receipt 对 HTTPS/domain/freshness、evidence ref/title/hash/time/kind/conflict group 做 canonical readback 校验；hard deadline 不叠加固定 cancel grace；SQLite connect/BEGIN 失败释放锁，API 将 sqlite 故障映射为结构化 storage-unavailable 503。
 - fixture-verified：L3 focused `69 passed`；受控 Vue `71 files / 527 passed`；真实 FastAPI + SQLite Playwright `3 passed`；Python 全量 `2168 passed, 12 skipped, 3 failed`。
 - baseline comparison：3 个失败仍是未修改 `tests/api/test_coding_context_routes.py`；固定 `b036b17` 对照此前同为 `3 failed, 11 passed`，本轮未扩大 Coding 隔离债务。
-- not-proven：当前依赖组合全仓 Mypy 受既有 LangChain/LangGraph stub/API mismatch 影响；changed Research module targeted mypy 通过。fake Knowledge/Provider/Web 不证明真实质量、生产准确率、SLA 或学习效果；当前等待第八轮三镜头复审。
+- not-proven：当前依赖组合全仓 Mypy 受既有 LangChain/LangGraph stub/API mismatch 影响；changed Research module targeted mypy 通过。fake Knowledge/Provider/Web 不证明真实质量、生产准确率、SLA 或学习效果；本地复核通过，但不等同于已发布或已合入。
