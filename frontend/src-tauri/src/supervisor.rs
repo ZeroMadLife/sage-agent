@@ -110,6 +110,7 @@ struct HostInner {
     snapshot_before_ownership_recovery: Option<HostSnapshot>,
     launch_generation: u64,
     configuration_restart_in_progress: bool,
+    configuration_epoch: u64,
 }
 
 impl Default for HostInner {
@@ -127,6 +128,7 @@ impl Default for HostInner {
             snapshot_before_ownership_recovery: None,
             launch_generation: 0,
             configuration_restart_in_progress: false,
+            configuration_epoch: 0,
         }
     }
 }
@@ -140,11 +142,122 @@ impl SharedHostState {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn test_host_with_repository(repository: DesktopStateRepository) -> SharedHostState {
+    let shared = SharedHostState::default();
+    shared.0.lock().expect("host state poisoned").repository = Some(repository);
+    shared
+}
+
+#[cfg(test)]
+pub(crate) fn test_reserve_unpublished(shared: &SharedHostState, record: &OrphanRecord) -> bool {
+    reserve_unpublished_launch_cleanup(shared, record)
+}
+
+#[cfg(test)]
 pub fn configuration_action_failure(
     shared: &SharedHostState,
 ) -> Option<(&'static str, &'static str)> {
     let inner = shared.0.lock().expect("host state poisoned");
     ownership_admission_failure(&inner).map(|reason| (reason, "open_diagnostics"))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ConfigurationActionFailure {
+    pub reason_code: &'static str,
+    pub action: &'static str,
+}
+
+pub(crate) struct ConfigurationMutationGuard {
+    shared: SharedHostState,
+    epoch: u64,
+}
+
+pub(crate) struct ConfigurationMutationCommit<T> {
+    pub value: T,
+    pub restart: Option<ConfigurationRestartReceipt>,
+}
+
+#[derive(Debug)]
+pub(crate) enum ConfigurationMutationCommitError<E> {
+    Admission(ConfigurationActionFailure),
+    Mutation(E),
+}
+
+pub(crate) struct ConfigurationRestartReceipt {
+    request: ConfigurationRestartRequest,
+}
+
+pub(crate) fn acquire_configuration_mutation_guard(
+    shared: &SharedHostState,
+) -> Result<ConfigurationMutationGuard, ConfigurationActionFailure> {
+    let inner = shared.0.lock().expect("host state poisoned");
+    configuration_mutation_failure(&inner)?;
+    Ok(ConfigurationMutationGuard {
+        shared: shared.clone(),
+        epoch: inner.configuration_epoch,
+    })
+}
+
+impl ConfigurationMutationGuard {
+    pub fn validate(&self) -> Result<(), ConfigurationActionFailure> {
+        let inner = self.shared.0.lock().expect("host state poisoned");
+        self.validate_locked(&inner)
+    }
+
+    pub fn commit<T, E, F>(
+        &self,
+        restart_required: bool,
+        mutation: F,
+    ) -> Result<ConfigurationMutationCommit<T>, ConfigurationMutationCommitError<E>>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        let mut inner = self.shared.0.lock().expect("host state poisoned");
+        self.validate_locked(&inner)
+            .map_err(ConfigurationMutationCommitError::Admission)?;
+        let value = mutation().map_err(ConfigurationMutationCommitError::Mutation)?;
+        let restart = restart_required.then(|| ConfigurationRestartReceipt {
+            request: begin_configuration_restart_locked(&mut inner),
+        });
+        Ok(ConfigurationMutationCommit { value, restart })
+    }
+
+    fn validate_locked(&self, inner: &HostInner) -> Result<(), ConfigurationActionFailure> {
+        if inner.configuration_epoch != self.epoch {
+            return Err(configuration_failure(
+                "desktop_configuration_superseded",
+                "retry_provider_action",
+            ));
+        }
+        configuration_mutation_failure(inner)
+    }
+}
+
+fn configuration_mutation_failure(inner: &HostInner) -> Result<(), ConfigurationActionFailure> {
+    if inner.stopping {
+        return Err(configuration_failure("desktop_stopping", "restart_sage"));
+    }
+    if inner.configuration_restart_in_progress {
+        return Err(configuration_failure(
+            "desktop_configuration_restart_in_progress",
+            "wait_for_startup",
+        ));
+    }
+    if let Some(reason_code) = ownership_admission_failure(inner) {
+        return Err(configuration_failure(reason_code, "open_diagnostics"));
+    }
+    Ok(())
+}
+
+fn configuration_failure(
+    reason_code: &'static str,
+    action: &'static str,
+) -> ConfigurationActionFailure {
+    ConfigurationActionFailure {
+        reason_code,
+        action,
+    }
 }
 
 #[derive(Serialize)]
@@ -558,6 +671,7 @@ fn reserve_unpublished_launch_cleanup(shared: &SharedHostState, record: &OrphanR
     let (persisted, prior_health) = {
         let mut inner = shared.0.lock().expect("host state poisoned");
         let prior_health = inner.ownership_recovery;
+        inner.configuration_epoch = inner.configuration_epoch.wrapping_add(1);
         if !inner.unpublished_orphans.contains(record) {
             if inner.unpublished_orphans.is_empty()
                 && inner.ownership_recovery == OwnershipRecoveryState::Healthy
@@ -990,33 +1104,45 @@ fn is_current_generation(shared: &SharedHostState, generation: u64) -> bool {
         == generation
 }
 
-pub fn restart_for_configuration(app: AppHandle, shared: SharedHostState) {
-    let Ok(data_dir) = app.path().app_data_dir() else {
+pub(crate) fn restart_for_configuration(
+    app: AppHandle,
+    shared: SharedHostState,
+    receipt: ConfigurationRestartReceipt,
+) -> Result<(), ConfigurationActionFailure> {
+    let data_dir = app.path().app_data_dir().ok();
+    let data_dir_available = data_dir.is_some();
+    if !data_dir_available {
         set_problem(
             &shared,
             "blocked",
             "desktop_data_dir_unavailable",
             "restart_sage",
         );
-        return;
-    };
-    let Some(request) = begin_configuration_restart(&shared) else {
-        return;
-    };
+    }
+    let request = receipt.request;
     tauri::async_runtime::spawn(async move {
         let stopped = stop_sidecar_for_configuration(&shared, &request).await;
         if !stopped {
             mark_configuration_stop_failed(&shared, &request);
         }
         let completed = finish_configuration_restart(&shared, request.generation);
-        if stopped
-            && completed
-            && !shared.is_stopping()
-            && is_current_generation(&shared, request.generation)
-        {
+        if let Some(data_dir) = data_dir.filter(|_| {
+            stopped
+                && completed
+                && !shared.is_stopping()
+                && is_current_generation(&shared, request.generation)
+        }) {
             schedule_launch(app, shared, data_dir, Duration::ZERO, request.generation);
         }
     });
+    if !data_dir_available {
+        Err(configuration_failure(
+            "desktop_data_dir_unavailable",
+            "restart_sage",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1025,18 +1151,24 @@ struct ConfigurationRestartRequest {
     orphan: Option<OrphanRecord>,
 }
 
+#[cfg(test)]
 fn begin_configuration_restart(shared: &SharedHostState) -> Option<ConfigurationRestartRequest> {
     let mut inner = shared.0.lock().expect("host state poisoned");
     if inner.configuration_restart_in_progress || ownership_admission_failure(&inner).is_some() {
         return None;
     }
+    Some(begin_configuration_restart_locked(&mut inner))
+}
+
+fn begin_configuration_restart_locked(inner: &mut HostInner) -> ConfigurationRestartRequest {
     inner.snapshot = HostSnapshot::starting();
     inner.launch_generation = inner.launch_generation.wrapping_add(1);
     inner.configuration_restart_in_progress = true;
-    Some(ConfigurationRestartRequest {
+    inner.configuration_epoch = inner.configuration_epoch.wrapping_add(1);
+    ConfigurationRestartRequest {
         generation: inner.launch_generation,
         orphan: inner.disk.orphan.clone(),
-    })
+    }
 }
 
 async fn stop_sidecar_for_configuration(
@@ -1352,10 +1484,24 @@ struct UnpublishedStartupReconciliation {
 
 fn reconcile_unpublished_startup<F>(
     repository: &DesktopStateRepository,
-    mut terminate: F,
+    terminate: F,
 ) -> UnpublishedStartupReconciliation
 where
     F: FnMut(&OrphanRecord) -> std::io::Result<crate::lifecycle::TerminationOutcome>,
+{
+    reconcile_unpublished_startup_with_replace(repository, terminate, |repository, remaining| {
+        repository.replace_unpublished_orphans_verified(remaining)
+    })
+}
+
+fn reconcile_unpublished_startup_with_replace<F, R>(
+    repository: &DesktopStateRepository,
+    mut terminate: F,
+    replace_and_reload: R,
+) -> UnpublishedStartupReconciliation
+where
+    F: FnMut(&OrphanRecord) -> std::io::Result<crate::lifecycle::TerminationOutcome>,
+    R: FnOnce(&DesktopStateRepository, &[OrphanRecord]) -> std::io::Result<Vec<OrphanRecord>>,
 {
     let original = match repository.load_unpublished_orphans() {
         Ok(records) => records,
@@ -1380,20 +1526,23 @@ where
             }
         }
     }
-    if repository.replace_unpublished_orphans(&remaining).is_err() {
-        return UnpublishedStartupReconciliation {
-            records: original,
-            health: OwnershipRecoveryState::PersistFailed,
-            cleanup_failed,
-        };
-    }
+    let verified_remaining = match replace_and_reload(repository, &remaining) {
+        Ok(records) => records,
+        Err(_) => {
+            return UnpublishedStartupReconciliation {
+                records: original,
+                health: OwnershipRecoveryState::PersistFailed,
+                cleanup_failed,
+            };
+        }
+    };
     UnpublishedStartupReconciliation {
-        health: if remaining.is_empty() {
+        health: if verified_remaining.is_empty() {
             OwnershipRecoveryState::Healthy
         } else {
             OwnershipRecoveryState::Recovering
         },
-        records: remaining,
+        records: verified_remaining,
         cleanup_failed,
     }
 }
@@ -1486,15 +1635,16 @@ fn append_diagnostic(
 #[cfg(test)]
 mod tests {
     use super::{
-        append_diagnostic, apply_startup_termination_outcome, begin_configuration_restart,
-        commit_launch_success, finalize_rejected_launch, finish_configuration_restart,
-        finish_runtime_termination, finish_runtime_termination_for_generation,
-        finish_unpublished_launch_cleanup, mark_configuration_stop_failed, origin_for_profile,
-        post_handshake_reject_reason, reconcile_unpublished_startup, record_launch_failure,
-        record_launch_failure_with_hook, reserve_unpublished_launch_cleanup, runtime_origin,
-        transition_launch_to_starting, ConfigurationRestartRequest, DesktopStateRepository,
-        DiagnosticLog, HostSnapshot, OwnershipRecoveryState, SharedHostState, DEVELOPMENT_ORIGIN,
-        PRODUCTION_ORIGIN,
+        acquire_configuration_mutation_guard, append_diagnostic, apply_startup_termination_outcome,
+        begin_configuration_restart, commit_launch_success, finalize_rejected_launch,
+        finish_configuration_restart, finish_runtime_termination,
+        finish_runtime_termination_for_generation, finish_unpublished_launch_cleanup,
+        mark_configuration_stop_failed, origin_for_profile, post_handshake_reject_reason,
+        reconcile_unpublished_startup, reconcile_unpublished_startup_with_replace,
+        record_launch_failure, record_launch_failure_with_hook, reserve_unpublished_launch_cleanup,
+        runtime_origin, transition_launch_to_starting, ConfigurationMutationCommitError,
+        ConfigurationRestartRequest, DesktopStateRepository, DiagnosticLog, HostSnapshot,
+        OwnershipRecoveryState, SharedHostState, DEVELOPMENT_ORIGIN, PRODUCTION_ORIGIN,
     };
     use crate::lifecycle::{OrphanRecord, TerminationOutcome};
     use crate::protocol::DesktopSession;
@@ -2243,6 +2393,51 @@ mod tests {
     }
 
     #[test]
+    fn startup_verified_reload_failure_or_drift_retains_original_ownership() {
+        for mode in ["parse", "io", "drift"] {
+            let root = tempfile::tempdir().unwrap();
+            let repository = DesktopStateRepository::new(root.path().join("state.json"));
+            let record = OrphanRecord {
+                pid: 42,
+                start_time: 100,
+                executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+            };
+            repository.add_unpublished_orphan(&record).unwrap();
+
+            let recovery = reconcile_unpublished_startup_with_replace(
+                &repository,
+                |_| Ok(TerminationOutcome::IdentityChanged),
+                |repository, remaining| {
+                    repository.replace_unpublished_orphans_verified_with(remaining, |path| {
+                        match mode {
+                            "parse" => std::fs::write(path, b"not-json"),
+                            "io" => {
+                                std::fs::remove_file(path)?;
+                                std::fs::create_dir(path)
+                            }
+                            "drift" => std::fs::write(
+                                path,
+                                serde_json::to_vec(&serde_json::json!({
+                                    "unpublished_orphans": [{
+                                        "pid": 99,
+                                        "start_time": 199,
+                                        "executable": "/Applications/Sage.app/Contents/Resources/sidecar/sage-api"
+                                    }]
+                                }))
+                                .map_err(std::io::Error::other)?,
+                            ),
+                            _ => unreachable!(),
+                        }
+                    })
+                },
+            );
+
+            assert_eq!(recovery.health, OwnershipRecoveryState::PersistFailed);
+            assert_eq!(recovery.records, [record]);
+        }
+    }
+
+    #[test]
     fn startup_replace_failure_retains_original_ownership_and_closes_health_gate() {
         let root = tempfile::tempdir().unwrap();
         let shared = SharedHostState::default();
@@ -2428,6 +2623,48 @@ mod tests {
         assert!(second.is_none());
         assert_eq!(shared.0.lock().unwrap().launch_generation, first.generation);
         assert!(finish_configuration_restart(&shared, first.generation));
+    }
+
+    #[test]
+    fn configuration_mutation_lease_is_invalidated_by_write_ahead_reservation() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = DesktopStateRepository::new(root.path().join("state.json"));
+        let shared = SharedHostState::default();
+        shared.0.lock().unwrap().repository = Some(repository.clone());
+        let lease = acquire_configuration_mutation_guard(&shared).unwrap();
+        let record = OrphanRecord {
+            pid: 73,
+            start_time: 173,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        };
+
+        assert!(reserve_unpublished_launch_cleanup(&shared, &record));
+        let committed = lease.commit(false, || Ok::<_, ()>("metadata-visible"));
+
+        assert!(matches!(
+            committed,
+            Err(ConfigurationMutationCommitError::Admission(_))
+        ));
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [record]);
+    }
+
+    #[test]
+    fn configuration_commit_atomically_owns_one_restart_receipt() {
+        let shared = SharedHostState::default();
+        let lease = acquire_configuration_mutation_guard(&shared).unwrap();
+
+        let committed = lease
+            .commit(true, || Ok::<_, ()>("metadata-visible"))
+            .unwrap();
+
+        assert_eq!(committed.value, "metadata-visible");
+        assert!(committed.restart.is_some());
+        let inner = shared.0.lock().unwrap();
+        assert!(inner.configuration_restart_in_progress);
+        assert_eq!(inner.snapshot.state, "starting");
+        assert_eq!(inner.launch_generation, 1);
+        drop(inner);
+        assert!(acquire_configuration_mutation_guard(&shared).is_err());
     }
 
     #[test]

@@ -55,6 +55,23 @@ fn unpublished_orphan_journal_round_trips_deduplicates_and_replaces() {
 }
 
 #[test]
+fn unpublished_orphan_replace_returns_verified_reload() {
+    let root = tempfile::tempdir().unwrap();
+    let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));
+    let record = OrphanRecord {
+        pid: 43,
+        start_time: 101,
+        executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+    };
+
+    let reloaded = repository
+        .replace_unpublished_orphans_verified(std::slice::from_ref(&record))
+        .unwrap();
+
+    assert_eq!(reloaded, [record]);
+}
+
+#[test]
 fn unpublished_orphan_remove_is_exact_and_durable() {
     let root = tempfile::tempdir().unwrap();
     let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));

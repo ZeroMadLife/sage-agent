@@ -1,4 +1,7 @@
 use crate::secret_broker::{broker_error, SecretBroker, SecretBrokerError};
+use crate::supervisor::{
+    ConfigurationMutationCommitError, ConfigurationMutationGuard, ConfigurationRestartReceipt,
+};
 use reqwest::blocking::Client;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -274,6 +277,46 @@ struct ProviderOperation {
 pub struct ProviderOperationOutcome<T> {
     pub result: Result<T, DesktopActionError>,
     pub runtime_invalidated: bool,
+    restart: Option<ConfigurationRestartReceipt>,
+}
+
+struct CoordinatedMutation<T> {
+    value: T,
+    restart: Option<ConfigurationRestartReceipt>,
+}
+
+fn validate_configuration_guard(
+    guard: Option<&ConfigurationMutationGuard>,
+) -> Result<(), DesktopActionError> {
+    guard
+        .map(ConfigurationMutationGuard::validate)
+        .transpose()
+        .map(|_| ())
+        .map_err(configuration_error)
+}
+
+fn run_configuration_commit<T>(
+    guard: Option<&ConfigurationMutationGuard>,
+    restart_required: bool,
+    mutation: impl FnOnce() -> Result<T, DesktopActionError>,
+) -> Result<CoordinatedMutation<T>, DesktopActionError> {
+    if let Some(guard) = guard {
+        let committed = guard
+            .commit(restart_required, mutation)
+            .map_err(|error| match error {
+                ConfigurationMutationCommitError::Admission(error) => configuration_error(error),
+                ConfigurationMutationCommitError::Mutation(error) => error,
+            })?;
+        Ok(CoordinatedMutation {
+            value: committed.value,
+            restart: committed.restart,
+        })
+    } else {
+        Ok(CoordinatedMutation {
+            value: mutation()?,
+            restart: None,
+        })
+    }
 }
 
 pub struct OnboardingService {
@@ -296,6 +339,13 @@ pub struct SharedOnboardingState(Arc<Mutex<OnboardingRuntime>>);
 impl Default for SharedOnboardingState {
     fn default() -> Self {
         Self(Arc::new(Mutex::new(OnboardingRuntime::Uninitialized)))
+    }
+}
+
+#[cfg(test)]
+impl SharedOnboardingState {
+    fn from_service(service: OnboardingService) -> Self {
+        Self(Arc::new(Mutex::new(OnboardingRuntime::Ready(service))))
     }
 }
 
@@ -348,14 +398,68 @@ pub fn desktop_onboarding_action(
     state: State<'_, SharedOnboardingState>,
     host: State<'_, crate::supervisor::SharedHostState>,
 ) -> Result<OnboardingSnapshot, DesktopActionError> {
-    if let Some((reason_code, action)) =
-        crate::supervisor::configuration_action_failure(host.inner())
-    {
-        return Err(DesktopActionError::new(reason_code, action));
+    let mut outcome = execute_onboarding_action(action, state.inner(), host.inner());
+    if let Some(receipt) = outcome.restart.take() {
+        if let Err(error) =
+            crate::supervisor::restart_for_configuration(app, host.inner().clone(), receipt)
+        {
+            if outcome.result.is_ok() {
+                outcome.result = Err(configuration_error(error));
+            }
+        }
     }
-    let mut runtime = state.0.lock().map_err(|_| DesktopActionError::storage())?;
+    outcome.result
+}
+
+struct OnboardingActionOutcome {
+    result: Result<OnboardingSnapshot, DesktopActionError>,
+    restart: Option<ConfigurationRestartReceipt>,
+}
+
+fn execute_onboarding_action(
+    action: DesktopOnboardingAction,
+    state: &SharedOnboardingState,
+    host: &crate::supervisor::SharedHostState,
+) -> OnboardingActionOutcome {
+    execute_onboarding_action_with_hook(action, state, host, || {})
+}
+
+fn execute_onboarding_action_with_hook<F>(
+    action: DesktopOnboardingAction,
+    state: &SharedOnboardingState,
+    host: &crate::supervisor::SharedHostState,
+    after_admission: F,
+) -> OnboardingActionOutcome
+where
+    F: FnOnce(),
+{
+    let guard = match crate::supervisor::acquire_configuration_mutation_guard(host) {
+        Ok(guard) => guard,
+        Err(error) => {
+            return OnboardingActionOutcome {
+                result: Err(configuration_error(error)),
+                restart: None,
+            }
+        }
+    };
+    after_admission();
+    let mut runtime = match state.0.lock() {
+        Ok(runtime) => runtime,
+        Err(_) => {
+            return OnboardingActionOutcome {
+                result: Err(DesktopActionError::storage()),
+                restart: None,
+            }
+        }
+    };
+    if let Err(error) = guard.validate() {
+        return OnboardingActionOutcome {
+            result: Err(configuration_error(error)),
+            restart: None,
+        };
+    }
     let OnboardingRuntime::Ready(service) = &mut *runtime else {
-        return match &*runtime {
+        let error = match &*runtime {
             OnboardingRuntime::Blocked(error) => Err(error.clone()),
             OnboardingRuntime::Uninitialized => Err(DesktopActionError::new(
                 "desktop_onboarding_starting",
@@ -363,36 +467,40 @@ pub fn desktop_onboarding_action(
             )),
             OnboardingRuntime::Ready(_) => unreachable!(),
         };
+        return OnboardingActionOutcome {
+            result: error,
+            restart: None,
+        };
     };
-    let restart_required = match apply_action(service, action) {
+    let applied = match apply_action(service, action, &guard) {
         Ok(value) => value,
         Err(failure) => {
-            drop(runtime);
-            return Err(complete_action_failure(failure, || {
-                crate::supervisor::restart_for_configuration(app, host.inner().clone());
-            }));
+            return OnboardingActionOutcome {
+                result: Err(failure.error),
+                restart: failure.restart,
+            };
         }
     };
     let snapshot = service.snapshot();
-    drop(runtime);
-    if restart_required {
-        crate::supervisor::restart_for_configuration(app, host.inner().clone());
+    OnboardingActionOutcome {
+        result: Ok(snapshot),
+        restart: applied.restart,
     }
-    Ok(snapshot)
 }
 
 fn apply_action(
     service: &mut OnboardingService,
     action: DesktopOnboardingAction,
-) -> Result<bool, ActionFailure> {
+    guard: &ConfigurationMutationGuard,
+) -> Result<ActionApplied, ActionFailure> {
     match action {
         DesktopOnboardingAction::ChooseMode { mode } => {
-            service.choose_mode(mode)?;
-            Ok(false)
+            commit_configuration(guard, false, || service.choose_mode(mode))
         }
         DesktopOnboardingAction::SelectWorkspace { workspace_path } => {
-            service.select_workspace(Path::new(&workspace_path))?;
-            Ok(false)
+            commit_configuration(guard, false, || {
+                service.select_workspace(Path::new(&workspace_path))
+            })
         }
         DesktopOnboardingAction::AddProvider {
             name,
@@ -400,80 +508,114 @@ fn apply_action(
             api_key,
             default_model,
         } => {
-            service.add_provider(LocalProviderInput {
-                name,
-                base_url,
-                api_key,
-                default_model,
-            })?;
-            Ok(false)
+            let mutation = service.add_provider_coordinated(
+                LocalProviderInput {
+                    name,
+                    base_url,
+                    api_key,
+                    default_model,
+                },
+                Some(guard),
+            )?;
+            Ok(ActionApplied {
+                restart: mutation.restart,
+            })
         }
         DesktopOnboardingAction::ProbeProvider { provider_id } => {
-            service.probe_provider(&provider_id)?;
-            Ok(service.is_active_provider(&provider_id)?)
+            let mutation = service.probe_provider_coordinated(&provider_id, Some(guard))?;
+            Ok(ActionApplied {
+                restart: mutation.restart,
+            })
         }
         DesktopOnboardingAction::SetDefaultModel {
             provider_id,
             model_id,
         } => {
-            service.set_default_model(&provider_id, &model_id)?;
-            Ok(service.is_active_provider(&provider_id)?)
+            let mutation =
+                service.set_default_model_coordinated(&provider_id, &model_id, Some(guard))?;
+            Ok(ActionApplied {
+                restart: mutation.restart,
+            })
         }
         DesktopOnboardingAction::SetActiveProvider { provider_id } => {
-            service.set_active_provider(&provider_id)?;
-            Ok(true)
+            let mutation = service.set_active_provider_coordinated(&provider_id, Some(guard))?;
+            Ok(ActionApplied {
+                restart: mutation.restart,
+            })
         }
         DesktopOnboardingAction::RotateProviderKey {
             provider_id,
             api_key,
-        } => {
-            operation_restart(service.rotate_provider_key_operation(&provider_id, api_key.expose()))
-        }
-        DesktopOnboardingAction::DisconnectProvider { provider_id } => {
-            operation_restart(service.disconnect_provider_operation(&provider_id))
-        }
-        DesktopOnboardingAction::DeleteProvider { provider_id } => {
-            operation_restart(service.delete_provider_operation(&provider_id))
-        }
+        } => operation_restart(service.rotate_provider_key_operation_coordinated(
+            &provider_id,
+            api_key.expose(),
+            Some(guard),
+        )),
+        DesktopOnboardingAction::DisconnectProvider { provider_id } => operation_restart(
+            service.disconnect_provider_operation_coordinated(&provider_id, Some(guard)),
+        ),
+        DesktopOnboardingAction::DeleteProvider { provider_id } => operation_restart(
+            service.delete_provider_operation_coordinated(&provider_id, Some(guard)),
+        ),
         DesktopOnboardingAction::RetryProviderReconciliation => {
             service.reconcile_pending_operations()?;
-            Ok(true)
+            commit_configuration(guard, true, || Ok(()))
         }
     }
 }
 
 struct ActionFailure {
     error: DesktopActionError,
-    runtime_invalidated: bool,
+    restart: Option<ConfigurationRestartReceipt>,
+}
+
+struct ActionApplied {
+    restart: Option<ConfigurationRestartReceipt>,
 }
 
 impl From<DesktopActionError> for ActionFailure {
     fn from(error: DesktopActionError) -> Self {
         Self {
             error,
-            runtime_invalidated: false,
+            restart: None,
         }
     }
 }
 
-fn operation_restart<T>(outcome: ProviderOperationOutcome<T>) -> Result<bool, ActionFailure> {
+fn operation_restart<T>(
+    outcome: ProviderOperationOutcome<T>,
+) -> Result<ActionApplied, ActionFailure> {
     match outcome.result {
-        Ok(_) => Ok(outcome.runtime_invalidated),
+        Ok(_) => Ok(ActionApplied {
+            restart: outcome.restart,
+        }),
         Err(error) => Err(ActionFailure {
             error,
-            runtime_invalidated: outcome.runtime_invalidated,
+            restart: outcome.restart,
         }),
     }
 }
 
-fn complete_action_failure(
-    failure: ActionFailure,
-    invalidate_runtime: impl FnOnce(),
-) -> DesktopActionError {
-    if failure.runtime_invalidated {
-        invalidate_runtime();
-    }
-    failure.error
+fn configuration_error(error: crate::supervisor::ConfigurationActionFailure) -> DesktopActionError {
+    DesktopActionError::new(error.reason_code, error.action)
+}
+
+fn commit_configuration<T>(
+    guard: &ConfigurationMutationGuard,
+    restart_required: bool,
+    mutation: impl FnOnce() -> Result<T, DesktopActionError>,
+) -> Result<ActionApplied, ActionFailure> {
+    let committed = guard
+        .commit(restart_required, mutation)
+        .map_err(|error| match error {
+            ConfigurationMutationCommitError::Admission(error) => {
+                ActionFailure::from(configuration_error(error))
+            }
+            ConfigurationMutationCommitError::Mutation(error) => ActionFailure::from(error),
+        })?;
+    Ok(ActionApplied {
+        restart: committed.restart,
+    })
 }
 
 pub fn runtime_configuration_for_app(
@@ -563,6 +705,16 @@ impl OnboardingService {
         &mut self,
         input: LocalProviderInput,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.add_provider_coordinated(input, None)
+            .map(|mutation| mutation.value)
+    }
+
+    fn add_provider_coordinated(
+        &mut self,
+        input: LocalProviderInput,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> Result<CoordinatedMutation<LocalProviderView>, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let name = normalized_label(&input.name, "provider_name_invalid")?;
         let base_url = normalized_base_url(&input.base_url)?;
@@ -617,41 +769,59 @@ impl OnboardingService {
         {
             return self.compensate_new_secret(&operation_id, &key_ref);
         }
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::reconciliation())?;
-        let persisted = transaction
-            .execute(
-                "INSERT INTO local_providers \
-                 (provider_id, name, base_url, key_ref, key_hint, key_configured, status) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, 1, 'untested')",
-                params![provider_id, name, base_url, key_ref, key_hint],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "INSERT INTO local_provider_models (provider_id, model_id, is_default) \
-                     VALUES (?1, ?2, 1)",
-                    params![provider_id, default_model],
+        let committed = run_configuration_commit(guard, false, || {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|_| DesktopActionError::reconciliation())?;
+            transaction
+                .execute(
+                    "INSERT INTO local_providers \
+                     (provider_id, name, base_url, key_ref, key_hint, key_configured, status) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, 1, 'untested')",
+                    params![provider_id, name, base_url, key_ref, key_hint],
                 )
-            })
-            .and_then(|_| {
-                transaction.execute(
-                    "DELETE FROM provider_operations WHERE operation_id = ?1",
-                    [&operation_id],
-                )
-            })
-            .and_then(|_| transaction.commit());
-        if persisted.is_err() {
-            return self.compensate_new_secret(&operation_id, &key_ref);
-        }
-        self.provider_view(&provider_id)
+                .and_then(|_| {
+                    transaction.execute(
+                        "INSERT INTO local_provider_models (provider_id, model_id, is_default) \
+                         VALUES (?1, ?2, 1)",
+                        params![provider_id, default_model],
+                    )
+                })
+                .and_then(|_| {
+                    transaction.execute(
+                        "DELETE FROM provider_operations WHERE operation_id = ?1",
+                        [&operation_id],
+                    )
+                })
+                .and_then(|_| transaction.commit())
+                .map_err(|_| DesktopActionError::reconciliation())?;
+            Ok(())
+        });
+        let restart = match committed {
+            Ok(committed) => committed.restart,
+            Err(error) => return self.compensate_new_secret_after(&operation_id, &key_ref, error),
+        };
+        Ok(CoordinatedMutation {
+            value: self.provider_view(&provider_id)?,
+            restart,
+        })
     }
 
     pub fn probe_provider(
         &mut self,
         provider_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.probe_provider_coordinated(provider_id, None)
+            .map(|mutation| mutation.value)
+    }
+
+    fn probe_provider_coordinated(
+        &mut self,
+        provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> Result<CoordinatedMutation<LocalProviderView>, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         if !provider.key_configured {
@@ -665,14 +835,18 @@ impl OnboardingService {
         let models = match probe_result {
             Ok(models) if !models.is_empty() => models,
             Ok(_) | Err(ProviderProbeError::InvalidResponse) => {
-                self.record_probe_failure(provider_id, "provider_probe_invalid_response")?;
+                if guard.is_none() {
+                    self.record_probe_failure(provider_id, "provider_probe_invalid_response")?;
+                }
                 return Err(DesktopActionError::new(
                     "provider_probe_invalid_response",
                     "check_provider_settings",
                 ));
             }
             Err(ProviderProbeError::Unavailable) => {
-                self.record_probe_failure(provider_id, "provider_probe_failed")?;
+                if guard.is_none() {
+                    self.record_probe_failure(provider_id, "provider_probe_failed")?;
+                }
                 return Err(DesktopActionError::new(
                     "provider_probe_failed",
                     "check_provider_settings",
@@ -684,47 +858,64 @@ impl OnboardingService {
         let selected_default = current_default
             .filter(|value| models.contains(value))
             .unwrap_or_else(|| models[0].clone());
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::storage())?;
-        transaction
-            .execute(
-                "DELETE FROM local_provider_models WHERE provider_id = ?1",
-                [provider_id],
-            )
-            .map_err(|_| DesktopActionError::storage())?;
-        for model in &models {
-            transaction
-                .execute(
+        let restart_required =
+            self.is_active_provider(provider_id)? || self.active_provider_id()?.is_none();
+        let committed =
+            run_configuration_commit(guard, restart_required, || {
+                let transaction = self
+                    .connection
+                    .transaction()
+                    .map_err(|_| DesktopActionError::storage())?;
+                transaction
+                    .execute(
+                        "DELETE FROM local_provider_models WHERE provider_id = ?1",
+                        [provider_id],
+                    )
+                    .map_err(|_| DesktopActionError::storage())?;
+                for model in &models {
+                    transaction.execute(
                     "INSERT INTO local_provider_models (provider_id, model_id, is_default) \
                      VALUES (?1, ?2, ?3)",
                     params![provider_id, model, i64::from(model == &selected_default)],
-                )
-                .map_err(|_| DesktopActionError::storage())?;
-        }
-        transaction
-            .execute(
-                "UPDATE local_providers SET status = 'connected', reason_code = NULL \
+                ).map_err(|_| DesktopActionError::storage())?;
+                }
+                transaction
+                    .execute(
+                        "UPDATE local_providers SET status = 'connected', reason_code = NULL \
                  WHERE provider_id = ?1",
-                [provider_id],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "UPDATE desktop_onboarding SET active_provider_id = ?1
+                        [provider_id],
+                    )
+                    .and_then(|_| {
+                        transaction.execute(
+                            "UPDATE desktop_onboarding SET active_provider_id = ?1
                      WHERE singleton = 1 AND active_provider_id IS NULL",
-                    [provider_id],
-                )
-            })
-            .and_then(|_| transaction.commit())
-            .map_err(|_| DesktopActionError::storage())?;
-        self.provider_view(provider_id)
+                            [provider_id],
+                        )
+                    })
+                    .and_then(|_| transaction.commit())
+                    .map_err(|_| DesktopActionError::storage())?;
+                Ok(())
+            })?;
+        Ok(CoordinatedMutation {
+            value: self.provider_view(provider_id)?,
+            restart: committed.restart,
+        })
     }
 
     pub fn set_active_provider(
         &mut self,
         provider_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.set_active_provider_coordinated(provider_id, None)
+            .map(|mutation| mutation.value)
+    }
+
+    fn set_active_provider_coordinated(
+        &mut self,
+        provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> Result<CoordinatedMutation<LocalProviderView>, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         if provider.status != "connected" || !provider.key_configured {
@@ -735,15 +926,21 @@ impl OnboardingService {
         }
         let mut secret = self.secrets.read(&provider.key_ref)?;
         secret.zeroize();
-        self.connection
-            .execute(
-                "INSERT INTO desktop_onboarding (singleton, active_provider_id)
+        let committed = run_configuration_commit(guard, true, || {
+            self.connection
+                .execute(
+                    "INSERT INTO desktop_onboarding (singleton, active_provider_id)
                  VALUES (1, ?1) ON CONFLICT(singleton) DO UPDATE
                  SET active_provider_id = excluded.active_provider_id",
-                [provider_id],
-            )
-            .map_err(|_| DesktopActionError::storage())?;
-        self.provider_view(provider_id)
+                    [provider_id],
+                )
+                .map_err(|_| DesktopActionError::storage())?;
+            Ok(())
+        })?;
+        Ok(CoordinatedMutation {
+            value: self.provider_view(provider_id)?,
+            restart: committed.restart,
+        })
     }
 
     pub fn set_default_model(
@@ -751,6 +948,17 @@ impl OnboardingService {
         provider_id: &str,
         model_id: &str,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        self.set_default_model_coordinated(provider_id, model_id, None)
+            .map(|mutation| mutation.value)
+    }
+
+    fn set_default_model_coordinated(
+        &mut self,
+        provider_id: &str,
+        model_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> Result<CoordinatedMutation<LocalProviderView>, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let model_id = normalized_label(model_id, "provider_model_invalid")?;
         let exists: bool = self
@@ -768,25 +976,32 @@ impl OnboardingService {
                 "select_provider_model",
             ));
         }
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::storage())?;
-        transaction
-            .execute(
-                "UPDATE local_provider_models SET is_default = 0 WHERE provider_id = ?1",
-                [provider_id],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "UPDATE local_provider_models SET is_default = 1 \
-                     WHERE provider_id = ?1 AND model_id = ?2",
-                    params![provider_id, model_id],
+        let restart_required = self.is_active_provider(provider_id)?;
+        let committed = run_configuration_commit(guard, restart_required, || {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|_| DesktopActionError::storage())?;
+            transaction
+                .execute(
+                    "UPDATE local_provider_models SET is_default = 0 WHERE provider_id = ?1",
+                    [provider_id],
                 )
-            })
-            .and_then(|_| transaction.commit())
-            .map_err(|_| DesktopActionError::storage())?;
-        self.provider_view(provider_id)
+                .and_then(|_| {
+                    transaction.execute(
+                        "UPDATE local_provider_models SET is_default = 1 \
+                     WHERE provider_id = ?1 AND model_id = ?2",
+                        params![provider_id, model_id],
+                    )
+                })
+                .and_then(|_| transaction.commit())
+                .map_err(|_| DesktopActionError::storage())?;
+            Ok(())
+        })?;
+        Ok(CoordinatedMutation {
+            value: self.provider_view(provider_id)?,
+            restart: committed.restart,
+        })
     }
 
     pub fn rotate_provider_key(
@@ -803,20 +1018,38 @@ impl OnboardingService {
         provider_id: &str,
         new_secret: &str,
     ) -> ProviderOperationOutcome<LocalProviderView> {
+        self.rotate_provider_key_operation_coordinated(provider_id, new_secret, None)
+    }
+
+    fn rotate_provider_key_operation_coordinated(
+        &mut self,
+        provider_id: &str,
+        new_secret: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> ProviderOperationOutcome<LocalProviderView> {
         let was_active = match self.is_active_provider(provider_id) {
             Ok(value) => value,
             Err(error) => {
                 return ProviderOperationOutcome {
                     result: Err(error),
                     runtime_invalidated: false,
+                    restart: None,
                 };
             }
         };
-        let result = self.rotate_provider_key_inner(provider_id, new_secret);
+        let mut restart = None;
+        let result = self.rotate_provider_key_inner(
+            provider_id,
+            new_secret,
+            guard,
+            was_active,
+            &mut restart,
+        );
         ProviderOperationOutcome {
             runtime_invalidated: was_active
                 && (result.is_ok() || self.provider_operation_pending(provider_id)),
             result,
+            restart,
         }
     }
 
@@ -824,7 +1057,11 @@ impl OnboardingService {
         &mut self,
         provider_id: &str,
         new_secret: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+        restart_required: bool,
+        restart: &mut Option<ConfigurationRestartReceipt>,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         if new_secret.trim().is_empty() {
             return Err(DesktopActionError::new(
@@ -865,27 +1102,32 @@ impl OnboardingService {
         {
             return self.compensate_new_secret(&operation_id, &key_ref);
         }
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::reconciliation())?;
-        let persisted = transaction
-            .execute(
-                "UPDATE local_providers SET key_ref = ?2, key_hint = ?3, key_configured = 1,
+        let committed = run_configuration_commit(guard, restart_required, || {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|_| DesktopActionError::reconciliation())?;
+            transaction
+                .execute(
+                    "UPDATE local_providers SET key_ref = ?2, key_hint = ?3, key_configured = 1,
                  status = 'untested', reason_code = NULL WHERE provider_id = ?1",
-                params![provider_id, key_ref, key_hint(new_secret.trim())],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "UPDATE provider_operations SET phase = 'metadata_applied'
-                 WHERE operation_id = ?1",
-                    [&operation_id],
+                    params![provider_id, key_ref, key_hint(new_secret.trim())],
                 )
-            })
-            .and_then(|_| transaction.commit());
-        if persisted.is_err() {
-            return self.compensate_new_secret(&operation_id, &key_ref);
-        }
+                .and_then(|_| {
+                    transaction.execute(
+                        "UPDATE provider_operations SET phase = 'metadata_applied'
+                 WHERE operation_id = ?1",
+                        [&operation_id],
+                    )
+                })
+                .and_then(|_| transaction.commit())
+                .map_err(|_| DesktopActionError::reconciliation())?;
+            Ok(())
+        });
+        *restart = match committed {
+            Ok(committed) => committed.restart,
+            Err(error) => return self.compensate_new_secret_after(&operation_id, &key_ref, error),
+        };
         if provider.key_configured {
             if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
                 self.record_operation_error(&operation_id, error.reason_code);
@@ -907,27 +1149,42 @@ impl OnboardingService {
         &mut self,
         provider_id: &str,
     ) -> ProviderOperationOutcome<LocalProviderView> {
+        self.disconnect_provider_operation_coordinated(provider_id, None)
+    }
+
+    fn disconnect_provider_operation_coordinated(
+        &mut self,
+        provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> ProviderOperationOutcome<LocalProviderView> {
         let was_active = match self.is_active_provider(provider_id) {
             Ok(value) => value,
             Err(error) => {
                 return ProviderOperationOutcome {
                     result: Err(error),
                     runtime_invalidated: false,
+                    restart: None,
                 };
             }
         };
-        let result = self.disconnect_provider_inner(provider_id);
+        let mut restart = None;
+        let result = self.disconnect_provider_inner(provider_id, guard, was_active, &mut restart);
         ProviderOperationOutcome {
             runtime_invalidated: was_active
                 && (result.is_ok() || self.provider_operation_pending(provider_id)),
             result,
+            restart,
         }
     }
 
     fn disconnect_provider_inner(
         &mut self,
         provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+        restart_required: bool,
+        restart: &mut Option<ConfigurationRestartReceipt>,
     ) -> Result<LocalProviderView, DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         let operation_id = Uuid::new_v4().to_string();
@@ -938,32 +1195,44 @@ impl OnboardingService {
             &provider.key_ref,
             None,
         )?;
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::storage())?;
-        transaction
-            .execute(
-                "UPDATE local_providers SET key_hint = '', key_configured = 0,
+        let committed = run_configuration_commit(guard, restart_required, || {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|_| DesktopActionError::storage())?;
+            transaction
+                .execute(
+                    "UPDATE local_providers SET key_hint = '', key_configured = 0,
              status = 'disconnected', reason_code = 'provider_key_disconnected'
              WHERE provider_id = ?1",
-                [provider_id],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "UPDATE desktop_onboarding SET active_provider_id = NULL
-             WHERE singleton = 1 AND active_provider_id = ?1",
                     [provider_id],
                 )
-            })
-            .and_then(|_| {
-                transaction.execute(
+                .and_then(|_| {
+                    transaction.execute(
+                        "UPDATE desktop_onboarding SET active_provider_id = NULL
+             WHERE singleton = 1 AND active_provider_id = ?1",
+                        [provider_id],
+                    )
+                })
+                .and_then(|_| {
+                    transaction.execute(
             "UPDATE provider_operations SET phase = 'metadata_applied' WHERE operation_id = ?1",
             [&operation_id],
         )
-            })
-            .and_then(|_| transaction.commit())
-            .map_err(|_| DesktopActionError::storage())?;
+                })
+                .and_then(|_| transaction.commit())
+                .map_err(|_| DesktopActionError::storage())?;
+            Ok(())
+        });
+        *restart = match committed {
+            Ok(committed) => committed.restart,
+            Err(error) => {
+                if is_configuration_admission_error(&error) {
+                    self.remove_operation(&operation_id)?;
+                }
+                return Err(error);
+            }
+        };
         if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
             self.record_operation_error(&operation_id, error.reason_code);
             return Err(DesktopActionError::reconciliation());
@@ -977,24 +1246,42 @@ impl OnboardingService {
     }
 
     pub fn delete_provider_operation(&mut self, provider_id: &str) -> ProviderOperationOutcome<()> {
+        self.delete_provider_operation_coordinated(provider_id, None)
+    }
+
+    fn delete_provider_operation_coordinated(
+        &mut self,
+        provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+    ) -> ProviderOperationOutcome<()> {
         let was_active = match self.is_active_provider(provider_id) {
             Ok(value) => value,
             Err(error) => {
                 return ProviderOperationOutcome {
                     result: Err(error),
                     runtime_invalidated: false,
+                    restart: None,
                 };
             }
         };
-        let result = self.delete_provider_inner(provider_id);
+        let mut restart = None;
+        let result = self.delete_provider_inner(provider_id, guard, was_active, &mut restart);
         ProviderOperationOutcome {
             runtime_invalidated: was_active
                 && (result.is_ok() || self.provider_operation_pending(provider_id)),
             result,
+            restart,
         }
     }
 
-    fn delete_provider_inner(&mut self, provider_id: &str) -> Result<(), DesktopActionError> {
+    fn delete_provider_inner(
+        &mut self,
+        provider_id: &str,
+        guard: Option<&ConfigurationMutationGuard>,
+        restart_required: bool,
+        restart: &mut Option<ConfigurationRestartReceipt>,
+    ) -> Result<(), DesktopActionError> {
+        validate_configuration_guard(guard)?;
         self.ensure_provider_operations_settled()?;
         let provider = self.provider_record(provider_id)?;
         let operation_id = Uuid::new_v4().to_string();
@@ -1005,31 +1292,43 @@ impl OnboardingService {
             &provider.key_ref,
             None,
         )?;
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|_| DesktopActionError::storage())?;
-        transaction
-            .execute(
-                "UPDATE local_providers SET key_configured = 0, status = 'pending_delete',
+        let committed = run_configuration_commit(guard, restart_required, || {
+            let transaction = self
+                .connection
+                .transaction()
+                .map_err(|_| DesktopActionError::storage())?;
+            transaction
+                .execute(
+                    "UPDATE local_providers SET key_configured = 0, status = 'pending_delete',
              reason_code = 'provider_delete_pending' WHERE provider_id = ?1",
-                [provider_id],
-            )
-            .and_then(|_| {
-                transaction.execute(
-                    "UPDATE desktop_onboarding SET active_provider_id = NULL
-             WHERE singleton = 1 AND active_provider_id = ?1",
                     [provider_id],
                 )
-            })
-            .and_then(|_| {
-                transaction.execute(
+                .and_then(|_| {
+                    transaction.execute(
+                        "UPDATE desktop_onboarding SET active_provider_id = NULL
+             WHERE singleton = 1 AND active_provider_id = ?1",
+                        [provider_id],
+                    )
+                })
+                .and_then(|_| {
+                    transaction.execute(
             "UPDATE provider_operations SET phase = 'metadata_applied' WHERE operation_id = ?1",
             [&operation_id],
         )
-            })
-            .and_then(|_| transaction.commit())
-            .map_err(|_| DesktopActionError::storage())?;
+                })
+                .and_then(|_| transaction.commit())
+                .map_err(|_| DesktopActionError::storage())?;
+            Ok(())
+        });
+        *restart = match committed {
+            Ok(committed) => committed.restart,
+            Err(error) => {
+                if is_configuration_admission_error(&error) {
+                    self.remove_operation(&operation_id)?;
+                }
+                return Err(error);
+            }
+        };
         if let Err(error) = self.delete_secret_if_present(&provider.key_ref) {
             self.record_operation_error(&operation_id, error.reason_code);
             return Err(DesktopActionError::reconciliation());
@@ -1122,6 +1421,24 @@ impl OnboardingService {
             Ok(()) => {
                 let _ = self.remove_operation(operation_id);
                 Err(DesktopActionError::storage())
+            }
+            Err(error) => {
+                self.record_operation_error(operation_id, error.reason_code);
+                Err(DesktopActionError::reconciliation())
+            }
+        }
+    }
+
+    fn compensate_new_secret_after<T>(
+        &self,
+        operation_id: &str,
+        key_ref: &str,
+        original: DesktopActionError,
+    ) -> Result<T, DesktopActionError> {
+        match self.delete_secret_if_present(key_ref) {
+            Ok(()) => {
+                self.remove_operation(operation_id)?;
+                Err(original)
             }
             Err(error) => {
                 self.record_operation_error(operation_id, error.reason_code);
@@ -1548,6 +1865,17 @@ impl OnboardingService {
     }
 }
 
+fn is_configuration_admission_error(error: &DesktopActionError) -> bool {
+    matches!(
+        error.reason_code,
+        "desktop_configuration_superseded"
+            | "desktop_configuration_restart_in_progress"
+            | "desktop_unpublished_sidecar_cleanup_failed"
+            | "desktop_state_persist_failed"
+            | "desktop_stopping"
+    )
+}
+
 fn migrate(connection: &Connection) -> Result<(), DesktopActionError> {
     let version: i64 = connection
         .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -1888,23 +2216,337 @@ fn docker_socket_ready() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{complete_action_failure, ActionFailure, DesktopActionError};
-    use std::cell::Cell;
+    use super::*;
+    use crate::lifecycle::OrphanRecord;
+    use crate::state_repository::DesktopStateRepository;
+    use std::collections::HashMap;
+    use std::sync::{Barrier, MutexGuard};
+
+    #[derive(Default)]
+    struct BarrierSecrets {
+        values: Mutex<HashMap<String, String>>,
+        stored: Option<(Arc<Barrier>, Arc<Barrier>)>,
+        fail_delete: Mutex<bool>,
+    }
+
+    impl SecretBroker for BarrierSecrets {
+        fn key_ref(&self, account: &str) -> Result<String, SecretBrokerError> {
+            Ok(format!("memory://{account}"))
+        }
+
+        fn store(&self, account: &str, secret: &str) -> Result<String, SecretBrokerError> {
+            let key_ref = self.key_ref(account)?;
+            self.values
+                .lock()
+                .unwrap()
+                .insert(key_ref.clone(), secret.to_string());
+            if let Some((staged, resume)) = &self.stored {
+                staged.wait();
+                resume.wait();
+            }
+            Ok(key_ref)
+        }
+
+        fn read(&self, key_ref: &str) -> Result<String, SecretBrokerError> {
+            self.values
+                .lock()
+                .unwrap()
+                .get(key_ref)
+                .cloned()
+                .ok_or(SecretBrokerError::Missing)
+        }
+
+        fn delete(&self, key_ref: &str) -> Result<(), SecretBrokerError> {
+            if std::mem::take(&mut *self.fail_delete.lock().unwrap()) {
+                return Err(SecretBrokerError::AccessDenied);
+            }
+            self.values
+                .lock()
+                .unwrap()
+                .remove(key_ref)
+                .map(|_| ())
+                .ok_or(SecretBrokerError::Missing)
+        }
+    }
+
+    struct BarrierProbe {
+        completed: Arc<Barrier>,
+        resume: Arc<Barrier>,
+    }
+
+    impl ProviderProbe for BarrierProbe {
+        fn discover_models(
+            &self,
+            _base_url: &str,
+            _secret: &str,
+        ) -> Result<Vec<String>, ProviderProbeError> {
+            self.completed.wait();
+            self.resume.wait();
+            Ok(vec!["model-new".into()])
+        }
+    }
+
+    struct TestCapabilities;
+
+    impl HostCapabilityProbe for TestCapabilities {
+        fn detect(&self) -> CapabilityInputs {
+            CapabilityInputs {
+                docker_ready: false,
+                postgres_ready: false,
+                web_search_ready: false,
+            }
+        }
+    }
+
+    fn provider_action() -> DesktopOnboardingAction {
+        DesktopOnboardingAction::AddProvider {
+            name: "Provider".into(),
+            base_url: "https://provider.example/v1".into(),
+            api_key: "test-secret-value".into(),
+            default_model: "model-old".into(),
+        }
+    }
+
+    fn orphan() -> OrphanRecord {
+        OrphanRecord {
+            pid: 73,
+            start_time: 173,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        }
+    }
+
+    fn test_host(root: &Path) -> (crate::supervisor::SharedHostState, DesktopStateRepository) {
+        let repository = DesktopStateRepository::new(root.join("host-state.json"));
+        let host = crate::supervisor::test_host_with_repository(repository.clone());
+        (host, repository)
+    }
+
+    fn locked_runtime(state: &SharedOnboardingState) -> MutexGuard<'_, OnboardingRuntime> {
+        state.0.lock().unwrap()
+    }
+
+    fn action_error(outcome: OnboardingActionOutcome) -> DesktopActionError {
+        match outcome.result {
+            Err(error) => error,
+            Ok(_) => panic!("provider action unexpectedly succeeded"),
+        }
+    }
 
     #[test]
-    fn action_failure_preserves_the_runtime_invalidation_signal() {
-        for runtime_invalidated in [false, true] {
-            let callback_called = Cell::new(false);
-            let error = complete_action_failure(
-                ActionFailure {
-                    error: DesktopActionError::reconciliation(),
-                    runtime_invalidated,
-                },
-                || callback_called.set(true),
-            );
+    fn provider_action_waiting_for_onboarding_mutex_rejects_new_write_ahead_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(BarrierSecrets::default());
+        let service = OnboardingService::open_with(
+            root.path().join("data"),
+            secrets.clone(),
+            Arc::new(BarrierProbe {
+                completed: Arc::new(Barrier::new(1)),
+                resume: Arc::new(Barrier::new(1)),
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, repository) = test_host(root.path());
+        let admitted = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let state_lock = locked_runtime(&state);
+        let worker = {
+            let state = state.clone();
+            let host = host.clone();
+            let admitted = admitted.clone();
+            let resume = resume.clone();
+            std::thread::spawn(move || {
+                execute_onboarding_action_with_hook(provider_action(), &state, &host, || {
+                    admitted.wait();
+                    resume.wait();
+                })
+            })
+        };
+        admitted.wait();
+        assert!(crate::supervisor::test_reserve_unpublished(
+            &host,
+            &orphan()
+        ));
+        resume.wait();
+        drop(state_lock);
 
-            assert_eq!(error.reason_code, "provider_reconciliation_required");
-            assert_eq!(callback_called.get(), runtime_invalidated);
-        }
+        let outcome = worker.join().unwrap();
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "desktop_configuration_superseded"
+        );
+        assert!(secrets.values.lock().unwrap().is_empty());
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [orphan()]);
+    }
+
+    #[test]
+    fn probe_result_cannot_publish_metadata_after_write_ahead_ownership() {
+        let root = tempfile::tempdir().unwrap();
+        let completed = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let secrets = Arc::new(BarrierSecrets::default());
+        let mut service = OnboardingService::open_with(
+            root.path().join("data"),
+            secrets,
+            Arc::new(BarrierProbe {
+                completed: completed.clone(),
+                resume: resume.clone(),
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let provider = service
+            .add_provider(match provider_action() {
+                DesktopOnboardingAction::AddProvider {
+                    name,
+                    base_url,
+                    api_key,
+                    default_model,
+                } => LocalProviderInput {
+                    name,
+                    base_url,
+                    api_key,
+                    default_model,
+                },
+                _ => unreachable!(),
+            })
+            .unwrap();
+        let provider_id = provider.provider_id.clone();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, _) = test_host(root.path());
+        let worker = {
+            let state = state.clone();
+            let host = host.clone();
+            let provider_id = provider_id.clone();
+            std::thread::spawn(move || {
+                execute_onboarding_action(
+                    DesktopOnboardingAction::ProbeProvider { provider_id },
+                    &state,
+                    &host,
+                )
+            })
+        };
+        completed.wait();
+        assert!(crate::supervisor::test_reserve_unpublished(
+            &host,
+            &orphan()
+        ));
+        resume.wait();
+
+        let outcome = worker.join().unwrap();
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "desktop_configuration_superseded"
+        );
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.providers[0].status, "untested");
+        assert_eq!(snapshot.providers[0].models, ["model-old"]);
+        assert!(snapshot.active_provider_id.is_none());
+    }
+
+    #[test]
+    fn staged_keychain_secret_is_compensated_when_commit_lease_drifts() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        let secrets = Arc::new(BarrierSecrets {
+            values: Mutex::new(HashMap::new()),
+            stored: Some((staged.clone(), resume.clone())),
+            ..BarrierSecrets::default()
+        });
+        let service = OnboardingService::open_with(
+            root.path().join("data"),
+            secrets.clone(),
+            Arc::new(BarrierProbe {
+                completed: Arc::new(Barrier::new(1)),
+                resume: Arc::new(Barrier::new(1)),
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let state = SharedOnboardingState::from_service(service);
+        let (host, repository) = test_host(root.path());
+        let worker = {
+            let state = state.clone();
+            let host = host.clone();
+            std::thread::spawn(move || execute_onboarding_action(provider_action(), &state, &host))
+        };
+        staged.wait();
+        assert!(crate::supervisor::test_reserve_unpublished(
+            &host,
+            &orphan()
+        ));
+        resume.wait();
+
+        let outcome = worker.join().unwrap();
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "desktop_configuration_superseded"
+        );
+        assert!(secrets.values.lock().unwrap().is_empty());
+        assert_eq!(repository.load_unpublished_orphans().unwrap(), [orphan()]);
+        let runtime = locked_runtime(&state);
+        let OnboardingRuntime::Ready(service) = &*runtime else {
+            panic!("service not ready")
+        };
+        assert!(service.snapshot().providers.is_empty());
+        assert_eq!(service.pending_operation_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn active_cleanup_failure_returns_error_with_owned_restart_receipt() {
+        let root = tempfile::tempdir().unwrap();
+        let secrets = Arc::new(BarrierSecrets::default());
+        let mut service = OnboardingService::open_with(
+            root.path().join("data"),
+            secrets.clone(),
+            Arc::new(BarrierProbe {
+                completed: Arc::new(Barrier::new(1)),
+                resume: Arc::new(Barrier::new(1)),
+            }),
+            Arc::new(TestCapabilities),
+        )
+        .unwrap();
+        let provider = service
+            .add_provider(match provider_action() {
+                DesktopOnboardingAction::AddProvider {
+                    name,
+                    base_url,
+                    api_key,
+                    default_model,
+                } => LocalProviderInput {
+                    name,
+                    base_url,
+                    api_key,
+                    default_model,
+                },
+                _ => unreachable!(),
+            })
+            .unwrap();
+        service.probe_provider(&provider.provider_id).unwrap();
+        service.set_active_provider(&provider.provider_id).unwrap();
+        *secrets.fail_delete.lock().unwrap() = true;
+        let state = SharedOnboardingState::from_service(service);
+        let (host, _) = test_host(root.path());
+
+        let outcome = execute_onboarding_action(
+            DesktopOnboardingAction::RotateProviderKey {
+                provider_id: provider.provider_id,
+                api_key: "test-secret-rotated".into(),
+            },
+            &state,
+            &host,
+        );
+
+        assert!(outcome.restart.is_some());
+        assert_eq!(
+            action_error(outcome).reason_code,
+            "provider_reconciliation_required"
+        );
     }
 }

@@ -75,6 +75,39 @@ impl DesktopStateRepository {
         self.save_unpublished_orphans_unlocked(records)
     }
 
+    pub fn replace_unpublished_orphans_verified(
+        &self,
+        records: &[OrphanRecord],
+    ) -> std::io::Result<Vec<OrphanRecord>> {
+        self.replace_unpublished_orphans_verified_with(records, |_| Ok(()))
+    }
+
+    pub(crate) fn replace_unpublished_orphans_verified_with<F>(
+        &self,
+        records: &[OrphanRecord],
+        after_replace: F,
+    ) -> std::io::Result<Vec<OrphanRecord>>
+    where
+        F: FnOnce(&Path) -> std::io::Result<()>,
+    {
+        let _guard = self
+            .unpublished_lock
+            .lock()
+            .expect("unpublished orphan state poisoned");
+        self.save_unpublished_orphans_unlocked(records)?;
+        after_replace(&self.unpublished_path)?;
+        let reloaded = self
+            .load_unpublished_orphans_unlocked()?
+            .unpublished_orphans;
+        if reloaded != records {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unpublished orphan journal reload did not match replacement",
+            ));
+        }
+        Ok(reloaded)
+    }
+
     pub fn remove_unpublished_orphan(&self, record: &OrphanRecord) -> std::io::Result<()> {
         let _guard = self
             .unpublished_lock
@@ -110,6 +143,62 @@ impl DesktopStateRepository {
         })
         .map_err(std::io::Error::other)?;
         atomic_write_private(&self.unpublished_path, &bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DesktopStateRepository;
+    use crate::lifecycle::OrphanRecord;
+
+    fn record(pid: u32) -> OrphanRecord {
+        OrphanRecord {
+            pid,
+            start_time: u64::from(pid) + 100,
+            executable: "/Applications/Sage.app/Contents/Resources/sidecar/sage-api".into(),
+        }
+    }
+
+    #[test]
+    fn verified_replace_fails_when_reload_is_not_parseable() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));
+
+        let result = repository.replace_unpublished_orphans_verified_with(&[record(42)], |path| {
+            std::fs::write(path, b"not-json")
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verified_replace_fails_when_reloaded_content_drifts() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));
+        let drifted = record(43);
+
+        let result = repository.replace_unpublished_orphans_verified_with(&[record(42)], |path| {
+            let bytes = serde_json::to_vec(&serde_json::json!({
+                "unpublished_orphans": [drifted]
+            }))
+            .map_err(std::io::Error::other)?;
+            std::fs::write(path, bytes)
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn verified_replace_fails_when_reload_has_an_io_error() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = DesktopStateRepository::new(root.path().join("desktop-host-state.json"));
+
+        let result = repository.replace_unpublished_orphans_verified_with(&[record(42)], |path| {
+            std::fs::remove_file(path)?;
+            std::fs::create_dir(path)
+        });
+
+        assert!(result.is_err());
     }
 }
 
