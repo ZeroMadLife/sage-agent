@@ -115,6 +115,20 @@ it('keeps picker cancellation and failures recoverable without exposing raw erro
   expect(wrapper.text()).not.toContain('select_workspace')
 })
 
+it('maps invalid manual workspace paths to actionable Chinese messages', () => {
+  const wrapper = mount(DesktopOnboarding, {
+    props: {
+      snapshot: snapshot({ stage: 'select_workspace', mode: 'local', reason_code: 'workspace_unavailable', action: 'select_workspace' }),
+      busy: false,
+      error: null,
+    },
+  })
+
+  expect(wrapper.text()).toContain('这个目录暂时无法使用')
+  expect(wrapper.text()).toContain('请确认路径存在且可以访问')
+  expect(wrapper.text()).not.toContain('workspace_unavailable')
+})
+
 it('exposes probe, default model, rotation, disconnect and delete for an existing Provider', async () => {
   const wrapper = mount(DesktopOnboarding, {
     props: {

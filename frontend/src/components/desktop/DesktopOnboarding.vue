@@ -50,6 +50,14 @@ const ONBOARDING_MESSAGES: Record<string, { title: string, detail: string }> = {
     title: '还没有选择学习空间',
     detail: '请选择一个文件夹，Sage 会把学习任务和本地知识保存在这里。',
   },
+  workspace_unavailable: {
+    title: '这个目录暂时无法使用',
+    detail: '请确认路径存在且可以访问，或重新选择一个文件夹。',
+  },
+  workspace_not_directory: {
+    title: '请选择文件夹',
+    detail: '当前路径指向的不是文件夹，请重新选择学习空间。',
+  },
   select_workspace: {
     title: '请选择一个学习空间',
     detail: '可以点击“选择文件夹”，也可以直接输入已有目录路径。',
