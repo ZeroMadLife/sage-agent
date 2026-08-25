@@ -4,7 +4,7 @@
 >
 > L2 状态（2026-08-25）：Assistant code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；仅本地 commit，未 push、未建 PR、未合入。
 >
-> L3 状态（2026-08-25）：首轮候选未通过中枢三镜头复审；修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 已从 clean `655af6b` 在原职责分支完成，等待新一轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
+> L3 状态（2026-08-25）：前两轮候选均未通过中枢三镜头复审；第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 已从 clean `b036b17cd47caa2383732289f2f98f617d69028f` 在原职责分支完成，等待新一轮三镜头复审；未 push、未建 PR、未合入 `dev/sage-v7`。
 >
 > 设计来源：`docs/superpowers/specs/2026-08-24-sage-desktop-learning-product-design.md`
 >
@@ -340,7 +340,7 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 
 ## 12. 切片 L3：Research、Synthesize 与 Learning Artifact
 
-> 修复 code candidate：`bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。首轮候选已被三镜头复审拒绝，当前结论仅为“修复候选已完成本地门禁，等待重新复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
+> 第二轮修复 code candidate：`40af474980d33cb64d3546fc34aa163b8fffccdf`；mini-spec：`docs/superpowers/specs/2026-08-25-sage-learning-research-artifact-v1-mini-spec.md`。前两轮候选均未获三镜头放行，当前结论仅为“第二轮修复候选已完成本地门禁，等待重新复审”，不是已放行、已合入、已发布或已证明真实 Provider/Web 质量。
 
 **交付行为**
 
@@ -372,9 +372,9 @@ SAGE_E2E_PYTHON=/Users/zeromadlife/Desktop/tour-agent/.venv/bin/python \
 - Slice 2（`bccb10d`）：Plan、Unit、Research receipt 与 Artifact identity 纳入 owner/workspace/plan scope；Plan hash 最终绑定 Unit IDs。SQLite reopen/read 重算 Plan、Unit、receipt、Artifact content hash/citation binding；篡改数据与旧空 identity fail closed，旧 Artifact 被 quarantine，不进入 API/UI。
 - Slice 3（`5705d33`）：Knowledge 首次推进不依赖 Research profile；无 provider 仍可形成 canonical `source_gap/degraded/blocked`。条件 Research 复用合法 Harness child seam，真实执行 timeout 与 max-steps/token/tool budget，所有 gate/失败也保存含实际 usage/elapsed 的 receipt。sufficiency 复用既有合同；冲突来源保留双方 citation，Artifact 为 `unverified` 且不得 ready。
 - Slice 4（`4848cf4`、`bbf7c19`）：Learning 失败码集中为可穷举枚举，L3 4xx/OpenAPI 使用统一结构；共享 UI 以 task + generation 拒绝迟到响应。Playwright 不再在浏览器用 `Map/page.route` 重写状态机，而是启动隔离真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web，并以服务进程 PID 变化验证重启恢复。
-- fixture-verified：B1/B2/B3、L0-L2 邻接与必要 Coding 定向 `67 passed`；L3 API `22 passed`；最终 focused 聚合复跑 `72 passed`；Vue 定向 `3 passed`，CodingView 单文件复跑 `25 passed`；仓库化纵向 Playwright `2 passed`；全仓 Ruff、Mypy（`286 source files`）、private/public production build、改动文件 format 与 `git diff --check` 均通过。
-- 完整 Vue 首轮为 `525 passed, 1 timeout`；超时文件在无并行负载下复跑为 `25 passed`，属于 5 秒负载超时，未伪装成完整首轮全绿。
-- 完整 Python 为 `2130 passed, 12 skipped, 3 failed`。3 个失败都位于未被 L3 修改且与 `655af6b` 相同的 `tests/api/test_coding_context_routes.py`：一个 helper 重复 `mkdir`，两个 resume 用例未移除内存 runtime，因而没有进入篡改后的持久化校验。本片不扩大为 Coding runtime 重构；该基线测试隔离债务仍未关闭。
+- 第二轮修复（`40af474`）：request journal 增加可过期 lease、owner 与递增 fencing，failed/cancelled/orphan running 可接管，旧 owner 不能 complete 新 claim；最终 checkpoint CAS 重验完整 frozen binding。Research 使用单调 deadline 覆盖 executor、EvidenceBundle read 与冲突/sufficiency projection，timeout/cancel 终结 child 并留下 terminal receipt；Knowledge 与 Web evidence 合并后重新判定冲突。Resume 与 replay 重验跨 task Artifact、response digest/schema/canonical binding；Learning API 的 404/409/422/503 与 OpenAPI 同构，UI refresh 可接管旧 generation 并解除 busy。
+- fixture-verified：B1/B2/B3、L0-L2 邻接与必要 Coding 定向 `136 passed`；最终 Research/Artifact/Execution/API focused `68 passed`；Vue 组件定向 `4 passed`；仓库化纵向 Playwright `3 passed`；全仓 Ruff、Mypy（`255 source files`）、private/public production build、15 个改动 Python 文件 format 与 `git diff --check` 均通过。
+- 完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；3 个失败均位于未被 L3 修改的 `tests/api/test_coding_context_routes.py`。detached `b036b17` 固定基线单独运行该文件同样得到 `3 failed, 11 passed`：一个 helper 重复 `mkdir`，两个 resume 用例未移除内存 runtime，因而没有进入篡改后的持久化校验。本片不扩大为 Coding runtime 重构；该基线测试隔离债务仍未关闭。
 - 未证明：本地 fake Knowledge/Provider/Web 只证明协议、scope、幂等、冲突投影与重启恢复，不证明真实 Knowledge 检索质量、真实 Provider/Web 质量、学习效果、生产准确率或 SLA。
 - Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀、书本 RAG projection 修改和 B4 跨领域 Eval 均保持未交付。
 

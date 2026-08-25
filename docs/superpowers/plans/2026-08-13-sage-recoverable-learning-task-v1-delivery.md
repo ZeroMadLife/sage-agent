@@ -2,7 +2,7 @@
 
 > 日期：2026-08-13
 >
-> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3 首轮候选未获放行，修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 等待新一轮三镜头复审；B4-E 未开始
+> 状态：A1、A2 已迁移到 L0；A3 Runtime 修复候选 `9a454d24843dd27f2e2c00bb34366219c428675e` 仍待中枢最后短复审；A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与最终复审通过的 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 共同构成 L3 固定起点；B1-B3 前两轮候选未获放行，第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 等待新一轮三镜头复审；B4-E 未开始
 >
 > 前置 PRD：`docs/superpowers/specs/2026-08-13-sage-recoverable-learning-task-v1-prd.md`
 >
@@ -16,9 +16,9 @@
 | A2 可恢复 Activation | L0 已迁移 | `6f84c8be881d041018b67bf54030f8bf9a9cf1f4` | 已绑定 Session、Thread Goal、Learning Goal Ref 和 kickoff TurnContextPlan；未生成 LearningPlan、Task DAG，也未执行首轮 Turn |
 | A3 Learning allowlist | L1 Runtime 修复候选，待中枢最后短复审 | `9a454d24843dd27f2e2c00bb34366219c428675e` | active receipt 已接入模型 catalog 过滤、ToolNode/Goal evaluator 前 canonical 重验；no-runtime HTTP Timeline 在 Session 缺失/损坏时也按 active owner binding 稳定 fail closed；尚未合入 `dev/sage-v7` |
 | A4 Assistant 确认 | L2 docs candidate 已最终复审通过 | `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b`、`ca6e618d6df993dff40ed3a304ca942c239e7d84` | Run hydration 与 runtime reconstruction 分层 single-flight；跨 Session 磁盘恢复并行，同 Session 共享结果/错误且取消隔离；普通 Coding 保持兼容 |
-| B1 Knowledge-only map | L3 修复候选，待重新复审 | `bccb10d`、`5705d33` | owner/workspace scoped Plan/Unit identity 与 reopen integrity；Knowledge-first map 使用真实 sufficiency/conflict，source gap/unverified 不代表 Mastery |
-| B2 条件 Research | L3 修复候选，待重新复审 | `5705d33`、`bbf7c19` | 复用既有只读 Research/Web/Evidence runtime；gate 失败也有 durable receipt，timeout/max steps/usage/elapsed 与冲突证据可追溯 |
-| B3 Artifact + Resume | L3 修复候选，待重新复审 | `7997044`、`bccb10d`、`4848cf4`、`bbf7c19` | 原子 advance owner、durable request journal、reopen quarantine、结构化 API、迟到响应 guard 与真实服务重启 E2E；未合入 `dev/sage-v7` |
+| B1 Knowledge-only map | L3 第二轮修复候选，待重新复审 | `5705d33`、`40af474` | owner/workspace scoped Plan/Unit identity 与 reopen integrity；Knowledge-first map 使用真实 sufficiency/conflict，Knowledge/Web 冲突保留双方 citation，source gap/unverified 不代表 Mastery |
+| B2 条件 Research | L3 第二轮修复候选，待重新复审 | `5705d33`、`40af474` | 复用既有只读 Research/Web/Evidence runtime；单调 deadline 覆盖 executor、Evidence read 与 projection，gate/timeout/cancel/overrun receipt 可追溯 |
+| B3 Artifact + Resume | L3 第二轮修复候选，待重新复审 | `7997044`、`bccb10d`、`4848cf4`、`bbf7c19`、`40af474` | durable lease takeover、完整 frozen-binding CAS、replay/Resume tamper fail-closed、结构化 API、refresh/task generation guard 与真实服务重启 E2E；未合入 `dev/sage-v7` |
 | B4-E | 未开始 | - | 跨领域 Eval、Mastery 和 Practice 均未交付 |
 
 A2 的恢复语义是 `durable bootstrap state machine + receipt + reconciliation`，不是
@@ -406,7 +406,7 @@ git diff --check
 
 ### Slice B1：Knowledge-only 学习地图与 source gap
 
-> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；identity/integrity 主要修复提交为 `bccb10d`，sufficiency/conflict 主要修复提交为 `5705d33`；未 push、未建 PR、未合入。
+> 第二轮修复候选收口于 `40af474980d33cb64d3546fc34aa163b8fffccdf`；identity/integrity 主要修复提交为 `bccb10d`，Knowledge/Web 冲突合并与恢复完整性补强为 `40af474`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -436,7 +436,7 @@ git diff --check
 
 ### Slice B2：条件 Web Research 与 citation
 
-> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；有界 Research/sufficiency 为 `5705d33`，合法恢复 runtime 与真实服务 E2E 为 `bbf7c19`；未 push、未建 PR、未合入。
+> 第二轮修复候选收口于 `40af474980d33cb64d3546fc34aa163b8fffccdf`；有界 Research/sufficiency 为 `5705d33`，完整 transaction deadline、真实 usage/overrun receipt、same-URL conflict 与合法恢复 E2E 补强为 `40af474`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -464,7 +464,7 @@ git diff --check
 
 ### Slice B3：LearningMap Artifact + Resume Summary
 
-> 修复候选收口于 `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；原子 owner/journal 为 `7997044`，scope/reopen integrity 为 `bccb10d`，API/UI guard 为 `4848cf4`，真实服务 E2E 为 `bbf7c19`；未 push、未建 PR、未合入。
+> 第二轮修复候选收口于 `40af474980d33cb64d3546fc34aa163b8fffccdf`；原子 owner/journal 为 `7997044`，scope/reopen integrity 为 `bccb10d`，durable takeover、完整 CAS、replay/Resume tamper、公共 503 与 refresh busy 补强为 `40af474`；未 push、未建 PR、未合入。
 
 **交付行为**
 
@@ -716,8 +716,8 @@ L0 在 `c10e700` 固定起点上的复审补强验证：
 
 A4/L2 code candidate `2ae52dfc47080a5349f2b3bbc00e9f182ecc1b8b` 与 docs candidate `ca6e618d6df993dff40ed3a304ca942c239e7d84` 已完成最终复审，作为本轮 L3 固定起点；它们仍未合入 `dev/sage-v7` 或发布。
 
-B1-B3 首轮候选未获三镜头放行。修复 code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 以四个垂直 slice 补齐原子 advance owner 与 durable request journal、owner/workspace scoped identity 与 reopen quarantine、有界 Research 与真实 sufficiency/conflict、结构化 API 与 task-generation UI guard，并让 Playwright 走真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web 及进程重启。
+B1-B3 前两轮候选未获三镜头放行。第二轮修复 code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 在既有四个垂直 slice 上补齐 durable lease takeover 与旧 owner fencing、最终 CAS 的完整 frozen binding、Research transaction deadline 和真实 overrun receipt、Knowledge/Web 冲突证据合并、replay/Resume tamper fail-closed、闭集公共错误与 refresh generation 接管；Playwright 继续走真实 FastAPI + SQLite + 本地 fake Knowledge/Provider/Web 及进程重启。
 
-当前 fixture 验证为：Python 邻接 `67 passed`、L3 API `22 passed`、最终 focused 聚合复跑 `72 passed`、Vue 定向 `3 passed`、CodingView 单文件 `25 passed`、Playwright `2 passed`；全仓 Ruff、Mypy `286 source files`、private/public build、改动文件 format 与 `git diff --check` 通过。完整 Vue 首轮为 `525 passed, 1 timeout`，超时文件独立复跑 `25 passed`。完整 Python 为 `2130 passed, 12 skipped, 3 failed`，3 个失败均位于 L3 未修改且与 `655af6b` 相同的 Coding context 测试隔离路径，本片未把它们包装成全绿或扩成 Coding runtime 重构。
+当前 fixture 验证为：Python 相邻 `136 passed`、最终 Research/Artifact/Execution/API focused `68 passed`、Vue 组件定向 `4 passed`、真实服务 Playwright `3 passed`；全仓 Ruff、Mypy `255 source files`、private/public build、15 个改动 Python 文件 format 与 `git diff --check` 通过。完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；detached `b036b17` 固定基线单独运行同一 Coding context 文件也为 `3 failed, 11 passed`，证明本轮未扩大这 3 个既有测试隔离失败。
 
 当前停止在 L3 修复候选，等待中枢重新三镜头复审，不 push、不建 PR、不合入。下一阶段不能直接写成 L4 已开始：Practice、Mastery、`code_test`、自动 Knowledge/Memory 沉淀和 B4 跨领域 Eval 均未交付；本地 fake Knowledge/Provider/Web 只证明协议和恢复链路，不证明真实 Provider/Web 质量或学习效果。

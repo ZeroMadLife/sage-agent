@@ -2,9 +2,11 @@
 
 > 日期：2026-08-25
 >
-> 状态：L3 修复候选实施合同；code candidate `bbf7c1966ec69d6798a02b0fe67d5657cb2190a8` 待中枢重新三镜头复审
+> 状态：L3 第二轮修复候选实施合同；code candidate `40af474980d33cb64d3546fc34aa163b8fffccdf` 待中枢重新三镜头复审
 >
 > 固定起点：`ca6e618d6df993dff40ed3a304ca942c239e7d84`
+>
+> 第二轮复审起点：`b036b17cd47caa2383732289f2f98f617d69028f`
 >
 > 权威范围：桌面学习产品计划 L3；可恢复学习任务计划 B1/B2/B3
 
@@ -228,20 +230,23 @@ Resume Summary 只投影：
 - Vue 组件/store 覆盖真实 DAG/checkpoint/artifact/source 投影；
 - 仓库化 Playwright 启动隔离真实 FastAPI + SQLite + Vite，只在 Knowledge/Provider/Web 外部
   边界使用本地 fake；覆盖真实 API、owner/task scope、Knowledge、source gap、条件 Research、
-  provider 失败、冲突 unverified Artifact、历史幂等 replay、去重、citation 展示和服务进程重启恢复。
+  provider 失败、same-URL 冲突 unverified Artifact、历史幂等 replay、orphan takeover、跨 task
+  Artifact 拒绝、去重、citation 展示、refresh busy 和服务进程重启恢复。
   浏览器不得用 `Map` 或 `page.route` 重写服务端状态机。
 
 ## 10. 当前实现证据与未证明边界
 
-- code candidate：`bbf7c1966ec69d6798a02b0fe67d5657cb2190a8`；仅本地 commit，未 push、
+- code candidate：`40af474980d33cb64d3546fc34aa163b8fffccdf`；仅本地 commit，未 push、
   未建 PR、未合入，且尚未获中枢重新三镜头放行。
-- fixture-verified：Python 邻接 `67 passed`、L3 API `22 passed`、最终 focused 聚合复跑
-  `72 passed`、Vue 定向 `3 passed`、
-  CodingView 单文件 `25 passed`、真实服务纵向 Playwright `2 passed`；全仓 Ruff、Mypy
-  `286 source files`、private/public build、改动文件 format 与 `git diff --check` 通过。
-- 完整 Vue 首轮为 `525 passed, 1 timeout`，超时文件独立复跑 `25 passed`。完整 Python 为
-  `2130 passed, 12 skipped, 3 failed`；3 个失败位于未修改且与 `655af6b` 相同的 Coding context
-  测试隔离路径，仍属于 L3 之外的未关闭基线债务。
+- implemented：durable request lease/takeover 与旧 owner fencing、完整 frozen-binding checkpoint CAS、
+  response replay/Resume canonical tamper 校验、Research 全 transaction deadline 与 terminal usage receipt、
+  Knowledge/Web evidence 合并冲突、闭集 API error、UI refresh/task generation guard。
+- fixture-verified：Python 相邻 `136 passed`、最终 Research/Artifact/Execution/API focused `68 passed`、
+  Vue 组件 `4 passed`、真实服务纵向 Playwright `3 passed`；全仓 Ruff、Mypy `255 source files`、
+  private/public build、15 个改动 Python 文件 format 与 `git diff --check` 通过。
+- 完整 Vue 为 `527 passed`。完整 Python 为 `2154 passed, 12 skipped, 3 failed`；detached
+  `b036b17` 固定基线单独运行同一 Coding context 文件也为 `3 failed, 11 passed`，因此这 3 项仍是
+  L3 之外的未关闭测试隔离债务，而不是本轮新增失败。
 - 本地 fake Knowledge/Provider/Web 只验证协议、持久化、并发、scope、恢复和 UI 投影，不证明
   真实 Knowledge 检索质量、Provider/Web 质量、学习效果、生产准确率或 SLA。
 
