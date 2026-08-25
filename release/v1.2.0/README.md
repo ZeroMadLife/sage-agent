@@ -63,5 +63,7 @@ Sage 现在先解决一个清晰问题：个人打开应用后，可以配置自
 
 - App 构建目录：`/private/tmp/sage-desktop-v120-learning-e93b5ea/Sage.app`
 - Bundle receipt：`/private/tmp/sage-desktop-v120-learning-e93b5ea/desktop-bundle-receipt.json`
+- Bundle receipt SHA-256：`1cadb2f21288d5858a95416286ecbd593a2b4f14f6278f6f332445c3a22c1896`
+- 自用 zip SHA-256：`67710424e8b67ac4da12189c431ba3ebf8311d2539ee63f2c9989438abf84e48`
 - Bundle lifecycle：`app_launch`、`crash_restart`、`explicit_exit`、`handshake_health`、`process_cleanup`、`webview_reconnect` 全部通过。
 - Sidecar smoke：学习链路、重启恢复、本地对话、SQLite RAG、副作用工具阻断、secret hygiene 全部通过。
