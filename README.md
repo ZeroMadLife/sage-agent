@@ -1,3 +1,5 @@
+
+
 <h1 align="center">Sage</h1>
 
 <p align="center"><strong>本地优先的 Personal AI Learning Companion，把目标、个人知识、真实实践与可验证证据连接成一条可恢复的 Agent 执行链。</strong></p>
@@ -154,7 +156,7 @@ git clone https://github.com/ZeroMadLife/sage-agent.git
 cd sage-agent
 
 bash scripts/bootstrap-dev-env.sh
-cd frontend && npm ci && cd ..
+npm --prefix frontend ci
 cp .env.example .env
 bash scripts/dev.sh
 ```
